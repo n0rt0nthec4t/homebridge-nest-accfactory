@@ -5,9 +5,15 @@
 
 # Homebridge Nest Accfcatory
 
+ <a href="https://www.npmjs.com/package/homebridge-nest-accfactory"><img title="npm version" src="https://badgen.net/npm/v/homebridge-nest-accfcatory" ></a>
+  <a href="https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases"><img title="version" src="https://img.shields.io/github/release/n0rt0nthec4t/homebridge-nest-accfactory.svg?include_prereleases" ></a>
+    <a href="https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases"><img title="date" src="https://img.shields.io/github/release-date/n0rt0nthec4t/homebridge-nest-accfactory" ></a>
+  <a href="https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases"><img title="homebridge version" src="https://img.shields.io/github/package-json/dependency-version/n0rt0nthec4t/homebridge-nest-accfactory/homebridge"> </a>
+
+
 </span>
 
-Formally known as 'nest-accfactory', this is a Homebridge plugin I have developed to allow Nest devices to be used with HomeKit including having support for HomeKit Secure Video on doorbells and camera devices
+Formally known as 'Nest_accfactory', this is a Homebridge plugin I have developed to allow Nest devices to be used with HomeKit including having support for HomeKit Secure Video on doorbells and camera devices
 
 **HomeKit Secure Video Support is disabled by default and needs to be explicitly enabled by the user**
 
