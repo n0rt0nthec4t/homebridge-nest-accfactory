@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package weave.trait.audio;
+
+message BasicVolumeCapabilitiesTrait {
+    uint32 volumeSetPointCount = 1;
+}
+
+message BasicVolumeTrait {
+    uint32 volume = 1;
+    bool mute = 2;
+}

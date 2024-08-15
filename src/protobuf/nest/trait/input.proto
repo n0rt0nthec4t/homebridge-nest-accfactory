@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+
+package nest.trait.input;
+
+message ButtonTrait {
+    ButtonState buttonState = 1;
+    uint32 cumulativePresses = 2;
+    google.protobuf.Timestamp firstObservedAt = 3;
+    google.protobuf.Timestamp firstObservedAtMs = 4;
+
+    enum ButtonState {
+        BUTTON_STATE_UNSPECIFIED = 0;
+        BUTTON_STATE_DOWN = 1;
+        BUTTON_STATE_UP = 2;
+        BUTTON_STATE_UNKNOWN = 3;
+    }
+
+    message ButtonEvent {
+        ButtonState buttonState = 1;
+        uint32 cumulativePresses = 2;
+        ButtonState priorButtonState = 3;
+    }
+
+    message ButtonInteractionDetectedEvent {
+        uint32 unused = 31;
+    }
+}

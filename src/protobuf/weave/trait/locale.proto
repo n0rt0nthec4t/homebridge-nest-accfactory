@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package weave.trait.locale;
+
+message LocaleAvailabilitySettingsTrait {
+    repeated string availableLocales = 1;
+}
+
+message LocaleCapabilitiesTrait {
+    repeated string availableLocales = 2;
+}
+
+message LocaleSettingsTrait {
+    string activeLocale = 1;
+}
+
+message LocaleStateTrait {
+    string activeLocale = 1;
+    repeated string alternativeLocales = 2;
+}

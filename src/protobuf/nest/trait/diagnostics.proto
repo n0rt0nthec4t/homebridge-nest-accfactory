@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+package nest.trait.diagnostics;
+
+message LedTrait {
+    LedFaultInformation faultInformation = 1;
+
+    enum LedScene {
+        LED_SCENE_UNSPECIFIED = 0;
+        LED_SCENE_BLUE = 1;
+        LED_SCENE_GREEN = 2;
+        LED_SCENE_YELLOW = 3;
+        LED_SCENE_RED = 4;
+        LED_SCENE_PATHLIGHT = 5;
+    }
+
+    enum LedAnimation {
+        LED_ANIMATION_UNSPECIFIED = 0;
+        LED_ANIMATION_BOOT = 1;
+        LED_ANIMATION_STATUS = 2;
+        LED_ANIMATION_BYPASS = 3;
+        LED_ANIMATION_SWU = 4;
+        LED_ANIMATION_PATHLIGHT = 5;
+        LED_ANIMATION_PULSE = 6;
+        LED_ANIMATION_PIRTEST = 7;
+        LED_ANIMATION_SOLID_ON = 8;
+        LED_ANIMATION_PULSE_ALARM = 9;
+        LED_ANIMATION_PULSE_ALARM_WAIT = 10;
+        LED_ANIMATION_PULSE_FAST = 11;
+        LED_ANIMATION_PULSE_FAST_WAIT = 12;
+        LED_ANIMATION_PULSE_SLOW = 13;
+        LED_ANIMATION_PULSE_WAIT = 14;
+        LED_ANIMATION_ROTATE = 15;
+        LED_ANIMATION_ROTATE_SLOW = 16;
+        LED_ANIMATION_SHIMMER = 17;
+        LED_ANIMATION_SIDELEFT = 18;
+        LED_ANIMATION_SIDERIGHT = 19;
+        LED_ANIMATION_WAVE1 = 20;
+        LED_ANIMATION_FLASH = 21;
+        LED_ANIMATION_PROGRESS = 22;
+        LED_ANIMATION_DIM_PULSES_SLOW = 23;
+        LED_ANIMATION_NIGHTLIGHT_LOW = 24;
+        LED_ANIMATION_NIGHTLIGHT_MEDIUM = 25;
+        LED_ANIMATION_NIGHTLIGHT_HIGH = 26;
+        LED_ANIMATION_LINE_HIGH = 27;
+        LED_ANIMATION_BLINK = 28;
+        LED_ANIMATION_BLINK_SLOW = 29;
+        LED_ANIMATION_BLINK_INFREQUENT = 30;
+        LED_ANIMATION_BREATHE = 31;
+        LED_ANIMATION_BREATHE_SLOW = 32;
+        LED_ANIMATION_BREATHE_FAST = 33;
+        LED_ANIMATION_OFF = 34;
+    }
+
+    enum LedFaultType {
+        LED_FAULT_TYPE_UNSPECIFIED = 0;
+        LED_FAULT_TYPE_NONE = 1;
+        LED_FAULT_TYPE_STUCK_ON = 2;
+        LED_FAULT_TYPE_SELF_TEST_FAILED = 3;
+    }
+
+    message LedFaultInformation {
+        bool asserted = 1;
+        LedFaultType type = 2;
+    }
+
+    message LedEvent {
+        uint32 ledId = 1;
+        bool ledOn = 2;
+        LedScene ledScene = 3;
+        uint32 brightness = 4;
+        LedWrgb wrgb = 5;
+        LedAnimation ledAnimation = 6;
+    }
+
+    message LedFaultEvent {
+        bool asserted = 1;
+        LedFaultType type = 32;
+    }
+
+    message LedWrgb {
+        uint32 blue = 1;
+        uint32 green = 2;
+        uint32 red = 3;
+        uint32 white = 4;
+    }
+}

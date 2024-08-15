@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package nest.trait.voiceassistant;
+
+message GoogleAssistantSetupTrait {
+    bool isSetup = 1;
+
+    enum ActivateAssistantDiscoverabilityResponseType {
+        ACTIVATE_ASSISTANT_DISCOVERABILITY_RESPONSE_TYPE_UNSPECIFIED = 0;
+        ACTIVATE_ASSISTANT_DISCOVERABILITY_RESPONSE_TYPE_SUCCESS = 1;
+        ACTIVATE_ASSISTANT_DISCOVERABILITY_RESPONSE_TYPE_FAIL_CANNOT_REACH_LIBASSISTANT = 2;
+    }
+
+    message ActivateAssistantDiscoverabilityRequest {
+        string obfuscatedDeviceId = 1;
+    }
+
+    message ActivateAssistantDiscoverabilityResponse {
+        ActivateAssistantDiscoverabilityResponseType responseType = 1;
+    }
+
+    message GoogleAssistantSetupStateChangeEvent {
+        bool isSetup = 1;
+    }
+}
+
+message GoogleAssistantSettingsTrait {
+    bool assistantEnabled = 1;
+    bool assistantAvailable = 2;
+}

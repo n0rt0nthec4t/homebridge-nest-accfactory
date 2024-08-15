@@ -1,0 +1,352 @@
+syntax = "proto3";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/wrappers.proto";
+import "../../weave/common.proto";
+
+package nest.trait.network;
+
+message TelemetryNetworkWpanTrait {
+    enum NodeType {
+        NODE_TYPE_UNSPECIFIED = 0;
+        NODE_TYPE_ROUTER = 1;
+        NODE_TYPE_END = 2;
+        NODE_TYPE_SLEEPY_END = 3;
+        NODE_TYPE_MINIMAL_END = 4;
+        NODE_TYPE_OFFLINE = 5;
+        NODE_TYPE_DISABLED = 6;
+        NODE_TYPE_DETACHED = 7;
+        NODE_TYPE_NL_LURKER = 16;
+        NODE_TYPE_COMMISSIONER = 32;
+        NODE_TYPE_LEADER = 64;
+    }
+
+    enum ThreadType {
+        THREAD_TYPE_UNSPECIFIED = 0;
+        THREAD_TYPE_SILABS = 1;
+        THREAD_TYPE_OPENTHREAD = 2;
+    }
+
+    message ChannelUtilization {
+        uint32 channel = 1;
+        float percentBusy = 2;
+    }
+
+    message PerAntennaStats {
+        uint32 txSuccessCnt = 1;
+        uint32 txFailCnt = 2;
+        int32 avgAckRssi = 3;
+    }
+
+    message WpanParentLinkEvent {
+        int32 rssi = 1;
+        uint32 unicastCcaThresholdFailures = 2;
+        uint32 unicastMacRetryCount = 3;
+    }
+
+    message NetworkWpanStatsEvent {
+        int32 phyRx = 1;
+        int32 phyTx = 2;
+        int32 macUnicastRx = 3;
+        int32 macUnicastTx = 4;
+        int32 macBroadcastRx = 5;
+        int32 macBroadcastTx = 6;
+        int32 macTxFailCca = 8;
+        int32 macRxFailDecrypt = 12;
+        NodeType nodeType = 15;
+        uint32 channel = 16;
+        int32 radioTxPower = 17;
+        ThreadType threadType = 18;
+        int32 macRxFailNoFrame = 20;
+        int32 macRxFailUnknownNeighbor = 21;
+        int32 macRxFailInvalidSrcAddr = 22;
+        int32 macRxFailFcs = 23;
+        int32 macTxAckReq = 24;
+        int32 macTxNoAckReq = 25;
+        int32 macTxAcked = 26;
+        int32 macTxData = 27;
+        int32 macTxDataPoll = 28;
+        int32 macTxBeacon = 29;
+        int32 macTxBeaconReq = 30;
+        int32 macTxOtherPkt = 31;
+        int32 macTxRetry = 32;
+        int32 macRxData = 33;
+        int32 macRxDataPoll = 34;
+        int32 macRxBeacon = 35;
+        int32 macRxBeaconReq = 36;
+        int32 macRxOtherPkt = 37;
+        int32 macRxFilterWhitelist = 38;
+        int32 macRxFilterDestAddr = 39;
+        int32 macRxFailOther = 40;
+        int32 ipTxSuccess = 41;
+        int32 ipRxSuccess = 42;
+        int32 ipTxFailure = 43;
+        int32 ipRxFailure = 44;
+        google.protobuf.Duration ncpTxTotalTime = 45;
+        google.protobuf.Duration ncpRxTotalTime = 46;
+        float macCcaFailRate = 47;
+    }
+
+    message TopoEntry {
+        bytes extAddress = 1;
+        uint32 rloc16 = 2;
+        uint32 linkQualityIn = 3;
+        int32 averageRssi = 4;
+        google.protobuf.Duration age = 5;
+        bool rxOnWhenIdle = 6;
+        bool fullFunction = 7;
+        bool secureDataRequest = 8;
+        bool fullNetworkData = 9;
+        int32 lastRssi = 10;
+    }
+
+    message ChildTableEntry {
+        TopoEntry topo = 1;
+        google.protobuf.Duration timeout = 2;
+        uint32 networkDataVersion = 3;
+    }
+
+    message NeighborTableEntry {
+        TopoEntry topo = 1;
+        uint32 linkFrameCounter = 2;
+        uint32 mleFrameCounter = 3;
+        bool isChild = 4;
+    }
+
+    message NetworkWpanTopoMinimalEvent {
+        uint32 rloc16 = 1;
+        uint32 routerId = 2;
+        uint32 leaderRouterId = 3;
+        int32 parentAverageRssi = 4;
+        int32 parentLastRssi = 5;
+        uint32 partitionId = 6;
+        bytes extAddress = 7;
+        int32 instantRssi = 8;
+    }
+
+    message NetworkWpanTopoFullEvent {
+        uint32 rloc16 = 1;
+        uint32 routerId = 2;
+        uint32 leaderRouterId = 3;
+        bytes leaderAddress = 4;
+        uint32 leaderWeight = 5;
+        uint32 leaderLocalWeight = 6;
+        repeated ChildTableEntry deprecatedChildTable = 7;
+        repeated NeighborTableEntry deprecatedNeighborTable = 8;
+        bytes networkData = 9;
+        uint32 networkDataVersion = 10;
+        bytes stableNetworkData = 11;
+        uint32 stableNetworkDataVersion = 12;
+        uint32 preferredRouterId = 13;
+        uint32 partitionId = 14;
+        bytes extAddress = 15;
+        uint32 childTableSize = 16;
+        uint32 neighborTableSize = 17;
+        int32 instantRssi = 18;
+    }
+
+    message TopoEntryEvent {
+        bytes extAddress = 1;
+        uint32 rloc16 = 2;
+        uint32 linkQualityIn = 3;
+        int32 averageRssi = 4;
+        google.protobuf.Duration age = 5;
+        bool rxOnWhenIdle = 6;
+        bool fullFunction = 7;
+        bool secureDataRequest = 8;
+        bool fullNetworkData = 9;
+        int32 lastRssi = 10;
+        uint32 linkFrameCounter = 11;
+        uint32 mleFrameCounter = 12;
+        bool isChild = 13;
+        google.protobuf.Duration timeout = 14;
+        google.protobuf.UInt32Value networkDataVersion = 15;
+        float macFrameErrorRate = 16;
+        float ipMessageErrorRate = 17;
+    }
+
+    message WpanChannelmonStatsEvent {
+        repeated ChannelUtilization channels = 1;
+        uint32 samples = 2;
+    }
+
+    message WpanAntennaStatsEvent {
+        repeated PerAntennaStats antennaStats = 1;
+        uint32 antSwitchCnt = 2;
+    }
+
+    message NetworkWpanTopoParentRespEvent {
+        uint32 rloc16 = 1;
+        int32 rssi = 2;
+        int32 priority = 3;
+        bytes extAddr = 4;
+        uint32 linkQuality3 = 5;
+        uint32 linkQuality2 = 6;
+        uint32 linkQuality1 = 7;
+    }
+}
+
+message RadioSignalStrengthTrait {
+    enum RadioType {
+        RADIO_TYPE_UNSPECIFIED = 0;
+        RADIO_TYPE_BLUETOOTH_LE = 1;
+    }
+
+    enum SignalStrength {
+        SIGNAL_STRENGTH_UNSPECIFIED = 0;
+        SIGNAL_STRENGTH_NO_SIGNAL = 1;
+        SIGNAL_STRENGTH_WEAK = 2;
+        SIGNAL_STRENGTH_STRONG = 3;
+    }
+
+    enum StatusCode {
+        STATUS_CODE_UNSPECIFIED = 0;
+        STATUS_CODE_DEVICE_INVALID = 1;
+        STATUS_CODE_RADIO_INVALID = 2;
+        STATUS_CODE_RADIO_ERROR = 3;
+    }
+
+    message SignalStrengthTestRequest {
+        weave.common.ResourceId deviceId = 1;
+        RadioType radioType = 2;
+        google.protobuf.Duration testDuration = 3;
+    }
+
+    message SignalStrengthTestResponse {
+        SignalStrength signalStrength = 1;
+    }
+}
+
+message TelemetryNetworkWifiTrait {
+    message NetworkWiFiStatsEvent {
+        int32 rssi = 1;
+        uint32 bcnRecvd = 2;
+        uint32 bcnLost = 3;
+        uint32 pktMcastRx = 4;
+        uint32 pktUcastRx = 5;
+        uint32 currRxRate = 6;
+        uint32 currTxRate = 7;
+        uint32 sleepTimePercent = 8;
+        uint32 bssid = 9;
+        uint32 freq = 10;
+        uint32 numOfAp = 11;
+    }
+
+    message NetworkWiFiDeauthEvent {
+        uint32 reason = 1;
+    }
+
+    message NetworkWiFiInvalidKeyEvent {
+        uint32 reason = 1;
+    }
+
+    message NetworkWiFiConnectionStatusChangeEvent {
+        bool isConnected = 1;
+        google.protobuf.StringValue lnid = 2;
+        google.protobuf.StringValue lnidW = 3;
+    }
+}
+
+message ThreadInterfaceTrait {
+    bool isOnline = 1;
+    bytes macAddress = 2;
+    repeated bytes ipAddresses = 3;
+    bytes extendedPanId = 32;
+    ThreadNetworkParameters networkParameters = 33;
+
+    enum ThreadRoutingRole {
+        THREAD_ROUTING_ROLE_UNSPECIFIED = 0;
+        THREAD_ROUTING_ROLE_END_DEVICE = 1;
+        THREAD_ROUTING_ROLE_ELIGIBLE = 2;
+        THREAD_ROUTING_ROLE_REGULAR = 3;
+        THREAD_ROUTING_ROLE_LEADER = 4;
+    }
+
+    message ThreadChannelDescriptor {
+        ThreadInterfaceCapabilityTrait.ThreadChannelPage page = 1;
+        uint32 index = 2;
+        weave.common.StringRef description = 3;
+    }
+
+    message ThreadInterfaceRole {
+        ThreadRoutingRole routingRole = 1;
+        bool isSleepy = 2;
+    }
+
+    message ThreadNetworkParameters {
+        ThreadInterfaceRole role = 1;
+        ThreadChannelDescriptor channel = 2;
+        bytes panId = 3;
+        bytes networkName = 4;
+    }
+}
+
+message NetworkFaultTrait {
+    bool asserted = 1;
+    repeated NetworkFaultType type = 32;
+
+    enum NetworkFaultType {
+        NETWORK_FAULT_TYPE_UNSPECIFIED = 0;
+        NETWORK_FAULT_TYPE_LINK_DOWN = 1;
+        NETWORK_FAULT_TYPE_HW_FAILURE = 2;
+        NETWORK_FAULT_TYPE_JAMMED = 3;
+    }
+
+    message NetworkFaultEvent {
+        bool asserted = 1;
+        repeated NetworkFaultType type = 32;
+    }
+}
+
+message RadioFaultTrait {
+    enum RadioFaultType {
+        RADIO_FAULT_TYPE_UNSPECIFIED = 0;
+        RADIO_FAULT_TYPE_BROKEN_WIFI = 1;
+        RADIO_FAULT_TYPE_BROKEN_CELLULAR = 2;
+        RADIO_FAULT_TYPE_BROKEN_15_4 = 3;
+        RADIO_FAULT_TYPE_BROKEN_NFC = 4;
+        RADIO_FAULT_TYPE_BROKEN_BLE = 5;
+    }
+
+    message RadioFaultEvent {
+        bool asserted = 1;
+        repeated RadioFaultType type = 32;
+    }
+}
+
+message ThreadInterfaceCapabilityTrait {
+    TelemetryNetworkWpanTrait.ThreadType type = 1;
+    weave.common.StringRef description = 2;
+    bool canSleep = 32;
+    bool canRoute = 33;
+    repeated ThreadChannelPage channelPages = 34;
+
+    enum ThreadChannelPage {
+        THREAD_CHANNEL_PAGE_UNSPECIFIED = 0;
+        THREAD_CHANNEL_PAGE_IEEE802_15_4_ISM2_4 = 1;
+    }
+}
+
+message TelemetryNetworkTrait {
+    message NetworkDHCPFailureEvent {
+        uint32 reason = 1;
+    }
+}
+
+message WifiNetworkFaultTrait {
+    bool asserted = 1;
+    repeated NetworkFaultTrait.NetworkFaultType type = 32;
+
+    message WifiNetworkFaultEvent {
+        bool asserted = 1;
+        repeated NetworkFaultTrait.NetworkFaultType type = 32;
+    }
+}
+
+message WifiInterfaceTrait {
+    bool isOnline = 1;
+    bytes macAddress = 2;
+    repeated bytes ipAddresses = 3;
+    int32 rssi = 32;
+    string regulatoryDomain = 33;
+}

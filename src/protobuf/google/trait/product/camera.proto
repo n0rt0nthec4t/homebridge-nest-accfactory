@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/wrappers.proto";
+
+package google.trait.product.camera;
+
+message FloodlightStateTrait {
+    enum LightState {
+        LIGHT_STATE_UNSPECIFIED = 0;
+        LIGHT_STATE_OFF = 1;
+        LIGHT_STATE_ON = 2;
+    }
+
+    LightState triggeredByMotion = 1;
+    LightState triggeredByEvent = 2;
+    LightState triggeredByLiveView = 3;
+    LightState manuallyTriggered = 4;
+    string associatedFloodlightSerialNumber = 5;
+    string associatedFloodlightFirmwareVersion = 6;
+    LightState currentState = 7;
+}
+
+message FloodlightSettingsTrait {
+    enum MotionTrigger {
+        TRIGGER_UNSPECIFIED = 0;
+        TRIGGER_SENSITIVITY_LOW = 1;
+        TRIGGER_SENSITIVITY_MEDIUM = 2;
+        TRIGGER_SENSITIVITY_HIGH = 3;
+        TRIGGER_SENSITIVITY_OFF = 4;
+    }
+
+    enum OnOffTrigger {
+        TRIGGER_UNSPECIFIED = 0;
+        TRIGGER_OFF = 1;
+        TRIGGER_ON = 2;
+    }
+
+    enum DaylightSensitivity {
+        DAYLIGHT_SENSITIVITY_UNSPECIFIED = 0;
+        DAYLIGHT_SENSITIVITY_DARKER = 1;
+        DAYLIGHT_SENSITIVITY_MEDIUM = 2;
+        DAYLIGHT_SENSITIVITY_BRIGHTER = 3;
+        DAYLIGHT_SENSITIVITY_DARKEST = 4;
+    }
+
+    int32 brightness = 1;
+    MotionTrigger motionTrigger = 2;
+    google.protobuf.Duration timerDuration = 3;
+    OnOffTrigger liveViewingTrigger = 4;
+    DaylightSensitivity daylightSensitivity = 5;
+    OnOffTrigger cameraEventTrigger = 6;
+}

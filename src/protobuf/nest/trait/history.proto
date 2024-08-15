@@ -1,0 +1,345 @@
+syntax = "proto3";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+import "../../nest/trait/hvac.proto";
+import "../../nest/trait/occupancy.proto";
+import "../../weave/common.proto";
+
+package nest.trait.history;
+
+message CameraObservationHistoryTrait {
+    message CameraObservationHistoryRequest {
+        google.protobuf.Timestamp queryStartTime = 1;
+        google.protobuf.Timestamp queryEndTime = 2;
+    }
+
+    message CameraObservationHistoryResponse {
+        message CameraEventTimeWindow {
+            enum EventType {
+                EVENT_UNSPECIFIED = 0;
+                EVENT_MOTION = 1;
+                EVENT_SOUND = 2;
+                EVENT_PERSON = 3;
+                EVENT_FACE = 4;
+                EVENT_UNFAMILIAR_FACE = 5;
+                EVENT_PERSON_TALKING = 6;
+                EVENT_DOG_BARKING = 7;
+                EVENT_DOORBELL = 8;
+                EVENT_PACKAGE_DELIVERED = 9;
+                EVENT_PACKAGE_RETRIEVED = 10;
+                EVENT_SMOKE_ALARM = 11;
+                EVENT_CO_ALARM = 12;
+                EVENT_FIRE_ALARM = 13;
+                EVENT_GLASS_BREAK = 14;
+                EVENT_OFFLINE = 15;
+                EVENT_BABY_CRYING = 16;
+                EVENT_DOOR_KNOCK = 17;
+                EVENT_VEHICLE = 18;
+                EVENT_FACE_OTHER = 19;
+                EVENT_PACKAGE_IN_TRANSIT = 20;
+                EVENT_ANIMAL_DOG = 21;
+                EVENT_ANIMAL_CAT = 22;
+                EVENT_ANIMAL = 23;
+                EVENT_MAGIC_MOMENT = 24;
+                EVENT_CTD = 25;
+                EVENT_CMDT = 26;
+                EVENT_TALKBACK = 27;
+                EVENT_SECURITY_ALARM = 28;
+                EVENT_NOT_A_FACE = 29;
+                EVENT_DOOR_OPEN = 30;
+                EVENT_DOOR_CLOSE = 31;
+                EVENT_DOOR_AJAR = 32;
+                EVENT_UNRECOGNIZED = 33;
+            }
+
+            message CameraEvent {
+                string eventId = 1;
+                google.protobuf.Timestamp startTime = 2;
+                google.protobuf.Timestamp endTime = 3;
+                repeated EventType eventType = 4;
+                FamiliarFace familiarFace = 5;
+                repeated ActivityZone activityZone = 6;
+                EventUrls eventUrls = 7;
+            }
+
+            message EventUrls {
+                string snapshotUrl = 1;
+                google.protobuf.StringValue clipUrl = 2;
+            }
+
+            message FamiliarFace {
+                string faceId = 1;
+                string faceName = 2;
+                string facePictureUrl = 4;
+            }
+
+            message ActivityZone {
+                uint32 zoneIndex = 1;
+                string name = 2;
+                uint32 internalIndex = 3;
+            }
+
+            string uuid = 1;
+            google.protobuf.Timestamp startTime = 2;
+            google.protobuf.Timestamp endTime = 3;
+            repeated CameraEvent cameraEvent = 4;
+            repeated ActivityZone activityZone = 6;
+            FamiliarFace familiarFace = 7;
+            EventUrls timeWindowUrls = 8;
+            int32 unknown = 10;
+        }
+
+        CameraEventTimeWindow cameraEventWindow = 1;
+    }
+}
+
+message EnergyHistoryTrait {
+    enum LegacyEnergyWinner {
+        LEGACY_ENERGY_WINNER_UNSPECIFIED = 0;
+        LEGACY_ENERGY_WINNER_USER = 1;
+        LEGACY_ENERGY_WINNER_WEATHER = 2;
+        LEGACY_ENERGY_WINNER_AWAY = 3;
+        LEGACY_ENERGY_WINNER_AUTO_AWAY = 4;
+        LEGACY_ENERGY_WINNER_TUNE_UP = 5;
+        LEGACY_ENERGY_WINNER_AUTO_DEHUM = 6;
+        LEGACY_ENERGY_WINNER_DEMAND_RESPONSE = 7;
+        LEGACY_ENERGY_WINNER_TIME_OF_USE = 8;
+    }
+
+    enum LegacySetPointType {
+        LEGACY_SET_POINT_TYPE_UNSPECIFIED = 0;
+        LEGACY_SET_POINT_TYPE_HEAT = 1;
+        LEGACY_SET_POINT_TYPE_COOL = 2;
+        LEGACY_SET_POINT_TYPE_RANGE = 3;
+        LEGACY_SET_POINT_TYPE_EMERGENCY_HEAT = 4;
+    }
+
+    enum LegacyEventType {
+        LEGACY_EVENT_TYPE_UNSPECIFIED = 0;
+        LEGACY_EVENT_TYPE_HEAT = 1;
+        LEGACY_EVENT_TYPE_COOL = 2;
+        LEGACY_EVENT_TYPE_RANGE = 3;
+        LEGACY_EVENT_TYPE_AWAY = 4;
+        LEGACY_EVENT_TYPE_AUTOAWAY = 5;
+        LEGACY_EVENT_TYPE_OFF = 6;
+        LEGACY_EVENT_TYPE_ON = 8;
+        LEGACY_EVENT_TYPE_EMERGENCY_HEAT = 9;
+        LEGACY_EVENT_TYPE_SUNLIGHT_CORRECTION = 10;
+    }
+
+    enum LegacyTouchedWhere {
+        LEGACY_TOUCHED_WHERE_UNSPECIFIED = 0;
+        LEGACY_TOUCHED_WHERE_SCHEDULE = 1;
+        LEGACY_TOUCHED_WHERE_ADHOC = 2;
+    }
+
+    message LegacyEnergyHistoryRequest {
+        google.protobuf.Timestamp queryStartTime = 1;
+        google.protobuf.Timestamp queryEndTime = 2;
+    }
+
+    message LegacyEnergyHistoryResponse {
+        repeated LegacyDayUsage days = 1;
+        google.protobuf.Duration recentMaxUsedSeconds = 2;
+    }
+
+    message LegacyDayUsage {
+        google.protobuf.Timestamp dayStart = 1;
+        google.protobuf.Timestamp dayEnd = 2;
+        google.protobuf.Duration totalHeatingSeconds = 10;
+        google.protobuf.Duration totalCoolingSeconds = 11;
+        google.protobuf.Duration totalFanCoolingSeconds = 12;
+        google.protobuf.Duration totalHumidifierSeconds = 13;
+        google.protobuf.Duration totalDehumidifierSeconds = 14;
+        LegacyEnergyWinner energyWinner = 15;
+        google.protobuf.BoolValue energyLeaf = 16;
+        google.protobuf.Int32Value recentAverageUsedSeconds = 17;
+        google.protobuf.Int32Value secondsUsageOverAverage = 18;
+        LegacySystemCapabilities systemCapabilities = 19;
+        bool cyclesIncomplete = 30;
+        repeated LegacyHVACCycle cycles = 31;
+        bool eventsIncomplete = 40;
+        repeated LegacyHVACUsage usageEvents = 41;
+        repeated LegacyRatePlanChange rates = 50;
+    }
+
+    message LegacyHVACCycle {
+        google.protobuf.Timestamp cycleStart = 1;
+        google.protobuf.Duration duration = 2;
+        bool isComplete = 3;
+        bool heat1 = 10;
+        bool heat2 = 11;
+        bool heat3 = 12;
+        bool heatAux = 13;
+        bool altHeat = 14;
+        bool altHeat2 = 15;
+        bool emergencyHeat = 16;
+        bool cool1 = 17;
+        bool cool2 = 18;
+        bool cool3 = 19;
+        bool fan = 20;
+        bool fanCooling = 21;
+        bool humidifier = 22;
+        bool dehumidifier = 23;
+        bool autoDehumdifier = 24;
+        bool waterHeater = 25;
+    }
+
+    message LegacySystemCapabilities {
+        bool hasStage1Cool = 1;
+        bool hasStage2Cool = 2;
+        bool hasStage3Cool = 3;
+        bool hasStage1Heat = 4;
+        bool hasStage2Heat = 5;
+        bool hasStage3Heat = 6;
+        bool hasStage1AlternateHeat = 7;
+        bool hasStage2AlternateHeat = 8;
+        bool hasHumidifier = 9;
+        bool hasDehumidifier = 10;
+        bool hasDualFuel = 11;
+        bool hasAuxHeat = 12;
+        bool hasEmergencyHeat = 13;
+        bool hasAirFilter = 14;
+        bool hasFossilFuel = 15;
+        bool hasHotWaterControl = 16;
+        bool hasHeatPump = 17;
+        bool hasHotWaterTemperature = 18;
+        bool hasFan = 19;
+    }
+
+    message LegacyRatePlanChange {
+        google.protobuf.Timestamp timestamp = 1;
+        google.protobuf.Timestamp ratePlanStart = 2;
+        google.protobuf.Timestamp ratePlanEnd = 3;
+        google.protobuf.UInt32Value tierLevel = 4;
+    }
+
+    message LegacyHVACUsage {
+        google.protobuf.Timestamp eventStart = 1;
+        int32 timezoneOffset = 2;
+        google.protobuf.Duration duration = 3;
+        bool continuation = 4;
+        LegacyEventType eventType = 5;
+        LegacyEventOnMode on = 10;
+        LegacyEventOffMode off = 11;
+        LegacyEventEcoAwayMode ecoAway = 12;
+        LegacyEventEcoAutoAwayMode ecoAutoAway = 13;
+        LegacyEventSunlightCorrection sunlightCorrection = 14;
+        LegacyEventSetPoint setPoint = 15;
+    }
+
+    message LegacyEventOnMode {
+        LegacyEventSource eventSource = 1;
+    }
+
+    message LegacyEventOffMode {
+        LegacyEventSource eventSource = 1;
+    }
+
+    message LegacyEventEcoAwayMode {
+        nest.trait.hvac.HvacControl.TemperatureThreshold heatingTarget = 1;
+        nest.trait.hvac.HvacControl.TemperatureThreshold coolingTarget = 2;
+        LegacyEventSource eventSource = 3;
+    }
+
+    message LegacyEventEcoAutoAwayMode {
+        nest.trait.hvac.HvacControl.TemperatureThreshold heatingTarget = 1;
+        nest.trait.hvac.HvacControl.TemperatureThreshold coolingTarget = 2;
+        LegacyEventSource eventSource = 3;
+    }
+
+    message LegacyEventSunlightCorrection {
+        LegacyEventSource eventSource = 1;
+    }
+
+    message LegacyEventSetPoint {
+        LegacySetPointType setPointType = 1;
+        nest.trait.hvac.SetPointScheduleSettingsTrait.SetPointScheduleType scheduleType = 2;
+        nest.trait.hvac.HvacControl.TemperatureThreshold heatingTarget = 3;
+        nest.trait.hvac.HvacControl.TemperatureThreshold coolingTarget = 4;
+        nest.trait.hvac.HvacActor.HvacActorMethod actor = 5;
+        google.protobuf.Timestamp touchedWhen = 6;
+        google.protobuf.Int32Value touchedTimezoneOffset = 7;
+        LegacyTouchedWhere touchedWhere = 8;
+        google.protobuf.StringValue touchedUserId = 9;
+        google.protobuf.UInt32Value scheduledStart = 10;
+        google.protobuf.UInt32Value scheduledDay = 11;
+        LegacyEventType previousEventType = 12;
+        LegacyEventSource source = 13;
+    }
+
+    message LegacyEventSource {
+        nest.trait.hvac.HvacActor.HvacActorMethod actor = 1;
+        LegacyTouchedWhere touchedWhere = 2;
+        google.protobuf.StringValue userName = 3;
+    }
+}
+
+message OccupancyHistoryTrait {
+    enum ImplicitChangeReason {
+        IMPLICIT_CHANGE_REASON_UNSPECIFIED = 0;
+        IMPLICIT_CHANGE_REASON_ARM = 1;
+        IMPLICIT_CHANGE_REASON_DISARM = 2;
+        IMPLICIT_CHANGE_REASON_UNLOCK = 3;
+    }
+
+    message FindOccupancyEventListRequest {
+        google.protobuf.Timestamp queryStartTime = 1;
+        google.protobuf.Timestamp queryEndTime = 2;
+        google.protobuf.StringValue fenceId = 3;
+    }
+
+    message ExplicitStructureModeChange {
+        nest.trait.occupancy.StructureModeTrait.StructureMode mode = 1;
+        weave.common.ResourceId user = 2;
+        google.protobuf.StringValue wwnClientId = 3;
+        nest.trait.occupancy.StructureModeTrait.StructureMode priorMode = 4;
+    }
+
+    message ImplicitStructureModeChange {
+        nest.trait.occupancy.StructureModeTrait.StructureMode mode = 1;
+        weave.common.ResourceId actor = 2;
+        ImplicitChangeReason reason = 3;
+        nest.trait.occupancy.StructureModeTrait.StructureMode priorMode = 4;
+    }
+
+    message EstimatedOccupancyStructureModeChange {
+        nest.trait.occupancy.StructureModeTrait.StructureMode mode = 1;
+        nest.trait.occupancy.StructureModeTrait.StructureModeReason reason = 2;
+        weave.common.ResourceId weaveDeviceId = 3;
+        google.protobuf.StringValue rtsSerialNumber = 4;
+        nest.trait.occupancy.StructureModeTrait.StructureMode priorMode = 5;
+    }
+
+    message CombinedPresenceChange {
+        nest.trait.occupancy.StructureModeTrait.Presence presence = 1;
+        nest.trait.occupancy.StructureModeTrait.Presence priorPresence = 2;
+    }
+
+    message GeofenceStateChange {
+        nest.trait.occupancy.Geofencing.GeofenceState geofenceState = 1;
+        weave.common.ResourceId userId = 2;
+        google.protobuf.StringValue rtsDeviceId = 3;
+        weave.common.ResourceId weaveMobileDeviceId = 4;
+        google.protobuf.Timestamp assertionTimestamp = 5;
+    }
+
+    message OccupancyHistoryRecord {
+        google.protobuf.Timestamp eventTimestamp = 1;
+        ExplicitStructureModeChange explicitChangeEvent = 2;
+        ImplicitStructureModeChange implicitChangeEvent = 3;
+        EstimatedOccupancyStructureModeChange estimatedOccupancyChangeEvent = 4;
+        CombinedPresenceChange presenceEvent = 5;
+        GeofenceStateChange geofenceEvent = 6;
+    }
+
+    message FindOccupancyEventsResponse {
+        OccupancyHistoryRecord record = 1;
+    }
+
+    message FindOccupancyEventListResponse {
+        repeated FindOccupancyEventsResponse responses = 1;
+    }
+}

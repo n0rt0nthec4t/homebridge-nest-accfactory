@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+import "../../weave/common.proto";
+
+package nest.trait.lighting;
+
+message LightingEcosystemFeaturesSettingsTrait {
+    NestSecureAlarmLightsOnSettings nestSecureAlarmLightsOnSettings = 1;
+    NestSecureArmDisarmSettings nestSecureArmDisarmSettings = 2;
+    NestProtectAlarmLightsOnSettings nestProtectAlarmLightsOnSettings = 3;
+    NestProtectSmokeAlarmFansOffSettings nestProtectSmokeAlarmFansOffSettings = 4;
+
+    message NestSecureAlarmLightsOnSettings {
+        bool enabled = 1;
+    }
+
+    message NestSecureArmDisarmSettings {
+        bool enabled = 1;
+        repeated weave.common.ResourceId participatingLightpads = 2;
+    }
+
+    message NestProtectAlarmLightsOnSettings {
+        bool enabled = 1;
+    }
+
+    message NestProtectSmokeAlarmFansOffSettings {
+        bool enabled = 1;
+    }
+}
+
+message FanActionOnSmokeAlarmGlobalSettingsTrait {
+    bool featureEnabled = 1;
+}
+
+message FanActionOnSmokeAlarmSettingsTrait {
+    bool featureEnabled = 1;
+}
+
+message LightingActionOnSafetyAlarmGlobalSettingsTrait {
+    bool featureEnabled = 1;
+}
+
+message LightingActionOnSafetyAlarmSettingsTrait {
+    bool featureEnabled = 1;
+}
+
+message LightingActionOnSecurityAlarmGlobalSettingsTrait {
+    bool featureEnabled = 1;
+}
+
+message LightingActionOnSecurityAlarmSettingsTrait {
+    bool featureEnabled = 1;
+}
+
+message MotionAlertsGlobalSettingsTrait {
+    bool alertWhenAwayFeatureEnabled = 1;
+}
+
+message StructureScenesTrait {
+    repeated weave.common.ResourceId scenes = 1;
+}

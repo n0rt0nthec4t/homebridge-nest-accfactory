@@ -1,0 +1,105 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+import "../../weave/common.proto";
+import "../../weave/trait/schedule.proto";
+
+package nest.trait.guest;
+
+message GuestsTrait {
+    repeated Guest guests = 1;
+    uint32 maxGuestsPerStructure = 2;
+
+    enum ResponseStatus {
+        RESPONSE_STATUS_UNSPECIFIED = 0;
+        RESPONSE_STATUS_SUCCESS = 1;
+        RESPONSE_STATUS_INTERNAL_FAILURE = 2;
+        RESPONSE_STATUS_COMMAND_MISSING_PARAMS = 3;
+        RESPONSE_STATUS_DUP_GUEST_NAME = 4;
+        RESPONSE_STATUS_LIMIT_REACHED = 5;
+        RESPONSE_STATUS_DUP_PINCODE = 6;
+        RESPONSE_STATUS_GUEST_NOT_FOUND = 7;
+    }
+
+    enum GuestStatus {
+        GUEST_STATUS_UNSPECIFIED = 0;
+        GUEST_STATUS_ACTIVE = 1;
+        GUEST_STATUS_INVITED = 2;
+        GUEST_STATUS_ACCESS_EXPIRED = 3;
+    }
+
+    message Guest {
+        string name = 1;
+        weave.common.ResourceId id = 2;
+        GuestStatus status = 3;
+        google.protobuf.Timestamp invitationSentTime = 4;
+        google.protobuf.Timestamp invitationAcceptanceTime = 5;
+        string avatarUrl = 6;
+    }
+
+    message CreateGuestRequest {
+        string name = 1;
+        bytes pincode = 2;
+        weave.trait.schedule.BasicUserSchedulesSettingsTrait.BasicUserSchedule schedule = 3;
+    }
+
+    message CreateGuestResponse {
+        weave.common.ResourceId guestId = 1;
+        ResponseStatus status = 2;
+    }
+
+    message RemoveGuestRequest {
+        weave.common.ResourceId guestId = 1;
+    }
+
+    message RemoveGuestResponse {
+        ResponseStatus status = 1;
+    }
+
+    message InviteGuestRequest {
+        weave.common.ResourceId guestId = 1;
+        string email = 2;
+        bytes encryptionKey = 3;
+        bytes encryptedPayload = 4;
+        string notes = 5;
+    }
+
+    message GuestInvitation {
+        string invitationUuid = 1;
+        bytes encryptedPayload = 2;
+        google.protobuf.Timestamp createdAt = 3;
+        google.protobuf.Timestamp sentAt = 4;
+        google.protobuf.Timestamp claimedAt = 5;
+        google.protobuf.Timestamp invisibleAt = 6;
+    }
+
+    message InviteGuestResponse {
+        ResponseStatus status = 1;
+    }
+
+    message SetGuestAvatarUrlRequest {
+        weave.common.ResourceId guestId = 1;
+        string avatarUrl = 2;
+    }
+
+    message SetGuestAvatarUrlResponse {
+        ResponseStatus status = 1;
+    }
+
+    message CreateGuestEvent {
+        weave.common.ResourceId inviterId = 1;
+        weave.common.ResourceId structureId = 2;
+        weave.common.ResourceId guestId = 3;
+    }
+
+    message InviteGuestEvent {
+        weave.common.ResourceId guestId = 1;
+        string guestEmail = 2;
+        string invitationLink = 3;
+        weave.common.ResourceId inviterId = 4;
+        weave.common.ResourceId structureId = 5;
+        string notes = 6;
+        google.protobuf.Timestamp invisibleDate = 7;
+        bool reinvite = 8;
+    }
+}

@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+
+package weave.trait.auth;
+
+message ApplicationKeysTrait {
+    repeated EpochKey epochKeys = 1;
+    repeated ApplicationMasterKey masterKeys = 2;
+
+    message EpochKey {
+        uint32 keyId = 1;
+        google.protobuf.Timestamp startTime = 2;
+        bytes key = 3;
+    }
+
+    message ApplicationMasterKey {
+        uint32 applicationGroupGlobalId = 1;
+        uint32 applicationGroupShortId = 2;
+        bytes key = 3;
+    }
+}

@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+import "../../weave/common.proto";
+
+package nest.trait.user;
+
+message UserSecurityNotificationSettingsTrait {
+    repeated StructureSecurityNotificationSettingsStruct structureSecurityNotificationSettings = 1;
+
+    enum SecurityNotificationSettingsChangeResponseType {
+        SECURITY_NOTIFICATION_SETTINGS_CHANGE_RESPONSE_TYPE_UNSPECIFIED = 0;
+        SECURITY_NOTIFICATION_SETTINGS_CHANGE_RESPONSE_TYPE_SUCCESS = 1;
+        SECURITY_NOTIFICATION_SETTINGS_CHANGE_RESPONSE_TYPE_FAIL = 2;
+    }
+
+    enum SecurityNotificationSettingsStructureResponseType {
+        SECURITY_NOTIFICATION_SETTINGS_STRUCTURE_RESPONSE_TYPE_UNSPECIFIED = 0;
+        SECURITY_NOTIFICATION_SETTINGS_STRUCTURE_RESPONSE_TYPE_SUCCESS = 1;
+        SECURITY_NOTIFICATION_SETTINGS_STRUCTURE_RESPONSE_TYPE_FAIL = 2;
+    }
+
+    message StructureSecurityNotificationSettingsStruct {
+        weave.common.ResourceId structureId = 1;
+        bool armReminderEnabled = 2;
+        bool disarmReminderEnabled = 3;
+        google.protobuf.BoolValue nightArmReminderEnabled = 4;
+    }
+
+    message SecurityNotificationSettingsChangeRequest {
+        weave.common.ResourceId structureId = 1;
+        google.protobuf.BoolValue armReminderEnabled = 2;
+        google.protobuf.BoolValue disarmReminderEnabled = 3;
+        google.protobuf.BoolValue nightArmReminderEnabled = 4;
+    }
+
+    message SecurityNotificationSettingsChangeResponse {
+        SecurityNotificationSettingsChangeResponseType responseType = 1;
+    }
+
+    message SecurityNotificationSettingsStructureRequest {
+        weave.common.ResourceId structureId = 1;
+    }
+
+    message SecurityNotificationSettingsStructureResponse {
+        SecurityNotificationSettingsStructureResponseType responseType = 1;
+        StructureSecurityNotificationSettingsStruct structureSecurityNotificationSettings = 2;
+    }
+}
+
+message UserAccessTrait {
+    repeated AccessRecord userAccessRecords = 1;
+
+    enum AccessType {
+        ACCESS_TYPE_UNSPECIFIED = 0;
+        ACCESS_TYPE_PINCODE = 1;
+        ACCESS_TYPE_TAG = 2;
+    }
+
+    message AccessRecord {
+        weave.common.ResourceId userId = 1;
+        AccessType type = 2;
+        weave.common.ResourceId deviceId = 3;
+        google.protobuf.Timestamp lastUsedTime = 4;
+    }
+
+    message AddUserAccessRecordRequest {
+        AccessRecord record = 1;
+    }
+
+    message DeleteUserAccessRecordRequest {
+        weave.common.ResourceId userId = 1;
+        AccessType type = 2;
+    }
+
+    message GuestPincodeFirstUsedEvent {
+        weave.common.ResourceId structureId = 1;
+        weave.common.ResourceId guestId = 2;
+        weave.common.ResourceId deviceId = 3;
+    }
+}
+
+message UserLockNotificationSettingsTrait {
+    map<string, DeviceLockNotificationSettingsStruct> deviceLockNotificationSettings = 1;
+
+    message DeviceLockNotificationSettingsStruct {
+        bool lockNotificationEnabled = 2;
+        bool unlockNotificationEnabled = 3;
+        bool lockReminderEnabled = 4;
+        bool unlockReminderEnabled = 5;
+    }
+}
+
+message UserInfoTrait {
+    string rtsUserId = 1;
+    uint32 maxNestTagCount = 2;
+}

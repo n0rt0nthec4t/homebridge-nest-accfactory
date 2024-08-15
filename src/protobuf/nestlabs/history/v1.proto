@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "../../nestlabs/eventingapi/v1.proto";
+
+package nestlabs.history.v1;
+
+enum FilterType {
+    FILTER_TYPE_UNSPECIFIED = 0;
+    FILTER_TYPE_WHITELIST = 1;
+    FILTER_TYPE_BLACKLIST = 2;
+}
+
+enum SortDirection {
+    SORT_UNSPECIFIED = 0;
+    SORT_ASCENDING = 1;
+    SORT_DESCENDING = 2;
+}
+
+enum EventSortField {
+    EVENT_SORT_UNSPECIFIED = 0;
+    EVENT_SORT_BY_TIME = 1;
+    EVENT_SORT_BY_ORIGIN_TIME = 2;
+}
+
+enum EventSortOrder {
+    EVENT_SORT_ORDER_UNSPECIFIED = 0;
+    EVENT_TIME_ASC = 1;
+    EVENT_TIME_DESC = 2;
+}
+
+message FindEventsRequest {
+    google.protobuf.Timestamp queryStartTime = 1;
+    google.protobuf.Timestamp queryEndTime = 2;
+    string structureId = 3;
+    EventTypeFilter typeFilter = 4;
+    repeated EventSortOrder sortOrder = 7;
+    repeated string includePreviousChangeEventTypes = 8;
+    ResourceIdFilter subjectDeviceIdFilter = 9;
+    int64 liveEventLimit = 10;
+    google.protobuf.Duration liveSortWindow = 11;
+    bool includePreviousEvents = 12;
+    repeated EventOrderBy orderBy = 13;
+}
+
+message FindEventsResponse {
+    nestlabs.eventingapi.v1.EventEnvelope envelope = 1;
+    string eventKey = 2;
+}
+
+message FindEventListResponse {
+    repeated FindEventsResponse responses = 1;
+}
+
+message EventTypeFilter {
+    repeated string types = 1;
+    FilterType filterType = 3;
+}
+
+message ResourceIdFilter {
+    repeated string resourceIds = 1;
+    FilterType filterType = 2;
+}
+
+message EventOrderBy {
+    EventSortField field = 1;
+    SortDirection direction = 2;
+}
+
+service HistoryService {
+    rpc FindEvents(FindEventsRequest) returns (FindEventsResponse);
+}

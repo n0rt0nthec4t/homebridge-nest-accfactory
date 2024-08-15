@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+import "google/protobuf/duration.proto";
+
+package nest.trait.ui;
+
+message EnhancedPathlightSettingsTrait {
+    map<uint32, PathlightTrigger> triggers = 1;
+    PathlightBrightnessDiscrete brightnessDiscrete = 3;
+
+    enum PathlightBrightnessDiscrete {
+        PATHLIGHT_BRIGHTNESS_DISCRETE_UNSPECIFIED = 0;
+        PATHLIGHT_BRIGHTNESS_DISCRETE_LOW = 1;
+        PATHLIGHT_BRIGHTNESS_DISCRETE_MEDIUM = 2;
+        PATHLIGHT_BRIGHTNESS_DISCRETE_HIGH = 3;
+    }
+
+    enum PathlightCondition {
+        PATHLIGHT_CONDITION_UNSPECIFIED = 0;
+        PATHLIGHT_CONDITION_LINE_POWER = 1;
+        PATHLIGHT_CONDITION_DARKNESS = 2;
+        PATHLIGHT_CONDITION_MOTION = 4;
+    }
+
+    message PathlightTrigger {
+        google.protobuf.Duration timeout = 1;
+        PathlightBrightnessDiscrete brightnessDiscrete = 2;
+        repeated PathlightCondition activationConditions = 3;
+    }
+}
+
+message UserInteractionTrait {
+    message UserInteractionDetectedEvent {
+        uint32 unused = 31;
+    }
+}
+
+message EnhancedPathlightStateTrait {
+    enum ActivationState {
+        ACTIVATION_STATE_UNSPECIFIED = 0;
+        ACTIVATION_STATE_OFF = 1;
+        ACTIVATION_STATE_TIMED_OUT = 2;
+        ACTIVATION_STATE_ACTIVE = 3;
+    }
+
+    message PathlightStateChangeEvent {
+        ActivationState state = 1;
+        repeated EnhancedPathlightSettingsTrait.PathlightCondition conditions = 2;
+        repeated EnhancedPathlightSettingsTrait.PathlightCondition activatedConditions = 3;
+        ActivationState previousState = 4;
+        google.protobuf.Duration activeDuration = 5;
+    }
+}
+
+message PathlightSettingsTrait {
+    PathlightBrightness pathlightBrightness = 1;
+
+    enum PathlightBrightness {
+        PATHLIGHT_BRIGHTNESS_UNSPECIFIED = 0;
+        PATHLIGHT_BRIGHTNESS_OFF = 1;
+        PATHLIGHT_BRIGHTNESS_LOW = 2;
+        PATHLIGHT_BRIGHTNESS_MEDIUM = 3;
+        PATHLIGHT_BRIGHTNESS_HIGH = 4;
+    }
+}

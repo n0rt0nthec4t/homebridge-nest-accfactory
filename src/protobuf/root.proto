@@ -1,0 +1,64 @@
+// Protobuf schema for Nest Observe and Nest BatchUpdateState API calls
+
+syntax = "proto3";
+
+import "google/trait/product/camera.proto";
+import "nest/messages.proto";
+import "nest/trait/audio.proto";
+import "nest/trait/detector.proto";
+import "nest/trait/hvac.proto";
+import "nest/trait/humanlibrary.proto";
+import "nest/trait/history.proto";
+import "nest/trait/humanlibrary.proto";
+import "nest/trait/input.proto";
+import "nest/trait/located.proto";
+import "nest/trait/media.proto";
+import "nest/trait/network.proto";
+import "nest/trait/occupancy.proto";
+import "nest/trait/product/protect.proto";
+import "nest/trait/product/camera.proto";
+import "nest/trait/product/doorbell.proto";
+import "nest/trait/resourcedirectory.proto";
+import "nest/trait/safety.proto";
+import "nest/trait/selftest.proto";
+import "nest/trait/sensor.proto";
+import "nest/trait/service.proto";
+import "nest/trait/structure.proto";
+import "nest/trait/ui.proto";
+import "weave/common.proto";
+import "weave/trait/audio.proto";
+import "weave/trait/description.proto";
+import "weave/trait/heartbeat.proto";
+import "weave/trait/locale.proto";
+import "weave/trait/network.proto";
+import "weave/trait/pairing.proto";
+import "weave/trait/peerdevices.proto";
+import "weave/trait/power.proto";
+import "weave/trait/schedule.proto";
+import "weave/trait/security.proto";
+import "weave/trait/time.proto";
+import "nestlabs/gateway/v2.proto";
+import "nestlabs/history/v1.proto";
+import "googlehome/foyer.proto";
+
+package nest.rpc;
+
+message NestTraitSetRequest {
+    message TraitObject {
+        nestlabs.gateway.v2.TraitId traitId = 1;
+        google.protobuf.Any property = 2;
+    }
+
+    repeated TraitObject set = 1;
+}
+
+message NestIncomingMessage {
+    repeated nestlabs.gateway.v2.ResourceMeta resourceMetas = 1;
+    repeated nestlabs.gateway.v2.TraitState get = 3;
+}
+
+message StreamBody {
+    repeated NestIncomingMessage message = 1;
+    google.rpc.Status status = 2;
+    repeated bytes noop = 15;
+}

@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+import "google/protobuf/wrappers.proto";
+import "../../weave/common.proto";
+
+package nest.trait.resourcedirectory;
+
+message RelatedResourcesTrait {
+    map<uint32, RelatedResource> relatedResources = 1;
+
+    message InterfaceStruct {
+        weave.common.InterfaceName interfaceName = 1;
+        uint32 version = 2;
+    }
+
+    message RelatedResource {
+        weave.common.ResourceId resourceId = 1;
+        weave.common.ResourceName resourceTypeName = 2;
+        uint32 resourceVersion = 3;
+        google.protobuf.UInt32Value vendorId = 4;
+        google.protobuf.UInt32Value productId = 5;
+        google.protobuf.StringValue softwareVersion = 6;
+        repeated InterfaceStruct interfaces = 7;
+    }
+
+    message SetRelatedResourcesRequest {
+        repeated weave.common.ResourceId relatedResourceId = 1;
+    }
+
+    message ResetRelatedResoucesRequest {
+    }
+}

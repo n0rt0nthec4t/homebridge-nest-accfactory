@@ -1,0 +1,111 @@
+{
+    "pluginAlias": "NestAccfactory",
+    "pluginType": "platform",
+    "singular": true,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "nest": {
+                "title": "Nest Account",
+                "type": "object",
+                "expandable": true,
+                "properties": {
+                    "access_token": {
+                        "title": "Access Token",
+                        "type": "string"
+                    },
+                    "fieldTest" : {
+                        "title": "Field Test",
+                        "type": "boolean",
+                        "description": "Use field test API endpoints",
+                        "default": false,
+                        "condition": {
+                            "functionBody": "return model.nest.access_token"
+                        }
+                    }
+                } 
+            },
+            "google": {
+                "title": "Google Account",
+                "type": "object",
+                "expandable": true,
+                "properties": {
+                    "issuetoken": {
+                        "title": "Issue Token",
+                        "type": "string"
+                    },
+                    "cookie": {
+                        "title": "Cookie",
+                        "type": "string"
+                    },
+                    "fieldTest" : {
+                        "title": "Field Test",
+                        "type": "boolean",
+                        "description": "Use field test API endpoints",
+                        "default": false,
+                        "condition": {
+                            "functionBody": "return model.google.issuetoken && model.google.cookie"
+                        }
+                    }
+                }   
+            },
+            "options": {
+                "title": "Options",
+                "type": "object",
+                "expandable": true,
+                "properties": {
+                    "eveApp": {
+                        "title": "Evehome App",
+                        "description": "Provide integration with EveHome app",
+                        "type": "boolean",
+                        "default": true
+                    },
+                    "weather": {
+                        "title": "Virtual Weather",
+                        "description": "Virtual weather station(s)",
+                        "type": "boolean",
+                        "default": false
+                    },
+                    "hksv": {
+                        "title": "HomeKit Secure Video",
+                        "description": "Enable HomeKit Secure Video for supported camera(s) and doorbell(s)",
+                        "type": "boolean",
+                        "default": false
+                    },
+                    "doorbellCooldown": {
+                        "title": "Doorbell Notifications",
+                        "description": "How long between consecutive doorbell notifications? (seconds)",
+                        "type": "integer",
+                        "default": 60,
+                        "minimum": 1,
+                        "maximum": 120
+                    },
+                    "personCooldown": {
+                        "title": "Person Notifications",
+                        "description": "How long between consecutive person notifications? (seconds)",
+                        "type": "integer",
+                        "default": 120,
+                        "minimum": 1,
+                        "maximum": 240
+                    },
+                    "motionCooldown": {
+                        "title": "Motion Notifications",
+                        "description": "How long between consecutive motion notifications? (seconds)",
+                        "type": "integer",
+                        "default": 60,
+                        "minimum": 1,
+                        "maximum": 120
+                    }
+                }
+            }
+        }
+    },
+    "oneOf": [
+        {
+            "required": ["nest"]
+        },
+        {
+            "required": ["google"]
+        }
+    ]
+}

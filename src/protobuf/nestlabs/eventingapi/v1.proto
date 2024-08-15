@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+import "google/protobuf/any.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "../../nest/messages.proto";
+import "../../weave/common.proto";
+import "../../wdl-event-importance.proto";
+
+package nestlabs.eventingapi.v1;
+
+message EventAgent {
+    weave.common.ResourceId deviceId = 1;
+    ServiceId serviceId = 2;
+
+    enum IdCase {
+        ID_NOT_SET = 0;
+        DEVICE_ID = 1;
+        SERVICE_ID = 2;
+    }
+}
+
+message Subject {
+    weave.common.ResourceId resourceId = 1;
+    weave.common.ResourceType resourceType = 2;
+    weave.common.ResourceId structureId = 3;
+    string traitInstanceLabel = 4;
+    weave.common.ResourceId pairerId = 5;
+    Device device = 6;
+    string instanceId = 7;
+
+    enum ResourceCase {
+        RESOURCE_NOT_SET = 0;
+        DEVICE = 6;
+    }
+
+    message Device {
+        uint32 vendorCode = 1;
+        uint32 productVersion = 2;
+        uint32 productId = 3;
+    }
+}
+
+message WdmEventFields {
+    google.protobuf.Timestamp eventUtcTimestamp = 1;
+    google.protobuf.Duration eventSystemTimestamp = 2;
+    google.protobuf.Timestamp requestUtcTimestamp = 3;
+    google.protobuf.Duration requestSystemTimestamp = 4;
+    uint64 eventId = 5;
+    uint64 relatedEventId = 6;
+    wdl.EventImportance relatedEventImportance = 7;
+}
+
+message EventHeader {
+    wdl.EventImportance eventImportance = 11;
+    Subject subject = 20;
+    google.protobuf.Timestamp observedTimestamp = 21;
+    EventAgent producerAgent = 22;
+    string producerEventKey = 23;
+    map<string, string> tags = 24;
+    nest.messages.SchemaVersion schemaVersion = 25;
+    map<string, google.protobuf.Timestamp> serviceTimestamps = 26;
+    WdmEventFields wdmEventFields = 40;
+
+    enum ExtraFieldsCase {
+        EXTRA_FIELDS_NOT_SET = 0;
+        WDM_EVENT_FIELDS = 40;
+    }
+}
+
+message EventEnvelope {
+    EventHeader eventHeader = 1;
+    google.protobuf.Any eventData = 2;
+}
+
+message EventEnvelopeList {
+    repeated EventEnvelope eventEnvelopes = 1;
+}
+
+message ServiceId {
+    string name = 1;
+    string version = 2;
+}

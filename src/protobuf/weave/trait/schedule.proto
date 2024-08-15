@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+import "../../weave/common.proto";
+
+package weave.trait.schedule;
+
+message BasicUserSchedulesSettingsTrait {
+    map<uint32, BasicUserSchedule> basicUserSchedules = 1;
+
+    enum ScheduleErrorCodes {
+        SCHEDULE_ERROR_CODES_UNSPECIFIED = 0;
+        SCHEDULE_ERROR_CODES_SUCCESS_STATUS = 1;
+        SCHEDULE_ERROR_CODES_DUPLICATE_ENTRY = 2;
+        SCHEDULE_ERROR_CODES_INDEX_OUT_OF_RANGE = 3;
+        SCHEDULE_ERROR_CODES_EMPTY_SCHEDULE_ENTRY = 4;
+        SCHEDULE_ERROR_CODES_INVALID_SCHEDULE = 5;
+    }
+
+    message DailyRepeatingScheduleItem {
+        repeated weave.common.DayOfWeek daysOfWeek = 1;
+        weave.common.TimeOfDay startTime = 2;
+        google.protobuf.Duration duration = 3;
+    }
+
+    message TimeboxScheduleItem {
+        google.protobuf.Timestamp startTime = 1;
+        google.protobuf.Timestamp endTime = 2;
+    }
+
+    message BasicUserSchedule {
+        weave.common.ResourceId userId = 1;
+        repeated DailyRepeatingScheduleItem dailyRepeatingSchedules = 2;
+        repeated TimeboxScheduleItem timeBoxSchedules = 3;
+    }
+
+    message SetUserScheduleRequest {
+        BasicUserSchedule userSchedule = 2;
+    }
+
+    message SetUserScheduleResponse {
+        ScheduleErrorCodes status = 1;
+    }
+
+    message GetUserScheduleRequest {
+        weave.common.ResourceId userId = 1;
+    }
+
+    message GetUserScheduleResponse {
+        ScheduleErrorCodes status = 1;
+        BasicUserSchedule userSchedule = 2;
+    }
+
+    message DeleteUserScheduleRequest {
+        weave.common.ResourceId userId = 1;
+    }
+
+    message DeleteUserScheduleResponse {
+        ScheduleErrorCodes status = 1;
+    }
+
+    message OfflineDeviceSyncSchedulesEvent {
+        map<uint32, BasicUserSchedule> basicUserSchedules = 1;
+        google.protobuf.FieldMask stateMask = 2;
+        string stateVersion = 3;
+        google.protobuf.Timestamp acceptedTimestamp = 4;
+        google.protobuf.Timestamp confirmedTimestamp = 5;
+    }
+}
+
+message BasicUserSchedulesCapabilitiesTrait {
+    uint32 basicMaxTimeBoxSchedulesSupportedPerUser = 1;
+    uint32 basicMaxDailyRepeatedSupportedPerUser = 2;
+}

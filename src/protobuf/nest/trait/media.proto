@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+import "google/protobuf/wrappers.proto";
+import "google/protobuf/any.proto";
+import "../../weave/common.proto";
+
+package nest.trait.media;
+
+message FoyerSendTalkbackRequest {
+    enum TalkbackCommand {
+        COMMAND_UNSPECIFIED = 0;
+        COMMAND_START = 1;
+        COMMAND_STOP = 2;
+    }
+
+    google.protobuf.StringValue requestId = 1;
+    string streamId = 2;
+    TalkbackCommand command = 3;
+}
+
+message StreamManagementTrait {
+    message JoinStreamRequest {
+        string sdp = 1;
+        int32 requestTag = 2;
+    }
+
+    message JoinStreamResponse {
+        int32 requestTag = 1;
+        string sdp = 2;
+        string streamId = 3;
+    }
+
+    message ExtendStreamRequest {
+        string streamId = 1;
+    }
+
+    message ExtendStreamResponse {
+        enum Status {
+            STATUS_UNSPECIFIED = 0;
+            STATUS_STREAM_EXTENDED = 1;
+            STATUS_STREAM_UNKNOWN_2 = 2;
+            STATUS_STREAM_UNKNOWN_3 = 3;
+            STATUS_STREAM_UNKNOWN_4 = 4;
+            STATUS_STREAM_EXTEND_FAILURE = 5;
+        }
+
+        Status status = 1;
+    }
+
+    message LeaveStreamRequest {
+        string streamId = 1;
+    }
+
+    message LeaveStreamResponse {
+        enum Status {
+            STATUS_UNSPECIFIED = 0;
+            STATUS_STREAM_TERMINATED = 1;
+            STATUS_STREAM_UNKNOWN_2 = 2;
+            STATUS_STREAM_UNKNOWN_3 = 3;
+            STATUS_STREAM_NOT_TERMINATED = 4;
+        }
+
+        Status status = 1;
+    }
+
+    int32 activeStreamCount = 1;
+    repeated string streamIds = 2;
+}

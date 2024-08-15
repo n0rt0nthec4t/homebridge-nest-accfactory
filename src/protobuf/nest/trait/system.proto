@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package nest.trait.system;
+
+message FaultTrait {
+    bool asserted = 1;
+
+    message FaultEvent {
+        bool asserted = 1;
+    }
+}
+
+message FactoryResetTrait {
+    enum FactoryResetCancelReason {
+        FACTORY_RESET_CANCEL_REASON_UNSPECIFIED = 0;
+        FACTORY_RESET_CANCEL_REASON_OTHER = 1;
+        FACTORY_RESET_CANCEL_REASON_USER = 2;
+        FACTORY_RESET_CANCEL_REASON_PRECONDITIONS = 3;
+    }
+
+    message FactoryResetMightStartEvent {
+        uint32 unused = 1;
+    }
+
+    message FactoryResetStartEvent {
+        uint32 unused = 1;
+    }
+
+    message FactoryResetCancelEvent {
+        FactoryResetCancelReason reason = 1;
+    }
+}
+
+message HardwareFaultTrait {
+    bool asserted = 1;
+    repeated FaultType faultList = 32;
+
+    enum FaultType {
+        FAULT_TYPE_UNSPECIFIED = 0;
+        FAULT_TYPE_RADIO = 1;
+        FAULT_TYPE_SENSOR = 2;
+        FAULT_TYPE_RESETTABLE_OVER_TEMPERATURE_TRIP = 3;
+        FAULT_TYPE_NONRESETTABLE_OVER_TEMPERATURE_TRIP = 4;
+        FAULT_TYPE_OTHER = 5;
+    }
+
+    message HardwareFaultEvent {
+        bool asserted = 1;
+        FaultType fault = 32;
+    }
+}

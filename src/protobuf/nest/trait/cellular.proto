@@ -1,0 +1,313 @@
+syntax = "proto3";
+
+package nest.trait.cellular;
+
+message CellularTrait {
+    CellularRegistrationStatus registrationStatus = 1;
+    CellularCellInformation cellInfo = 2;
+    CellularQuality cellQuality = 3;
+    bytes imei = 4;
+    SIMInformation simInfo = 5;
+    CellularConnectionSummary connectionSummary = 6;
+    NetworkInformation networkInfo = 7;
+    CellularModemInformation modemInfo = 8;
+    bool fastScanMode = 9;
+    bytes simId = 10;
+
+    enum CellStatus {
+        CELL_STATUS_UNSPECIFIED = 0;
+        CELL_STATUS_UNKNOWN = 1;
+        CELL_STATUS_CELL_SUITABLE = 2;
+        CELL_STATUS_CELL_LOW_PRIORITY = 3;
+    }
+
+    enum SIMStatus {
+        SIM_STATUS_UNSPECIFIED = 0;
+        SIM_STATUS_SIM_NOT_INSERTED = 1;
+        SIM_STATUS_SIM_INSERTED = 2;
+    }
+
+    enum SIMType {
+        SIM_TYPE_UNSPECIFIED = 0;
+        SIM_TYPE_UNKNOWN_SIM = 1;
+        SIM_TYPE_NEST_SIM = 2;
+    }
+
+    enum CellularQuality {
+        CELLULAR_QUALITY_UNSPECIFIED = 0;
+        CELLULAR_QUALITY_UNKNOWN = 1;
+        CELLULAR_QUALITY_GOOD = 2;
+        CELLULAR_QUALITY_BAD = 3;
+    }
+
+    enum CellularSubscriptionValue {
+        CELLULAR_SUBSCRIPTION_VALUE_UNSPECIFIED = 0;
+        CELLULAR_SUBSCRIPTION_VALUE_UNKNOWN = 1;
+        CELLULAR_SUBSCRIPTION_VALUE_SUBSCRIBED = 2;
+        CELLULAR_SUBSCRIPTION_VALUE_NOT_SUBSCRIBED = 3;
+    }
+
+    enum CellularResetAction {
+        CELLULAR_RESET_ACTION_UNSPECIFIED = 0;
+        CELLULAR_RESET_ACTION_AIRPLANE_MODE = 1;
+        CELLULAR_RESET_ACTION_RESTART_MODEM = 2;
+        CELLULAR_RESET_ACTION_FLASH_FIRMWARE = 3;
+        CELLULAR_RESET_ACTION_FPLMN_CLEAR = 4;
+        CELLULAR_RESET_ACTION_DEVICE_REBOOT = 5;
+    }
+
+    enum CellularTechnology {
+        CELLULAR_TECHNOLOGY_UNSPECIFIED = 0;
+        CELLULAR_TECHNOLOGY_UNKNOWN = 1;
+        CELLULAR_TECHNOLOGY_GSM = 2;
+        CELLULAR_TECHNOLOGY_EDGE = 3;
+        CELLULAR_TECHNOLOGY_UMTS = 4;
+        CELLULAR_TECHNOLOGY_HSPA = 5;
+        CELLULAR_TECHNOLOGY_LTE = 6;
+    }
+
+    enum CellularRegistrationStatus {
+        CELLULAR_REGISTRATION_STATUS_UNSPECIFIED = 0;
+        CELLULAR_REGISTRATION_STATUS_UNKNOWN = 1;
+        CELLULAR_REGISTRATION_STATUS_UNREGISTERED = 2;
+        CELLULAR_REGISTRATION_STATUS_REGISTERED = 3;
+        CELLULAR_REGISTRATION_STATUS_SEARCHING = 4;
+        CELLULAR_REGISTRATION_STATUS_DENIED = 5;
+        CELLULAR_REGISTRATION_STATUS_ROAMING = 6;
+    }
+
+    enum CellularRegistrationMode {
+        CELLULAR_REGISTRATION_MODE_UNSPECIFIED = 0;
+        CELLULAR_REGISTRATION_MODE_AUTO = 1;
+        CELLULAR_REGISTRATION_MODE_AUTO_ONLY = 2;
+        CELLULAR_REGISTRATION_MODE_MANUAL = 3;
+    }
+
+    enum CellularConnContextStatus {
+        CELLULAR_CONN_CONTEXT_STATUS_UNSPECIFIED = 0;
+        CELLULAR_CONN_CONTEXT_STATUS_ACTIVATED = 1;
+        CELLULAR_CONN_CONTEXT_STATUS_DEACTIVATED = 2;
+    }
+
+    message NetworkInformation {
+        uint32 mcc = 1;
+        uint32 mnc = 2;
+    }
+
+    message SIMInformation {
+        bytes simId = 1;
+        SIMStatus simStatus = 2;
+        SIMType simType = 3;
+        repeated string iccIds = 4;
+    }
+
+    message GsmCellInformation {
+        uint32 arfcn = 1;
+        uint32 bsic = 2;
+        int32 rxLev = 3;
+        NetworkInformation networkInfo = 4;
+        uint32 cellId = 5;
+        CellStatus cellStatus = 6;
+        uint32 lac = 7;
+        sint32 band = 8;
+    }
+
+    message UmtsCellInformation {
+        uint32 uarfcn = 1;
+        uint32 scrCode = 2;
+        int32 rxLev = 3;
+        NetworkInformation networkInfo = 4;
+        uint32 lac = 5;
+        CellStatus cellStatus = 6;
+        sint32 rscp = 7;
+        sint32 ecIo = 8;
+        sint32 band = 9;
+    }
+
+    message LteCellInformation {
+        uint32 earfcn = 1;
+        uint32 pci = 2;
+        NetworkInformation networkInfo = 3;
+        string ecgi = 4;
+        CellStatus cellStatus = 5;
+        sint32 rsrp = 6;
+        sint32 rsrq = 7;
+        sint32 rssi = 8;
+        sint32 band = 9;
+    }
+
+    message CellularCellInformation {
+        CellularTechnology cellTech = 1;
+        GsmCellInformation gsmCell = 2;
+        UmtsCellInformation umtsCell = 3;
+        LteCellInformation lteCell = 4;
+    }
+
+    message CellularRegistrationInformation {
+        CellularRegistrationStatus registrationStatus = 1;
+        CellularRegistrationMode registrationMode = 2;
+        uint32 areaCode = 3;
+        NetworkInformation networkInfo = 4;
+        uint32 cellId = 5;
+        CellularTechnology cellTech = 6;
+        string operatorName = 7;
+        CellStatus cellStatus = 8;
+    }
+
+    message CellularModemInformation {
+        bool online = 1;
+        bool powered = 2;
+        bool lockdown = 3;
+        bool emergency = 4;
+        string manufacturer = 5;
+        string model = 6;
+        string revision = 7;
+        bytes nestImei = 8;
+        bytes vendorImei = 9;
+        string ofonoVersion = 10;
+    }
+
+    message CellularConnectionSummary {
+        bool powered = 1;
+        bool attached = 2;
+        CellularConnContextStatus connectionActivation = 3;
+        CellularSettingsTrait.CellularSubscriptionStatus subscriptionStatus = 4;
+        CellularRegistrationStatus registrationStatus = 5;
+        CellularTechnology cellTech = 6;
+    }
+
+    message CellularConnectionInformation {
+        string type = 1;
+        string protocol = 2;
+        string accessPointName = 3;
+        string iface = 4;
+        string method = 5;
+        string address = 6;
+        string netmask = 7;
+        repeated string dnsServers = 8;
+        bool suspended = 9;
+        bool roamingAllowed = 10;
+        string bearer = 11;
+    }
+
+    message CellularConnectionIPv6Settings {
+    }
+
+    message CellularQualityEvent {
+        CellularTechnology cellTech = 1;
+        sint32 rsrp = 2;
+        sint32 rsrq = 3;
+        sint32 rscp = 4;
+        sint32 ecIo = 5;
+        sint32 rssi = 6;
+    }
+
+    message CellularNetworkEvent {
+        CellularRegistrationStatus registrationStatus = 1;
+        CellularCellInformation cellInfo = 2;
+    }
+
+    message CellularTelemetryEvent {
+        CellularModemInformation modemInfo = 1;
+        CellularCellInformation cellInfo = 2;
+        CellularConnectionInformation connInfo = 3;
+        CellularRegistrationInformation registrationInfo = 4;
+        SIMInformation simInfo = 5;
+    }
+
+    message CellularSubscriptionEvent {
+        CellularSettingsTrait.CellularSubscriptionStatus subscriptionStatus = 1;
+    }
+
+    message CellularResetEvent {
+        CellularResetAction resetAction = 1;
+        uint32 resetCount = 2;
+        uint32 recoveryCount = 3;
+        uint32 backToBackFailureCount = 4;
+    }
+
+    message CellularFirmwareUpgradeEvent {
+        bool forced = 1;
+        string currentVersion = 2;
+        string targetVersion = 3;
+        uint32 result = 4;
+    }
+
+    message CellularNetworkErrorEvent {
+        uint32 errorCode = 1;
+    }
+
+    message CellularErrorEvent {
+        uint32 errorCode = 1;
+    }
+
+    message CellularIRATEvent {
+        uint32 reason = 1;
+    }
+
+    message CellularSubscriptionInformationEvent {
+        CellularSettingsTrait.CellularSubscriptionStatus subscriptionStatus = 1;
+        CellularSettingsTrait.CellularActivationStatus activationStatus = 2;
+    }
+}
+
+message CellularSettingsTrait {
+    CarrierType carrier = 1;
+    CellularActivationStatus activationStatus = 2;
+    CellularSubscriptionStatus subscriptionStatus = 3;
+
+    enum CellularActivationStatus {
+        CELLULAR_ACTIVATION_STATUS_UNSPECIFIED = 0;
+        CELLULAR_ACTIVATION_STATUS_NO_ACTIVATION = 1;
+        CELLULAR_ACTIVATION_STATUS_ACTIVATION_PENDING = 2;
+        CELLULAR_ACTIVATION_STATUS_ACTIVATED = 3;
+        CELLULAR_ACTIVATION_STATUS_ACTIVATION_FAILED = 4;
+        CELLULAR_ACTIVATION_STATUS_SERVICE_SUSPENDED = 5;
+        CELLULAR_ACTIVATION_STATUS_DEACTIVATION_PENDING = 6;
+        CELLULAR_ACTIVATION_STATUS_DEACTIVATION_FAILED = 7;
+        CELLULAR_ACTIVATION_STATUS_LIMITED_ACTIVATION = 8;
+    }
+
+    enum CarrierType {
+        CARRIER_TYPE_UNSPECIFIED = 0;
+        CARRIER_TYPE_SPRINT = 1;
+        CARRIER_TYPE_TMOBILE = 2;
+        CARRIER_TYPE_GOOGLE_VOICE = 3;
+        CARRIER_TYPE_USCC = 4;
+        CARRIER_TYPE_HGES_3UK = 5;
+        CARRIER_TYPE_HGES_3HK = 6;
+        CARRIER_TYPE_AIRTEL = 7;
+        CARRIER_TYPE_AMERICA_MOVIL = 8;
+        CARRIER_TYPE_ATT = 9;
+        CARRIER_TYPE_AXIATA = 10;
+        CARRIER_TYPE_CHINA_MOBILE = 11;
+        CARRIER_TYPE_CHINA_TELECOM = 12;
+        CARRIER_TYPE_CHINA_UNICOM = 13;
+        CARRIER_TYPE_ETISALAT = 14;
+        CARRIER_TYPE_IDEA = 15;
+        CARRIER_TYPE_MTN = 16;
+        CARRIER_TYPE_ORANGE = 17;
+        CARRIER_TYPE_SINGTEL = 18;
+        CARRIER_TYPE_STC = 19;
+        CARRIER_TYPE_TELEFONICA = 20;
+        CARRIER_TYPE_TELENOR = 21;
+        CARRIER_TYPE_TELIA_SONERA = 22;
+        CARRIER_TYPE_VERIZON = 23;
+        CARRIER_TYPE_VIMPELCOM = 24;
+        CARRIER_TYPE_VODAFONE = 25;
+        CARRIER_TYPE_NOVA = 26;
+        CARRIER_TYPE_NOVA_PAID_WIFI = 27;
+        CARRIER_TYPE_FAKE = 10000;
+    }
+
+    enum CellularSubscriptionStatus {
+        CELLULAR_SUBSCRIPTION_STATUS_UNSPECIFIED = 0;
+        CELLULAR_SUBSCRIPTION_STATUS_INACTIVE = 1;
+        CELLULAR_SUBSCRIPTION_STATUS_PENDING = 2;
+        CELLULAR_SUBSCRIPTION_STATUS_ACTIVE = 3;
+    }
+
+    message CellBackupFirstActivationEvent {
+        uint32 unused = 1;
+    }
+}

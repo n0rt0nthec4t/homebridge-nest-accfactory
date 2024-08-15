@@ -1,0 +1,107 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+import "weave/common.proto";
+
+package nest.services.apigateway;
+
+enum InitiatedBy {
+    UNSPECIFIED = 0;
+    RTS = 1;
+    PHX = 2;
+}
+
+message WeaveResourceIdMappingRequest {
+    repeated weave.common.ResourceId resourceId = 1;
+    bool skipInvalidIds = 2;
+}
+
+message LegacyResourceIdMappingRequest {
+    repeated string resourceId = 1;
+    bool skipInvalidIds = 2;
+}
+
+message ResourceIdMapping {
+    string legacyResourceId = 1;
+    weave.common.ResourceId weaveResourceId = 2;
+}
+
+message ResourceIdMappingResponse {
+    repeated ResourceIdMapping resourceIdMapping = 1;
+}
+
+message GetUserStructuresRequest {
+    weave.common.ResourceId userResourceId = 1;
+}
+
+message UserStructuresResponse {
+    repeated weave.common.ResourceId ownedStructures = 1;
+    repeated weave.common.ResourceId memberStructures = 2;
+}
+
+message BorderRouterListRequest {
+    string userId = 1;
+    string structureId = 2;
+}
+
+message BorderRouterListResponse {
+    repeated string borderRouters = 1;
+}
+
+message PairingTokenRequest {
+    string userId = 1;
+}
+
+message PairingTokenResponse {
+    string pairingToken = 1;
+}
+
+message PairNFCTokenDeviceRequest {
+    uint64 weaveNodeId = 1;
+    string userId = 2;
+    int32 weaveVendorId = 3;
+    int32 weaveProductId = 4;
+}
+
+message PairNFCTokenDeviceResponse {
+    string resourceId = 1;
+}
+
+message UnpairingRequest {
+    string resourceId = 1;
+    string userId = 2;
+}
+
+message UnpairingResponse {
+}
+
+message TopazPairingRequest {
+    uint64 weaveNodeId = 1;
+    string rtsUserId = 2;
+    string rtsStructureId = 3;
+    string rtsTopazId = 4;
+    int32 weaveVendorId = 5;
+    int32 weaveProductId = 6;
+    string currentSoftwareVersion = 7;
+    string serviceGroupId = 8;
+    uint64 fabricId = 9;
+    google.protobuf.Timestamp pairedAt = 10;
+    InitiatedBy pairedBy = 11;
+    bool linePowered = 12;
+    string whereId = 13;
+    string spokenWhereId = 14;
+}
+
+message TopazPairingResponse {
+    weave.common.ResourceId resourceId = 1;
+}
+
+service ResourceRelationshipService {
+    rpc GetResourceIdMappingByWeaveIds(WeaveResourceIdMappingRequest) returns (ResourceIdMappingResponse);
+    rpc GetResourceIdMappingByLegacyIds(LegacyResourceIdMappingRequest) returns (ResourceIdMappingResponse);
+    rpc GetUserStructures(GetUserStructuresRequest) returns(UserStructuresResponse);
+}
+
+service ProvisioningHelperService {
+    rpc Unpair(UnpairingRequest) returns (UnpairingResponse);
+}

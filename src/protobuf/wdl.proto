@@ -1,0 +1,450 @@
+syntax = "proto3";
+
+import "google/protobuf/any.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "weave/common.proto";
+import "wdl-event-importance.proto";
+
+package wdl;
+
+enum MessageType {
+    STRUCT = 0;
+    PROPERTIES_DEPRECATED = 1;
+    COMMAND = 2;
+    COMMAND_LIST = 3;
+    EVENT = 4;
+    EVENT_LIST = 5;
+    RESOURCE = 6;
+    IFACE = 7;
+    RESPONSE_EVENT = 8;
+    SERVICE_DESCRIPTION = 9;
+    UNION = 10;
+    TRAIT = 11;
+    UPDATE_PARAMETERS = 12;
+    TYPEDEF = 13;
+    IFACE_IMPLEMENTATIONS = 14;
+    TYPESPACE = 15;
+}
+
+enum PublishedBy {
+    SELF = 0;
+    EXTERNAL = 1;
+}
+
+enum Encoding {
+    ENCODING_UNSPECIFIED = 0;
+    FIXED = 1;
+    FLOAT = 2;
+}
+
+enum Stability {
+    ALPHA = 0;
+    BETA = 1;
+    PROD = 2;
+}
+
+enum Privilege {
+    PRIV_ANY = 0;
+    PRIV_ADVANCED = 1;
+    PRIV_ADMIN = 2;
+    PRIV_SERVICE = 3;
+}
+
+enum Variability {
+    DYNAMIC = 0;
+    STATIC = 1;
+}
+
+enum WriteAccess {
+    READ_WRITE = 0;
+    READ_ONLY = 1;
+}
+
+enum Vendor {
+    COMMON = 0;
+    NEST = 9050;
+    CHARGEPOINT = 29124;
+    SKYDROP = 34131;
+    NET2GRID = 42430;
+    GEORGIA_POWER = 45485;
+    RACHIO = 45950;
+    LIFI_LABS = 48130;
+    BLUE_LINE = 50785;
+    CAL_THINGS = 51143;
+    GOOGLE = 57600;
+    LUMI = 58986;
+    YALE = 59175;
+    TP_LINK = 65242;
+}
+
+message AnyStruct {
+    string type = 1;
+    repeated AnyValue values = 2;
+}
+
+message AnyValue {
+    string fieldName = 1;
+    bool boolVal = 2;
+    int64 intVal = 3;
+    uint64 uintVal = 4;
+    double numberVal = 5;
+    string stringVal = 6;
+    string bytesBase16Val = 7;
+    string resourceIdVal = 8;
+    AnyStruct structVal = 9;
+
+    enum ValueCase {
+        VALUE_NOT_SET = 0;
+        BOOL_VAL = 2;
+        INT_VAL = 3;
+        UINT_VAL = 4;
+        NUMBER_VAL = 5;
+        STRING_VAL = 6;
+        BYTES_BASE16_VAL = 7;
+        RESOURCE_ID_VAL = 8;
+        STRUCT_VAL = 9;
+    }
+}
+
+message TraitVersionAssociation {
+    uint32 version = 1;
+    uint32 parentVersion = 2;
+}
+
+message TraitVersionIdentifier {
+    string trait = 1;
+}
+
+message IntegerConstraints {
+    uint32 width = 1;
+    int64 max = 2;
+    int64 min = 3;
+}
+
+message UnsignedConstraints {
+    uint32 width = 1;
+    uint64 max = 2;
+    uint64 min = 3;
+}
+
+message NumberConstraints {
+    uint32 fixedEncodingWidth = 1;
+    double max = 2;
+    double min = 3;
+    double precision = 4;
+}
+
+message TimestampConstraints {
+    bool signed = 1;
+    double precision = 2;
+    uint32 width = 3;
+}
+
+message DurationConstraints {
+    bool signed = 1;
+    double precision = 2;
+    uint32 width = 3;
+}
+
+message StringConstraints {
+    uint32 minLength = 1;
+    uint32 maxLength = 2;
+    string allowedCharacters = 3;
+}
+
+message BytesConstraints {
+    uint32 minLength = 1;
+    uint32 maxLength = 2;
+}
+
+message VersionCompatibleOptions {
+    uint32 minVersion = 1;
+    uint32 maxVersion = 2;
+    repeated uint32 incompatibleVersions = 3;
+    google.protobuf.Any defaultValue = 4;
+}
+
+message WdlCommandOptions {
+    uint32 id = 1;
+    VersionCompatibleOptions compatibility = 3;
+    bool extendable = 5;
+    uint32 reservedTagMin = 6;
+    uint32 reservedTagMax = 7;
+    string pb_extends = 8;
+    string completionEvent = 11;
+}
+
+message WdlEventOptions {
+    uint32 id = 1;
+    VersionCompatibleOptions compatibility = 3;
+    bool extendable = 5;
+    uint32 reservedTagMin = 6;
+    uint32 reservedTagMax = 7;
+    string pb_extends = 8;
+    EventImportance eventImportance = 9;
+}
+
+message WdlPropertiesOptions {
+    Variability variability = 3;
+    WriteAccess writable = 4;
+    bool extendable = 5;
+    uint32 reservedTagMin = 6;
+    uint32 reservedTagMax = 7;
+    TraitVersionIdentifier extends = 8;
+}
+
+message WdlPropertyOptions {
+    Variability variability = 1;
+    WriteAccess writable = 2;
+    VersionCompatibleOptions compatibility = 3;
+    bool optional = 5;
+    bool nullable = 6;
+    string updateCommand = 7;
+    weave.common.QuantityType quantityType = 20;
+    double quantityScale = 21;
+    double quantityOffset = 22;
+    IntegerConstraints intConstraints = 31;
+    UnsignedConstraints uintConstraints = 32;
+    NumberConstraints numberConstraints = 33;
+    StringConstraints stringConstraints = 34;
+    BytesConstraints bytesConstraints = 35;
+    TimestampConstraints timestampConstraints = 36;
+    DurationConstraints durationConstraints = 37;
+    weave.common.ResourceType resourceType = 50;
+    bool ephemeral = 51;
+}
+
+message WdlParameterOptions {
+    bool optional = 1;
+    bool nullable = 2;
+    VersionCompatibleOptions compatibility = 3;
+    weave.common.QuantityType quantityType = 20;
+    double quantityScale = 21;
+    double quantityOffset = 22;
+    IntegerConstraints intConstraints = 31;
+    UnsignedConstraints uintConstraints = 32;
+    NumberConstraints numberConstraints = 33;
+    StringConstraints stringConstraints = 34;
+    BytesConstraints bytesConstraints = 35;
+    TimestampConstraints timestampConstraints = 36;
+    DurationConstraints durationConstraints = 37;
+    weave.common.ResourceType resourceType = 50;
+}
+
+message WdlEnumOptions {
+    bool bitmask = 1;
+    bool extendable = 5;
+    uint32 reservedTagMin = 6;
+    uint32 reservedTagMax = 7;
+    string extends = 8;
+    string constantType = 10;
+    VersionCompatibleOptions compatibility = 11;
+}
+
+message WdlEnumValueOptions {
+    VersionCompatibleOptions compatibility = 3;
+    bool unknownFallback = 10;
+    uint32 fallback = 11;
+    repeated string constantResourceId = 108;
+}
+
+message WdlTlvOptions {
+    Encoding encoding = 1;
+}
+
+message WdlPropertyRefinement {
+    string property = 1;
+    bool unimplemented = 3;
+    IntegerConstraints intConstraints = 31;
+    UnsignedConstraints uintConstraints = 32;
+    NumberConstraints numberConstraints = 33;
+    StringConstraints stringConstraints = 34;
+    BytesConstraints bytesConstraints = 35;
+    TimestampConstraints timestampConstraints = 36;
+    DurationConstraints durationConstraints = 37;
+    repeated bool staticBoolValue = 101;
+    repeated int64 staticIntValue = 102;
+    repeated uint64 staticUintValue = 103;
+    repeated double staticNumberValue = 104;
+    repeated string staticStringValue = 105;
+    repeated bytes staticBytesBase16Value = 106;
+    repeated AnyStruct staticStructValue = 107;
+    repeated string staticResourceIdValue = 108;
+    repeated bool initialBoolValue = 121;
+    repeated int64 initialIntValue = 122;
+    repeated uint64 initialUintValue = 123;
+    repeated double initialNumberValue = 124;
+    repeated string initialStringValue = 125;
+    repeated bytes initialBytesBase16Value = 126;
+    repeated AnyStruct initialStructValue = 127;
+    repeated string initialResourceIdValue = 128;
+    repeated google.protobuf.Duration initialDurationValue = 129;
+    repeated google.protobuf.Timestamp initialTimestampValue = 130;
+    repeated string initialEnumValueName = 131;
+
+    enum ConstraintsCase {
+        CONSTRAINTS_NOT_SET = 0;
+        INT_CONSTRAINTS = 31;
+        UINT_CONSTRAINTS = 32;
+        NUMBER_CONSTRAINTS = 33;
+        STRING_CONSTRAINTS = 34;
+        BYTES_CONSTRAINTS = 35;
+        TIMESTAMP_CONSTRAINTS = 36;
+        DURATION_CONSTRAINTS = 37;
+    }
+}
+
+message WdlParameterRefinement {
+    string parameter = 1;
+    IntegerConstraints intConstraints = 31;
+    UnsignedConstraints uintConstraints = 32;
+    NumberConstraints numberConstraints = 33;
+    StringConstraints stringConstraints = 34;
+    BytesConstraints bytesConstraints = 35;
+    TimestampConstraints timestampConstraints = 36;
+    DurationConstraints durationConstraints = 37;
+
+    enum ConstraintsCase {
+        CONSTRAINTS_NOT_SET = 0;
+        INT_CONSTRAINTS = 31;
+        UINT_CONSTRAINTS = 32;
+        NUMBER_CONSTRAINTS = 33;
+        STRING_CONSTRAINTS = 34;
+        BYTES_CONSTRAINTS = 35;
+        TIMESTAMP_CONSTRAINTS = 36;
+        DURATION_CONSTRAINTS = 37;
+    }
+}
+
+message WdlCommandRefinement {
+    string command = 1;
+    repeated WdlParameterRefinement parameters = 2;
+}
+
+message WdlEventRefinement {
+    string event = 1;
+    repeated WdlParameterRefinement parameters = 2;
+    EventImportance eventImportance = 4;
+}
+
+message WdlTraitInstOptions {
+    uint32 instance = 3;
+}
+
+message WdlTraitInstConfig {
+    PublishedBy publishedBy = 1;
+    bool proxied = 2;
+    bool subscribed = 3;
+    uint32 minVersion = 4;
+    repeated WdlPropertyRefinement propRefinement = 10;
+    repeated WdlCommandRefinement commandRefinement = 11;
+    repeated WdlEventRefinement eventRefinement = 12;
+}
+
+message WdlIfaceTraitInstOptions {
+    uint32 minVersion = 1;
+}
+
+message TraitVersionIds {
+    uint32 version = 1;
+    int32 id = 2;
+}
+
+message WdlVersionEntry {
+    string name = 1;
+    uint32 version = 2;
+}
+
+message WdlTraitVersionMapEntry {
+    uint32 parentVersion = 1;
+    repeated WdlVersionEntry dependentVersionList = 2;
+}
+
+message WdlTraitOptions {
+    int32 id = 1;
+    Vendor vendorId = 3;
+    uint32 version = 4;
+    PublishedBy publishedBy = 5;
+    bool extendable = 6;
+    Stability stability = 7;
+    repeated WdlTraitVersionMapEntry versionMap = 8;
+    uint32 reservedCommandTagMin = 10;
+    uint32 reservedCommandTagMax = 11;
+    uint32 reservedEventTagMin = 12;
+    uint32 reservedEventTagMax = 13;
+}
+
+message WdlTypespaceOptions {
+    Vendor vendorId = 3;
+    uint32 version = 4;
+    Stability stability = 7;
+    repeated WdlTraitVersionMapEntry versionMap = 8;
+}
+
+message WdlStructOptions {
+    VersionCompatibleOptions compatibility = 3;
+    bool extendable = 5;
+    uint32 reservedTagMin = 6;
+    uint32 reservedTagMax = 7;
+    string extends = 8;
+}
+
+message TraitMapping {
+    string from = 1;
+    string to = 2;
+}
+
+message WdlImplementsOptions {
+    string iface = 1;
+    repeated TraitMapping traitMapping = 2;
+    uint32 minVersion = 3;
+}
+
+message WdlImplementationOptions {
+    repeated TraitMapping traitMapping = 2;
+}
+
+message WdlResourceVersionEntry {
+    uint32 resourceVersion = 1;
+    repeated WdlVersionEntry traitVersionList = 2;
+    repeated WdlVersionEntry ifaceVersionList = 3;
+}
+
+message WdlResourceOptions {
+    Vendor vendorId = 1;
+    uint32 version = 2;
+    weave.common.ResourceType resourceType = 3;
+    uint32 vendorProductId = 5;
+    Stability stability = 6;
+    repeated WdlResourceVersionEntry versionMap = 7;
+}
+
+message WdlIfaceOptions {
+    int32 id = 1;
+    Vendor vendorId = 2;
+    uint32 version = 3;
+    Stability stability = 4;
+    repeated WdlTraitVersionMapEntry versionMap = 5;
+}
+
+message WdlInterfaceOptions {
+    int32 id = 1;
+    int32 vendorId = 2;
+    uint32 version = 3;
+}
+
+message WdlServiceOptions {
+    string config = 1;
+    WdlTraitOptions trait = 2;
+    WdlResourceOptions resource = 3;
+}
+
+message CaspianOptions {
+    bool ignore = 1;
+}
+
+message VendorOptions {
+    string name = 1;
+    repeated string packages = 2;
+}

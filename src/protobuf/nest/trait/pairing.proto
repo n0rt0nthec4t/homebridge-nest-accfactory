@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+import "../../weave/common.proto";
+
+package nest.trait.pairing;
+
+message UnpairingTrait {
+    enum UnpairingResponseStatus {
+        UNPAIRING_RESPONSE_STATUS_UNSPECIFIED = 0;
+        UNPAIRING_RESPONSE_STATUS_SUCCESS = 1;
+        UNPAIRING_RESPONSE_STATUS_INVALID_REQUEST = 2;
+        UNPAIRING_RESPONSE_STATUS_NOT_FOUND = 3;
+        UNPAIRING_RESPONSE_STATUS_NOT_AUTHORIZED = 4;
+        UNPAIRING_RESPONSE_STATUS_INTERNAL_ERROR = 5;
+    }
+
+    message UnpairingEvent {
+        weave.common.ResourceId userId = 1;
+        weave.common.ResourceId resourceId = 2;
+        weave.common.ResourceId pairerId = 3;
+        weave.common.StringRef storageUuid = 4;
+        string resourceInstanceId = 5;
+        PairingCommon.InitiatedBy initiatedBy = 6;
+        weave.common.ResourceName resourceTypeName = 7;
+        uint64 fabricId = 8;
+    }
+
+    message UnpairingRequest {
+    }
+
+    message UnpairingResponse {
+        UnpairingResponseStatus responseStatus = 1;
+    }
+}
+
+message PairingTrait {
+    enum PairingResponseStatus {
+        PAIRING_RESPONSE_STATUS_UNSPECIFIED = 0;
+        PAIRING_RESPONSE_STATUS_SUCCESS = 1;
+        PAIRING_RESPONSE_STATUS_INVALID_REQUEST = 2;
+        PAIRING_RESPONSE_STATUS_NOT_FOUND = 3;
+        PAIRING_RESPONSE_STATUS_NOT_AUTHORIZED = 4;
+        PAIRING_RESPONSE_STATUS_INTERNAL_ERROR = 5;
+    }
+
+    message PairingEvent {
+        weave.common.ResourceId resourceId = 1;
+        weave.common.ResourceId pairerId = 2;
+        weave.common.ResourceId userId = 4;
+        int32 weaveVendorId = 5;
+        int32 weaveProductId = 6;
+        string hardwareRevision = 7;
+        string softwareRevision = 8;
+        string resourceInstanceId = 9;
+        google.protobuf.Timestamp pairedAt = 10;
+        PairingCommon.InitiatedBy initiatedBy = 11;
+    }
+
+    message PairingRequest {
+        uint64 weaveNodeId = 1;
+        weave.common.ResourceId pairerId = 2;
+        weave.common.ResourceId userId = 3;
+        int32 weaveVendorId = 4;
+        int32 weaveProductId = 5;
+        string pairingToken = 6;
+        uint64 fabricId = 7;
+        google.protobuf.Timestamp pairedAt = 8;
+        string serialNumber = 9;
+        bytes macAddress = 10;
+        bytes ipAddress = 11;
+    }
+
+    message PairingResponse {
+        PairingResponseStatus responseStatus = 1;
+    }
+}
+
+message PairingCommon {
+    enum InitiatedBy {
+        INITIATED_BY_UNSPECIFIED = 0;
+        INITIATED_BY_RTS = 1;
+        INITIATED_BY_PHX = 2;
+    }
+}

@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+import "../../weave/common.proto";
+
+package weave.trait.network;
+
+message NetworkInterfaceCapabilityTrait {
+    NetworkInterfaceType type = 1;
+    weave.common.StringRef description = 2;
+
+    enum NetworkInterfaceType {
+        NETWORK_INTERFACE_TYPE_UNSPECIFIED = 0;
+        NETWORK_INTERFACE_TYPE_WEAVE_TUNNEL = 1;
+        NETWORK_INTERFACE_TYPE_WIFI = 2;
+        NETWORK_INTERFACE_TYPE_THREAD = 3;
+        NETWORK_INTERFACE_TYPE_CELLULAR = 4;
+    }
+}
+
+message NetworkInterfaceTrait {
+    bool isOnline = 1;
+    bytes macAddress = 2;
+    repeated bytes ipAddresses = 3;
+}

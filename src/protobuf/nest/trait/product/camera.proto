@@ -1,0 +1,283 @@
+syntax = "proto3";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
+package nest.trait.product.camera;
+
+enum CameraState {
+    CAMERA_UNSPECIFIED = 0;
+    CAMERA_ON = 1;
+    CAMERA_OFF = 2;
+}
+
+message RecordingToggleSettingsTrait {
+    CameraState targetCameraState = 1;
+    int32 changeModeReason = 2;
+    google.protobuf.Timestamp settingsUpdated = 3;
+}
+
+message RecordingToggleTrait {
+    CameraState currentCameraState = 1;
+    int32 changeModeReason = 2;
+    google.protobuf.Timestamp toggleUpdated = 3;
+}
+
+message RecordingEncoderSettingsTrait {
+    enum RecordingQuality {
+        RECORDING_QUALITY_UNSPECIFIED = 0;
+        RECORDING_QUALITY_LOW = 1;
+        RECORDING_QUALITY_MEDIUM = 2;
+        RECORDING_QUALITY_MEDIUM_HIGH = 3;
+        RECORDING_QUALITY_HIGH = 4;
+    }
+
+    RecordingQuality recordingQuality = 1;
+}
+
+message MediaQualitySettingsTrait {
+    enum MediaQuality {
+        MEDIA_QUALITY_UNSPECIFIED = 0;
+        MEDIA_QUALITY_LOW_OR_MEDIUM = 1;
+        MEDIA_QUALITY_HIGH = 2;
+    }
+
+    MediaQuality mediaQuality = 1;
+}
+
+message ActivityZoneSettingsTrait {
+    message ActivityZone {
+        message ActivityZoneProperties {
+            message Coordinate {
+                float x = 1;
+                float y = 2;
+            }
+
+            string name = 2;
+            int32 internalIndex = 3;
+            repeated Coordinate vertices = 4;
+            int32 zoneId = 5;
+        }
+
+        int32 zoneIndex = 1;
+        ActivityZoneProperties zoneProperties = 2;
+    }
+
+    repeated ActivityZone activityZones = 3;
+    int32 unknown = 4; // 0 = zones disabled, 1 = zones enabled?
+}
+
+message FaceTrackingSettingsTrait {
+    google.protobuf.BoolValue faceTrackingEnabled = 1;
+    int32 unknown = 2;
+}
+
+message StreamingProtocolTrait {
+    enum StreamingProtocol {
+        PROTOCOL_UNSPECIFIED = 0;
+        PROTOCOL_WEBRTC = 1;
+        PROTOCOL_NEXUSTALK = 2;
+        PROTOCOL_MPEGDASH = 3;
+        PROTOCOL_RTSP = 4;
+        PROTOCOL_HLS = 5;
+    }
+
+    enum AudioCommunicationType {
+        AUDIO_TYPE_UNSPECIFIED = 0;
+        AUDIO_TYPE_NONE = 1;
+        AUDIO_TYPE_HALF_DUPLEX = 2;
+        AUDIO_TYPE_FULL_DUPLEX = 3;
+    }
+
+    repeated StreamingProtocol supportedProtocols = 1;
+    AudioCommunicationType audioCommunicationType = 2;
+    google.protobuf.StringValue directHost = 3;
+    google.protobuf.StringValue dashUrl = 6;
+    google.protobuf.StringValue hlsUrl = 7;
+}
+
+message LoadingImageTrait {
+    google.protobuf.Int32Value maximumAgeInSeconds = 1;
+    string liveUrl = 2;
+}
+
+message ObservationTriggerCapabilitiesTrait {
+    message VideoEventTypes {
+        google.protobuf.BoolValue motion = 1;
+        google.protobuf.BoolValue person = 2;
+        google.protobuf.BoolValue face = 3;
+        google.protobuf.BoolValue vehicle = 4;
+        google.protobuf.BoolValue animal = 5;
+        google.protobuf.BoolValue package = 6;
+        google.protobuf.BoolValue unknown7 = 7;
+        google.protobuf.BoolValue unknown8 = 8;
+        google.protobuf.BoolValue unknown9 = 9;
+        google.protobuf.BoolValue unknown10 = 10;
+    }
+
+    message AudioEventTypes {
+        google.protobuf.BoolValue personTalking = 1;
+        google.protobuf.BoolValue dogBarking = 2;
+        google.protobuf.BoolValue unknown3 = 3;
+        google.protobuf.BoolValue unknown4 = 4;
+        google.protobuf.BoolValue otherSounds = 5;
+        google.protobuf.BoolValue smokeAndCoSounds = 6;
+        google.protobuf.BoolValue unknown7 = 7;
+        google.protobuf.BoolValue unknown8 = 8;
+        google.protobuf.BoolValue unknown9 = 9;
+        google.protobuf.BoolValue unknown10 = 10;
+    }
+
+    VideoEventTypes videoEventTypes = 1;
+    AudioEventTypes audioEventTypes = 2;
+}
+
+message MediaRequestTrait {
+    int32 unknown1 = 1;
+}
+
+message UploadLiveImageTrait {
+    message UploadLiveImageRequest {
+
+    }
+
+    message UploadLiveImageResponse {
+        enum Status {
+            STATUS_UNSPECIFIED = 0;
+            STATUS_SUCCESSFUL = 1;
+            STATUS_UNSUCCESSFUL = 2;
+        }
+
+        Status status = 1;
+    }
+
+    string liveImageUrl = 1;
+    google.protobuf.Timestamp timestamp = 2;
+}
+
+message ObservationTriggerSettingsTrait {
+    message EventTrigger {
+        google.protobuf.BoolValue enabled = 1;
+    }
+
+    message SoundTriggerSettings {
+        EventTrigger personTalking = 1;
+        EventTrigger dogBarking = 2;
+        EventTrigger unknown3 = 3;
+        EventTrigger unknown4 = 4;
+        EventTrigger smokeAlarmSounds = 5;
+        EventTrigger carbonMonoxideAlarmSounds = 6;
+    }
+
+    message ZoneTriggerSettings {
+        message ZoneSettings {
+            message TriggerTypes {
+                EventTrigger motion = 1;
+                EventTrigger person = 2;
+                EventTrigger face = 3;
+                EventTrigger vehicle = 4;
+                EventTrigger animal = 5;
+                EventTrigger package = 6;
+            }
+
+            int32 zoneId = 1;
+            TriggerTypes triggerTypes = 3;
+        }
+
+        int32 zoneIndex = 1;
+        ZoneSettings zoneSettings = 2;
+    }
+
+    message AITriggerSettings {
+        message AISeenSettings {
+            bool garageDoor = 1;
+        }
+
+        AISeenSettings seenSettings = 2;
+    }
+
+    SoundTriggerSettings globalTriggerSettings = 6;
+    repeated ZoneTriggerSettings zoneTriggerSettings = 8;
+    AITriggerSettings globalAITriggerSettings = 9;
+}
+
+enum VideoHistorySetting {
+    VIDEO_HISTORY_UNSPECIFIED = 0;
+    VIDEO_HISTORY_LEGACY_NONE = 1;
+    VIDEO_HISTORY_EVENTS_24_7 = 2;
+    VIDEO_HISTORY_EVENTS = 3;
+    VIDEO_HISTORY_LEGACY_EVENTS = 4;
+    VIDEO_HISTORY_NONE = 5;
+}
+
+message RecordingMediaSettingsTrait {
+    VideoHistorySetting videoHistory = 1;
+    bool audioHistoryEnabled = 2;
+    int32 unknown3 = 3;
+}
+
+message AspectRatioTrait {
+    int32 widthRelative = 1;
+    int32 heightRelative = 2;
+}
+
+message QuietTimeSettingsTrait {
+    google.protobuf.Timestamp quietTimeEnds = 1;
+}
+
+message EventSessionTrait {
+    bool eventActive = 1;
+}
+
+message RecordingMediaCapabilitiesTrait {
+    repeated VideoHistorySetting supportedCapabilities = 1;
+}
+
+message EffectiveHistoryLengthTrait {
+    google.protobuf.UInt32Value historyDurationSeconds = 1;
+}
+
+message CameraMigrationStatusTrait {
+    message MigrationState {
+        enum WhereMigrated {
+            NOT_MIGRATED = 0;
+            MIGRATED_TO_GOOGLE_HOME = 1;
+            MIGRATED_TO_NEST = 2;
+        }
+
+        enum MigrationProgress {
+            PROGRESS_NONE = 0;
+            PROGRESS_STARTING = 1;
+            PROGRESS_INSTALLING = 2;
+            PROGRESS_COMPLETE = 3;
+            PROGRESS_MAYBE_ERROR = 4;
+            PROGRESS_FINALISING = 5;
+        }
+
+        WhereMigrated where = 1;
+        MigrationProgress progress = 2;
+    }
+
+    MigrationState state = 1;
+}
+
+message DoorStateTrait {
+    message DoorState {
+        message OpenCloseState {
+            DoorOpenCloseState doorState = 2;
+        }
+
+        enum DoorOpenCloseState {
+            STATE_UNSPECIFIED = 0;
+            STATE_MAYBE_CLOSING = 1;
+            STATE_CLOSED = 2;
+            STATE_MAYBE_OPENING = 3;
+            STATE_OPEN = 4;
+        }
+
+        OpenCloseState openClose = 2;
+    }
+
+    DoorState state = 1;
+}

@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+import "../../weave/common.proto";
+
+package weave.trait.peerdevices;
+
+message PeerDevicesTrait {
+    map<uint32, PeerDevice> peerDevices = 1;
+
+    message PeerDevice {
+        weave.common.ResourceId deviceId = 1;
+        weave.common.ResourceName resourceTypeName = 2;
+        uint32 vendorId = 3;
+        uint32 productId = 4;
+        string softwareVersion = 5;
+        bool deviceReady = 6;
+    }
+}

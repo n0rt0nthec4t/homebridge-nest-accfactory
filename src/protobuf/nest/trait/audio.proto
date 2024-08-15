@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package nest.trait.audio;
+
+message MicrophoneSettingsTrait {
+    bool enableMicrophone = 1;
+}

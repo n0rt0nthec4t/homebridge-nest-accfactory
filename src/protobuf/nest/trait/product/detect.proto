@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+
+package nest.trait.product.detect;
+
+message DetectInstallationStateTrait {
+    DeviceMode deviceMode = 1;
+    PlacementGuidanceCheck placementGuidanceCheck = 2;
+
+    enum DeviceMode {
+        DEVICE_MODE_UNSPECIFIED = 0;
+        DEVICE_MODE_IDLE = 1;
+        DEVICE_MODE_PLACEMENT_GUIDANCE = 2;
+        DEVICE_MODE_OPEN_CLOSE_TEST = 3;
+        DEVICE_MODE_PIR_TEST = 4;
+    }
+
+    enum PlacementGuidanceCheck {
+        PLACEMENT_GUIDANCE_CHECK_UNSPECIFIED = 0;
+        PLACEMENT_GUIDANCE_CHECK_UNKNOWN = 1;
+        PLACEMENT_GUIDANCE_CHECK_INVALID = 2;
+        PLACEMENT_GUIDANCE_CHECK_VALID = 3;
+    }
+
+    enum SetDeviceModeResponseType {
+        SET_DEVICE_MODE_RESPONSE_TYPE_UNSPECIFIED = 0;
+        SET_DEVICE_MODE_RESPONSE_TYPE_SUCCESS = 1;
+        SET_DEVICE_MODE_RESPONSE_TYPE_ERROR_UNKNOWN = 2;
+        SET_DEVICE_MODE_RESPONSE_TYPE_ERROR_INVALID_PLACEMENT_GUIDANCE_CHECK_RESULT = 3;
+        SET_DEVICE_MODE_RESPONSE_TYPE_ERROR_INVALID_LOCATED_FIXTURE = 4;
+    }
+
+    message InstallationTransitionRequestedEvent {
+        DeviceMode previousDeviceMode = 1;
+        DeviceMode newDeviceMode = 2;
+    }
+
+    message InstallationPlacementGuidanceCheckEvent {
+        PlacementGuidanceCheck checkResult = 1;
+    }
+
+    message SetDeviceModeRequest {
+        DeviceMode deviceMode = 1;
+    }
+}
+
+message IncorrectInstallationDetectionTrait {
+    IncorrectInstallationState installationState = 1;
+    google.protobuf.Timestamp firstObservedAtMs = 2;
+
+    enum IncorrectInstallationState {
+        INCORRECT_INSTALLATION_STATE_UNSPECIFIED = 0;
+        INCORRECT_INSTALLATION_STATE_UNKNOWN = 1;
+        INCORRECT_INSTALLATION_STATE_CORRECT = 2;
+        INCORRECT_INSTALLATION_STATE_INCORRECT = 3;
+    }
+
+    message IncorrectInstallationDetectionChangeEvent {
+        IncorrectInstallationState installationState = 1;
+        IncorrectInstallationState priorInstallationState = 2;
+    }
+}
+
+message DetectInstallationStateDFTrait {
+    DetectInstallationStateTrait.DeviceMode intendedDeviceMode = 1;
+}

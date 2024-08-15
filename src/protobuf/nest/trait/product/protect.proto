@@ -1,0 +1,344 @@
+syntax = "proto3";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+import "../../../nest/trait/selftest.proto";
+import "../../../weave/common.proto";
+
+package nest.trait.product.protect;
+
+message SelfTestTrait {
+    google.protobuf.Timestamp lastMstStart = 1;
+    google.protobuf.Timestamp lastMstEnd = 2;
+    bool lastMstCancelled = 3;
+    google.protobuf.Timestamp lastAstStart = 4;
+    google.protobuf.Timestamp lastAstEnd = 5;
+
+    enum SelfTestType {
+        SELF_TEST_TYPE_UNSPECIFIED = 0;
+        SELF_TEST_TYPE_AST = 1;
+        SELF_TEST_TYPE_MST = 2;
+    }
+
+    enum StartSelfTestStatus {
+        START_SELF_TEST_STATUS_UNSPECIFIED = 0;
+        START_SELF_TEST_STATUS_OK = 1;
+        START_SELF_TEST_STATUS_FAILED = 2;
+    }
+
+    enum EndSelfTestStatus {
+        END_SELF_TEST_STATUS_UNSPECIFIED = 0;
+        END_SELF_TEST_STATUS_OK = 1;
+        END_SELF_TEST_STATUS_FAILED = 2;
+    }
+
+    enum MstTrigger {
+        MST_TRIGGER_UNSPECIFIED = 0;
+        MST_TRIGGER_BUTTON = 1;
+        MST_TRIGGER_REMOTE = 2;
+        MST_TRIGGER_APP = 3;
+    }
+
+    message StartSelfTestRequest {
+        SelfTestType type = 1;
+        nest.trait.selftest.SelfTestRunnerTrait.TestId testId = 2;
+    }
+
+    message StartSelfTestResponse {
+        StartSelfTestStatus status = 1;
+    }
+
+    message EndSelfTestRequest {
+        SelfTestType type = 1;
+        nest.trait.selftest.SelfTestRunnerTrait.TestId testId = 2;
+    }
+
+    message EndSelfTestResponse {
+        EndSelfTestStatus status = 1;
+    }
+
+    message MstTransitionEvent {
+        MstTrigger trigger = 1;
+        uint32 newState = 2;
+        uint32 oldState = 3;
+    }
+
+    message AstTransitionEvent {
+        bool orchestrator = 1;
+        uint32 newState = 2;
+        uint32 oldState = 3;
+    }
+}
+
+message LegacyStructureSelfTestTrait {
+    bool lastMstCancelled = 1;
+    bool mstInProgress = 2;
+    google.protobuf.Timestamp lastMstStartUtcSecs = 3;
+    google.protobuf.Timestamp lastMstEndUtcSecs = 4;
+    google.protobuf.Timestamp lastMstSuccessUtcSecs = 5;
+    bool astInProgress = 6;
+    google.protobuf.Timestamp lastAstStartUtcSecs = 7;
+    google.protobuf.Timestamp lastAstEndUtcSecs = 8;
+    google.protobuf.Timestamp astRequestUtcSecs = 9;
+    google.protobuf.Timestamp astSkipUtcSecs = 10;
+    repeated uint64 astParticipants = 11;
+
+    enum SelfTestType {
+        SELF_TEST_TYPE_UNSPECIFIED = 0;
+        SELF_TEST_TYPE_AST = 1;
+        SELF_TEST_TYPE_MST = 2;
+    }
+
+    enum StartSelfTestStatus {
+        START_SELF_TEST_STATUS_UNSPECIFIED = 0;
+        START_SELF_TEST_STATUS_OK = 1;
+        START_SELF_TEST_STATUS_FAILED = 2;
+    }
+
+    enum EndSelfTestStatus {
+        END_SELF_TEST_STATUS_UNSPECIFIED = 0;
+        END_SELF_TEST_STATUS_OK = 1;
+        END_SELF_TEST_STATUS_FAILED = 2;
+    }
+
+    message StartSelfTestRequest {
+        SelfTestType type = 1;
+        nest.trait.selftest.SelfTestRunnerTrait.TestId testId = 2;
+    }
+
+    message StartSelfTestResponse {
+        StartSelfTestStatus status = 1;
+    }
+
+    message EndSelfTestRequest {
+        SelfTestType type = 1;
+        nest.trait.selftest.SelfTestRunnerTrait.TestId testId = 2;
+    }
+
+    message EndSelfTestResponse {
+        EndSelfTestStatus status = 1;
+    }
+}
+
+message AudioTestTrait {
+    AudioTestResult speakerResult = 1;
+    AudioTestResult buzzerResult = 2;
+
+    enum AudioTestSource {
+        AUDIO_TEST_SOURCE_UNSPECIFIED = 0;
+        AUDIO_TEST_SOURCE_AUTOMATIC = 1;
+        AUDIO_TEST_SOURCE_MANUAL = 2;
+    }
+
+    enum AudioFaultType {
+        AUDIO_FAULT_TYPE_UNSPECIFIED = 0;
+        AUDIO_FAULT_TYPE_INCONCLUSIVE_OTHER = 1;
+        AUDIO_FAULT_TYPE_INCONCLUSIVE_AMBIENT_NOISE = 2;
+        AUDIO_FAULT_TYPE_INCONCLUSIVE_ASYNC_INTER = 4;
+        AUDIO_FAULT_TYPE_INCONCLUSIVE_DID_NOT_RUN = 8;
+        AUDIO_FAULT_TYPE_INCONCLUSIVE_DROPPED_BUFFER = 16;
+    }
+
+    message AudioTestResult {
+        AudioTestSource source = 1;
+        bool testPassed = 2;
+        repeated AudioFaultType types = 3;
+    }
+
+    message AudioTestStartEvent {
+        AudioTestSource source = 1;
+    }
+
+    message AudioTestEndEvent {
+        AudioTestResult speakerResult = 1;
+        AudioTestResult buzzerResult = 2;
+    }
+}
+
+message ReadyActionTrait {
+    enum ReadyActionState {
+        READY_ACTION_STATE_UNSPECIFIED = 0;
+        READY_ACTION_STATE_IDLE = 1;
+        READY_ACTION_STATE_START_UX = 2;
+        READY_ACTION_STATE_PAIRING_UX = 3;
+    }
+
+    enum ReadyStateChangeReason {
+        READY_STATE_CHANGE_REASON_UNSPECIFIED = 0;
+        READY_STATE_CHANGE_REASON_TIMEOUT = 1;
+        READY_STATE_CHANGE_REASON_BUTTON_PRESS = 2;
+        READY_STATE_CHANGE_REASON_BLE_TRIGGER = 3;
+    }
+
+    message ReadyActionStateChangeEvent {
+        ReadyActionState newReadyActionState = 1;
+        ReadyActionState previousReadyActionState = 2;
+        ReadyStateChangeReason changeReason = 3;
+    }
+}
+
+message TrapActionTrait {
+    enum TrapStatus {
+        TRAP_STATUS_UNSPECIFIED = 0;
+        TRAP_STATUS_NONE = 1;
+        TRAP_STATUS_LAST_GASP_BEGIN = 2;
+        TRAP_STATUS_SAFETY_MCU = 3;
+    }
+
+    message TrapStatusUpdateEvent {
+        TrapStatus newTrapStatus = 1;
+        TrapStatus previousTrapStatus = 2;
+    }
+
+    message SafetyMCUFaultEvent {
+        bool asserted = 1;
+    }
+}
+
+message NightTimePromiseTrait {
+    enum NtpState {
+        NTP_STATE_UNSPECIFIED = 0;
+        NTP_STATE_ALL_CLEAR_NTP_ENABLED = 1;
+        NTP_STATE_ALL_CLEAR_NTP_DISABLED = 2;
+        NTP_STATE_WARNINGS_DISPLAYED = 3;
+        NTP_STATE_WARNINGS_SPOKEN = 4;
+        NTP_STATE_CRITICAL_WARNINGS_SPOKEN = 5;
+        NTP_STATE_DONE = 6;
+    }
+
+    message NightTimePromiseEvent {
+        NtpState state = 1;
+        bool usingRemote = 2;
+        bool criticalWarnings = 3;
+        uint32 warningCount = 4;
+    }
+}
+
+message ProtectDeviceInfoTrait {
+    string deviceExternalColor = 1;
+    CertRegion certificationBody = 2;
+
+    enum CertRegion {
+        CERT_REGION_UNSPECIFIED = 0;
+        CERT_REGION_US = 1;
+        CERT_REGION_EU = 2;
+        CERT_REGION_AU = 3;
+    }
+
+    message AppDailyConnectionStatusEvent {
+        google.protobuf.Timestamp wdmDisconnectTime = 1;
+    }
+}
+
+message SafetySummaryTrait {
+    repeated DeviceStatus criticalDevices = 1;
+    repeated DeviceStatus warningDevices = 2;
+    int32 totalCriticalFailures = 3;
+    int32 totalWarnings = 4;
+    nest.trait.selftest.SelfTestRunnerTrait.TestId testId = 5;
+
+    enum FailureType {
+        FAILURE_TYPE_UNSPECIFIED = 0;
+        FAILURE_TYPE_SMOKE = 1;
+        FAILURE_TYPE_CO = 2;
+        FAILURE_TYPE_TEMP = 4;
+        FAILURE_TYPE_HUM = 8;
+        FAILURE_TYPE_ALS = 16;
+        FAILURE_TYPE_US = 32;
+        FAILURE_TYPE_PIR = 64;
+        FAILURE_TYPE_BUZZER = 128;
+        FAILURE_TYPE_EXPIRED = 256;
+        FAILURE_TYPE_EXPIRING = 512;
+        FAILURE_TYPE_BATT_VERYLOW = 1024;
+        FAILURE_TYPE_BATT_LOW = 2048;
+        FAILURE_TYPE_WIFI = 4096;
+        FAILURE_TYPE_LED = 8192;
+        FAILURE_TYPE_AUDIO = 16384;
+        FAILURE_TYPE_POWEROUT = 32768;
+        FAILURE_TYPE_OFFLINE = 65536;
+    }
+
+    message DeviceStatus {
+        weave.common.ResourceId resourceId = 1;
+        weave.common.ResourceId spokenWhereAnnotation = 2;
+        repeated FailureType failures = 3;
+        repeated FailureType criticalMask = 4;
+        uint32 productId = 5;
+        uint32 vendorId = 6;
+    }
+}
+
+message ActionSchedulerTrait {
+    message ActionSchedulerOpEvent {
+        uint32 opId = 1;
+        uint32 actionId = 2;
+    }
+}
+
+message AudioPlayTrait {
+    message AudioPlayEvent {
+        google.protobuf.UInt32Value sentenceId = 1;
+        google.protobuf.StringValue sentenceString = 2;
+        repeated uint32 sentenceArgIds = 3;
+    }
+}
+
+message LegacyAlarmHistoryTrait {
+    repeated AlarmStatus smokeHistory = 1;
+    repeated AlarmStatus coHistory = 2;
+
+    message AlarmStatus {
+        google.protobuf.Timestamp timestamp = 1;
+        uint32 status = 2;
+        bool synced = 3;
+    }
+}
+
+message NightTimePromiseSettingsTrait {
+    bool greenLedEnabled = 1;
+    NightTimePromiseBrightness greenLedBrightness = 2;
+
+    enum NightTimePromiseBrightness {
+        NIGHT_TIME_PROMISE_BRIGHTNESS_UNSPECIFIED = 0;
+        NIGHT_TIME_PROMISE_BRIGHTNESS_LOW = 1;
+        NIGHT_TIME_PROMISE_BRIGHTNESS_MEDIUM = 2;
+        NIGHT_TIME_PROMISE_BRIGHTNESS_HIGH = 3;
+    }
+}
+
+message OutOfBoxTrait {
+    message OutOfBoxFinishedEvent {
+        bool success = 1;
+        bool defaultLanguageSelected = 2;
+        bool currentLanguage = 3;
+        bool osmSwapPossible = 4;
+        uint32 repeatCount = 5;
+    }
+}
+
+message LegacyProtectDeviceInfoTrait {
+    string capabilityIdx = 1;
+    bool autoAway = 2;
+    google.protobuf.FloatValue capabilityLevel = 3;
+    bool linePowerCapable = 4;
+    string spSoftwareVersion = 5;
+}
+
+message LegacyProtectDeviceSettingsTrait {
+    google.protobuf.Timestamp replaceByDate = 1;
+}
+
+message LegacySelfTestSettingsTrait {
+    bool astEnabled = 1;
+    bool astNotify = 2;
+    google.protobuf.Duration astRepeatSecs = 3;
+    google.protobuf.Duration astForceSecs = 4;
+    google.protobuf.Duration astStartOffsetUtcSecs = 5;
+    google.protobuf.Duration astEndOffsetUtcSecs = 6;
+}
+
+message SafetyStructureSettingsTrait {
+    string structureHushKey = 1;
+    bool phoneHushEnabled = 2;
+}

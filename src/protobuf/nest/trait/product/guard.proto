@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+import "../../../weave/common.proto";
+
+package nest.trait.product.guard;
+
+message GuardInstallationStateTrait {
+    DeviceMode deviceMode = 1;
+    CredentialCheck lastCredentialCheck = 2;
+    CredentialType lastCredentialType = 3;
+    weave.common.ResourceId lastCredentialUser = 4;
+
+    enum DeviceMode {
+        DEVICE_MODE_UNSPECIFIED = 0;
+        DEVICE_MODE_IDLE = 1;
+        DEVICE_MODE_PIR_TEST = 2;
+        DEVICE_MODE_PINCODE_TEST = 3;
+        DEVICE_MODE_NFC_TEST = 4;
+    }
+
+    enum CredentialCheck {
+        CREDENTIAL_CHECK_UNSPECIFIED = 0;
+        CREDENTIAL_CHECK_UNKNOWN = 1;
+        CREDENTIAL_CHECK_VALID = 2;
+    }
+
+    enum CredentialType {
+        CREDENTIAL_TYPE_UNSPECIFIED = 0;
+        CREDENTIAL_TYPE_UNKNOWN = 1;
+        CREDENTIAL_TYPE_PINCODE = 2;
+        CREDENTIAL_TYPE_NFC = 3;
+    }
+
+    message InstallationTransitionRequestedEvent {
+        DeviceMode previousDeviceMode = 1;
+        DeviceMode newDeviceMode = 2;
+    }
+
+    message InstallationCredentialCheckEvent {
+        CredentialCheck checkResult = 1;
+        CredentialType checkType = 2;
+        weave.common.ResourceId checkUser = 3;
+    }
+
+    message SetDeviceModeRequest {
+        DeviceMode deviceMode = 1;
+    }
+}
+
+message SecurityChimeSettingsTrait {
+    bool securityChimeEnabled = 1;
+    SecurityChimeSound openSecurityChimeSound = 2;
+
+    enum SecurityChimeSound {
+        SECURITY_CHIME_SOUND_UNSPECIFIED = 0;
+        SECURITY_CHIME_SOUND_SINGLE = 1;
+        SECURITY_CHIME_SOUND_DOUBLE = 2;
+    }
+}

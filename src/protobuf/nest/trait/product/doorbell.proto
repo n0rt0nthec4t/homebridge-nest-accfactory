@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+package nest.trait.product.doorbell;
+
+message DoorbellIndoorChimeSettingsTrait {
+    enum ChimeType {
+        CHIME_TYPE_UNSPECIFIED = 0;
+        CHIME_TYPE_MECHANICAL = 1;
+        CHIME_TYPE_ELECTRONIC = 2;
+    }
+
+    ChimeType chimeType = 1;
+    google.protobuf.Duration chimeDuration = 2;
+    bool chimeEnabled = 3;
+}

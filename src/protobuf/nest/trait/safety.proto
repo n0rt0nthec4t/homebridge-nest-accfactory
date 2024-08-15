@@ -1,0 +1,119 @@
+syntax = "proto3";
+
+import "google/protobuf/duration.proto";
+import "../../weave/common.proto";
+import "../../nest/trait/sensor.proto";
+
+package nest.trait.safety;
+
+message SafetyAlarmTrait {
+    uint32 sessionId = 1;
+    AlarmState alarmState = 2;
+    SilenceState silenceState = 3;
+
+    enum AlarmLevel {
+        ALARM_LEVEL_UNSPECIFIED = 0;
+        ALARM_LEVEL_IDLE = 1;
+        ALARM_LEVEL_MONITOR = 2;
+        ALARM_LEVEL_MODERATE = 3;
+        ALARM_LEVEL_SUBSTANTIAL = 4;
+        ALARM_LEVEL_SEVERE = 5;
+        ALARM_LEVEL_CRITICAL = 6;
+    }
+
+    enum AlarmState {
+        ALARM_STATE_UNSPECIFIED = 0;
+        ALARM_STATE_IDLE = 1;
+        ALARM_STATE_HEADS_UP1 = 2;
+        ALARM_STATE_HEADS_UP2 = 3;
+        ALARM_STATE_ALARM = 4;
+    }
+
+    enum SilenceState {
+        SILENCE_STATE_UNSPECIFIED = 0;
+        SILENCE_STATE_DISALLOWED = 1;
+        SILENCE_STATE_ALLOWED = 2;
+        SILENCE_STATE_SILENCED = 3;
+    }
+
+    message SafetyAlarmChangeEvent {
+        uint32 sessionId = 1;
+        AlarmLevel alarmLevel = 2;
+        AlarmState alarmState = 3;
+        AlarmState prevAlarmState = 4;
+        SilenceState silenceState = 5;
+        SilenceState prevSilenceState = 6;
+        google.protobuf.Duration prevStateDuration = 7;
+    }
+}
+
+message SafetyAlarmRemoteTrait {
+    message SafetyAlarmStatus {
+        weave.common.ResourceId originator = 1;
+        SafetyAlarmTrait.AlarmState alarmState = 2;
+        SafetyAlarmTrait.SilenceState silenceState = 3;
+    }
+
+    message SafetyAlarmRemoteChangeEvent {
+        SafetyAlarmStatus remoteStatus = 1;
+        SafetyAlarmStatus prevRemoteStatus = 2;
+    }
+}
+
+message SafetyAlarmCOTrait {
+    uint32 sessionId = 1;
+    SafetyAlarmTrait.AlarmState alarmState = 2;
+    SafetyAlarmTrait.SilenceState silenceState = 3;
+    nest.trait.sensor.CarbonMonoxideTrait.CoSample peakConcentration = 16;
+    nest.trait.sensor.CarbonMonoxideTrait.CoSample blameThreshold = 17;
+    google.protobuf.Duration blameDuration = 18;
+
+    message SafetyAlarmCOChangeEvent {
+        uint32 sessionId = 1;
+        SafetyAlarmTrait.AlarmLevel alarmLevel = 2;
+        SafetyAlarmTrait.AlarmState alarmState = 3;
+        SafetyAlarmTrait.AlarmState prevAlarmState = 4;
+        SafetyAlarmTrait.SilenceState silenceState = 5;
+        SafetyAlarmTrait.SilenceState prevSilenceState = 6;
+        google.protobuf.Duration prevStateDuration = 7;
+        nest.trait.sensor.CarbonMonoxideTrait.CoSample peakConcentration = 16;
+        nest.trait.sensor.CarbonMonoxideTrait.CoSample blameThreshold = 17;
+        google.protobuf.Duration blameDuration = 18;
+    }
+}
+
+message SafetyAlarmRemoteCOTrait {
+    message SafetyAlarmRemoteCOChangeEvent {
+        SafetyAlarmRemoteTrait.SafetyAlarmStatus remoteStatus = 1;
+        SafetyAlarmRemoteTrait.SafetyAlarmStatus prevRemoteStatus = 2;
+    }
+}
+
+message SafetyAlarmRemoteSmokeTrait {
+    message SafetyAlarmRemoteSmokeChangeEvent {
+        SafetyAlarmRemoteTrait.SafetyAlarmStatus remoteStatus = 1;
+        SafetyAlarmRemoteTrait.SafetyAlarmStatus prevRemoteStatus = 2;
+    }
+}
+
+message SafetyAlarmSmokeTrait {
+    uint32 sessionId = 1;
+    SafetyAlarmTrait.AlarmState alarmState = 2;
+    SafetyAlarmTrait.SilenceState silenceState = 3;
+
+    message SafetyAlarmSmokeChangeEvent {
+        uint32 sessionId = 1;
+        SafetyAlarmTrait.AlarmLevel alarmLevel = 2;
+        SafetyAlarmTrait.AlarmState alarmState = 3;
+        SafetyAlarmTrait.AlarmState prevAlarmState = 4;
+        SafetyAlarmTrait.SilenceState silenceState = 5;
+        SafetyAlarmTrait.SilenceState prevSilenceState = 6;
+        google.protobuf.Duration prevStateDuration = 7;
+        bool steamDetected = 16;
+    }
+}
+
+message SafetyAlarmSettingsTrait {
+    bool headsUpEnabled = 1;
+    bool steamDetectionEnabled = 2;
+}

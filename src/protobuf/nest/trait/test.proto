@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+
+package nest.trait.test;
+
+message ExperimentSettingsTrait {
+    map<uint32, Experiment> experiments = 1;
+
+    message Experiment {
+        string name = 1;
+        google.protobuf.Timestamp enableFrom = 2;
+        google.protobuf.Timestamp enableUntil = 3;
+    }
+}

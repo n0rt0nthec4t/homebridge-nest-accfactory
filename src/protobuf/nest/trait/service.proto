@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+import "../../weave/common.proto";
+
+package nest.trait.service;
+
+message DeviceInfoTrait {
+    uint64 weaveNodeId = 1;
+    string typeName = 2;
+    string className = 3;
+    weave.common.ResourceId pairerId = 4;
+    uint64 fabricId = 5;
+    string serviceGroupId = 6;
+    DeviceState deviceState = 7;
+    google.protobuf.Timestamp pairedAt = 8;
+    string softwareVersion = 9;
+    string resourceInstanceId = 10;
+    repeated DeviceCapability deviceCapabilities = 11;
+    repeated DeviceRadio deviceRadios = 12;
+
+    enum DeviceCapability {
+        DEVICE_CAPABILITY_UNSPECIFIED = 0;
+        DEVICE_CAPABILITY_ALWAYS_CONNECTED = 1;
+        DEVICE_CAPABILITY_BORDER_ROUTER = 2;
+    }
+
+    enum DeviceRadio {
+        DEVICE_RADIO_UNSPECIFIED = 0;
+        DEVICE_RADIO_THREAD = 1;
+        DEVICE_RADIO_BLUETOOTH_LE = 2;
+        DEVICE_RADIO_WIFI = 3;
+    }
+
+    enum DeviceState {
+        DEVICE_STATE_UNSPECIFIED = 0;
+        DEVICE_STATE_UNPAIRED = 1;
+        DEVICE_STATE_PAIRED = 2;
+        DEVICE_STATE_MOBILE_CONFIGURED = 3;
+        DEVICE_STATE_CONFIGURED = 4;
+    }
+}
+
+message AssociatedHeadUnitTrait {
+    weave.common.ResourceId headunitResourceId = 1;
+}

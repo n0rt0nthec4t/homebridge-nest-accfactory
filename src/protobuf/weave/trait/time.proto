@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
+package weave.trait.time;
+
+message TimezoneTrait {
+    google.protobuf.StringValue timezoneName = 1;
+    repeated UtcOffsetStruct utcOffsets = 3;
+
+    message UtcOffsetStruct {
+        google.protobuf.Timestamp startTimestamp = 1;
+        int32 offsetMinutes = 2;
+    }
+}

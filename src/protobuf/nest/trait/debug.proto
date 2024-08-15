@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+import "google/protobuf/wrappers.proto";
+
+package nest.trait.debug;
+
+message DebugTrait {
+    uint32 productId = 1;
+    uint32 buildConfig = 2;
+    uint32 buildTag = 3;
+
+    message StringLogEntryEvent {
+        string region = 1;
+        string messageTxt = 2;
+    }
+
+    message TokenizedLogArguments {
+        google.protobuf.Int32Value arg4Byte = 1;
+        google.protobuf.Int64Value arg8Byte = 2;
+        google.protobuf.StringValue argString = 3;
+    }
+
+    message TokenizedLogEntryEvent {
+        uint32 token = 1;
+        repeated TokenizedLogArguments args = 2;
+    }
+
+    message TokenizedHeaderEntryEvent {
+        uint32 productId = 1;
+        uint32 buildConfig = 2;
+        uint32 buildTag = 3;
+    }
+
+    message EncodedTokenizedLogEntryEvent {
+        string tokenizedString = 1;
+    }
+}

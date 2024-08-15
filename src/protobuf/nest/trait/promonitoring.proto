@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package nest.trait.promonitoring;
+
+message ProMonitoringSettingsTrait {
+    BurglaryMonitoringActivationStatus burglaryMonitoringActivationStatus = 1;
+
+    enum BurglaryMonitoringActivationStatus {
+        BURGLARY_MONITORING_ACTIVATION_STATUS_UNSPECIFIED = 0;
+        BURGLARY_MONITORING_ACTIVATION_STATUS_NOT_ACTIVATED = 1;
+        BURGLARY_MONITORING_ACTIVATION_STATUS_PENDING = 2;
+        BURGLARY_MONITORING_ACTIVATION_STATUS_ACTIVATED = 3;
+    }
+}

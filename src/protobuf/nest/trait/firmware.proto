@@ -1,0 +1,221 @@
+syntax = "proto3";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+import "../../weave/common.proto";
+
+package nest.trait.firmware;
+
+message FirmwareTrait {
+    enum AssertType {
+        ASSERT_TYPE_UNSPECIFIED = 0;
+        ASSERT_TYPE_HARD_FAULT = 1;
+        ASSERT_TYPE_SOFTWARE_ASSERT = 2;
+        ASSERT_TYPE_WATCHDOG = 3;
+        ASSERT_TYPE_STACK_OVERFLOW = 4;
+    }
+
+    enum ResetType {
+        RESET_TYPE_UNSPECIFIED = 0;
+        RESET_TYPE_UNKNOWN = 1;
+        RESET_TYPE_SW_REQUESTED = 2;
+        RESET_TYPE_SW_UPDATE = 3;
+        RESET_TYPE_FACTORY_RESET = 4;
+        RESET_TYPE_HARD_FAULT = 5;
+        RESET_TYPE_ASSERT = 6;
+        RESET_TYPE_WATCHDOG = 7;
+        RESET_TYPE_STACK_OVERFLOW = 8;
+        RESET_TYPE_BUTTON_RESET = 9;
+        RESET_TYPE_LOW_BATTERY = 10;
+        RESET_TYPE_DEBUG_BOARD = 11;
+        RESET_TYPE_PMIC_RESET = 12;
+    }
+
+    message AssertTaskInfoStruct {
+        string taskName = 1;
+        string taskState = 2;
+        repeated uint32 backtrace = 3;
+    }
+
+    message FirmwareAssertContextStruct {
+        uint32 processorId = 1;
+        string serialNumber = 2;
+        string version = 3;
+        AssertType assertType = 4;
+        repeated uint32 registers = 5;
+        repeated uint32 machineBacktrace = 6;
+        repeated AssertTaskInfoStruct taskInfo = 7;
+        string activeTaskName = 8;
+        string description = 9;
+    }
+
+    message TaskInfoStruct {
+        string taskName = 1;
+        google.protobuf.Duration taskActiveTime = 2;
+        uint32 stackHighWatermark = 3;
+        google.protobuf.UInt32Value virtualMemorySize = 4;
+        google.protobuf.UInt32Value virtualResidentSetSize = 5;
+    }
+
+    message AllocatedPbufStruct {
+        uint32 pbufId = 1;
+        uint32 callSite = 2;
+    }
+
+    message SleepBlockerStruct {
+        string callerName = 1;
+        uint32 callCount = 2;
+    }
+
+    message IRQStruct {
+        uint32 irqNumber = 1;
+        uint32 numOfInterrupts = 2;
+    }
+
+    message QueueInfoStruct {
+        uint32 location = 1;
+        uint32 size = 2;
+        uint32 highWatermark = 3;
+    }
+
+    message ItemTotalUsageStruct {
+        string itemName = 1;
+        google.protobuf.Duration itemUsage = 2;
+    }
+
+    message RebootRequest {
+    }
+
+    message ProfileIntervalEvent {
+        google.protobuf.Duration totalTime = 1;
+        google.protobuf.Duration intervalDuration = 2;
+        repeated TaskInfoStruct taskProfileInfo = 3;
+        repeated google.protobuf.Duration clockActiveTime = 4;
+        repeated uint32 pbufHighWatermark = 5;
+        repeated google.protobuf.Duration sleepStateDuration = 6;
+        repeated AllocatedPbufStruct allocatedPbufs = 7;
+        google.protobuf.Duration deepSleepBlockedDuration = 8;
+        repeated SleepBlockerStruct sleepBlockers = 9;
+        repeated QueueInfoStruct queueInfo = 10;
+        repeated IRQStruct irqInfo = 11;
+        google.protobuf.UInt32Value availableRam = 12;
+        repeated ItemTotalUsageStruct trackedItems = 13;
+    }
+
+    message FirmwareBootEvent {
+        uint32 processorId = 1;
+        string versionString = 2;
+        uint32 hardwareResetReason = 3;
+        ResetType softwareResetReason = 4;
+    }
+
+    message FirmwareAssertContextEvent {
+        FirmwareAssertContextStruct state = 1;
+    }
+
+    message BreadcrumbEvent {
+        uint32 id = 1;
+        bytes breadcrumb = 2;
+    }
+
+    message FirmwareStatsEvent {
+        google.protobuf.Duration totalTime = 1;
+        int32 envWrites = 2;
+        int32 envBytes = 3;
+        int32 rngRequests = 4;
+        int32 bootCount = 5;
+    }
+}
+
+message SoftwareUpdateTrait {
+    google.protobuf.Timestamp lastUpdateTime = 1;
+
+    enum State {
+        STATE_UNSPECIFIED = 0;
+        STATE_IDLE = 1;
+        STATE_QUERYING = 2;
+        STATE_DOWNLOADING = 3;
+        STATE_INSTALLING = 4;
+        STATE_ROLLING_BACK = 5;
+    }
+
+    enum StartTrigger {
+        START_TRIGGER_UNSPECIFIED = 0;
+        START_TRIGGER_USER_INITIATED = 1;
+        START_TRIGGER_SCHEDULED = 2;
+        START_TRIGGER_USB = 3;
+        START_TRIGGER_FROM_DFU = 4;
+        START_TRIGGER_BLE = 5;
+        START_TRIGGER_REMOTE_AGENT = 6;
+        START_TRIGGER_OTHER = 7;
+    }
+
+    message SoftwareUpdateStartEvent {
+        StartTrigger trigger = 1;
+    }
+
+    message FailureEvent {
+        State state = 1;
+        uint32 platformReturnCode = 2;
+        weave.common.ProfileSpecificStatusCode primaryStatusCode = 3;
+        weave.common.ProfileSpecificStatusCode remoteStatusCode = 4;
+    }
+
+    message DownloadFailureEvent {
+        State state = 1;
+        uint32 platformReturnCode = 2;
+        weave.common.ProfileSpecificStatusCode primaryStatusCode = 3;
+        weave.common.ProfileSpecificStatusCode remoteStatusCode = 4;
+        string bytesDownloaded = 32;
+    }
+
+    message QueryBeginEvent {
+        google.protobuf.StringValue currentSwVersion = 2;
+        google.protobuf.UInt32Value vendorId = 3;
+        google.protobuf.UInt32Value vendorProductId = 4;
+        google.protobuf.UInt32Value productRevision = 5;
+        google.protobuf.StringValue locale = 6;
+        google.protobuf.StringValue queryServerAddr = 7;
+        weave.common.ResourceId queryServerId = 8;
+    }
+
+    message QueryFinishEvent {
+        google.protobuf.StringValue imageVersion = 1;
+        google.protobuf.StringValue imageUrl = 2;
+    }
+
+    message DownloadStartEvent {
+        google.protobuf.StringValue imageVersion = 1;
+        google.protobuf.StringValue imageUrl = 2;
+        google.protobuf.StringValue subImageName = 3;
+        google.protobuf.UInt64Value offset = 4;
+        google.protobuf.StringValue destination = 5;
+    }
+
+    message DownloadFinishEvent {
+        google.protobuf.StringValue imageVersion = 1;
+        google.protobuf.StringValue imageUrl = 2;
+        google.protobuf.StringValue subImageName = 3;
+        google.protobuf.StringValue destination = 4;
+    }
+
+    message InstallStartEvent {
+        google.protobuf.StringValue imageVersion = 2;
+        google.protobuf.StringValue subImageName = 3;
+        google.protobuf.StringValue localSource = 4;
+        google.protobuf.StringValue destination = 5;
+    }
+
+    message InstallFinishEvent {
+        google.protobuf.StringValue imageVersion = 2;
+        google.protobuf.StringValue subImageName = 3;
+    }
+
+    message ImageRollbackEvent {
+        google.protobuf.StringValue imageVersion = 2;
+        google.protobuf.StringValue subImageName = 3;
+        google.protobuf.StringValue rollbackFrom = 4;
+        google.protobuf.StringValue rollbackTo = 5;
+    }
+}

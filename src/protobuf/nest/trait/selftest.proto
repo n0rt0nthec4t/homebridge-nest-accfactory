@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+import "google/protobuf/duration.proto";
+import "../../weave/common.proto";
+
+package nest.trait.selftest;
+
+message SelfTestRunnerTrait {
+    TestId currentSelfTestId = 1;
+    TestId previousSelfTestId = 2;
+
+    enum SelfTestType {
+        SELF_TEST_TYPE_UNSPECIFIED = 0;
+        SELF_TEST_TYPE_SOUND_CHECK = 1;
+        SELF_TEST_TYPE_SAFETY_CHECK = 2;
+        SELF_TEST_TYPE_SECURITY_CHECK = 3;
+    }
+
+    enum SelfTestResult {
+        SELF_TEST_RESULT_UNSPECIFIED = 0;
+        SELF_TEST_RESULT_PASS = 1;
+        SELF_TEST_RESULT_FAIL_WARN = 2;
+        SELF_TEST_RESULT_FAIL_CRITICAL = 3;
+    }
+
+    enum RunSelfTestStatus {
+        RUN_SELF_TEST_STATUS_UNSPECIFIED = 0;
+        RUN_SELF_TEST_STATUS_SUCCESS = 1;
+        RUN_SELF_TEST_STATUS_WILL_NOT_RUN = 2;
+        RUN_SELF_TEST_STATUS_EXCEEDS_TIMEOUT = 4;
+        RUN_SELF_TEST_STATUS_ALREADY_RUN = 5;
+        RUN_SELF_TEST_STATUS_BUSY = 6;
+        RUN_SELF_TEST_STATUS_INTERNAL_ERROR = 7;
+    }
+
+    message TestId {
+        weave.common.ResourceId rootOrchestratorId = 1;
+        uint32 instanceId = 2;
+    }
+
+    message SelfTestStartedEvent {
+        TestId testId = 1;
+        weave.common.ResourceId orchestratorId = 2;
+    }
+
+    message SelfTestEndedEvent {
+        TestId testId = 1;
+        SelfTestResult result = 2;
+        RunSelfTestStatus testStatus = 3;
+        repeated weave.common.EventId relatedResults = 4;
+    }
+
+    message OrchestrationStartedEvent {
+        TestId testId = 1;
+        weave.common.ResourceId parentId = 2;
+    }
+
+    message OrchestrationEndedEvent {
+        TestId testId = 1;
+        SelfTestResult result = 2;
+    }
+
+    message RunnerTimoutEvent {
+        TestId testId = 1;
+        weave.common.ResourceId runnerId = 2;
+    }
+
+    message RunSelfTestRequest {
+        TestId testId = 1;
+        google.protobuf.Duration testTimeout = 2;
+        repeated SelfTestType testTypes = 3;
+    }
+
+    message RunSelfTestResponse {
+        SelfTestResult result = 1;
+        RunSelfTestStatus testStatus = 3;
+    }
+}

@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+
+package nest.trait.olive;
+
+message GaiaMergeNotificationsTrait {
+    map<string, StructureInvitation> structureInvitations = 1;
+    google.protobuf.Timestamp latestUserGaiaMergeNotified = 2;
+
+    message StructureInvitation {
+        google.protobuf.Timestamp latestStructureInviteNotified = 1;
+        string invitationToken = 2;
+    }
+}

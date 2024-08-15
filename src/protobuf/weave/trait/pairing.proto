@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package weave.trait.pairing;
+
+message ConfigurationDoneTrait {
+    bool appConfigurationComplete = 1;
+    bool deviceReady = 2;
+}

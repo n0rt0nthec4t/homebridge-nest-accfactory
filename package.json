@@ -1,0 +1,64 @@
+{
+    "private": true,
+    "displayName": "Nest Accfactory",
+    "name": "homebridge-nest-accfactory",
+    "homepage": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/#readme",
+    "version": "0.0.1",
+    "description": "Homebridge support for Nest/Google devices including HomeKit Secure Video (HKSV) support for doorbells and cameras",
+    "license": "Apache-2.0",
+    "author": "n0rt0nthec4t",
+    "type": "module",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/n0rt0nthec4t/homebridge-nest-accfactory.git"
+    },
+    "bugs": {
+        "url": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issues"
+    },
+    "engines": {
+        "node": "^18.20.4 || ^20.16.0 || ^22.5.1",
+        "homebridge": "^1.8.0 || ^2.0.0-beta.0"
+    },
+    "main": "dist/index.js",
+    "files": [
+        "LICENSE",
+        "dist/**/*",
+        "config.schema.json"
+    ],
+    "scripts": {
+        "lint": "eslint src/**/*.js --max-warnings=0",
+        "watch": "npm run build && npm link && nodemon",
+        "build": "rimraf ./dist && copyfiles -u 1 src/*.js dist && copyfiles -u 1 src/res/*.h264 dist && copyfiles -u 1 src/res/*.jpg dist && copyfiles -u 1 'src/protobuf/**/*.proto' dist",
+        "prepublishOnly": "npm run lint && npm run build"
+    },
+    "keywords": [
+        "homebridge",
+        "homebridge-plugin",
+        "hksv",
+        "hap-nodejs",
+        "nest",
+        "doorbell",
+        "camera",
+        "thermostat",
+        "temperature",
+        "smoke",
+        "sensor"
+    ],
+    "devDependencies": {
+        "@types/node": "^20.14.12",
+        "@typescript-eslint/eslint-plugin": "^7.17.0",
+        "@typescript-eslint/parser": "^7.17.0",
+        "copyfiles": "^2.4.1",
+        "eslint": "^8.57.0",
+        "homebridge": "^2.0.0-beta.0",
+        "nodemon": "^3.1.4",
+        "rimraf": "^6.0.1"
+    },
+    "dependencies": {
+        "axios": ">=1.6.7",
+        "ffmpeg-for-homebridge": "^2.1.1",
+        "pbf": "^3.3.0",
+        "protobufjs": ">=7.2.6",
+        "ws": ">=8.17.1"
+    }
+}

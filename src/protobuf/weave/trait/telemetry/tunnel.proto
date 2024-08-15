@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+
+package weave.trait.telemetry.tunnel;
+
+message TelemetryTunnelTrait {
+    enum TunnelType {
+        TUNNEL_TYPE_UNSPECIFIED = 0;
+        TUNNEL_TYPE_NONE = 1;
+        TUNNEL_TYPE_PRIMARY = 2;
+        TUNNEL_TYPE_BACKUP = 3;
+        TUNNEL_TYPE_SHORTCUT = 4;
+    }
+
+    enum TunnelState {
+        TUNNEL_STATE_UNSPECIFIED = 0;
+        TUNNEL_STATE_NO_TUNNEL = 1;
+        TUNNEL_STATE_PRIMARY_ESTABLISHED = 2;
+        TUNNEL_STATE_BACKUP_ONLY_ESTABLISHED = 3;
+        TUNNEL_STATE_PRIMARY_AND_BACKUP_ESTABLISHED = 4;
+    }
+
+    message TelemetryTunnelStatsEvent {
+        string txBytesToService = 1;
+        string rxBytesFromService = 2;
+        uint32 txMessagesToService = 3;
+        uint32 rxMessagesFromService = 4;
+        uint32 tunnelDownCount = 5;
+        uint32 tunnelConnAttemptCount = 6;
+        google.protobuf.Timestamp lastTimeTunnelWentDown = 7;
+        google.protobuf.Timestamp lastTimeTunnelEstablished = 8;
+        uint32 droppedMessagesCount = 9;
+        TunnelState currentTunnelState = 10;
+        TunnelType currentActiveTunnel = 11;
+    }
+}
