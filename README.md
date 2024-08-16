@@ -30,3 +30,15 @@ The following Nest devices are supported
 The accessory supports connection to Nest using a Nest account OR a Google (migrated Nest account) account.
 
 ## Configuration
+
+### Nest Account
+
+If you have a Nest account, you will need to obtain an access token from the Nest web app. Simply go to https://home.nest.com in your browser and log in. Once that's done, go to https://home.nest.com/session in your browser, and you will see a long string that looks like this:
+
+{"2fa_state":"enrolled","access_token":"XXX", ...}
+
+The value of "access_token" near the start of the string (the XXX) (a long sequence of letters, numbers and punctuation beginning with b) can be entered into the plugin-configuration within Homebridge
+
+There may be other keys labelled access_token further along in the string - please ignore these.
+
+**Do not log out of home.nest.com, as this will invalidate your credentials. Just close the browser tab**
