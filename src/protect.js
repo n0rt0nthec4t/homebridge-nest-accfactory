@@ -1,7 +1,7 @@
 // Nest Protect
 // Part of homebridge-nest-accfactory
 //
-// Code version 14/8/2024
+// Code version 17/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -22,14 +22,14 @@ export default class NestProtect extends HomeKitDevice {
     }
 
     // Class functions
-    addServices(serviceName) {
+    addServices() {
         // Create extra details for output
         let postSetupDetails = [];
 
         // Setup the smoke sensor service if not already present on the accessory
         this.smokeService = this.accessory.getService(this.hap.Service.SmokeSensor);
         if (this.smokeService === undefined) {
-            this.smokeService = this.accessory.addService(this.hap.Service.SmokeSensor, serviceName, 1);
+            this.smokeService = this.accessory.addService(this.hap.Service.SmokeSensor, '', 1);
         }
         if (this.smokeService.testCharacteristic(this.hap.Characteristic.StatusActive) === false) {
             this.smokeService.addCharacteristic(this.hap.Characteristic.StatusActive);
@@ -42,7 +42,7 @@ export default class NestProtect extends HomeKitDevice {
         // Setup the carbon monoxide service if not already present on the accessory
         this.carbonMonoxideService = this.accessory.getService(this.hap.Service.CarbonMonoxideSensor);
         if (this.carbonMonoxideService === undefined) {
-            this.carbonMonoxideService = this.accessory.addService(this.hap.Service.CarbonMonoxideSensor, serviceName, 1);
+            this.carbonMonoxideService = this.accessory.addService(this.hap.Service.CarbonMonoxideSensor, '', 1);
         }
         if (this.carbonMonoxideService.testCharacteristic(this.hap.Characteristic.StatusActive) === false) {
             this.carbonMonoxideService.addCharacteristic(this.hap.Characteristic.StatusActive);
@@ -54,7 +54,7 @@ export default class NestProtect extends HomeKitDevice {
         // Setup battery service if not already present on the accessory
         this.batteryService = this.accessory.getService(this.hap.Service.Battery);
         if (this.batteryService === undefined) {
-            this.batteryService = this.accessory.addService(this.hap.Service.Battery, serviceName, 1);
+            this.batteryService = this.accessory.addService(this.hap.Service.Battery, '', 1);
         }
         this.batteryService.setHiddenService(true);
 
@@ -62,14 +62,13 @@ export default class NestProtect extends HomeKitDevice {
         if (typeof this.deviceData?.wired_or_battery === 'number' && this.deviceData?.wired_or_battery === 0) {
             this.motionService = this.accessory.getService(this.hap.Service.MotionSensor);
             if (this.motionService === undefined) {
-                this.motionService = this.accessory.addService(this.hap.Service.MotionSensor, serviceName, 1);
+                this.motionService = this.accessory.addService(this.hap.Service.MotionSensor, '', 1);
             }
             postSetupDetails.push('With motion sensor');
         }
 
         // Setup linkage to EveHome app if configured todo so
         if (this.deviceData?.eveApp === true &&
-            this.historyService !== undefined &&
             this.smokeService !== undefined &&
             typeof this.historyService?.linkToEveHome === 'function') {
 
@@ -121,9 +120,8 @@ export default class NestProtect extends HomeKitDevice {
             this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, (deviceData.detected_motion === false));
 
             // Log motion to history only if changed to previous recording
-            if (this.historyService !== undefined &&
-                typeof this.historyService?.addHistory === 'function' &&
-                deviceData.detected_motion !== this.deviceData.detected_motion) {
+            if (deviceData.detected_motion !== this.deviceData.detected_motion &&
+                typeof this.historyService?.addHistory === 'function') {
 
                 this.historyService.addHistory(this.motionService, {
                     'time': Math.floor(Date.now() / 1000),
@@ -134,7 +132,6 @@ export default class NestProtect extends HomeKitDevice {
 
         // Notify Eve App of device status changes if linked
         if (this.deviceData.eveApp === true &&
-            this.historyService !== undefined &&
             typeof this.historyService?.updateEveHome === 'function') {
 
             // Update our internal data with properties Eve will need to process

@@ -1,7 +1,7 @@
 // Nest Thermostat
 // Part of homebridge-nest-accfactory
 //
-// Code version 14/8/2024
+// Code version 17/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -29,14 +29,14 @@ export default class NestThermostat extends HomeKitDevice {
     }
 
     // Class functions
-    async addServices(serviceName) {
+    async addServices() {
         // Create extra details for output
         let postSetupDetails = [];
 
         // Setup the thermostat service if not already present on the accessory
         this.thermostatService = this.accessory.getService(this.hap.Service.Thermostat);
         if (this.thermostatService === undefined) {
-            this.thermostatService = this.accessory.addService(this.hap.Service.Thermostat, serviceName, 1);
+            this.thermostatService = this.accessory.addService(this.hap.Service.Thermostat, '', 1);
         }
         if (this.thermostatService.testCharacteristic(this.hap.Characteristic.StatusActive) === false) {
             // Used to indicate active temperature if the thermostat is using its temperature sensor data
@@ -166,7 +166,7 @@ export default class NestThermostat extends HomeKitDevice {
         // Setup occupancy service if not already present on the accessory
         this.occupancyService = this.accessory.getService(this.hap.Service.OccupancySensor);
         if (this.occupancyService === undefined) {
-            this.occupancyService = this.accessory.addService(this.hap.Service.OccupancySensor, serviceName, 1);
+            this.occupancyService = this.accessory.addService(this.hap.Service.OccupancySensor, '', 1);
         }
         if (this.occupancyService.testCharacteristic(this.hap.Characteristic.StatusFault) === false) {
             this.occupancyService.addCharacteristic(this.hap.Characteristic.StatusFault);
@@ -175,7 +175,7 @@ export default class NestThermostat extends HomeKitDevice {
         // Setup battery service if not already present on the accessory
         this.batteryService = this.accessory.getService(this.hap.Service.Battery);
         if (this.batteryService === undefined) {
-            this.batteryService = this.accessory.addService(this.hap.Service.Battery, serviceName, 1);
+            this.batteryService = this.accessory.addService(this.hap.Service.Battery, '', 1);
         }
         this.batteryService.setHiddenService(true);
         this.thermostatService.addLinkedService(this.batteryService);
@@ -184,7 +184,7 @@ export default class NestThermostat extends HomeKitDevice {
         this.fanService = this.accessory.getService(this.hap.Service.Fanv2);
         if (this.deviceData?.has_fan === true) {
             if (this.fanService === undefined) {
-                this.fanService = this.accessory.addService(this.hap.Service.Fanv2, serviceName, 1);
+                this.fanService = this.accessory.addService(this.hap.Service.Fanv2, '', 1);
             }
             this.fanService.getCharacteristic(this.hap.Characteristic.Active).onSet((value) => {
                 this.setFan(value);
@@ -202,7 +202,7 @@ export default class NestThermostat extends HomeKitDevice {
         this.dehumidifierService = this.accessory.getService(this.hap.Service.HumidifierDehumidifier);
         if (this.deviceData?.has_dehumidifier === true) {
             if (this.dehumidifierService === undefined) {
-                this.dehumidifierService = this.accessory.addService(this.hap.Service.HumidifierDehumidifier, serviceName, 1);
+                this.dehumidifierService = this.accessory.addService(this.hap.Service.HumidifierDehumidifier, '', 1);
             }
             this.dehumidifierService.getCharacteristic(this.hap.Characteristic.TargetHumidifierDehumidifierState).setProps({
                 validValues: [
@@ -225,7 +225,7 @@ export default class NestThermostat extends HomeKitDevice {
         this.humidityService = this.accessory.getService(this.hap.Service.HumiditySensor);
         if (this.deviceData?.humiditySensor === true) {
             if (this.humidityService === undefined) {
-                this.humidityService = this.accessory.addService(this.hap.Service.HumiditySensor, serviceName, 1);
+                this.humidityService = this.accessory.addService(this.hap.Service.HumiditySensor, '', 1);
             }
         }
         if (this.deviceData?.humiditySensor === false && this.humidityService !== undefined) {
@@ -235,7 +235,6 @@ export default class NestThermostat extends HomeKitDevice {
 
         // Setup linkage to EveHome app if configured todo so
         if (this.deviceData?.eveApp === true &&
-            this.historyService !== undefined &&
             this.thermostatService !== undefined &&
             typeof this.historyService?.linkToEveHome === 'function') {
 
@@ -247,11 +246,12 @@ export default class NestThermostat extends HomeKitDevice {
         }
 
         // Attempt to load any external modules for this thermostat
-        // We support external cool/heat/fan/dehumidifier modules
+        // We support external cool/heat/fan/dehumidifier module functions
+        // This is all undocumented on how to use, as its for my specific use case :-)
         const loadExternalModule = async (module) => {
             let loadedModule = undefined;
-            if (module?.module !== undefined &&
-                module?.options !== undefined) {
+            if (typeof module?.module === 'string' && module.module !== '' &&
+                typeof module?.options === 'string') {
                 try {
                     let externalModule = await import(module.module);
                     if (typeof externalModule?.default === 'function') {
@@ -272,11 +272,11 @@ export default class NestThermostat extends HomeKitDevice {
         this.externalDehumidifier = await loadExternalModule(this.deviceData?.externalDehumidifier);
 
         // Create extra details for output
-        this.humidityService && postSetupDetails.push('Seperate humidity sensor');
-        this.externalCool && postSetupDetails.push('Using external cooling module');
-        this.externalHeat && postSetupDetails.push('Using external heating module');
-        this.externalFan && postSetupDetails.push('Using external fan module');
-        this.externalDehumidifier && postSetupDetails.push('Using external dehumidification module');
+        this.humidityService !== undefined && postSetupDetails.push('Seperate humidity sensor');
+        this.externalCool !== undefined && postSetupDetails.push('Using external cooling module');
+        this.externalHeat !== undefined && postSetupDetails.push('Using external heating module');
+        this.externalFan !== undefined && postSetupDetails.push('Using external fan module');
+        this.externalDehumidifier !== undefined && postSetupDetails.push('Using external dehumidification module');
 
         return postSetupDetails;
     }
@@ -478,7 +478,7 @@ export default class NestThermostat extends HomeKitDevice {
         if (deviceData.has_fan !== this.deviceData.has_fan) {
             if (deviceData.has_fan === true && this.deviceData.has_fan === false && this.fanService === undefined) {
                 // Fan has been added
-                this.fanService = this.accessory.addService(this.hap.Service.Fanv2, 'Fan', 1);
+                this.fanService = this.accessory.addService(this.hap.Service.Fanv2, '', 1);
                 //this.fanService.addCharacteristic(this.hap.Characteristic.RotationSpeed);
                 //this.fanService.getCharacteristic(this.hap.Characteristic.RotationSpeed).setProps({minStep: (100 / this.deviceData.fan_max_speed), minValue: 0, maxValue: 100});
                 this.fanService.getCharacteristic(this.hap.Characteristic.Active).onSet((value) => {
@@ -500,7 +500,7 @@ export default class NestThermostat extends HomeKitDevice {
         if (deviceData.has_dehumidifier !== this.deviceData.has_dehumidifier) {
             if (deviceData.has_dehumidifier === true && this.deviceData.has_dehumidifier === false && this.dehumidifierService === undefined) {
                 // Dehumidifier has been added
-                this.dehumidifierService = this.accessory.addService(this.hap.Service.HumidifierDehumidifier, 'Dehumidifier', 1);
+                this.dehumidifierService = this.accessory.addService(this.hap.Service.HumidifierDehumidifier, '', 1);
                 this.dehumidifierService.getCharacteristic(this.hap.Characteristic.TargetHumidifierDehumidifierState).setProps({
                     validValues: [
                         this.hap.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER,
@@ -682,9 +682,8 @@ export default class NestThermostat extends HomeKitDevice {
         }
 
         // Log thermostat metrics to history only if changed to previous recording
-        if (this.historyService !== undefined &&
-            typeof this.historyService?.addHistory === 'function' &&
-            this.thermostatService !== undefined) {
+        if (this.thermostatService !== undefined &&
+            typeof this.historyService?.addHistory === 'function') {
 
             let tempEntry = this.historyService.lastHistory(this.thermostatService);
             if (tempEntry === null ||
@@ -706,7 +705,7 @@ export default class NestThermostat extends HomeKitDevice {
 
         // Notify Eve App of device status changes if linked
         if (this.deviceData.eveApp === true &&
-            this.historyService !== undefined &&
+            this.thermostatService !== undefined &&
             typeof this.historyService?.updateEveHome === 'function') {
 
             // Update our internal data with properties Eve will need to process

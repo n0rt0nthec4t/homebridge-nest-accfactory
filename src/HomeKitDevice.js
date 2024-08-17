@@ -37,7 +37,7 @@
 // HomeKitDevice.updateServices(deviceData)
 // HomeKitDevice.messageServices(type, message)
 //
-// Code version 14/8/2024
+// Code version 17/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -151,7 +151,9 @@ export default class HomeKitDevice {
             typeof this.deviceData?.software_version !== 'string' || this.deviceData.software_version === '' ||
             typeof this.deviceData?.description !== 'string' && this.deviceData.description === '' ||
             typeof this.deviceData?.model !== 'string' || this.deviceData.model === '' ||
-            typeof this.deviceData?.manufacturer !== 'string' || this.deviceData.manufacturer === '') {
+            typeof this.deviceData?.manufacturer !== 'string' || this.deviceData.manufacturer === '' ||
+            (typeof this.deviceData?.hkPairingCode === 'string' && this.deviceData.hkPairingCode === '') ||
+            (typeof this.deviceData?.hkUsername === 'string' && this.deviceData.hkUsername === '')) {
 
             return;
         }
@@ -187,6 +189,7 @@ export default class HomeKitDevice {
             informationService.updateCharacteristic(this.hap.Characteristic.SerialNumber, this.deviceData.serial_number);
             informationService.updateCharacteristic(this.hap.Characteristic.FirmwareRevision, this.deviceData.software_version);
         }
+        informationService.updateCharacteristic(this.hap.Characteristic.Name, this.deviceData.description);
 
         // Restore any data we have stored in this.accessory.context
         if (this.#platform !== undefined) {
@@ -203,7 +206,7 @@ export default class HomeKitDevice {
 
         if (typeof this.addServices === 'function') {
             try {
-                let postSetupDetails = await this.addServices(this.deviceData.description);
+                let postSetupDetails = await this.addServices();
                 if (this?.log?.success) {
                     this.log.info('Setup %s %s as "%s"', this.deviceData.manufacturer, this.deviceData.model, this.deviceData.description);
                 }
@@ -314,21 +317,47 @@ export default class HomeKitDevice {
             this.accessory !== undefined) {
 
             let informationService = this.accessory.getService(this.hap.Service.AccessoryInformation);
+            if (informationService !== undefined) {
+                // Update details associated with the accessory
+                // ie: Name, Manufacturer, Model, Serial # and firmware version
+                if (typeof deviceData?.description === 'string' &&
+                    deviceData.description !== this.deviceData.description) {
 
-            if (typeof deviceData?.software_version === 'string' &&
-                deviceData.software_version !== this.deviceData.software_version &&
-                informationService !== undefined) {
+                    // Update serial number on the HomeKit accessory
+                    informationService.updateCharacteristic(this.hap.Characteristic.Name, this.deviceData.description);
+                }
 
-                // Update software version on the HomeKit accessory
-                informationService.updateCharacteristic(this.hap.Characteristic.FirmwareRevision, this.deviceData.software_version);
-            }
+                if (typeof deviceData?.manufacturer === 'string' &&
+                    deviceData.manufacturer !== '' &&
+                    deviceData.manufacturer !== this.deviceData.manufacturer) {
 
-            if (typeof deviceData?.serial_number === 'string' &&
-                deviceData.serial_number !== this.deviceData.serial_number &&
-                informationService !== undefined) {
+                    // Update serial number on the HomeKit accessory
+                    informationService.updateCharacteristic(this.hap.Characteristic.Manufacturer, this.deviceData.manufacturer);
+                }
 
-                // Update serial number on the HomeKit accessory
-                informationService.updateCharacteristic(this.hap.Characteristic.SerialNumber, this.deviceData.serial_number);
+                if (typeof deviceData?.model === 'string' &&
+                    deviceData.model !== '' &&
+                    deviceData.model !== this.deviceData.model) {
+
+                    // Update serial number on the HomeKit accessory
+                    informationService.updateCharacteristic(this.hap.Characteristic.Model, this.deviceData.model);
+                }
+
+                if (typeof deviceData?.serial_number === 'string' &&
+                    deviceData.serial_number !== '' &&
+                    deviceData.serial_number !== this.deviceData.serial_number) {
+
+                    // Update serial number on the HomeKit accessory
+                    informationService.updateCharacteristic(this.hap.Characteristic.SerialNumber, this.deviceData.serial_number);
+                }
+
+                if (typeof deviceData?.software_version === 'string' &&
+                    deviceData.software_version !== '' &&
+                    deviceData.software_version !== this.deviceData.software_version) {
+
+                    // Update software version on the HomeKit accessory
+                    informationService.updateCharacteristic(this.hap.Characteristic.FirmwareRevision, this.deviceData.software_version);
+                }
             }
 
             if (typeof deviceData?.online === 'boolean' &&
@@ -344,7 +373,7 @@ export default class HomeKitDevice {
                 if (deviceData.online === true &&
                     this?.log?.success) {
 
-                    this.log.success('Device "%s" is offline', this.deviceData.description);
+                    this.log.success('Device "%s" is online', this.deviceData.description);
                 }
             }
 

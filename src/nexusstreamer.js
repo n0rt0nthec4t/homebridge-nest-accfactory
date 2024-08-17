@@ -339,7 +339,7 @@ export default class NexusStreamer {
     }
 
     stopTalkStream(sessionID) {
-        let index = this.buffer.streams.findIndex(({ type, id }) => id === sessionID);
+        let index = this.buffer.streams.findIndex(({ id }) => id === sessionID);
         if (index !== -1) {
             this.buffer.streams[index].audioTimeout && clearTimeout(this.buffer.streams[index].audioTimeout); // Clear any active return audio timer
         }

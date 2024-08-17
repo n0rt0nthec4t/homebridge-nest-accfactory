@@ -12,7 +12,8 @@
                 "properties": {
                     "access_token": {
                         "title": "Access Token",
-                        "type": "string"
+                        "type": "string",
+                        "placeholder": "See https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/#nest-account"
                     },
                     "fieldTest" : {
                         "title": "Field Test",
@@ -32,11 +33,14 @@
                 "properties": {
                     "issuetoken": {
                         "title": "Issue Token",
-                        "type": "string"
+                        "type": "string",
+                        "placeholder": "See https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/#google-account"
                     },
                     "cookie": {
                         "title": "Cookie",
-                        "type": "string"
+                        "type": "string",
+                        "placeholder": "See https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/#google-account"
+
                     },
                     "fieldTest" : {
                         "title": "Field Test",

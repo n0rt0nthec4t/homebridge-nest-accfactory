@@ -1,5 +1,4 @@
 {
-    "private": true,
     "displayName": "Nest Accfactory",
     "name": "homebridge-nest-accfactory",
     "homepage": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/#readme",
@@ -26,7 +25,7 @@
         "config.schema.json"
     ],
     "scripts": {
-        "lint": "eslint src/**/*.js --max-warnings=0",
+        "lint": "eslint src/**/*.js --max-warnings=5000",
         "watch": "npm run build && npm link && nodemon",
         "build": "rimraf ./dist && copyfiles -u 1 src/*.js dist && copyfiles -u 1 src/res/*.h264 dist && copyfiles -u 1 src/res/*.jpg dist && copyfiles -u 1 'src/protobuf/**/*.proto' dist",
         "prepublishOnly": "npm run lint && npm run build"

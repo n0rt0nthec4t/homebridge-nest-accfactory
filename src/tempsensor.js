@@ -1,7 +1,7 @@
 // Nest Temperature Sensor
 // Part of homebridge-nest-accfactory
 //
-// Code version 14/8/2024
+// Code version 17/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -20,24 +20,24 @@ export default class NestTemperatureSensor extends HomeKitDevice {
     }
 
     // Class functions
-    addServices(serviceName) {
+    addServices() {
         // Setup the temperature service if not already present on the accessory
         this.temperatureService = this.accessory.getService(this.hap.Service.TemperatureSensor);
         if (this.temperatureService === undefined) {
-            this.temperatureService = this.accessory.addService(this.hap.Service.TemperatureSensor, serviceName, 1);
+            this.temperatureService = this.accessory.addService(this.hap.Service.TemperatureSensor, '', 1);
         }
         this.temperatureService.setPrimaryService();
 
         // Setup the battery service if not already present on the accessory
         this.batteryService = this.accessory.getService(this.hap.Service.Battery);
         if (this.batteryService === undefined) {
-            this.batteryService = this.accessory.addService(this.hap.Service.Battery, serviceName, 1);
+            this.batteryService = this.accessory.addService(this.hap.Service.Battery, '', 1);
         }
         this.batteryService.setHiddenService(true);
 
         // Setup linkage to EveHome app if configured todo so
         if (this.deviceData?.eveApp === true &&
-            this.historyService !== undefined &&
+            this.temperatureService !== undefined &&
             typeof this.historyService?.linkToEveHome === 'function') {
 
             this.historyService.linkToEveHome(this.accessory, this.temperatureService, {
@@ -74,9 +74,9 @@ export default class NestTemperatureSensor extends HomeKitDevice {
         this.batteryService.updateCharacteristic(this.hap.Characteristic.StatusLowBattery, deviceData.battery_level > LOWBATTERYLEVEL ? this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL : this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW);
 
         // If we have the history service running and temperature has changed to previous in past 5mins
-        if (this.historyService !== undefined &&
-            typeof this.historyService?.addHistory === 'function' &&
-            deviceData.current_temperature !== this.deviceData.current_temperature) {
+        if (deviceData.current_temperature !== this.deviceData.current_temperature &&
+            this.temperatureService !== undefined &&
+            typeof this.historyService?.addHistory === 'function') {
 
             this.historyService.addHistory(this.temperatureService, {
                 'time': Math.floor(Date.now() / 1000),

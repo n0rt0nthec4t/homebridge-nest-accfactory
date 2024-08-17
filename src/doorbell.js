@@ -1,7 +1,7 @@
 // Nest Doorbell(s)
 // Part of homebridge-nest-accfactory
 //
-// Code version 12/8/2024
+// Code version 17/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -25,14 +25,14 @@ export default class NestDoorbell extends NestCamera {
     }
 
     // Class functions
-    addServices(serviceName) {
+    addServices() {
         this.createCameraMotionServices();
 
         // Setup HomeKit doorbell controller options
         NestCamera.controllerOptions.delegate = this;
         NestCamera.controllerOptions.streamingOptions.audio.twoWayAudio = (this.deviceData.has_speaker === true && this.deviceData.has_microphone === true);
         NestCamera.controllerOptions.doorbellOptions = {
-            name: serviceName,
+            name: this.deviceData.description,
         };
         if (this.deviceData.hksv === true) {
             NestCamera.controllerOptions.recording = {
@@ -94,7 +94,7 @@ export default class NestDoorbell extends NestCamera {
             // This needs to be explically enabled via a configuration option for the device
             this.switchService = this.accessory.getService(this.hap.Service.Switch);
             if (this.switchService === undefined) {
-                this.switchService = this.accessory.addService(this.hap.Service.Switch, serviceName, 1);
+                this.switchService = this.accessory.addService(this.hap.Service.Switch, '', 1);
             }
             if (this.switchService.testCharacteristic(this.hap.Characteristic.StatusActive) === false) {
                 this.switchService.addCharacteristic(this.hap.Characteristic.StatusActive);
@@ -127,7 +127,6 @@ export default class NestDoorbell extends NestCamera {
 
         // Setup linkage to EveHome app if configured todo so
         if (this.deviceData?.eveApp === true &&
-            this.historyService !== undefined &&
             typeof this.motionServices?.[1]?.service === 'object' &&
             typeof this.historyService?.linkToEveHome === 'function') {
 
@@ -224,7 +223,7 @@ export default class NestDoorbell extends NestCamera {
                     this.controller.ringDoorbell();
                 }
 
-                if (this.historyService !== undefined &&
+                if (this.controller?.doorbellService !== undefined &&
                     typeof this.historyService?.addHistory === 'function') {
 
                     // Record a doorbell press and unpress event to our history
