@@ -166,7 +166,7 @@ export default class NestProtect extends HomeKitDevice {
         }
 
         if (typeof EveHomeSetData?.alarmtest === 'boolean') {
-            //outputLogging(ACCESSORYNAME, false, 'Eve Smoke Alarm test', (EveHomeSetData.alarmtest === true ? 'start' : 'stop'));
+            //this.log.info('Eve Smoke Alarm test', (EveHomeSetData.alarmtest === true ? 'start' : 'stop'));
         }
         if (typeof EveHomeSetData?.statusled === 'boolean') {
             this.deviceData.ntp_green_led = EveHomeSetData.statusled;    // Do quick status update as setting Nest values does take sometime

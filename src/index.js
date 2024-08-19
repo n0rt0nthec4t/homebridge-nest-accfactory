@@ -596,10 +596,13 @@ export class NestAccfactory {
             }));
 
             await this.#processPostSubscribe(connectionType, deviceChanges);
-        }).catch(() => {
-            this.log.debug('REST API subscribe failed. Will retry');
+        }).catch((error) => {
+            if (error.code !== 'ECONNRESET') {
+                console.log(error)
+                this.log.error('REST API subscribe failed. Will retry');
+            }
         }).finally(() => {
-            setTimeout(this.#subscribeREST.bind(this, connectionType, fullRefresh), 500);
+            setTimeout(this.#subscribeREST.bind(this, connectionType, fullRefresh), 1000);
         });
     }
 
@@ -774,10 +777,12 @@ export class NestAccfactory {
                 }
             }
         }).catch((error) => {
-            this.log.error('Protobuf observe error occured. Will retry');
-            this.log.error(error);
+            if (error.code !== 'ECONNRESET') {
+                console.log(error)
+                this.log.error('Protobuf observe error occured. Will retry');
+            }
         }).finally(() => {
-            setTimeout(this.#subscribeProtobuf.bind(this, connectionType), 500);
+            setTimeout(this.#subscribeProtobuf.bind(this, connectionType), 1000);
         });
     }
 

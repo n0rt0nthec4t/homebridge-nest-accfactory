@@ -504,23 +504,13 @@ export default class HomeKitHistory {
                 // treat these as EveHome Door
                 // Inverse status used for all UUID types except HAP.Service.ContactSensor.UUID
 
-                // Setup the history service if not already present on the accessory
-                let historyService = accessory.getService(HAP.Service.EveHomeHistory);
-                if (historyService === undefined) {
-                    historyService = accessory.addService(HAP.Service.EveHomeHistory, '', 1);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveLastActivation) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveLastActivation);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveOpenDuration) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveOpenDuration);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveClosedDuration) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveClosedDuration);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveTimesOpened) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveTimesOpened);
-                }
+                // Setup the history service and the required characteristics for this service UUID type
+                // Callbacks setup below after this is created
+                let historyService = this.#createHistoryService(accessory, service, [
+                    HAP.Characteristic.EveLastActivation,
+                    HAP.Characteristic.EveOpenDuration,
+                    HAP.Characteristic.EveTimesOpened,
+                ]);
 
                 let tempHistory = this.getHistory(service.UUID, service.subtype);
                 let historyreftime = (this.historyData.reset - EPOCH_OFFSET);
@@ -560,17 +550,12 @@ export default class HomeKitHistory {
             {
                 // Treat as Eve MotionBlinds
 
-                // Setup the history service if not already present on the accessory
-                let historyService = accessory.getService(HAP.Service.EveHomeHistory);
-                if (historyService === undefined) {
-                    historyService = accessory.addService(HAP.Service.EveHomeHistory, '', 1);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveGetConfiguration) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveGetConfiguration);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveSetConfiguration) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveSetConfiguration);
-                }
+                // Setup the history service and the required characteristics for this service UUID type
+                // Callbacks setup below after this is created
+                let historyService = this.#createHistoryService(accessory, service, [
+                    HAP.Characteristic.EveGetConfiguration,
+                    HAP.Characteristic.EveSetConfiguration,
+                ]);
 
                 let tempHistory = this.getHistory(service.UUID, service.subtype);
                 let historyreftime = (this.historyData.reset - EPOCH_OFFSET);
@@ -684,37 +669,18 @@ export default class HomeKitHistory {
             case HAP.Service.Thermostat.UUID : {
                 // treat these as EveHome Thermo
 
-                // Setup the history service if not already present on the accessory
-                let historyService = accessory.getService(HAP.Service.EveHomeHistory);
-                if (historyService === undefined) {
-                    historyService = accessory.addService(HAP.Service.EveHomeHistory, '', 1);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveValvePosition) === false) {
-                    // Needed to show history for thermostat heating modes (valve position)
-                    service.addCharacteristic(HAP.Characteristic.EveValvePosition);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveFirmware) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveFirmware);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveProgramData) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveProgramData);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveProgramCommand) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveProgramCommand);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.StatusActive) === false) {
-                    service.addCharacteristic(HAP.Characteristic.StatusActive);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.CurrentTemperature) === false) {
-                    service.addCharacteristic(HAP.Characteristic.CurrentTemperature);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.TemperatureDisplayUnits) === false) {
-                    service.addCharacteristic(HAP.Characteristic.TemperatureDisplayUnits);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.LockPhysicalControls) === false) {
-                    // Allows childlock toggle to be displayed in Eve App
-                    service.addCharacteristic(HAP.Characteristic.LockPhysicalControls);
-                }
+                // Setup the history service and the required characteristics for this service UUID type
+                // Callbacks setup below after this is created
+                let historyService = this.#createHistoryService(accessory, service, [
+                    HAP.Characteristic.EveValvePosition,
+                    HAP.Characteristic.EveFirmware,
+                    HAP.Characteristic.EveProgramData,
+                    HAP.Characteristic.EveProgramCommand,
+                    HAP.Characteristic.StatusActive,
+                    HAP.Characteristic.CurrentTemperature,
+                    HAP.Characteristic.TemperatureDisplayUnits,
+                    HAP.Characteristic.LockPhysicalControls,
+                ]);
 
                 let tempHistory = this.getHistory(service.UUID, service.subtype);
                 let historyreftime = (this.historyData.reset - EPOCH_OFFSET);
@@ -945,14 +911,11 @@ export default class HomeKitHistory {
             case HAP.Service.EveAirPressureSensor.UUID : {
                 // treat these as EveHome Weather (2015)
 
-                // Setup the history service if not already present on the accessory
-                let historyService = accessory.getService(HAP.Service.EveHomeHistory);
-                if (historyService === undefined) {
-                    historyService = accessory.addService(HAP.Service.EveHomeHistory, '', 1);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveFirmware) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveFirmware);
-                }
+                // Setup the history service and the required characteristics for this service UUID type
+                // Callbacks setup below after this is created
+                let historyService = this.#createHistoryService(accessory, service, [
+                    HAP.Characteristic.EveFirmware,
+                ]);
 
                 let tempHistory = this.getHistory(service.UUID, service.subtype);
                 let historyreftime = (tempHistory.length === 0 ? (this.historyData.reset - EPOCH_OFFSET) : (tempHistory[0].time - EPOCH_OFFSET));
@@ -977,14 +940,12 @@ export default class HomeKitHistory {
             case HAP.Service.TemperatureSensor.UUID : {
                 // treat these as EveHome Room(s)
 
-                // Setup the history service if not already present on the accessory
-                let historyService = accessory.getService(HAP.Service.EveHomeHistory);
-                if (historyService === undefined) {
-                    historyService = accessory.addService(HAP.Service.EveHomeHistory, '', 1);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveFirmware) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveFirmware);
-                }
+                // Setup the history service and the required characteristics for this service UUID type
+                // Callbacks setup below after this is created
+                let historyService = this.#createHistoryService(accessory, service, [
+                    HAP.Characteristic.EveFirmware,
+                    (service.UUID === HAP.Service.AirQualitySensor.UUID ? HAP.Characteristic.VOCDensity : HAP.Characteristic.TemperatureDisplayUnits),
+                ]);
 
                 let tempHistory = this.getHistory(service.UUID, service.subtype);
                 let historyreftime = (this.historyData.reset - EPOCH_OFFSET);
@@ -994,10 +955,6 @@ export default class HomeKitHistory {
 
                 if (service.UUID === HAP.Service.AirQualitySensor.UUID) {
                     // Eve Room 2 (2018)
-                    if (service.testCharacteristic(HAP.Characteristic.VOCDensity) === false) {
-                        service.addCharacteristic(HAP.Characteristic.VOCDensity);
-                    }
-
                     this.EveHome = {
                         'service': historyService,
                         'linkedservice': service,
@@ -1019,10 +976,6 @@ export default class HomeKitHistory {
 
                 if (service.UUID === HAP.Service.TemperatureSensor.UUID) {
                     // Eve Room (2015)
-                    if (service.testCharacteristic(HAP.Characteristic.TemperatureDisplayUnits) === false) {
-                        service.addCharacteristic(HAP.Characteristic.TemperatureDisplayUnits); // Needed to show history for temperature
-                    }
-
                     this.EveHome = {
                         'service': historyService,
                         'linkedservice': service,
@@ -1045,23 +998,15 @@ export default class HomeKitHistory {
             case HAP.Service.MotionSensor.UUID : {
                 // treat these as EveHome Motion
 
-                // Setup the history service if not already present on the accessory
-                let historyService = accessory.getService(HAP.Service.EveHomeHistory);
-                if (historyService === undefined) {
-                    historyService = accessory.addService(HAP.Service.EveHomeHistory, '', 1);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveSensitivity) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveSensitivity);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveDuration) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveDuration);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveLastActivation) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveLastActivation);
-                }
-
-                //service.addCharacteristic(HAP.Characteristic.EveGetConfiguration);
-                //service.addCharacteristic(HAP.Characteristic.EveSetConfiguration);
+                // Setup the history service and the required characteristics for this service UUID type
+                // Callbacks setup below after this is created
+                let historyService = this.#createHistoryService(accessory, service, [
+                    HAP.Characteristic.EveSensitivity,
+                    HAP.Characteristic.EveDuration,
+                    HAP.Characteristic.EveLastActivation,
+                    // HAP.Characteristic.EveGetConfiguration,
+                    // HAP.Characteristic.EveSetConfiguration,
+                ]);
 
                 let tempHistory = this.getHistory(service.UUID, service.subtype);
                 let historyreftime = (this.historyData.reset - EPOCH_OFFSET);
@@ -1157,20 +1102,13 @@ export default class HomeKitHistory {
             case HAP.Service.SmokeSensor.UUID : {
                 // treat these as EveHome Smoke
 
-                // Setup the history service if not already present on the accessory
-                let historyService = accessory.getService(HAP.Service.EveHomeHistory);
-                if (historyService === undefined) {
-                    historyService = accessory.addService(HAP.Service.EveHomeHistory, '', 1);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveGetConfiguration) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveGetConfiguration);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveSetConfiguration) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveSetConfiguration);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveDeviceStatus) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveDeviceStatus);
-                }
+                // Setup the history service and the required characteristics for this service UUID type
+                // Callbacks setup below after this is created
+                let historyService = this.#createHistoryService(accessory, service, [
+                    HAP.Characteristic.EveGetConfiguration,
+                    HAP.Characteristic.EveSetConfiguration,
+                    HAP.Characteristic.EveDeviceStatus,
+                ]);
 
                 let tempHistory = this.getHistory(service.UUID, service.subtype);
                 let historyreftime = (this.historyData.reset - EPOCH_OFFSET);
@@ -1270,21 +1208,13 @@ export default class HomeKitHistory {
 
                 // TODO - see if we can add history per valve service under the irrigation system????. History service per valve???
 
-                // Setup the history service if not already present on the accessory
-                let historyService = accessory.getService(HAP.Service.EveHomeHistory);
-                if (historyService === undefined) {
-                    historyService = accessory.addService(HAP.Service.EveHomeHistory, '', 1);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveGetConfiguration) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveGetConfiguration);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveSetConfiguration) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveSetConfiguration);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.LockPhysicalControls) === false) {
-                    // Allows childlock toggle to be displayed in Eve App
-                    service.addCharacteristic(HAP.Characteristic.LockPhysicalControls);
-                }
+                // Setup the history service and the required characteristics for this service UUID type
+                // Callbacks setup below after this is created
+                let historyService = this.#createHistoryService(accessory, service, [
+                    HAP.Characteristic.EveGetConfiguration,
+                    HAP.Characteristic.EveSetConfiguration,
+                    HAP.Characteristic.LockPhysicalControls,
+                ]);
 
                 let tempHistory = this.getHistory(HAP.Service.Valve.UUID, (service.UUID === HAP.Service.IrrigationSystem.UUID ? null : service.subtype));
                 let historyreftime = (this.historyData.reset - EPOCH_OFFSET);
@@ -1522,26 +1452,15 @@ export default class HomeKitHistory {
                 // treat these as EveHome energy
                 // TODO - schedules
 
-                // Setup the history service if not already present on the accessory
-                let historyService = accessory.getService(HAP.Service.EveHomeHistory);
-                if (historyService === undefined) {
-                    historyService = accessory.addService(HAP.Service.EveHomeHistory, '', 1);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveFirmware) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveFirmware);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveElectricalVoltage) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveElectricalVoltage);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveElectricalCurrent) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveElectricalCurrent);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveElectricalWattage) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveElectricalWattage);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveTotalConsumption) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveSetConfEveTotalConsumptioniguration);
-                }
+                // Setup the history service and the required characteristics for this service UUID type
+                // Callbacks setup below after this is created
+                let historyService = this.#createHistoryService(accessory, service, [
+                    HAP.Characteristic.EveFirmware,
+                    HAP.Characteristic.EveElectricalVoltage,
+                    HAP.Characteristic.EveElectricalCurrent,
+                    HAP.Characteristic.EveElectricalWattage,
+                    HAP.Characteristic.EveTotalConsumption,
+                ]);
 
                 let tempHistory = this.getHistory(service.UUID, service.subtype);
                 let historyreftime = (this.historyData.reset - EPOCH_OFFSET);
@@ -1586,20 +1505,13 @@ export default class HomeKitHistory {
             case HAP.Service.LeakSensor.UUID : {
                 // treat these as EveHome Water Guard
 
-                // Setup the history service if not already present on the accessory
-                let historyService = accessory.getService(HAP.Service.EveHomeHistory);
-                if (historyService === undefined) {
-                    historyService = accessory.addService(HAP.Service.EveHomeHistory, '', 1);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveGetConfiguration) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveGetConfiguration);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.EveSetConfiguration) === false) {
-                    service.addCharacteristic(HAP.Characteristic.EveSetConfiguration);
-                }
-                if (service.testCharacteristic(HAP.Characteristic.StatusFault) === false) {
-                    service.addCharacteristic(HAP.Characteristic.StatusFault);
-                }
+                // Setup the history service and the required characteristics for this service UUID type
+                // Callbacks setup below after this is created
+                let historyService = this.#createHistoryService(accessory, service, [
+                    HAP.Characteristic.EveGetConfiguration,
+                    HAP.Characteristic.EveSetConfiguration,
+                    HAP.Characteristic.StatusFault,
+                ]);
 
                 let tempHistory = this.getHistory(service.UUID, service.subtype);
                 let historyreftime = (this.historyData.reset - EPOCH_OFFSET);
@@ -2253,22 +2165,20 @@ export default class HomeKitHistory {
             }
         } else {
             // We're not transferring any data back
-            this?.log?.debug && this.log.debug('#EveHistoryEntries: do we ever get here.....???', this.EveHome.send, this.EveHome.evetype, this.EveHome.type, this.EveHome.sub, this.EveHome.entry);
+            this?.log?.debug && this.log.debug('#EveHistoryEntries: no more entries to send to EveHome ("%s") for "%s:%s', this.EveHome.evetype, this.EveHome.type, this.EveHome.sub);
             this.EveHome.send = 0;  // no more to send
             dataStream = '00';
         }
         return encodeEveData(dataStream);
     }
 
-    #EveHistoryRequest(value, callback) {
+    #EveHistoryRequest(value) {
         // Requesting history, starting at specific entry
         this.EveHome.entry = EveHexStringToNumber(decodeEveData(value).substring(4, 12));    // Starting entry
         if (this.EveHome.entry === 0) {
             this.EveHome.entry = 1; // requested to restart from beginning of history for sending to EveHome
         }
         this.EveHome.send = (this.EveHome.count - this.EveHome.entry + 1);    // Number of entries we're expected to send
-        callback();
-
         this?.log?.debug && this.log.debug('#EveHistoryRequest: requested address', this.EveHome.entry);
     }
 
@@ -2277,6 +2187,32 @@ export default class HomeKitHistory {
         let timestamp = (EPOCH_OFFSET + EveHexStringToNumber(decodeEveData(value)));
 
         this?.log?.debug && this.log.debug('#EveSetTime: timestamp offset', new Date(timestamp * 1000));
+    }
+
+    #createHistoryService(accessory, service, characteristics) {
+        let historyService = undefined;
+
+        if (typeof accessory !== 'object' ||
+            typeof service !== 'object' ||
+            Array.isArray(characteristics) === false) {
+
+            return;
+        }
+
+        // Setup the history service
+        historyService = accessory.getService(HAP.Service.EveHomeHistory);
+        if (historyService === undefined) {
+            historyService = accessory.addService(HAP.Service.EveHomeHistory, '', 1);
+        }
+
+        // Add in any specified characteristics
+        characteristics.forEach((characteristic) => {
+            if (service.testCharacteristic(characteristic) === false) {
+                service.addCharacteristic(characteristic);
+            }
+        });
+
+        return historyService;
     }
 }
 
@@ -2388,7 +2324,7 @@ export class EveHistoryRequest extends HAP.Characteristic {
     constructor() {
         super('Eve History Request', EveHistoryRequest.UUID, {
             format: HAP.Formats.DATA,
-            perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY, HAP.Perms.HIDDEN],
+            perms: [HAP.Perms.PAIRED_WRITE, HAP.Perms.HIDDEN],
         });
         this.value = this.getDefaultValue();
     }
@@ -2402,7 +2338,7 @@ export class EveSetTime extends HAP.Characteristic {
     constructor() {
         super('Eve SetTime', EveSetTime.UUID, {
             format: HAP.Formats.DATA,
-            perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY, HAP.Perms.HIDDEN],
+            perms: [HAP.Perms.PAIRED_WRITE, HAP.Perms.HIDDEN],
         });
         this.value = this.getDefaultValue();
     }
@@ -2481,7 +2417,7 @@ export class EveProgramCommand extends HAP.Characteristic {
     constructor() {
         super('Eve Program Command', EveProgramCommand.UUID, {
             format: HAP.Formats.DATA,
-            perms: [HAP.Perms.PAIRED_WRITE],
+            perms: [HAP.Perms.PAIRED_WRITE, HAP.Perms.HIDDEN],
         });
         this.value = this.getDefaultValue();
     }
@@ -2494,7 +2430,7 @@ export class EveProgramData extends HAP.Characteristic {
     constructor() {
         super('Eve Program Data', EveProgramData.UUID, {
             format: HAP.Formats.DATA,
-            perms: [HAP.Perms.PAIRED_WRITE],
+            perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
         });
         this.value = this.getDefaultValue();
     }

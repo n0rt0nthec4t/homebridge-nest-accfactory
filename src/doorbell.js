@@ -104,8 +104,10 @@ export default class NestDoorbell extends NestCamera {
             this.switchService.getCharacteristic(this.hap.Characteristic.On).onSet((value) => {
                 if (value !== this.deviceData.indoor_chime_enabled) {
                     // only change indoor chime status value if different than on-device
-                    this.log.info('Indoor chime on "%s" was turned', this.deviceData.description, (value === true ? 'on' : 'off'));
                     this.set({'doorbell.indoor_chime.enabled' : value});
+                    if (this?.log?.info) {
+                        this.log.info('Indoor chime on "%s" was turned', this.deviceData.description, (value === true ? 'on' : 'off'));
+                    }
                 }
             });
 
@@ -115,7 +117,7 @@ export default class NestDoorbell extends NestCamera {
         }
         if (this.switchService !== undefined && this.deviceData.chimeSwitch === false) {
             // No longer required to have the switch service
-            // This ti to handle Homebridge cached restored accessories
+            // This is to handle Homebridge cached restored accessories
             this.accessory.removeService(this.switchService);
         }
 

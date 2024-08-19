@@ -37,7 +37,7 @@
 // HomeKitDevice.updateServices(deviceData)
 // HomeKitDevice.messageServices(type, message)
 //
-// Code version 17/8/2024
+// Code version 19/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -123,9 +123,9 @@ export default class HomeKitDevice {
         // Mainly used to restore a HomeBridge cached accessory
         if (typeof accessory === 'object' &&
             typeof this?.hap?.uuid?.generate === 'function' &&
-            typeof deviceData.serial_number === 'string') {
+            typeof deviceData.uuid === 'string') {
 
-            let uuid = this.hap.uuid.generate(HomeKitDevice.PLUGIN_NAME + '_' + deviceData.serial_number);
+            let uuid = this.hap.uuid.generate(HomeKitDevice.PLUGIN_NAME + '_' + deviceData.uuid);
 
             if (Array.isArray(accessory) === true) {
                 this.accessory = accessory.find((accessory) => accessory.UUID === uuid);
@@ -158,24 +158,36 @@ export default class HomeKitDevice {
             return;
         }
 
-        let uuid = this.hap.uuid.generate(HomeKitDevice.PLUGIN_NAME + '_' + this.deviceData.serial_number);
+        // Generate a UUID for HomeKit based on plugin name and the devices data uuid we have
+        let HomeKitUUID = this.hap.uuid.generate(HomeKitDevice.PLUGIN_NAME + '_' + this.deviceData.uuid);
+
+        // Special case for Homebridge 'restored' accessories. Pain in the arse
+        // Remove all services accept on the accessory EXCEPT for the accessory information service
+        // These will be added back via the 'addServices' call we execute below
+        if (this.accessory !== undefined) {
+            this.accessory.services.forEach((service) => {
+                if (service.UUID !== this.hap.Service.AccessoryInformation.UUID) {
+                    this.accessory.removeService(service);
+                }
+            });
+        }
 
         // If we do not have an existing accessory object, create a new one
         if (this.accessory === undefined &&
             this.#platform !== undefined) {
 
             // Create HomeBridge platform accessory
-            this.accessory = new this.#platform.platformAccessory(this.deviceData.description, uuid);
+            this.accessory = new this.#platform.platformAccessory(this.deviceData.description, HomeKitUUID);
             this.#platform.registerPlatformAccessories(HomeKitDevice.PLUGIN_NAME, HomeKitDevice.PLATFORM_NAME, [this.accessory]);
         }
 
         if (this.accessory === undefined &&
             this.#platform === undefined) {
 
-            //    /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/.test('12:34:56:78:90:1')
+            //    /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/.test('12:34:56:78:90:12')
 
             // Create HAP-NodeJS libray accessory
-            this.accessory = new this.hap.Accessory(accessoryName, uuid);
+            this.accessory = new this.hap.Accessory(accessoryName, HomeKitUUID);
             this.accessory.username = (typeof this.deviceData?.hkUsername === 'string' ? this.deviceData.hkUsername : 'xx:xx:xx:xx:xx:xx');
             this.accessory.pincode = (typeof this.deviceData?.hkPairingCode === 'string' ? this.deviceData.hkPairingCode : hkPairingCode);
             this.accessory.category = accessoryCategory;

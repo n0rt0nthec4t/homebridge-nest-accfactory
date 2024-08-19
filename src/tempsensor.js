@@ -72,6 +72,7 @@ export default class NestTemperatureSensor extends HomeKitDevice {
         // Update battery level and status
         this.batteryService.updateCharacteristic(this.hap.Characteristic.BatteryLevel, deviceData.battery_level);
         this.batteryService.updateCharacteristic(this.hap.Characteristic.StatusLowBattery, deviceData.battery_level > LOWBATTERYLEVEL ? this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL : this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW);
+        this.batteryService.updateCharacteristic(this.hap.Characteristic.ChargingState, this.hap.Characteristic.ChargingState.NOT_CHARGEABLE);
 
         // If we have the history service running and temperature has changed to previous in past 5mins
         if (deviceData.current_temperature !== this.deviceData.current_temperature &&
