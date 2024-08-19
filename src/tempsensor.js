@@ -1,7 +1,7 @@
 // Nest Temperature Sensor
 // Part of homebridge-nest-accfactory
 //
-// Code version 17/8/2024
+// Code version 19/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -40,7 +40,7 @@ export default class NestTemperatureSensor extends HomeKitDevice {
             this.temperatureService !== undefined &&
             typeof this.historyService?.linkToEveHome === 'function') {
 
-            this.historyService.linkToEveHome(this.accessory, this.temperatureService, {
+            this.historyService.linkToEveHome(this.temperatureService, {
                 description: this.deviceData.description,
             });
         }

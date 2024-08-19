@@ -1,7 +1,7 @@
 // Nest Protect
 // Part of homebridge-nest-accfactory
 //
-// Code version 17/8/2024
+// Code version 19/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -72,7 +72,7 @@ export default class NestProtect extends HomeKitDevice {
             this.smokeService !== undefined &&
             typeof this.historyService?.linkToEveHome === 'function') {
 
-            this.historyService.linkToEveHome(this.accessory, this.smokeService, {
+            this.historyService.linkToEveHome(this.smokeService, {
                 description: this.deviceData.description,
                 getcommand: this.#EveHomeGetcommand.bind(this),
                 setcommand: this.#EveHomeSetcommand.bind(this),

@@ -132,7 +132,7 @@ export default class NestDoorbell extends NestCamera {
             typeof this.motionServices?.[1]?.service === 'object' &&
             typeof this.historyService?.linkToEveHome === 'function') {
 
-            this.historyService.linkToEveHome(this.accessory, this.motionServices[1].service, {
+            this.historyService.linkToEveHome(this.motionServices[1].service, {
                 description: this.deviceData.description,
             });
         }
@@ -164,7 +164,7 @@ export default class NestDoorbell extends NestCamera {
             return;
         }
 
-        // Get the camera class todo all its updates irst, then we'll handle the doorbell specific stuff
+        // Get the camera class todo all its updates first, then we'll handle the doorbell specific stuff
         super.updateServices(deviceData);
 
         // Update online status of Doorbell in HomeKit

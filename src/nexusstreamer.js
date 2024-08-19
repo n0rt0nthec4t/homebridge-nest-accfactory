@@ -4,7 +4,7 @@
 // Allows multiple HomeKit devices to connect to the single stream
 //
 // Mark Hulskamp
-// 11/8/2024
+// 19/8/2024
 'use strict';
 
 // Define external lbrary requirements
@@ -115,6 +115,7 @@ const H264NALUnitType = {
 const H264NALStartcode = Buffer.from([0x00, 0x00, 0x00, 0x01]);
 const AACAudioSilence = Buffer.from([0x21, 0x10, 0x01, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));                 // Make a defined for JS __dirname
 
 // NeuxsStreamer object
 export default class NexusStreamer {
@@ -143,7 +144,7 @@ export default class NexusStreamer {
     online = undefined;
 
     constructor(deviceData, options) {
-        let resourcePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)) + '/res');  // Default location for *.h264 files
+        let resourcePath = path.resolve(__dirname + '/res');  // Default location for *.h264 files
 
         if (typeof options === 'object') {
             if (typeof options?.log?.info === 'function' &&

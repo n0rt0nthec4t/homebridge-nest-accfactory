@@ -1,6 +1,6 @@
 // HomeKitDevice class
 //
-// This is the base class for all HomeKit accessories we code for in Homebridge
+// This is the base class for all HomeKit accessories we code for in Homebridge/HAP-NodeJS
 //
 // The deviceData structure should at a minimum contain the following elements:
 //
@@ -44,8 +44,6 @@
 // Define nodejs module requirements
 import EventEmitter from 'node:events';
 
-const hkPairingCode = '031-45-154';                                             // Default HomeKit paircode for HAP-NodeJS Library
-
 // Define our HomeKit device class
 export default class HomeKitDevice {
     static ADD = 'HomeKitDevice.add';                                           // Device add message
@@ -58,13 +56,14 @@ export default class HomeKitDevice {
     static HISTORY = undefined;                                                 // HomeKit History object (override)
 
     deviceData = {};                                                            // The devices data we store
-    eventEmitter = undefined;                                                   // Event emitter to use for comms
     historyService = undefined;                                                 // HomeKit history service
     accessory = undefined;                                                      // Accessory service for this device
     hap = undefined;                                                            // HomeKit Accessory Protocol API stub
     log = undefined;                                                            // Logging function object
 
+    // Internal data we use within the accessory for various things
     #platform = undefined;                                                      // Homebridge platform api
+    #eventEmitter = undefined;                                                  // Event emitter to use for comms
 
     constructor(accessory, api, log, eventEmitter, deviceData) {
         // Validate the passed in logging object. We are expecting certain functions to be present
@@ -104,20 +103,21 @@ export default class HomeKitDevice {
 
         // Validate if eventEmitter object passed to us is an instance of EventEmitter
         if (eventEmitter instanceof EventEmitter === true) {
-            this.eventEmitter = eventEmitter;
+            this.#eventEmitter = eventEmitter;
         }
 
         // If we have a valid EventEmitter and a device uuid
         // Setup a listener for messages to this device
-        if (this.eventEmitter !== undefined &&
+        if (this.#eventEmitter !== undefined &&
             typeof this.deviceData?.uuid === 'string' &&
             this.deviceData.uuid !== '') {
 
-            this.eventEmitter.addListener(this.deviceData.uuid, this.#message.bind(this));
+            this.#eventEmitter.addListener(this.deviceData.uuid, this.#message.bind(this));
         }
 
         // Make copy of current data and store in this object
-        this.deviceData = deviceData;
+        // eslint-disable-next-line no-undef
+        this.deviceData = structuredClone(deviceData);
 
         // See if we were passed in an existing accessory object or array of accessory objects
         // Mainly used to restore a HomeBridge cached accessory
@@ -153,7 +153,7 @@ export default class HomeKitDevice {
             typeof this.deviceData?.model !== 'string' || this.deviceData.model === '' ||
             typeof this.deviceData?.manufacturer !== 'string' || this.deviceData.manufacturer === '' ||
             (typeof this.deviceData?.hkPairingCode === 'string' && this.deviceData.hkPairingCode === '') ||
-            (typeof this.deviceData?.hkUsername === 'string' && this.deviceData.hkUsername === '')) {
+            (typeof this.deviceData?.hkUsername === 'string' && new RegExp(/^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/).test(this.deviceData.hkUsername) === false)) {
 
             return;
         }
@@ -184,12 +184,10 @@ export default class HomeKitDevice {
         if (this.accessory === undefined &&
             this.#platform === undefined) {
 
-            //    /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/.test('12:34:56:78:90:12')
-
             // Create HAP-NodeJS libray accessory
             this.accessory = new this.hap.Accessory(accessoryName, HomeKitUUID);
-            this.accessory.username = (typeof this.deviceData?.hkUsername === 'string' ? this.deviceData.hkUsername : 'xx:xx:xx:xx:xx:xx');
-            this.accessory.pincode = (typeof this.deviceData?.hkPairingCode === 'string' ? this.deviceData.hkPairingCode : hkPairingCode);
+            this.accessory.username = this.deviceData.hkUsername;
+            this.accessory.pincode = this.deviceData.hkPairingCode;
             this.accessory.category = accessoryCategory;
         }
 
@@ -213,7 +211,7 @@ export default class HomeKitDevice {
             this.historyService === undefined &&
             useHistoryService === true) {
 
-            this.historyService = new HomeKitDevice.HISTORY(this.accessory, {api: this.#platform, log: this.log});
+            this.historyService = new HomeKitDevice.HISTORY(this.accessory, this.hap, this.log);
         }
 
         if (typeof this.addServices === 'function') {
@@ -238,15 +236,17 @@ export default class HomeKitDevice {
         }
 
         // if we have a valid EventEmitter and we have not previously setup an message event handler, do so now
-        if (this.eventEmitter !== undefined && this.eventEmitter.listenerCount(this.deviceData.uuid) === 0) {
-            this.eventEmitter.addListener(this.deviceData.uuid, this.#message.bind(this));
+        if (this.#eventEmitter !== undefined && this.#eventEmitter.listenerCount(this.deviceData.uuid) === 0) {
+            this.#eventEmitter.addListener(this.deviceData.uuid, this.#message.bind(this));
         }
 
         // Perform an initial update using current data
         this.update(this.deviceData, true);
 
         // If using HAP-NodeJS library, publish accessory on local network
-        if (this.#platform === undefined) {
+        if (this.#platform === undefined &&
+            this.accessory !== undefined) {
+
             if (this?.log?.debug) {
                 this.log.debug('Advertising accessory "%s" to local network using HAP-NodeJS library', accessoryName);
             }
@@ -264,12 +264,12 @@ export default class HomeKitDevice {
             this.log.warn('Device "%s" has been removed', this.deviceData.description);
         }
 
-        if (this.eventEmitter === undefined &&
+        if (this.#eventEmitter === undefined &&
             typeof this.deviceData?.uuid === 'string' &&
             this.deviceData.uuid !== '') {
 
             // Remove listener for 'messages'
-            this.eventEmitter.removeAllListeners(this.deviceData.uuid);
+            this.#eventEmitter.removeAllListeners(this.deviceData.uuid);
         }
 
         if (typeof this.removeServices === 'function') {
@@ -282,18 +282,27 @@ export default class HomeKitDevice {
             }
         }
 
-        if (typeof this.accessory === 'object') {
-            // Unpublish the accessory from Homebridge or HAP
-            this.api.unregisterPlatformAccessories(HomeKitDevice.PLUGIN_NAME, HomeKitDevice.PLATFORM_NAME, [this.accessory]);
+        if (this.accessory !== undefined &&
+            this.#platform !== undefined) {
+
+            // Unregister the accessory from Homebridge
+            this.#platform.unregisterPlatformAccessories(HomeKitDevice.PLUGIN_NAME, HomeKitDevice.PLATFORM_NAME, [this.accessory]);
+        }
+
+        if (this.accessory !== undefined &&
+            this.#platform === undefined) {
+
+            // Unpublish the accessory from HAP
+            this.accessory.unpublish();
         }
 
         this.deviceData = {};
         this.accessory = undefined;
-        this.eventEmitter = undefined;
         this.historyService = undefined;
         this.hap = undefined;
         this.log = undefined;
         this.#platform = undefined;
+        this.#eventEmitter = undefined;
 
         // Do we destroy this object??
         // this = null;
@@ -398,13 +407,16 @@ export default class HomeKitDevice {
                     }
                 }
             }
-            this.deviceData = deviceData;    // Finally, update our internally stored data with the new data
+
+            // Finally, update our internally stored data with the new data
+            // eslint-disable-next-line no-undef
+            this.deviceData = structuredClone(deviceData);
         }
     }
 
     async set(values) {
         if (typeof values !== 'object' ||
-            this.eventEmitter === undefined ||
+            this.#eventEmitter === undefined ||
             typeof this.deviceData?.uuid !== 'string' ||
             this.deviceData.uuid === '') {
 
@@ -412,12 +424,12 @@ export default class HomeKitDevice {
         }
 
         // Send event with data to set
-        this.eventEmitter.emit(HomeKitDevice.SET, this.deviceData.uuid, values);
+        this.#eventEmitter.emit(HomeKitDevice.SET, this.deviceData.uuid, values);
     }
 
     async get(values) {
         if (typeof values !== 'object' ||
-            this.eventEmitter === undefined ||
+            this.#eventEmitter === undefined ||
             typeof this.deviceData?.uuid !== 'string' ||
             this.deviceData.uuid === '') {
 
@@ -426,7 +438,7 @@ export default class HomeKitDevice {
 
         // <---- TODO
         // Send event with data to get. Once get has completed, callback will be called with the requested data
-        //this.eventEmitter.emit(HomeKitDevice.GET, this.deviceData.uuid, values);
+        //this.#eventEmitter.emit(HomeKitDevice.GET, this.deviceData.uuid, values);
         //
         // await ....
         // return gottenValues;

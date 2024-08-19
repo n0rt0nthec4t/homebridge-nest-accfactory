@@ -1,7 +1,7 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 17/8/2024
+// Code version 19/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -52,10 +52,7 @@ const MP4BOX = 'mp4box';                                        // MP4 box frage
 //const EXPECTEDVIDEORATE = 30;
 const USERAGENT = 'Nest/5.75.0 (iOScom.nestlabs.jasper.release) os=17.4.1';     // User Agent string
 
-
-
-
-
+const __dirname = path.dirname(fileURLToPath(import.meta.url));                 // Make a defined for JS __dirname
 
 export default class NestCamera extends HomeKitDevice {
     controller = undefined;                                                     // HomeKit Camera/Doorbell controller service
@@ -143,16 +140,17 @@ export default class NestCamera extends HomeKitDevice {
             audio: null,                                // audio input stream
             id: null,                                   // HKSV Recording ID
             time: 0,                                    // Time to record from in buffer, 0 means from start of buffer
+            eventEmitter: null,                         // Event emitter object for MP4 fragments
         };
 
         // buffer for camera offline jpg image
-        let imageFile = path.resolve(path.dirname(fileURLToPath(import.meta.url)) + '/res/' + CAMERAOFFLINEJPGFILE);
+        let imageFile = path.resolve(__dirname + '/res/' + CAMERAOFFLINEJPGFILE);
         if (fs.existsSync(imageFile) === true) {
             this.cameraOfflineImage = fs.readFileSync(imageFile);
         }
 
         // buffer for camera stream off jpg image
-        imageFile = path.resolve(path.dirname(fileURLToPath(import.meta.url)) + '/res/' + CAMERAOFFJPGFILE);
+        imageFile = path.resolve(__dirname + '/res/' + CAMERAOFFJPGFILE);
         if (fs.existsSync(imageFile) === true) {
             this.cameraOfflineImage = fs.readFileSync(imageFile);
         }
@@ -229,7 +227,7 @@ export default class NestCamera extends HomeKitDevice {
             typeof this.motionServices?.[1]?.service === 'object' &&
             typeof this.historyService?.linkToEveHome === 'function') {
 
-            this.historyService.linkToEveHome(this.accessory, this.motionServices[1].service, {
+            this.historyService.linkToEveHome(this.motionServices[1].service, {
                 description: this.deviceData.description,
             });
         }
@@ -860,41 +858,65 @@ export default class NestCamera extends HomeKitDevice {
             // Handle motion event
             // For a HKSV enabled camera, we will use this to trigger the starting of the HKSV recording if the camera is active
             if (event.types.includes('motion') === true) {
-                if (deviceData.hksv === false || (deviceData.hksv === true && this.controller.recordingManagement.operatingModeService.getCharacteristic(this.hap.Characteristic.HomeKitCameraActive).value === this.hap.Characteristic.HomeKitCameraActive.ON)) {
-                    if (this.motionServices[1].service.getCharacteristic(this.hap.Characteristic.MotionDetected).value !== true) {
-                        // Make sure if motion detected, the motion sensor is still active
-                        this.log.info('Motion started at "%s"', this.deviceData.description);
-                        this.motionServices[1].service.updateCharacteristic(this.hap.Characteristic.MotionDetected, true);    // Trigger motion
-
-                        if (this.deviceData.eveApp === true &&
-                            this.historyService !== undefined &&
-                            typeof this.historyService?.addHistory === 'function') {
-
-                            this.historyService.addHistory(this.motionServices[1].service, {time: Math.floor(Date.now() / 1000), status: 1});   // Motion started for history
+                if (this.motionTimer === undefined) {
+                    if (this?.log?.info) {
+                        if (deviceData.hksv === true) {
+                            this.log.info('Motion detected at "%s" %s"', this.deviceData.description, this.controller.recordingManagement.operatingModeService.getCharacteristic(this.hap.Characteristic.HomeKitCameraActive).value === this.hap.Characteristic.HomeKitCameraActive.OFF ? 'but HSKV recording disabled' : '')
+                        }
+                        if (deviceData.hksv === false) {
+                            this.log.info('Motion detected at "%s"', this.deviceData.description);
                         }
                     }
-
-                    clearTimeout(this.motionTimer); // Clear any motion active timer so we can extend
-                    this.motionTimer = setTimeout(() => {
-                        this.log.info('Motion ended at "%s"', this.deviceData.description);
-                        this.motionServices[1].service.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);  // clear motion
-                        this.motionTimer = undefined;   // No motion timer active
-
-                        if (this.deviceData.eveApp === true &&
-                            this.historyService !== undefined &&
-                            typeof this.historyService?.addHistory === 'function') {
-
-                            this.HomeKitHistory && this.HomeKitHistory.addHistory(this.motionServices[1].service, {time: Math.floor(Date.now() / 1000), status: 0});   // Motion ended for history
-                        }
-                    }, (this.deviceData.motionCooldown * 1000));
                 }
+
+                event.zone_ids.forEach((zoneID) => {
+                    if (typeof this.motionServices?.[zoneID]?.service === 'object' &&
+                        this.motionServices[zoneID].service.getCharacteristic(this.hap.Characteristic.MotionDetected).value !== true) {
+
+                        // Trigger motion for matching zone of not aleady active
+                        this.motionServices[zoneID].service.updateCharacteristic(this.hap.Characteristic.MotionDetected, true);
+
+                        // Log motion srarted into history
+                        if (typeof this.historyService?.addHistory === 'function') {
+                            this.historyService.addHistory(this.motionServices[zoneID].service, {
+                                'time': Math.floor(Date.now() / 1000),
+                                'status': 1,
+                            });
+                        }
+                    }
+                });
+
+                // Clear any motion active timer so we can extend of more motion detected
+                clearTimeout(this.motionTimer);
+                this.motionTimer = setTimeout(() => {
+                    event.zone_ids.forEach((zoneID) => {
+                        if (typeof this.motionServices?.[zoneID]?.service === 'object') {
+                            // Mark associted motion services as motion not detected
+                            this.motionServices[zoneID].service.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
+
+                            // Log motion srarted into history
+                            if (typeof this.historyService?.addHistory === 'function') {
+                                this.historyService.addHistory(this.motionServices[zoneID].service, {
+                                    'time': Math.floor(Date.now() / 1000),
+                                    'status': 0,
+                                });
+                            }
+                        }
+                    });
+
+                    this.motionTimer = undefined;   // No motion timer active
+                }, (this.deviceData.motionCooldown * 1000));
             }
 
-            // Handle person/face event for non HKSV enabled cameras
+            // Handle person/face event
             // We also treat a 'face' event the same as a person event ie: if you have a face, you have a person
-            if (deviceData.hksv === false && (event.types.includes('person') === true || event.types.includes('face') === true)) {
+            if (event.types.includes('person') === true || event.types.includes('face') === true) {
                 if (this.personTimer === undefined) {
-                    this.log.info('Person detected at "%s"', this.deviceData.description);
+                    // We don't have a person cooldown timer running, so we can process the 'person'/'face' event
+                    if (this?.log?.info && this.deviceData.hksv === false) {
+                        // We'll only log a person detected event if HKSV is disabled
+                        this.log.info('Person detected at "%s"', this.deviceData.description);
+                    }
 
                     // Cooldown for person being detected
                     // Start this before we process further
@@ -909,14 +931,8 @@ export default class NestCamera extends HomeKitDevice {
                             'done': false,
                         };
 
-                        this.HomeKitHistory && this.HomeKitHistory.addHistory(this.motionServices[1].service, {time: Math.floor(Date.now() / 1000), status: 0});   // Motion ended for history
-                        Object.values(this.motionServices).forEach((service) => {
-                            service.service.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);  // clear any motion
-                        });
-
-
                         this.personTimer = undefined;  // No person timer active
-                    }, (this.deviceData.PersonCooldown * 1000));
+                    }, (this.deviceData.personCooldown * 1000));
 
                     // Check which zone triggered the person alert and update associated motion sensor(s)
                     this.snapshotEvent = {
@@ -925,20 +941,12 @@ export default class NestCamera extends HomeKitDevice {
                         'id' : event.id,
                         'done': false,
                     };
-                    event.zone_ids.forEach((zoneID) => {
-                        if (typeof this.motionServices?.[zoneID]?.service === 'object') {
-                            this.motionServices[zoneID].service.updateCharacteristic(this.hap.Characteristic.MotionDetected, true);    // Trigger motion for matching zone
 
-                            // Log motion started to histiry service
-                            if (typeof this.historyService?.addHistory === 'function') {
-
-                                this.historyService.addHistory(this.motionServices[zoneID].service, {
-                                    'time': Math.floor(Date.now() / 1000),
-                                    'status': 1,
-                                });
-                            }
-                        }
-                    });
+                    if (event.types.includes('motion') === false) {
+                        // If person/face events doesn't include a motion event, add in here
+                        // This will handle all the motion trigging stuff
+                        event.types.push('motion');
+                    }
                 }
             }
         });

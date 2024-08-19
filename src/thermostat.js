@@ -9,8 +9,8 @@
 import HomeKitDevice from './HomeKitDevice.js';
 
 const LOWBATTERYLEVEL = 10;                                                     // Low battery level percentage
-const MIN_TEMPERATURE = 9;                                                      // Minimum temperature for thermostat
-const MAX_TEMPERATURE = 32;                                                     // Maximum temperature for thermostat
+const MIN_TEMPERATURE = 9;                                                      // Minimum temperature for Nest Thermostat
+const MAX_TEMPERATURE = 32;                                                     // Maximum temperature for Nest Thermostat
 
 export default class NestThermostat extends HomeKitDevice {
     batteryService = undefined;
@@ -30,9 +30,6 @@ export default class NestThermostat extends HomeKitDevice {
 
     // Class functions
     async addServices() {
-        // Create extra details for output
-        let postSetupDetails = [];
-
         // Setup the thermostat service if not already present on the accessory
         this.thermostatService = this.accessory.getService(this.hap.Service.Thermostat);
         if (this.thermostatService === undefined) {
@@ -256,7 +253,7 @@ export default class NestThermostat extends HomeKitDevice {
             this.thermostatService !== undefined &&
             typeof this.historyService?.linkToEveHome === 'function') {
 
-            this.historyService.linkToEveHome(this.accessory, this.thermostatService, {
+            this.historyService.linkToEveHome(this.thermostatService, {
                 description: this.deviceData.description,
                 getcommand: this.#EveHomeGetcommand.bind(this),
                 setcommand: this.#EveHomeSetcommand.bind(this),
@@ -290,6 +287,7 @@ export default class NestThermostat extends HomeKitDevice {
         this.externalDehumidifier = await loadExternalModule(this.deviceData?.externalDehumidifier);
 
         // Create extra details for output
+        let postSetupDetails = [];
         this.humidityService !== undefined && postSetupDetails.push('Seperate humidity sensor');
         this.externalCool !== undefined && postSetupDetails.push('Using external cooling module');
         this.externalHeat !== undefined && postSetupDetails.push('Using external heating module');
@@ -371,7 +369,7 @@ export default class NestThermostat extends HomeKitDevice {
 
             this.set({'hvac_mode' : mode});
             if (this?.log?.info) {
-                this.log.info('Set thermostat mode on "%s" to "%s"', this.deviceData.description, mode);
+                this.log.info('Set mode on "%s" to "%s"', this.deviceData.description, mode);
             }
         }
     }
@@ -414,7 +412,7 @@ export default class NestThermostat extends HomeKitDevice {
 
                 this.set({'target_temperature': temperature });
                 if (this?.log?.info) {
-                    this.log.info('Set thermostat %s%s temperature on "%s" to "%s °C"', (this.deviceData.hvac_mode.toUpperCase().includes('ECO') ? 'eco mode ' : ''), (this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).value === this.hap.Characteristic.TargetHeatingCoolingState.HEAT ? 'heating' : 'cooling'), this.deviceData.description, temperature);
+                    this.log.info('Set %s%s temperature on "%s" to "%s °C"', (this.deviceData.hvac_mode.toUpperCase().includes('ECO') ? 'eco mode ' : ''), (this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).value === this.hap.Characteristic.TargetHeatingCoolingState.HEAT ? 'heating' : 'cooling'), this.deviceData.description, temperature);
                 }
             }
             if (characteristic.UUID === this.hap.Characteristic.HeatingThresholdTemperature.UUID &&
@@ -422,7 +420,7 @@ export default class NestThermostat extends HomeKitDevice {
 
                 this.set({'target_temperature_low': temperature });
                 if (this?.log?.info) {
-                    this.log.info('Set %sheating temperature on thermostat "%s" to "%s °C"', (this.deviceData.hvac_mode.toUpperCase().includes('ECO') ? 'eco mode ' : ''), this.deviceData.description, temperature);
+                    this.log.info('Set %sheating temperature on "%s" to "%s °C"', (this.deviceData.hvac_mode.toUpperCase().includes('ECO') ? 'eco mode ' : ''), this.deviceData.description, temperature);
                 }
             }
             if (characteristic.UUID === this.hap.Characteristic.CoolingThresholdTemperature.UUID &&
@@ -430,7 +428,7 @@ export default class NestThermostat extends HomeKitDevice {
 
                 this.set({'target_temperature_high': temperature });
                 if (this?.log?.info) {
-                    this.log.info('Set %scooling temperature on thermostat "%s" to "%s °C"', (this.deviceData.hvac_mode.toUpperCase().includes('ECO') ? 'eco mode ' : ''), this.deviceData.description, temperature);
+                    this.log.info('Set %scooling temperature on "%s" to "%s °C"', (this.deviceData.hvac_mode.toUpperCase().includes('ECO') ? 'eco mode ' : ''), this.deviceData.description, temperature);
                 }
             }
 
