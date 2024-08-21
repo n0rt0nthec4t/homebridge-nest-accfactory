@@ -16,7 +16,7 @@
     },
     "engines": {
         "node": "^18.20.4 || ^20.16.0 || ^22.5.1",
-        "homebridge": "^1.8.0 || ^2.0.0-beta.0"
+        "homebridge": "^1.8.0 || ^2.0.0"
     },
     "main": "dist/index.js",
     "files": [
@@ -25,6 +25,7 @@
         "config.schema.json"
     ],
     "scripts": {
+        "format": "prettier --write src/**/*.js",
         "lint": "eslint src/**/*.js --max-warnings=0",
         "watch": "npm run build && npm link && nodemon",
         "build": "rimraf ./dist && copyfiles -u 1 src/*.js dist && copyfiles -u 1 src/res/*.h264 dist && copyfiles -u 1 src/res/*.jpg dist && copyfiles -u 1 'src/protobuf/**/*.proto' dist",
@@ -44,20 +45,21 @@
         "sensor"
     ],
     "devDependencies": {
-        "@types/node": "^20.14.12",
-        "@typescript-eslint/eslint-plugin": "^7.17.0",
-        "@typescript-eslint/parser": "^7.17.0",
+        "@types/node": "^20.16.0",
+        "@typescript-eslint/eslint-plugin": "^8.2.0",
+        "@typescript-eslint/parser": "^8.2.0",
+        "prettier-eslint": "^16.3.0",
+        "prettier": "^3.3.3",
         "copyfiles": "^2.4.1",
-        "eslint": "^8.57.0",
-        "homebridge": "^2.0.0-beta.0",
+        "eslint": "^9.9.0",
         "nodemon": "^3.1.4",
-        "rimraf": "^6.0.1"
+        "rimraf": "^6.0.1",
+        "homebridge": "^1.8.4"
     },
     "dependencies": {
-        "axios": ">=1.6.7",
-        "ffmpeg-for-homebridge": "^2.1.1",
-        "pbf": "^3.3.0",
-        "protobufjs": ">=7.2.6",
-        "ws": ">=8.17.1"
+        "axios": "^1.7.4",
+        "pbf": "^4.0.1",
+        "protobufjs": "^7.3.2",
+        "ws": "^8.18.0"
     }
 }

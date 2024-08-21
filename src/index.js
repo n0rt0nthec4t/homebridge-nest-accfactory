@@ -16,7 +16,7 @@
 //
 // Supports both Nest REST and protobuf APIs for communication to Nest systems
 //
-// Code version 20/8/2024
+// Code version 21/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -30,7 +30,6 @@ import HomeKitHistory from './HomeKitHistory.js';
 HomeKitDevice.HISTORY = HomeKitHistory;
 
 export default (api) => {
-    // Register our platform with HomeBridge
-    api.registerPlatform(HomeKitDevice.PLATFORM_NAME, NestAccfactory);
-
+  // Register our platform with HomeBridge
+  api.registerPlatform(HomeKitDevice.PLATFORM_NAME, NestAccfactory);
 };

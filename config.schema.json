@@ -66,39 +66,26 @@
                     },
                     "weather": {
                         "title": "Virtual Weather",
-                        "description": "Virtual weather station(s)",
+                        "description": "Virtual weather station",
                         "type": "boolean",
                         "default": false
+                    },
+                    "elevation": {
+                        "title": "Elevation",
+                        "description": "Height above sea level for the weather station",
+                        "type": "integer",
+                        "default": 0,
+                        "minimum": 0,
+                        "maximum": 8848,
+                        "condition": {
+                            "functionBody": "return model.options.weather"
+                        }
                     },
                     "hksv": {
                         "title": "HomeKit Secure Video",
                         "description": "Enable HomeKit Secure Video for supported camera(s) and doorbell(s)",
                         "type": "boolean",
                         "default": false
-                    },
-                    "doorbellCooldown": {
-                        "title": "Doorbell Notifications",
-                        "description": "How long between consecutive doorbell notifications? (seconds)",
-                        "type": "integer",
-                        "default": 60,
-                        "minimum": 1,
-                        "maximum": 120
-                    },
-                    "personCooldown": {
-                        "title": "Person Notifications",
-                        "description": "How long between consecutive person notifications? (seconds)",
-                        "type": "integer",
-                        "default": 120,
-                        "minimum": 1,
-                        "maximum": 240
-                    },
-                    "motionCooldown": {
-                        "title": "Motion Notifications",
-                        "description": "How long between consecutive motion notifications? (seconds)",
-                        "type": "integer",
-                        "default": 60,
-                        "minimum": 1,
-                        "maximum": 120
                     }
                 }
             }
