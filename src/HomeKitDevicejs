@@ -108,6 +108,7 @@ export default class HomeKitDevice {
     }
 
     // Make copy of current data and store in this object
+
     // eslint-disable-next-line no-undef
     this.deviceData = structuredClone(deviceData);
 

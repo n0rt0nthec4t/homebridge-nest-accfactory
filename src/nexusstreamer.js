@@ -387,7 +387,7 @@ export default class NexusStreamer {
     let index = this.buffer.streams.findIndex(({ type, id }) => type === 'live' && id === sessionID);
     if (index !== -1) {
       this?.log?.debug && this.log.debug('Stopped live stream from "%s"', this.nexusTalk.host);
-      this.buffer.streams[index].audioTimeout && clearTimeout(this.buffer.streams[index].audioTimeout); // Clear any active return audio timer
+      clearTimeout(this.buffer.streams[index]?.audioTimeout); // Clear any active return audio timer
       this.buffer.streams.splice(index, 1); // remove this object
     }
 

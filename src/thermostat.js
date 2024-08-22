@@ -280,6 +280,7 @@ export default class NestThermostat extends HomeKitDevice {
         if (typeof externalModule?.default === 'function') {
           loadedModule = externalModule.default(this.log, options);
         }
+        // eslint-disable-next-line no-unused-vars
       } catch (error) {
         if (this?.log?.warn) {
           this.log.warn('Failed to load specified external module for thermostat "%s"', module);
@@ -555,28 +556,37 @@ export default class NestThermostat extends HomeKitDevice {
         ? this.hap.Characteristic.TemperatureDisplayUnits.CELSIUS
         : this.hap.Characteristic.TemperatureDisplayUnits.FAHRENHEIT,
     );
+
     this.thermostatService.updateCharacteristic(this.hap.Characteristic.CurrentTemperature, deviceData.current_temperature);
+
     this.thermostatService.updateCharacteristic(
       this.hap.Characteristic.StatusFault,
       deviceData.online === true && deviceData.removed_from_base === false
         ? this.hap.Characteristic.StatusFault.NO_FAULT
         : this.hap.Characteristic.StatusFault.GENERAL_FAULT,
     ); // If Nest isn't online or removed from base, report in HomeKit
+
     this.thermostatService.updateCharacteristic(
       this.hap.Characteristic.LockPhysicalControls,
       deviceData.temperature_lock === true
         ? this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED
         : this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_DISABLED,
     );
-    this.thermostatService.updateCharacteristic(
-      this.hap.Characteristic.FilterChangeIndication,
-      deviceData.has_air_filter && deviceData.filter_replacement_needed === true
-        ? this.hap.Characteristic.FilterChangeIndication.CHANGE_FILTER
-        : this.hap.Characteristic.FilterChangeIndication.FILTER_OK,
-    );
-    this.thermostatService.updateCharacteristic(this.hap.Characteristic.StatusActive, deviceData.active_rcs_sensor === ''); // Using a temperature sensor as active temperature?
 
-    // Battery status if defined. Since Nest needs 3.6 volts to turn on, we'll use that as the lower limit. Havent seen battery level above 3.9ish, so assume 3.9 is upper limit
+    // Update air filter sttaus if has been added
+    if (this.thermostatService.testCharacteristic(this.hap.Characteristic.FilterChangeIndication) === true) {
+      this.thermostatService.updateCharacteristic(
+        this.hap.Characteristic.FilterChangeIndication,
+        deviceData.has_air_filter && deviceData.filter_replacement_needed === true
+          ? this.hap.Characteristic.FilterChangeIndication.CHANGE_FILTER
+          : this.hap.Characteristic.FilterChangeIndication.FILTER_OK,
+      );
+    }
+
+    // Using a temperature sensor as active temperature?
+    this.thermostatService.updateCharacteristic(this.hap.Characteristic.StatusActive, deviceData.active_rcs_sensor === '');
+
+    // Update battery status
     this.batteryService.updateCharacteristic(this.hap.Characteristic.BatteryLevel, deviceData.battery_level);
     this.batteryService.updateCharacteristic(
       this.hap.Characteristic.StatusLowBattery,
@@ -607,7 +617,7 @@ export default class NestThermostat extends HomeKitDevice {
 
     // Update seperate humidity sensor if configured todo so
     if (this.humidityService !== undefined) {
-      this.humidityService.updateCharacteristic(this.hap.Characteristic.CurrentRelativeHumidity, deviceData.current_humidity); // Humidity will be listed under seperate sensor
+      this.humidityService.updateCharacteristic(this.hap.Characteristic.CurrentRelativeHumidity, deviceData.current_humidity);
       this.humidityService.updateCharacteristic(
         this.hap.Characteristic.StatusFault,
         deviceData.online === true && deviceData.removed_from_base === false
@@ -615,18 +625,20 @@ export default class NestThermostat extends HomeKitDevice {
           : this.hap.Characteristic.StatusFault.GENERAL_FAULT,
       ); // If Nest isn't online or removed from base, report in HomeKit
     }
-    this.thermostatService.updateCharacteristic(this.hap.Characteristic.CurrentRelativeHumidity, deviceData.current_humidity); // Humidity will be listed under thermostat only
+
+    // Update humity on thermostat
+    this.thermostatService.updateCharacteristic(this.hap.Characteristic.CurrentRelativeHumidity, deviceData.current_humidity);
 
     // Check for fan setup change on thermostat
     if (deviceData.has_fan !== this.deviceData.has_fan) {
       if (deviceData.has_fan === true && this.deviceData.has_fan === false && this.fanService === undefined) {
         // Fan has been added
         this.fanService = this.accessory.addService(this.hap.Service.Fanv2, '', 1);
-        //this.fanService.addCharacteristic(this.hap.Characteristic.RotationSpeed);
-        //this.fanService.getCharacteristic(this.hap.Characteristic.RotationSpeed).setProps({minStep: (100 / this.deviceData.fan_max_speed), minValue: 0, maxValue: 100});
+
         this.fanService.getCharacteristic(this.hap.Characteristic.Active).onSet((value) => {
           this.setFan(value);
         });
+
         this.fanService.getCharacteristic(this.hap.Characteristic.Active).onGet(() => {
           return this.deviceData.fan_state === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE;
         });
@@ -648,12 +660,15 @@ export default class NestThermostat extends HomeKitDevice {
       if (deviceData.has_dehumidifier === true && this.deviceData.has_dehumidifier === false && this.dehumidifierService === undefined) {
         // Dehumidifier has been added
         this.dehumidifierService = this.accessory.addService(this.hap.Service.HumidifierDehumidifier, '', 1);
+
         this.dehumidifierService.getCharacteristic(this.hap.Characteristic.TargetHumidifierDehumidifierState).setProps({
           validValues: [this.hap.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER],
         });
+
         this.dehumidifierService.getCharacteristic(this.hap.Characteristic.Active).onSet((value) => {
           this.setDehumidifier(value);
         });
+
         this.dehumidifierService.getCharacteristic(this.hap.Characteristic.Active).onGet(() => {
           return this.deviceData.dehumidifier_state === true
             ? this.hap.Characteristic.Active.ACTIVE
@@ -753,7 +768,7 @@ export default class NestThermostat extends HomeKitDevice {
         this.hap.Characteristic.TargetHeatingCoolingState,
         this.hap.Characteristic.TargetHeatingCoolingState.AUTO,
       );
-      historyEntry.target = { low: deviceData.target_temperature_low, high: deviceData.target_temperature_high }; // target temperature range
+      historyEntry.target = { low: deviceData.target_temperature_low, high: deviceData.target_temperature_high };
     }
     if (deviceData.can_cool === false && deviceData.can_heat === false && deviceData.hvac_mode.toUpperCase() === 'OFF') {
       // off mode.
@@ -846,7 +861,8 @@ export default class NestThermostat extends HomeKitDevice {
           this.externalFan.off();
         }
       }
-      //this.fanService.updateCharacteristic(this.hap.Characteristic.RotationSpeed, (deviceData.fan_state === true ? (deviceData.fan_current_speed / deviceData.fan_max_speed) * 100 : 0));
+      //this.fanService.updateCharacteristic(this.hap.Characteristic.RotationSpeed,
+      //  (deviceData.fan_state === true ? (deviceData.fan_current_speed / deviceData.fan_max_speed) * 100 : 0));
       this.fanService.updateCharacteristic(
         this.hap.Characteristic.Active,
         deviceData.fan_state === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE,
@@ -859,7 +875,8 @@ export default class NestThermostat extends HomeKitDevice {
         deviceData.dehumidifier_state === true &&
         this.externalDehumidifier !== undefined
       ) {
-        // Dehumidifier mode was switched on and external dehumidifier external code is being used, so start dehumidifier via dehumidifiern external code
+        // Dehumidifier mode was switched on and external dehumidifier external code is being used
+        // Start dehumidifier via dehumidifiern external code
         if (typeof this.externalDehumidifier.dehumififier === 'function') {
           this.externalDehumidifier.dehumififier(0);
         }
@@ -869,7 +886,8 @@ export default class NestThermostat extends HomeKitDevice {
         deviceData.dehumidifier_state === false &&
         this.externalDehumidifier !== undefined
       ) {
-        // Dehumidifier mode was switched off and external dehumidifier external code was being used, so stop dehumidifier via dehumidifier external code
+        // Dehumidifier mode was switched off and external dehumidifier external code was being used
+        // Stop dehumidifier via dehumidifier external code
         if (typeof this.externalDehumidifier.off === 'function') {
           this.externalDehumidifier.off();
         }
@@ -920,12 +938,12 @@ export default class NestThermostat extends HomeKitDevice {
   }
 
   #EveHomeGetcommand(EveHomeGetData) {
-    // Pass back extra data for Eve Thermo this.hap.CharacteristicEventTypes.GET process command
-    // Data will already be an object, our only job is to add/modify to it
+    // Pass back extra data for Eve Thermo onGet() to process command
+    // Data will already be an object, our only job is to add/modify it
     if (typeof EveHomeGetData === 'object') {
-      //EveHomeGetData.enableschedule = optionalParams.hasOwnProperty('EveThermo_enableschedule') === true ? optionalParams.EveThermo_enableschedule : false; // Schedules on/off
+      EveHomeGetData.enableschedule = this.deviceData.schedule_mode === 'heat'; // Schedules on/off
       EveHomeGetData.attached = this.deviceData.online === true && this.deviceData.removed_from_base === false;
-      EveHomeGetData.vacation = this.deviceData.vacation_mode; //   Vaction mode on/off
+      EveHomeGetData.vacation = this.deviceData.vacation_mode === true; //   Vaction mode on/off
       EveHomeGetData.vacationtemp = this.deviceData.vacation_mode === true ? EveHomeGetData.vacationtemp : null;
       EveHomeGetData.programs = []; // No programs yet, we'll process this below
       if (this.deviceData.schedule_mode.toUpperCase() === 'HEAT' || this.deviceData.schedule_mode.toUpperCase() === 'RANGE') {

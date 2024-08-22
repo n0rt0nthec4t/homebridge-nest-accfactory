@@ -25,10 +25,11 @@
         "config.schema.json"
     ],
     "scripts": {
+        "clean": "rimraf ./dist",
         "format": "prettier --write src/**/*.js",
         "lint": "eslint src/**/*.js --max-warnings=0",
         "watch": "npm run build && npm link && nodemon",
-        "build": "rimraf ./dist && copyfiles -u 1 src/*.js dist && copyfiles -u 1 src/res/*.h264 dist && copyfiles -u 1 src/res/*.jpg dist && copyfiles -u 1 'src/protobuf/**/*.proto' dist",
+        "build": "npm run clean && copyfiles -u 1 src/*.js dist && copyfiles -u 1 src/res/*.h264 dist && copyfiles -u 1 src/res/*.jpg dist && copyfiles -u 1 'src/protobuf/**/*.proto' dist",
         "prepublishOnly": "npm run lint && npm run build"
     },
     "keywords": [
@@ -45,21 +46,22 @@
         "sensor"
     ],
     "devDependencies": {
-        "@types/node": "^20.16.0",
-        "@typescript-eslint/eslint-plugin": "^8.2.0",
+        "@eslint/js": "^9.9.0",
+        "@stylistic/eslint-plugin": "^2.6.4",
         "@typescript-eslint/parser": "^8.2.0",
-        "prettier-eslint": "^16.3.0",
-        "prettier": "^3.3.3",
+        "@types/node": "^20.16.0",
         "copyfiles": "^2.4.1",
         "eslint": "^9.9.0",
         "nodemon": "^3.1.4",
+        "prettier": "^3.3.3",
+        "prettier-eslint": "^16.3.0",
         "rimraf": "^6.0.1",
         "homebridge": "^1.8.4"
     },
     "dependencies": {
         "axios": "^1.7.4",
         "pbf": "^4.0.1",
-        "protobufjs": "^7.3.2",
+        "protobufjs": "^7.3.3",
         "ws": "^8.18.0"
     }
 }

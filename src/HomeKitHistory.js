@@ -548,7 +548,7 @@ export default class HomeKitHistory {
           HAP.Characteristic.EveTimesOpened,
           this.entryCount(this.EveHome.type, this.EveHome.sub, { status: 1 }),
         ); // Count of entries based upon status = 1, opened
-        service.updateCharacteristic(HAP.Characteristic.EveLastActivation, this.#EveLastEventTime()); // time of last event in seconds since first event
+        service.updateCharacteristic(HAP.Characteristic.EveLastActivation, this.#EveLastEventTime());
 
         // Setup callbacks for characteristics
         service.getCharacteristic(HAP.Characteristic.EveTimesOpened).onGet(() => {
@@ -2222,7 +2222,7 @@ export default class HomeKitHistory {
                 numberToEveHexString(historyEntry.temperature * 100, 4), // temperature
                 numberToEveHexString(historyEntry.humidity * 100, 4), // Humidity
                 numberToEveHexString(tempTarget * 100, 4), // target temperature for heating
-                numberToEveHexString(historyEntry.status === 2 ? 100 : historyEntry.status === 3 ? 50 : 0, 2), // 0% valve position = off, 50% = cooling, 100% = heating
+                numberToEveHexString(historyEntry.status === 2 ? 100 : historyEntry.status === 3 ? 50 : 0, 2), // 0% = off, 50% = cooling, 100% = heating
                 numberToEveHexString(0, 2), // Thermo target
                 numberToEveHexString(0, 2),
               ); // Window open status 0 = window closed, 1 = open

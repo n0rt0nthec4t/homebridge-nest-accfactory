@@ -45,10 +45,7 @@ const AudioCodecs = {
 
 const CAMERAOFFLINEJPGFILE = 'Nest_camera_offline.jpg'; // Camera offline jpg image file
 const CAMERAOFFJPGFILE = 'Nest_camera_off.jpg'; // Camera video off jpg image file
-//const CAMERATRANSFERRING = 'Nest_camera_transfer.jpg';          // Camera transferring jpg image file
-//const CAMERACONNECTINGJPGFILE = 'Nest_camera_connecting.jpg';   // Camera connecting jpg image file
 const MP4BOX = 'mp4box'; // MP4 box fragement event for HKSV recording
-//const EXPECTEDVIDEORATE = 30;
 const USERAGENT = 'Nest/5.75.0 (iOScom.nestlabs.jasper.release) os=17.4.1'; // User Agent string
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
@@ -62,50 +59,8 @@ export default class NestCamera extends HomeKitDevice {
   cameraOfflineImage = undefined; // JPG image buffer for camera offline
   cameraVideoOffImage = undefined; // JPG image buffer for camera video off
   lastSnapshotImage = undefined; // JPG image buffer for last camera snapshot
-
-  static controllerOptions = {
-    cameraStreamCount: 2, // HomeKit requires at least 2 streams, but 1 is also just fine
-    delegate: undefined,
-    streamingOptions: {
-      supportedCryptoSuites: [HAP.SRTPCryptoSuites.NONE, HAP.SRTPCryptoSuites.AES_CM_128_HMAC_SHA1_80],
-      video: {
-        resolutions: [
-          // width, height, framerate
-          [3840, 2160, 30], // 4K
-          [1920, 1080, 30], // 1080p
-          [1600, 1200, 30], // Native res of Nest Hello
-          [1280, 960, 30],
-          [1280, 720, 30], // 720p
-          [1024, 768, 30],
-          [640, 480, 30],
-          [640, 360, 30],
-          [480, 360, 30],
-          [480, 270, 30],
-          [320, 240, 30],
-          [320, 240, 15], // Apple Watch requires this configuration (Apple Watch also seems to required OPUS @16K)
-          [320, 180, 30],
-          [320, 180, 15],
-        ],
-        codec: {
-          type: HAP.VideoCodecType.H264,
-          profiles: [HAP.H264Profile.BASELINE, HAP.H264Profile.MAIN, HAP.H264Profile.HIGH],
-          levels: [HAP.H264Level.LEVEL3_1, HAP.H264Level.LEVEL3_2, HAP.H264Level.LEVEL4_0],
-        },
-      },
-      audio: {
-        twoWayAudio: false,
-        codecs: [
-          {
-            type: HAP.AudioStreamingCodecType.AAC_ELD,
-            samplerate: HAP.AudioStreamingSamplerate.KHZ_16,
-            audioChannel: 1,
-          },
-        ],
-      },
-    },
-    recording: undefined,
-    sensors: undefined,
-  };
+  pendingSessions = [];
+  currentSessions = [];
 
   constructor(accessory, api, log, eventEmitter, deviceData) {
     super(accessory, api, log, eventEmitter, deviceData);
@@ -116,8 +71,6 @@ export default class NestCamera extends HomeKitDevice {
       id: 0,
       done: false,
     };
-    this.pendingSessions = [];
-    this.ongoingSessions = [];
 
     // HKSV stuff
     this.HKSVRecordingConfiguration = {}; // HomeKit Secure Video recording configuration
@@ -150,49 +103,8 @@ export default class NestCamera extends HomeKitDevice {
   addServices() {
     this.createCameraMotionServices();
 
-    // Setup HomeKit doorbell controller options
-    NestCamera.controllerOptions.delegate = this;
-    NestCamera.controllerOptions.streamingOptions.audio.twoWayAudio =
-      this.deviceData.has_speaker === true && this.deviceData.has_microphone === true;
-    if (this.deviceData.hksv === true) {
-      NestCamera.controllerOptions.recording = {
-        delegate: this,
-        options: {
-          overrideEventTriggerOptions: [HAP.EventTriggerOption.MOTION],
-          mediaContainerConfiguration: [
-            {
-              fragmentLength: 4000,
-              type: HAP.MediaContainerType.FRAGMENTED_MP4,
-            },
-          ],
-          prebufferLength: 4000, // Seems to always be 4000???
-          video: {
-            resolutions: NestCamera.controllerOptions.streamingOptions.video.resolutions,
-            parameters: {
-              profiles: NestCamera.controllerOptions.streamingOptions.video.codec.profiles,
-              levels: NestCamera.controllerOptions.streamingOptions.video.codec.levels,
-            },
-            type: NestCamera.controllerOptions.streamingOptions.video.codec.type,
-          },
-          audio: {
-            codecs: [
-              {
-                type: HAP.AudioStreamingCodecType.AAC_ELD,
-                samplerate: HAP.AudioStreamingSamplerate.KHZ_16,
-                audioChannel: 1,
-              },
-            ],
-          },
-        },
-      };
-
-      NestCamera.controllerOptions.sensors = {
-        motion: typeof this.motionServices?.[1]?.service === 'object' ? this.motionServices[1].service : false,
-      };
-    }
-
-    // Setup HomeKit doorbell controller
-    this.controller = new this.hap.CameraController(NestCamera.controllerOptions);
+    // Setup HomeKit camera controller
+    this.controller = new this.hap.CameraController(this.generateControllerOptions());
     this.accessory.configureController(this.controller);
 
     // Setup additional HomeKit services and characteristics we'll use
@@ -241,7 +153,7 @@ export default class NestCamera extends HomeKitDevice {
       this.HKSVRecorder.ffmpeg.kill('SIGKILL');
     }
 
-    this.ongoingSessions.forEach((session) => {
+    this.currentSessions.forEach((session) => {
       if (typeof session.rtpSplitter?.close === 'function') {
         session.rtpSplitter.close();
       }
@@ -263,7 +175,8 @@ export default class NestCamera extends HomeKitDevice {
     this.personTimer = undefined;
   }
 
-  // Taken and adapted from https://github.com/hjdhjd/homebridge-unifi-protect/blob/eee6a4e379272b659baa6c19986d51f5bf2cbbbc/src/protect-ffmpeg-record.ts
+  // Taken and adapted from:
+  // https://github.com/hjdhjd/homebridge-unifi-protect/blob/eee6a4e379272b659baa6c19986d51f5bf2cbbbc/src/protect-ffmpeg-record.ts
   async *handleRecordingStreamRequest(HKSVRecordingStreamID) {
     if (
       this.motionServices?.[1]?.service !== undefined &&
@@ -290,6 +203,7 @@ export default class NestCamera extends HomeKitDevice {
     commandLine =
       commandLine +
       ' -map 0:v' + // stdin, the first input is video data
+      ' -an' + // No audio in this stream
       ' -codec:v ' +
       recordCodec +
       ' -fps_mode vfr -time_base 1:90000';
@@ -322,10 +236,10 @@ export default class NestCamera extends HomeKitDevice {
       commandLine =
         commandLine +
         ' -map 1:a' + // pipe:3, the second input is audio data
+        ' -vn' + // No video in this stream
         ' -codec:a ' +
         AudioCodecs.LIBFDK_AAC +
-        ' -profile:a ' +
-        (this.HKSVRecordingConfiguration.audioCodec.type === this.hap.AudioRecordingCodecType.AAC_LC ? 'aac_low' : 'acc_eld') +
+        ' -profile:a aac_low' + // HAP.AudioRecordingCodecType.AAC_LC
         ' -ar ' +
         audioSampleRates[this.HKSVRecordingConfiguration.audioCodec.samplerate] +
         'k' +
@@ -341,7 +255,7 @@ export default class NestCamera extends HomeKitDevice {
       ' -f mp4' + // output is an mp4
       ' pipe:1'; // output to stdout
 
-    this.HKSVRecorder.ffmpeg = child_process.spawn(__dirname + '/ffmpeg', commandLine.split(' '), {
+    this.HKSVRecorder.ffmpeg = child_process.spawn(path.resolve(this.deviceData.ffmpegPath + '/ffmpeg'), commandLine.split(' '), {
       env: process.env,
       stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
     }); // Extra pipe, #3 for audio data
@@ -408,7 +322,7 @@ export default class NestCamera extends HomeKitDevice {
     this.log.info(
       'Recording started from "%s" %s %s',
       this.deviceData.description,
-      includeAudio === true ? 'with audio' : 'without audio',
+      includeAudio === false ? 'without audio' : '',
       recordCodec !== VideoCodecs.COPY ? 'using H264 encoder ' + recordCodec : '',
     );
 
@@ -662,7 +576,7 @@ export default class NestCamera extends HomeKitDevice {
     }
     let ffmpegAudioTalkback = null; // No ffmpeg process for return audio yet
     if (request.type === this.hap.StreamRequestTypes.START) {
-      this.ongoingSessions[request.sessionID] = this.pendingSessions[request.sessionID]; // Move our pending session to ongoing session
+      this.currentSessions[request.sessionID] = this.pendingSessions[request.sessionID]; // Move our pending session to ongoing session
       delete this.pendingSessions[request.sessionID]; // remove this pending session information
 
       // Build our ffmpeg command string for the video stream
@@ -683,18 +597,18 @@ export default class NestCamera extends HomeKitDevice {
         ' -payload_type ' +
         request.video.pt +
         ' -ssrc ' +
-        this.ongoingSessions[request.sessionID].videoSSRC +
+        this.currentSessions[request.sessionID].videoSSRC +
         ' -f rtp' +
         ' -srtp_out_suite ' +
-        this.hap.SRTPCryptoSuites[this.ongoingSessions[request.sessionID].videoCryptoSuite] +
+        this.hap.SRTPCryptoSuites[this.currentSessions[request.sessionID].videoCryptoSuite] +
         ' -srtp_out_params ' +
-        this.ongoingSessions[request.sessionID].videoSRTP.toString('base64') +
+        this.currentSessions[request.sessionID].videoSRTP.toString('base64') +
         ' srtp://' +
-        this.ongoingSessions[request.sessionID].address +
+        this.currentSessions[request.sessionID].address +
         ':' +
-        this.ongoingSessions[request.sessionID].videoPort +
+        this.currentSessions[request.sessionID].videoPort +
         '?rtcpport=' +
-        this.ongoingSessions[request.sessionID].videoPort +
+        this.currentSessions[request.sessionID].videoPort +
         '&pkt_size=' +
         request.video.mtu;
 
@@ -719,26 +633,26 @@ export default class NestCamera extends HomeKitDevice {
           ' -payload_type ' +
           request.audio.pt +
           ' -ssrc ' +
-          this.ongoingSessions[request.sessionID].audioSSRC +
+          this.currentSessions[request.sessionID].audioSSRC +
           ' -f rtp' +
           ' -srtp_out_suite ' +
-          this.hap.SRTPCryptoSuites[this.ongoingSessions[request.sessionID].audioCryptoSuite] +
+          this.hap.SRTPCryptoSuites[this.currentSessions[request.sessionID].audioCryptoSuite] +
           ' -srtp_out_params ' +
-          this.ongoingSessions[request.sessionID].audioSRTP.toString('base64') +
+          this.currentSessions[request.sessionID].audioSRTP.toString('base64') +
           ' srtp://' +
-          this.ongoingSessions[request.sessionID].address +
+          this.currentSessions[request.sessionID].address +
           ':' +
-          this.ongoingSessions[request.sessionID].audioPort +
+          this.currentSessions[request.sessionID].audioPort +
           '?rtcpport=' +
-          this.ongoingSessions[request.sessionID].audioPort +
+          this.currentSessions[request.sessionID].audioPort +
           '&localrtcpport=' +
-          this.ongoingSessions[request.sessionID].localAudioPort +
+          this.currentSessions[request.sessionID].localAudioPort +
           '&pkt_size=188';
       }
 
       // Start our ffmpeg streaming process and stream from nexus
       this.log.info('Live stream started on "%s"', this.deviceData.description);
-      let ffmpegStreaming = child_process.spawn(__dirname + '/ffmpeg', commandLine.split(' '), {
+      let ffmpegStreaming = child_process.spawn(path.resolve(this.deviceData.ffmpegPath + '/ffmpeg'), commandLine.split(' '), {
         env: process.env,
         stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
       }); // Extra pipe, #3 for audio data
@@ -753,7 +667,7 @@ export default class NestCamera extends HomeKitDevice {
       ffmpegStreaming.stderr.on('data', (data) => {
         if (data.toString().includes('frame=') === false) {
           // Monitor ffmpeg output while testing. Use 'ffmpeg as a debug option'
-          this.log.info(data.toString());
+          this.log.debug(data.toString());
         }
       });
 
@@ -767,25 +681,25 @@ export default class NestCamera extends HomeKitDevice {
       // We only create the the rtpsplitter and ffmpeg processs if twoway audio is supported AND audio enabled on camera/doorbell
       if (this.deviceData.audio_enabled === true && this.deviceData.has_speaker === true && this.deviceData.has_microphone === true) {
         // Setup RTP splitter for two/away audio
-        this.ongoingSessions[request.sessionID].rtpSplitter = dgram.createSocket('udp4');
-        this.ongoingSessions[request.sessionID].rtpSplitter.bind(this.ongoingSessions[request.sessionID].rptSplitterPort);
+        this.currentSessions[request.sessionID].rtpSplitter = dgram.createSocket('udp4');
+        this.currentSessions[request.sessionID].rtpSplitter.bind(this.currentSessions[request.sessionID].rptSplitterPort);
 
-        this.ongoingSessions[request.sessionID].rtpSplitter.on('error', () => {
-          this.ongoingSessions[request.sessionID].rtpSplitter.close();
+        this.currentSessions[request.sessionID].rtpSplitter.on('error', () => {
+          this.currentSessions[request.sessionID].rtpSplitter.close();
         });
 
-        this.ongoingSessions[request.sessionID].rtpSplitter.on('message', (message) => {
+        this.currentSessions[request.sessionID].rtpSplitter.on('message', (message) => {
           let payloadType = message.readUInt8(1) & 0x7f;
           if (payloadType === request.audio.pt) {
             // Audio payload type from HomeKit should match our payload type for audio
             if (message.length > 50) {
               // Only send on audio data if we have a longer audio packet. (not sure it makes any difference, as under iOS 15 packets are roughly same length)
-              this.ongoingSessions[request.sessionID].rtpSplitter.send(message, this.ongoingSessions[request.sessionID].audioTalkbackPort);
+              this.currentSessions[request.sessionID].rtpSplitter.send(message, this.currentSessions[request.sessionID].audioTalkbackPort);
             }
           } else {
-            this.ongoingSessions[request.sessionID].rtpSplitter.send(message, this.ongoingSessions[request.sessionID].localAudioPort);
+            this.currentSessions[request.sessionID].rtpSplitter.send(message, this.currentSessions[request.sessionID].localAudioPort);
             // Send RTCP to return audio as a heartbeat
-            this.ongoingSessions[request.sessionID].rtpSplitter.send(message, this.ongoingSessions[request.sessionID].audioTalkbackPort);
+            this.currentSessions[request.sessionID].rtpSplitter.send(message, this.currentSessions[request.sessionID].audioTalkbackPort);
           }
         });
 
@@ -806,7 +720,9 @@ export default class NestCamera extends HomeKitDevice {
           ' -ar 16k' +
           ' -f data pipe:1';
 
-        ffmpegAudioTalkback = child_process.spawn(__dirname + '/ffmpeg', commandLine.split(' '), { env: process.env });
+        ffmpegAudioTalkback = child_process.spawn(path.resolve(this.deviceData.ffmpegPath + '/ffmpeg'), commandLine.split(' '), {
+          env: process.env,
+        });
         ffmpegAudioTalkback.on('error', (error) => {
           this.log.debug('FFmpeg failed to start Nest camera talkback audio process', error.message);
         });
@@ -823,19 +739,19 @@ export default class NestCamera extends HomeKitDevice {
         ffmpegAudioTalkback.stdin.write(
           'v=0\n' +
             'o=- 0 0 IN ' +
-            (this.ongoingSessions[request.sessionID].ipv6 ? 'IP6' : 'IP4') +
+            (this.currentSessions[request.sessionID].ipv6 ? 'IP6' : 'IP4') +
             ' ' +
-            this.ongoingSessions[request.sessionID].address +
+            this.currentSessions[request.sessionID].address +
             '\n' +
             's=Nest Audio Talkback\n' +
             'c=IN ' +
-            (this.ongoingSessions[request.sessionID].ipv6 ? 'IP6' : 'IP4') +
+            (this.currentSessions[request.sessionID].ipv6 ? 'IP6' : 'IP4') +
             ' ' +
-            this.ongoingSessions[request.sessionID].address +
+            this.currentSessions[request.sessionID].address +
             '\n' +
             't=0 0\n' +
             'm=audio ' +
-            this.ongoingSessions[request.sessionID].audioTalkbackPort +
+            this.currentSessions[request.sessionID].audioTalkbackPort +
             ' RTP/AVP ' +
             request.audio.pt +
             '\n' +
@@ -854,9 +770,9 @@ export default class NestCamera extends HomeKitDevice {
             request.audio.pt +
             ' profile-level-id=1;mode=AAC-hbr;sizelength=13;indexlength=3;indexdeltalength=3;config=F8F0212C00BC00\n' +
             'a=crypto:1 ' +
-            this.hap.SRTPCryptoSuites[this.ongoingSessions[request.sessionID].audioCryptoSuite] +
+            this.hap.SRTPCryptoSuites[this.currentSessions[request.sessionID].audioCryptoSuite] +
             ' inline:' +
-            this.ongoingSessions[request.sessionID].audioSRTP.toString('base64'),
+            this.currentSessions[request.sessionID].audioSRTP.toString('base64'),
         );
         ffmpegAudioTalkback.stdin.end();
 
@@ -865,32 +781,32 @@ export default class NestCamera extends HomeKitDevice {
       }
 
       // Store our ffmpeg sessions
-      ffmpegStreaming && this.ongoingSessions[request.sessionID].ffmpeg.push(ffmpegStreaming); // Store ffmpeg process ID
-      ffmpegAudioTalkback && this.ongoingSessions[request.sessionID].ffmpeg.push(ffmpegAudioTalkback); // Store ffmpeg audio return process ID
-      this.ongoingSessions[request.sessionID].video = request.video; // Cache the video request details
-      this.ongoingSessions[request.sessionID].audio = request.audio; // Cache the audio request details
+      ffmpegStreaming && this.currentSessions[request.sessionID].ffmpeg.push(ffmpegStreaming); // Store ffmpeg process ID
+      ffmpegAudioTalkback && this.currentSessions[request.sessionID].ffmpeg.push(ffmpegAudioTalkback); // Store ffmpeg audio return process ID
+      this.currentSessions[request.sessionID].video = request.video; // Cache the video request details
+      this.currentSessions[request.sessionID].audio = request.audio; // Cache the audio request details
     }
 
-    if (request.type === this.hap.StreamRequestTypes.STOP && typeof this.ongoingSessions[request.sessionID] === 'object') {
+    if (request.type === this.hap.StreamRequestTypes.STOP && typeof this.currentSessions[request.sessionID] === 'object') {
       if (ffmpegAudioTalkback !== null) {
         this.NexusStreamer.stopTalkStream(request.sessionID);
       }
       this.NexusStreamer.stopLiveStream(request.sessionID);
-      this.ongoingSessions[request.sessionID].rtpSplitter && this.ongoingSessions[request.sessionID].rtpSplitter.close();
+      this.currentSessions[request.sessionID].rtpSplitter && this.currentSessions[request.sessionID].rtpSplitter.close();
 
       // Close off any running ffmpeg processes we created
-      this.ongoingSessions[request.sessionID].ffmpeg &&
-        this.ongoingSessions[request.sessionID].ffmpeg.forEach((ffmpeg) => {
+      this.currentSessions[request.sessionID].ffmpeg &&
+        this.currentSessions[request.sessionID].ffmpeg.forEach((ffmpeg) => {
           ffmpeg && ffmpeg.kill('SIGKILL'); // Kill this ffmpeg process
         });
       this.controller.forceStopStreamingSession(request.sessionID);
-      delete this.ongoingSessions[request.sessionID]; // this session has finished
+      delete this.currentSessions[request.sessionID]; // this session has finished
       this.log.info('Live stream stopped from "%s"', this.deviceData.description);
     }
 
-    if (request.type === this.hap.StreamRequestTypes.RECONFIGURE && typeof this.ongoingSessions[request.sessionID] === 'object') {
+    if (request.type === this.hap.StreamRequestTypes.RECONFIGURE && typeof this.currentSessions[request.sessionID] === 'object') {
       // <---- TODO
-      //(config.debug.includes(Debugging.CAMERA) || config.debug.includes(Debugging.DOORBELL)) ) && this.log.info('Reconfiguration request for live stream on "%s"', this.deviceData.description);
+      // this.log.info('Reconfiguration request for live stream on "%s"', this.deviceData.description);
     }
 
     if (typeof callback === 'function') {
@@ -1239,5 +1155,107 @@ export default class NestCamera extends HomeKitDevice {
         ? this.hap.Characteristic.HomeKitCameraActive.ON
         : this.hap.Characteristic.HomeKitCameraActive.OFF;
     });
+  }
+
+  generateControllerOptions() {
+    // Setup HomeKit controller camera/doorbell options
+    let controllerOptions = {
+      cameraStreamCount: 2, // HomeKit requires at least 2 streams, but 1 is also just fine
+      delegate: this,
+      streamingOptions: {
+        supportedCryptoSuites: [HAP.SRTPCryptoSuites.NONE, HAP.SRTPCryptoSuites.AES_CM_128_HMAC_SHA1_80],
+        video: {
+          resolutions: [
+            // width, height, framerate
+            [3840, 2160, 30], // 4K
+            [1920, 1080, 30], // 1080p
+            [1600, 1200, 30], // Native res of Nest Hello
+            [1280, 960, 30],
+            [1280, 720, 30], // 720p
+            [1024, 768, 30],
+            [640, 480, 30],
+            [640, 360, 30],
+            [480, 360, 30],
+            [480, 270, 30],
+            [320, 240, 30],
+            [320, 240, 15], // Apple Watch requires this configuration (Apple Watch also seems to required OPUS @16K)
+            [320, 180, 30],
+            [320, 180, 15],
+          ],
+          codec: {
+            type: HAP.VideoCodecType.H264,
+            profiles: [HAP.H264Profile.BASELINE, HAP.H264Profile.MAIN, HAP.H264Profile.HIGH],
+            levels: [HAP.H264Level.LEVEL3_1, HAP.H264Level.LEVEL3_2, HAP.H264Level.LEVEL4_0],
+          },
+        },
+        audio: {
+          twoWayAudio: this.deviceData.has_speaker === true && this.deviceData.has_microphone === true,
+          codecs: [
+            {
+              type: HAP.AudioStreamingCodecType.AAC_ELD,
+              samplerate: HAP.AudioStreamingSamplerate.KHZ_16,
+              audioChannel: 1,
+            },
+          ],
+        },
+      },
+      recording: undefined,
+      sensors: undefined,
+    };
+
+    if (this.deviceData.hksv === true) {
+      controllerOptions.recording = {
+        delegate: this,
+        options: {
+          overrideEventTriggerOptions: [HAP.EventTriggerOption.MOTION],
+          mediaContainerConfiguration: [
+            {
+              fragmentLength: 4000,
+              type: HAP.MediaContainerType.FRAGMENTED_MP4,
+            },
+          ],
+          prebufferLength: 4000, // Seems to always be 4000???
+          video: {
+            resolutions: [
+              // width, height, framerate
+              [3840, 2160, 30], // 4K
+              [1920, 1080, 30], // 1080p
+              [1600, 1200, 30], // Native res of Nest Hello
+              [1280, 960, 30],
+              [1280, 720, 30], // 720p
+              [1024, 768, 30],
+              [640, 480, 30],
+              [640, 360, 30],
+              [480, 360, 30],
+              [480, 270, 30],
+              [320, 240, 30],
+              [320, 240, 15], // Apple Watch requires this configuration (Apple Watch also seems to required OPUS @16K)
+              [320, 180, 30],
+              [320, 180, 15],
+            ],
+            parameters: {
+              profiles: [HAP.H264Profile.BASELINE, HAP.H264Profile.MAIN, HAP.H264Profile.HIGH],
+              levels: [HAP.H264Level.LEVEL3_1, HAP.H264Level.LEVEL3_2, HAP.H264Level.LEVEL4_0],
+            },
+            type: HAP.VideoCodecType.H264,
+          },
+          audio: {
+            codecs: [
+              {
+                type: HAP.AudioRecordingCodecType.AAC_LC,
+                samplerate: HAP.AudioRecordingSamplerate.KHZ_16,
+                audioChannel: 1,
+              },
+            ],
+          },
+        },
+      };
+
+      controllerOptions.sensors = {
+        motion: typeof this.motionServices?.[1]?.service === 'object' ? this.motionServices[1].service : false,
+      };
+    }
+
+    return controllerOptions;
   }
 }

@@ -5,9 +5,6 @@
 // Mark Hulskamp
 'use strict';
 
-// Define HAP module requirements
-import HAP from 'hap-nodejs';
-
 // Define nodejs module requirements
 import { setTimeout, clearTimeout } from 'node:timers';
 
@@ -27,52 +24,8 @@ export default class NestDoorbell extends NestCamera {
   addServices() {
     this.createCameraMotionServices();
 
-    // Setup HomeKit doorbell controller options
-    NestCamera.controllerOptions.delegate = this;
-    NestCamera.controllerOptions.streamingOptions.audio.twoWayAudio =
-      this.deviceData.has_speaker === true && this.deviceData.has_microphone === true;
-    NestCamera.controllerOptions.doorbellOptions = {
-      name: this.deviceData.description,
-    };
-    if (this.deviceData.hksv === true) {
-      NestCamera.controllerOptions.recording = {
-        delegate: this,
-        options: {
-          overrideEventTriggerOptions: [HAP.EventTriggerOption.MOTION, HAP.EventTriggerOption.DOORBELL],
-          mediaContainerConfiguration: [
-            {
-              fragmentLength: 4000,
-              type: HAP.MediaContainerType.FRAGMENTED_MP4,
-            },
-          ],
-          prebufferLength: 4000, // Seems to always be 4000???
-          video: {
-            resolutions: NestCamera.controllerOptions.streamingOptions.video.resolutions,
-            parameters: {
-              profiles: NestCamera.controllerOptions.streamingOptions.video.codec.profiles,
-              levels: NestCamera.controllerOptions.streamingOptions.video.codec.levels,
-            },
-            type: NestCamera.controllerOptions.streamingOptions.video.codec.type,
-          },
-          audio: {
-            codecs: [
-              {
-                type: HAP.AudioStreamingCodecType.AAC_ELD,
-                samplerate: HAP.AudioStreamingSamplerate.KHZ_16,
-                audioChannel: 1,
-              },
-            ],
-          },
-        },
-      };
-
-      NestCamera.controllerOptions.sensors = {
-        motion: typeof this.motionServices?.[1]?.service === 'object' ? this.motionServices[1].service : false,
-      };
-    }
-
     // Setup HomeKit doorbell controller
-    this.controller = new this.hap.DoorbellController(NestCamera.controllerOptions);
+    this.controller = new this.hap.DoorbellController(this.generateControllerOptions());
     this.accessory.configureController(this.controller);
 
     // Setup additional HomeKit services and characteristics we'll use
