@@ -5,11 +5,9 @@
 
 # Homebridge Nest Accfactory
 
- <a href="https://www.npmjs.com/package/homebridge-nest-accfactory"><img title="npm version" src="https://badgen.net/npm/v/homebridge-nest-accfactory/latest" ></a>
-  <a href="https://www.npmjs.com/package/homebridge-nest-accfactory"><img title="downloads" src="https://badgen.net/npm/dt/homebridge-nest-accfactory?label=downloads" ></a>
-  <a href="https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases"><img title="version" src="https://img.shields.io/github/release/n0rt0nthec4t/homebridge-nest-accfactory.svg?include_prereleases" ></a>
->
-
+[![npm](https://badgen.net/npm/v/homebridge-nest-accfactory/latest)](https://www.npmjs.com/package/homebridge-nest-accfactory)
+[![npm](https://badgen.net/npm/dt/homebridge-nest-accfactory?label=downloads)](https://www.npmjs.com/package/homebridge-nest-accfactory)
+[![Donate](https://badgen.net/badge/donate/paypal/yellow)](https://paypal.me/n0rt0nthec4t)
 
 </span>
 
