@@ -37,7 +37,7 @@
 // HomeKitDevice.updateServices(deviceData)
 // HomeKitDevice.messageServices(type, message)
 //
-// Code version 21/8/2024
+// Code version 24/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -83,17 +83,14 @@ export default class HomeKitDevice {
       this.hap = api.hap;
       this.#platform = api;
 
-      if (this?.log?.debug) {
-        this.log.debug('HomeKitDevice module using Homebridge backend for "%s"', deviceData?.description);
-      }
+      this?.log?.debug && this.log.debug('HomeKitDevice module using Homebridge backend for "%s"', deviceData?.description);
     }
 
     if (typeof api?.HAPLibraryVersion === 'function' && typeof api?.version === 'undefined' && typeof api?.hap === 'undefined') {
       // As we're missing the HomeBridge entry points but have the HAP library version
       this.hap = api;
-      if (this?.log?.debug) {
-        this.log.debug('HomeKitDevice module using HAP-NodeJS library for "%s"', deviceData?.description);
-      }
+
+      this?.log?.debug && this.log.debug('HomeKitDevice module using HAP-NodeJS library for "%s"', deviceData?.description);
     }
 
     // Validate if eventEmitter object passed to us is an instance of EventEmitter
@@ -221,21 +218,19 @@ export default class HomeKitDevice {
         let postSetupDetails = await this.addServices();
         if (this?.log?.info) {
           this.log.info('Setup %s %s as "%s"', this.deviceData.manufacturer, this.deviceData.model, this.deviceData.description);
-        }
-        if (this.historyService?.EveHome !== undefined && this?.log?.info) {
-          this.log.info('  += EveHome support as "%s"', this.historyService.EveHome.evetype);
-        }
-        if (typeof postSetupDetails === 'object') {
-          postSetupDetails.forEach((output) => {
-            if (this?.log?.info) {
-              this.log.info('  += %s', output);
-            }
-          });
+          if (this.historyService?.EveHome !== undefined) {
+            this.log.info('  += EveHome support as "%s"', this.historyService.EveHome.evetype);
+          }
+          if (typeof postSetupDetails === 'object') {
+            postSetupDetails.forEach((output) => {
+              if (this?.log?.info) {
+                this.log.info('  += %s', output);
+              }
+            });
+          }
         }
       } catch (error) {
-        if (this?.log?.error) {
-          this.log.error('addServices call for device "%s" failed. Error was', this.deviceData.description, error);
-        }
+        this?.log?.error && this.log.error('addServices call for device "%s" failed. Error was', this.deviceData.description, error);
       }
     }
 
@@ -250,7 +245,8 @@ export default class HomeKitDevice {
     // If using HAP-NodeJS library, publish accessory on local network
     if (this.#platform === undefined && this.accessory !== undefined) {
       if (this?.log?.info) {
-        this.log.info('Advertising accessory "%s" to local network', accessoryName);
+        this.log.info('  += Advertising as "%s"', accessoryName);
+        this.log.info('  += Pairing code is "%s"', this.accessory.pincode);
       }
       this.accessory.publish({
         username: this.accessory.username,
@@ -261,9 +257,7 @@ export default class HomeKitDevice {
   }
 
   async remove() {
-    if (this?.log?.warn) {
-      this.log.warn('Device "%s" has been removed', this.deviceData.description);
-    }
+    this?.log?.warn && this.log.warn('Device "%s" has been removed', this.deviceData.description);
 
     if (this.#eventEmitter === undefined && typeof this.deviceData?.uuid === 'string' && this.deviceData.uuid !== '') {
       // Remove listener for 'messages'
@@ -274,9 +268,7 @@ export default class HomeKitDevice {
       try {
         await this.removeServices();
       } catch (error) {
-        if (this?.log?.error) {
-          this.log.error('removeServices call for device "%s" failed. Error was', this.deviceData.description, error);
-        }
+        this?.log?.error && this.log.error('removeServices call for device "%s" failed. Error was', this.deviceData.description, error);
       }
     }
 
@@ -384,9 +376,7 @@ export default class HomeKitDevice {
         try {
           await this.updateServices(deviceData); // Pass updated data on for accessory to process as it needs
         } catch (error) {
-          if (this?.log?.error) {
-            this.log.error('updateServices call for device "%s" failed. Error was', this.deviceData.description, error);
-          }
+          this?.log?.error && this.log.error('updateServices call for device "%s" failed. Error was', this.deviceData.description, error);
         }
       }
 
@@ -458,9 +448,8 @@ export default class HomeKitDevice {
           try {
             await this.messageServices(type, message);
           } catch (error) {
-            if (this?.log?.error) {
+            this?.log?.error &&
               this.log.error('messageServices call for device "%s" failed. Error was', this.deviceData.description, error);
-            }
           }
         }
         break;

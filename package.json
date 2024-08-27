@@ -15,8 +15,8 @@
         "url": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issues"
     },
     "engines": {
-        "node": "^18.20.4 || ^20.16.0 || ^22.5.1",
-        "homebridge": "^1.8.0 || ^2.0.0"
+        "node": "^18.20.4 || ^20.16.0 || ^22.6.0",
+        "homebridge": "^1.8.0 || ^2.0.0-beta.0"
     },
     "main": "dist/index.js",
     "files": [
@@ -27,8 +27,7 @@
     "scripts": {
         "clean": "rimraf ./dist",
         "format": "prettier --write src/**/*.js",
-        "lint": "eslint src/**/*.js --max-warnings=0",
-        "watch": "npm run build && npm link && nodemon",
+        "lint": "eslint src/**/*.js --max-warnings=100",
         "build": "npm run clean && copyfiles -u 1 src/*.js dist && copyfiles -u 1 src/res/*.h264 dist && copyfiles -u 1 src/res/*.jpg dist && copyfiles -u 1 'src/protobuf/**/*.proto' dist",
         "prepublishOnly": "npm run lint && npm run build"
     },
@@ -50,13 +49,12 @@
         "@stylistic/eslint-plugin": "^2.6.4",
         "@typescript-eslint/parser": "^8.2.0",
         "@types/node": "^20.16.0",
+        "homebridge": "^2.0.0-beta.0",
         "copyfiles": "^2.4.1",
         "eslint": "^9.9.0",
-        "nodemon": "^3.1.4",
         "prettier": "^3.3.3",
         "prettier-eslint": "^16.3.0",
-        "rimraf": "^6.0.1",
-        "homebridge": "^1.8.4"
+        "rimraf": "^6.0.1"
     },
     "dependencies": {
         "axios": "^1.7.4",

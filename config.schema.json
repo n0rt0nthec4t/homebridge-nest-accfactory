@@ -58,9 +58,9 @@
                 "type": "object",
                 "expandable": true,
                 "properties": {
-                    "eveApp": {
-                        "title": "Evehome App",
-                        "description": "Provide integration with EveHome app",
+                    "eveHistory": {
+                        "title": "EveHome History",
+                        "description": "Provide history in EveHome application where applicable",
                         "type": "boolean",
                         "default": true
                     },

@@ -1,7 +1,7 @@
 // Nest 'virtual' weather station
 // Part of homebridge-nest-accfactory
 //
-// Code version 21/8/2024
+// Code version 27/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -88,7 +88,7 @@ export default class NestWeather extends HomeKitDevice {
 
     // Setup linkage to EveHome app if configured todo so
     if (
-      this.deviceData?.eveApp === true &&
+      this.deviceData?.eveHistory === true &&
       this.airPressureService !== undefined &&
       typeof this.historyService?.linkToEveHome === 'function'
     ) {

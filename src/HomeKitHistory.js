@@ -707,13 +707,13 @@ export default class HomeKitHistory {
 
         // Need some internal storage to track Eve Thermo configuration from EveHome app
         this.EveThermoPersist = {
-          firmware: typeof options?.EveThermo_firmware === 'number' ? options.EveThermo_firmware : 1251, // Firmware version 1251 2015 thermo, 2834 2020 thermo
+          firmware: typeof options?.EveThermo_firmware === 'number' ? options.EveThermo_firmware : 1251, // 1251 (2015), 2834 (2020) thermo
           attached: options?.EveThermo_attached === true, // attached to base?
-          tempoffset: typeof options?.EveThermo_tempoffset === 'number' ? options.EveThermo_tempoffset : -2.5, // Temperature offset. default -2.5
+          tempoffset: typeof options?.EveThermo_tempoffset === 'number' ? options.EveThermo_tempoffset : -2.5, // Temperature offset
           enableschedule: options?.EveThermo_enableschedule === true, // Schedules on/off
           pause: options?.EveThermo_pause === true, // Paused on/off
           vacation: options?.EveThermo_vacation === true, // Vacation status - disabled ie: Home
-          vacationtemp: typeof options?.EveThermo_vacationtemp === 'number' ? options.EveThermo_vactiontemp : null, // Vacation temp disabled if null
+          vacationtemp: typeof options?.EveThermo_vacationtemp === 'number' ? options.EveThermo_vactiontemp : null, // Vacation temp
           programs: typeof options?.EveThermo_programs === 'object' ? options.EveThermo_programs : [],
         };
 
@@ -1151,7 +1151,7 @@ export default class HomeKitHistory {
         // Need some internal storage to track Eve Smoke configuration from EveHome app
         this.EveSmokePersist = {
           firmware: typeof options?.EveSmoke_firmware === 'number' ? options.EveSmoke_firmware : 1208, // Firmware version
-          lastalarmtest: typeof options?.EveSmoke_lastalarmtest === 'number' ? options.EveSmoke_lastalarmtest : 0, // Time in seconds of alarm test
+          lastalarmtest: typeof options?.EveSmoke_lastalarmtest === 'number' ? options.EveSmoke_lastalarmtest : 0, // Seconds of alarm test
           alarmtest: options?.EveSmoke_alarmtest === true, // Is alarmtest running
           heatstatus: typeof options?.EveSmoke_heatstatus === 'number' ? options.EveSmoke_heatstatus : 0, // Heat sensor status
           statusled: options?.EveSmoke_statusled === false, // Status LED flash/enabled
@@ -1410,7 +1410,7 @@ export default class HomeKitHistory {
                         end_offset = (end >>> 5) * 60; // Seconds since 00:00
                       } else if ((end & 0x1f) === 3) {
                         //end_sunrise = ((end >>> 5) & 0x01);    // 1 = sunrise, 0 = sunset
-                        end_offset = (end >>> 6) & 0x01 ? ~((end >>> 7) * 60) + 1 : (end >>> 7) * 60; // offset from sunrise/sunset (plus/minus value)
+                        end_offset = (end >>> 6) & 0x01 ? ~((end >>> 7) * 60) + 1 : (end >>> 7) * 60; // offset sunrise/sunset (+/- value)
                       }
                       times.push({
                         start: start_sunrise === null ? start_offset : start_sunrise ? 'sunrise' : 'sunset',
@@ -1588,7 +1588,7 @@ export default class HomeKitHistory {
         // Need some internal storage to track Eve Water Guard configuration from EveHome app
         this.EveWaterGuardPersist = {
           firmware: typeof options?.EveWaterGuard_firmware === 'number' ? options.EveWaterGuard_firmware : 2866, // Firmware version
-          lastalarmtest: typeof options?.EveWaterGuard_lastalarmtest === 'number' ? options.EveWaterGuard_lastalarmtest : 0, // Time in seconds of alarm test
+          lastalarmtest: typeof options?.EveWaterGuard_lastalarmtest === 'number' ? options.EveWaterGuard_lastalarmtest : 0, // In seconds
           muted: options?.EveWaterGuard_muted === true, // Leak alarms are not muted
         };
 
@@ -1800,7 +1800,7 @@ export default class HomeKitHistory {
       '12%s 13%s 14%s 19%s f40000%s fa%s',
       numberToEveHexString(this.EveThermoPersist.tempoffset * 10, 2),
       this.EveThermoPersist.enableschedule === true ? '01' : '00',
-      (this.EveThermoPersist.attached = this.EveThermoPersist.attached === true ? 'c0' : 'c7'),
+      this.EveThermoPersist.attached === true ? 'c0' : 'c7',
       this.EveThermoPersist.vacation === true ? '01' + numberToEveHexString(this.EveThermoPersist.vacationtemp * 2, 2) : '00ff', // away status and temp
       encodedTemperatures,
       encodedSchedule[0] +
@@ -2093,8 +2093,8 @@ export default class HomeKitHistory {
                 numberToEveHexString(historyEntry.status === 0 ? parseInt('111', 2) : parseInt('101', 2), 2), // Field mask, 111 is for sending water usage when a valve is recorded as closed, 101 is for when valve is recorded as opened, no water usage is sent
                 numberToEveHexString(historyEntry.status, 2),
                 historyEntry.status === 0 ? numberToEveHexString(Math.floor(parseFloat(historyEntry.water) * 1000), 16) : '', // water used in millilitres if valve closed entry (64bit value)
-                numberToEveHexString(3120, 4),
-              ); // battery millivolts - 3120mv which think should be 100% for an eve aqua running on 2 x AAs??
+                numberToEveHexString(3120, 4), // battery millivolts - 3120mv which think should be 100% for an eve aqua running on 2 x AAs??
+              );
               break;
             }
 
@@ -2224,8 +2224,8 @@ export default class HomeKitHistory {
                 numberToEveHexString(tempTarget * 100, 4), // target temperature for heating
                 numberToEveHexString(historyEntry.status === 2 ? 100 : historyEntry.status === 3 ? 50 : 0, 2), // 0% = off, 50% = cooling, 100% = heating
                 numberToEveHexString(0, 2), // Thermo target
-                numberToEveHexString(0, 2),
-              ); // Window open status 0 = window closed, 1 = open
+                numberToEveHexString(0, 2), // Window open status 0 = closed, 1 = open
+              );
               break;
             }
 

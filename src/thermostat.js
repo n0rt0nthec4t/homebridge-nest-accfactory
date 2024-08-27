@@ -1,7 +1,7 @@
 // Nest Thermostat
 // Part of homebridge-nest-accfactory
 //
-// Code version 21/8/2024
+// Code version 27/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -252,7 +252,7 @@ export default class NestThermostat extends HomeKitDevice {
 
     // Setup linkage to EveHome app if configured todo so
     if (
-      this.deviceData?.eveApp === true &&
+      this.deviceData?.eveHistory === true &&
       this.thermostatService !== undefined &&
       typeof this.historyService?.linkToEveHome === 'function'
     ) {
@@ -282,9 +282,7 @@ export default class NestThermostat extends HomeKitDevice {
         }
         // eslint-disable-next-line no-unused-vars
       } catch (error) {
-        if (this?.log?.warn) {
-          this.log.warn('Failed to load specified external module for thermostat "%s"', module);
-        }
+        this?.log?.warn && this.log.warn('Failed to load specified external module for thermostat "%s"', module);
       }
 
       return loadedModule;
@@ -309,19 +307,20 @@ export default class NestThermostat extends HomeKitDevice {
   setFan(fanState) {
     this.set({ fan_state: fanState === this.hap.Characteristic.Active.ACTIVE ? true : false });
     this.fanService.updateCharacteristic(this.hap.Characteristic.Active, fanState);
-    if (this?.log?.info) {
+
+    this?.log?.info &&
       this.log.info(
         'Set fan on thermostat "%s" to "%s"',
         this.deviceData.description,
         fanState === this.hap.Characteristic.Active.ACTIVE ? 'On with initial fan speed of ' + this.deviceData.fan_current_speed : 'Off',
       );
-    }
   }
 
   setDehumidifier(dehumidiferState) {
     this.set({ dehumidifer_State: dehumidiferState === this.hap.Characteristic.Active.ACTIVE ? true : false });
     this.dehumidifierService.updateCharacteristic(this.hap.Characteristic.Active, dehumidiferState);
-    if (this?.log?.info) {
+
+    this?.log?.info &&
       this.log.info(
         'Set dehumidifer on thermostat "%s" to "%s"',
         this.deviceData.description,
@@ -329,19 +328,18 @@ export default class NestThermostat extends HomeKitDevice {
           ? 'On with target humidity level of ' + this.deviceData.target_humidity + '%'
           : 'Off',
       );
-    }
   }
 
   setDisplayUnit(temperatureUnit) {
     this.set({ temperature_scale: temperatureUnit === this.hap.Characteristic.TemperatureDisplayUnits.CELSIUS ? 'C' : 'F' });
     this.thermostatService.updateCharacteristic(this.hap.Characteristic.TemperatureDisplayUnits, temperatureUnit);
-    if (this?.log?.info) {
+
+    this?.log?.info &&
       this.log.info(
         'Set temperature units on thermostat "%s" to "%s"',
         this.deviceData.description,
         temperatureUnit === this.hap.Characteristic.TemperatureDisplayUnits.CELSIUS ? '°C' : '°F',
       );
-    }
   }
 
   setMode(thermostatMode) {
@@ -406,9 +404,8 @@ export default class NestThermostat extends HomeKitDevice {
       }
 
       this.set({ hvac_mode: mode });
-      if (this?.log?.info) {
-        this.log.info('Set mode on "%s" to "%s"', this.deviceData.description, mode);
-      }
+
+      this?.log?.info && this.log.info('Set mode on "%s" to "%s"', this.deviceData.description, mode);
     }
   }
 
@@ -443,7 +440,8 @@ export default class NestThermostat extends HomeKitDevice {
           this.hap.Characteristic.TargetHeatingCoolingState.AUTO
       ) {
         this.set({ target_temperature: temperature });
-        if (this?.log?.info) {
+
+        this?.log?.info &&
           this.log.info(
             'Set %s%s temperature on "%s" to "%s °C"',
             this.deviceData.hvac_mode.toUpperCase().includes('ECO') ? 'eco mode ' : '',
@@ -454,7 +452,6 @@ export default class NestThermostat extends HomeKitDevice {
             this.deviceData.description,
             temperature,
           );
-        }
       }
       if (
         characteristic.UUID === this.hap.Characteristic.HeatingThresholdTemperature.UUID &&
@@ -462,14 +459,14 @@ export default class NestThermostat extends HomeKitDevice {
           this.hap.Characteristic.TargetHeatingCoolingState.AUTO
       ) {
         this.set({ target_temperature_low: temperature });
-        if (this?.log?.info) {
+
+        this?.log?.info &&
           this.log.info(
             'Set %sheating temperature on "%s" to "%s °C"',
             this.deviceData.hvac_mode.toUpperCase().includes('ECO') ? 'eco mode ' : '',
             this.deviceData.description,
             temperature,
           );
-        }
       }
       if (
         characteristic.UUID === this.hap.Characteristic.CoolingThresholdTemperature.UUID &&
@@ -477,14 +474,14 @@ export default class NestThermostat extends HomeKitDevice {
           this.hap.Characteristic.TargetHeatingCoolingState.AUTO
       ) {
         this.set({ target_temperature_high: temperature });
-        if (this?.log?.info) {
+
+        this?.log?.info &&
           this.log.info(
             'Set %scooling temperature on "%s" to "%s °C"',
             this.deviceData.hvac_mode.toUpperCase().includes('ECO') ? 'eco mode ' : '',
             this.deviceData.description,
             temperature,
           );
-        }
       }
 
       this.thermostatService.updateCharacteristic(characteristic, temperature); // Update HomeKit with value
@@ -529,13 +526,12 @@ export default class NestThermostat extends HomeKitDevice {
     }
     this.set({ temperature_lock: value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED ? true : false });
 
-    if (this?.log?.info) {
+    this?.log?.info &&
       this.log.info(
         'Setting Childlock on "%s" to "%s"',
         this.deviceData.description,
         value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED ? 'Enabled' : 'Disabled',
       );
-    }
   }
 
   updateServices(deviceData) {
@@ -648,11 +644,13 @@ export default class NestThermostat extends HomeKitDevice {
         this.accessory.removeService(this.fanService);
         this.fanService = undefined;
       }
-      this.log.info(
-        'Fan setup on thermostat "%s" has changed. Fan was',
-        this.deviceData.description,
-        this.fanService === undefined ? 'removed' : 'added',
-      );
+
+      this?.log?.info &&
+        this.log.info(
+          'Fan setup on thermostat "%s" has changed. Fan was',
+          this.deviceData.description,
+          this.fanService === undefined ? 'removed' : 'added',
+        );
     }
 
     // Check for dehumidifer setup change on thermostat
@@ -681,13 +679,12 @@ export default class NestThermostat extends HomeKitDevice {
         this.dehumidifierService = undefined;
       }
 
-      if (this?.log?.info) {
+      this?.log?.info &&
         this.log.info(
           'Dehumidifier setup on thermostat "%s" has changed. Dehumidifier was',
           this.deviceData.description,
           this.dehumidifierService === undefined ? 'removed' : 'added',
         );
-      }
     }
 
     if (deviceData.can_cool !== this.deviceData.can_cool || deviceData.can_heat !== this.deviceData.can_heat) {
@@ -723,9 +720,8 @@ export default class NestThermostat extends HomeKitDevice {
           validValues: [this.hap.Characteristic.TargetHeatingCoolingState.OFF],
         });
       }
-      if (this?.log?.info) {
-        this.log.info('Heating/cooling setup on thermostat on "%s" has changed', this.deviceData.description);
-      }
+
+      this?.log?.info && this.log.info('Heating/cooling setup on thermostat on "%s" has changed', this.deviceData.description);
     }
 
     // Update current mode temperatures
@@ -922,7 +918,7 @@ export default class NestThermostat extends HomeKitDevice {
 
     // Notify Eve App of device status changes if linked
     if (
-      this.deviceData.eveApp === true &&
+      this.deviceData.eveHistory === true &&
       this.thermostatService !== undefined &&
       typeof this.historyService?.updateEveHome === 'function'
     ) {

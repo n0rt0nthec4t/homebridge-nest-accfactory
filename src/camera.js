@@ -1,12 +1,9 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 21/8/2024
+// Code version 27/8/2024
 // Mark Hulskamp
 'use strict';
-
-// Define HAP module requirements
-import HAP from 'hap-nodejs';
 
 // Define nodejs module requirements
 import EventEmitter from 'node:events';
@@ -54,6 +51,7 @@ export default class NestCamera extends HomeKitDevice {
   controller = undefined; // HomeKit Camera/Doorbell controller service
   NexusStreamer = undefined; // Object for the NexusTalk Streamer
   motionServices = {}; // Object of Camera/Doorbell motion sensor(s)
+  operatingModeService = undefined; // Link to camera/doorbell operating mode service
   personTimer = undefined; // Cooldown timer for person/face events
   motionTimer = undefined; // Cooldown timer for motion events
   cameraOfflineImage = undefined; // JPG image buffer for camera offline
@@ -93,7 +91,7 @@ export default class NestCamera extends HomeKitDevice {
     // buffer for camera stream off jpg image
     imageFile = path.resolve(__dirname + '/res/' + CAMERAOFFJPGFILE);
     if (fs.existsSync(imageFile) === true) {
-      this.cameraOfflineImage = fs.readFileSync(imageFile);
+      this.cameraVideoOffImage = fs.readFileSync(imageFile);
     }
 
     this.set({ 'watermark.enabled': false }); // 'Try' to turn off Nest watermark in video stream
@@ -115,15 +113,15 @@ export default class NestCamera extends HomeKitDevice {
       this.controller.speakerService.addCharacteristic(this.hap.Characteristic.StatusActive);
     }
 
-    // Setup HomeKit Secure Video characteristics after we have a controller created
-    this.createCameraHKSVServices();
+    // Setup additional services/characteristics after we have a controller created
+    this.createCameraServices();
 
     // Setup our streaming object
     this.NexusStreamer = new NexusStreamer(this.deviceData, { log: this.log });
 
     // Setup linkage to EveHome app if configured todo so
     if (
-      this.deviceData?.eveApp === true &&
+      this.deviceData?.eveHistory === true &&
       typeof this.motionServices?.[1]?.service === 'object' &&
       typeof this.historyService?.linkToEveHome === 'function'
     ) {
@@ -141,8 +139,8 @@ export default class NestCamera extends HomeKitDevice {
 
   removeServices() {
     // Clean up our camera object since this device is being removed
-    clearTimeout(this.motionTimer);
-    clearTimeout(this.personTimer);
+    this.motionTimer = clearTimeout(this.motionTimer);
+    this.personTimer = clearTimeout(this.personTimer);
 
     if (this.NexusStreamer !== undefined) {
       this.NexusStreamer.stopBuffering(); // Stop any buffering
@@ -171,8 +169,6 @@ export default class NestCamera extends HomeKitDevice {
     this.motionServices = {};
     this.NexusStreamer = undefined;
     this.controller = undefined;
-    this.motionTimer = undefined;
-    this.personTimer = undefined;
   }
 
   // Taken and adapted from:
@@ -191,7 +187,7 @@ export default class NestCamera extends HomeKitDevice {
     let includeAudio =
       this.deviceData.audio_enabled === true &&
       this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.RecordingAudioActive)
-        .value === this.hap.Characteristic.RecordingAudioActive.ENABLE;
+        .value === 1;
     let recordCodec = VideoCodecs.LIBX264;
 
     // Build our ffmpeg commandline for the video stream
@@ -368,13 +364,14 @@ export default class NestCamera extends HomeKitDevice {
 
     // Log recording finished messages depending on reason
     if (closeReason === this.hap.HDSProtocolSpecificErrorReason.NORMAL) {
-      this.log.success('Recording completed from "%s"', this.deviceData.description);
+      this?.log?.info && this.log.info('Recording completed from "%s"', this.deviceData.description);
     } else {
-      this.log.warn(
-        'Recording completed with error from "%s". Reason was "%s"',
-        this.deviceData.description,
-        this.hap.HDSProtocolSpecificErrorReason[closeReason],
-      );
+      this?.log?.warn &&
+        this.log.warn(
+          'Recording completed with error from "%s". Reason was "%s"',
+          this.deviceData.description,
+          this.hap.HDSProtocolSpecificErrorReason[closeReason],
+        );
     }
   }
 
@@ -390,12 +387,12 @@ export default class NestCamera extends HomeKitDevice {
       // Start a buffering stream for this camera/doorbell. Ensures motion captures all video on motion trigger
       // Required due to data delays by on prem Nest to cloud to HomeKit accessory to iCloud etc
       // Make sure have appropriate bandwidth!!!
-      this.log.info('Pre-buffering started for "%s"', this.deviceData.description);
+      this?.log?.info && this.log.info('Pre-buffering started for "%s"', this.deviceData.description);
       this.NexusStreamer.startBuffering();
     }
     if (enableHKSVRecordings === false) {
       this.NexusStreamer.stopBuffering();
-      this.log.info('Pre-buffering stopped for "%s"', this.deviceData.description);
+      this?.log?.info && this.log.info('Pre-buffering stopped for "%s"', this.deviceData.description);
     }
 
     this.HKSVRecorder.record = enableHKSVRecordings;
@@ -473,7 +470,6 @@ export default class NestCamera extends HomeKitDevice {
             }
 
             imageBuffer = response.data;
-            this.lastSnapshotImage = response.data;
           })
           .catch(() => {
             // Empty
@@ -495,10 +491,9 @@ export default class NestCamera extends HomeKitDevice {
       // If we get here, we have no snapshot image
       // We'll use the last success snapshop as long as its within a certain time period
       this.log.warn('Unable to obtain live snapshot. Using cached image');
-      imageBuffer = this.lastSnapshotImage;
     }
 
-    callback(imageBuffer.length === 0 ? 'No Camera/Doorbell snapshot obtained' : null, imageBuffer);
+    callback(imageBuffer?.length === 0 ? 'No Camera/Doorbell snapshot obtained' : null, imageBuffer);
   }
 
   async prepareStream(request, callback) {
@@ -574,7 +569,20 @@ export default class NestCamera extends HomeKitDevice {
       }
       return;
     }
-    let ffmpegAudioTalkback = null; // No ffmpeg process for return audio yet
+
+    if (this.deviceData?.ffmpegPath === undefined && request.type === this.hap.StreamRequestTypes.START) {
+      this?.log?.warn &&
+        this.log.warn(
+          'Request received to start live video for "%s" however we do not have an ffmpeg binary present',
+          this.deviceData.description,
+        );
+
+      if (typeof callback === 'function') {
+        callback(); // do callback if defined
+      }
+      return;
+    }
+
     if (request.type === this.hap.StreamRequestTypes.START) {
       this.currentSessions[request.sessionID] = this.pendingSessions[request.sessionID]; // Move our pending session to ongoing session
       delete this.pendingSessions[request.sessionID]; // remove this pending session information
@@ -583,7 +591,8 @@ export default class NestCamera extends HomeKitDevice {
       let commandLine =
         '-hide_banner -nostats' +
         ' -use_wallclock_as_timestamps 1' +
-        ' -f h264 -thread_queue_size 1024 -copytb 1 -i pipe:0' + // Video data only on stdin
+        //   ' -f h264 -thread_queue_size 1024 -copytb 1 -i pipe:0' + // Video data only on stdin
+        ' -f h264 -thread_queue_size 1024 -i pipe:0' + // Video data only on stdin
         (this.deviceData.audio_enabled === true ? ' -f aac -thread_queue_size 1024 -i pipe:3' : ''); // Audio data only on extra pipe created in spawn command
 
       // Build our video command for ffmpeg
@@ -651,17 +660,10 @@ export default class NestCamera extends HomeKitDevice {
       }
 
       // Start our ffmpeg streaming process and stream from nexus
-      this.log.info('Live stream started on "%s"', this.deviceData.description);
       let ffmpegStreaming = child_process.spawn(path.resolve(this.deviceData.ffmpegPath + '/ffmpeg'), commandLine.split(' '), {
         env: process.env,
         stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
       }); // Extra pipe, #3 for audio data
-      this.NexusStreamer.startLiveStream(
-        request.sessionID,
-        ffmpegStreaming.stdin,
-        this.deviceData.audio_enabled === true && ffmpegStreaming.stdio[3] ? ffmpegStreaming.stdio[3] : null,
-        false,
-      );
 
       // ffmpeg console output is via stderr
       ffmpegStreaming.stderr.on('data', (data) => {
@@ -678,7 +680,8 @@ export default class NestCamera extends HomeKitDevice {
         }
       });
 
-      // We only create the the rtpsplitter and ffmpeg processs if twoway audio is supported AND audio enabled on camera/doorbell
+      // We only create the rtpsplitter and ffmpeg processs if twoway audio is supported AND audio enabled on camera/doorbell
+      let ffmpegAudioTalkback = null; // No ffmpeg process for return audio yet
       if (this.deviceData.audio_enabled === true && this.deviceData.has_speaker === true && this.deviceData.has_microphone === true) {
         // Setup RTP splitter for two/away audio
         this.currentSessions[request.sessionID].rtpSplitter = dgram.createSocket('udp4');
@@ -693,7 +696,8 @@ export default class NestCamera extends HomeKitDevice {
           if (payloadType === request.audio.pt) {
             // Audio payload type from HomeKit should match our payload type for audio
             if (message.length > 50) {
-              // Only send on audio data if we have a longer audio packet. (not sure it makes any difference, as under iOS 15 packets are roughly same length)
+              // Only send on audio data if we have a longer audio packet.
+              // (not sure it makes any difference, as under iOS 15 packets are roughly same length)
               this.currentSessions[request.sessionID].rtpSplitter.send(message, this.currentSessions[request.sessionID].audioTalkbackPort);
             }
           } else {
@@ -723,15 +727,14 @@ export default class NestCamera extends HomeKitDevice {
         ffmpegAudioTalkback = child_process.spawn(path.resolve(this.deviceData.ffmpegPath + '/ffmpeg'), commandLine.split(' '), {
           env: process.env,
         });
+
         ffmpegAudioTalkback.on('error', (error) => {
-          this.log.debug('FFmpeg failed to start Nest camera talkback audio process', error.message);
+          this?.log?.debug && this.log.debug('FFmpeg failed to start Nest camera talkback audio process', error.message);
         });
 
+        // ffmpeg console output is via stderr
         ffmpegAudioTalkback.stderr.on('data', (data) => {
-          if (data.toString().includes('size=') === false) {
-            // Monitor ffmpeg output while testing. Use 'ffmpeg as a debug option'
-            this.log.debug(data.toString());
-          }
+          this?.log?.debug && this.log.debug(data.toString());
         });
 
         // Write out SDP configuration
@@ -775,10 +778,27 @@ export default class NestCamera extends HomeKitDevice {
             this.currentSessions[request.sessionID].audioSRTP.toString('base64'),
         );
         ffmpegAudioTalkback.stdin.end();
-
-        this.log.info('Audio talkback stream started from "%s"', this.deviceData.description);
-        this.NexusStreamer.startTalkStream(request.sessionID, ffmpegAudioTalkback.stdout);
       }
+
+      this?.log?.info &&
+        this.log.info(
+          'Live stream started on "%s" %s',
+          this.deviceData.description,
+          ffmpegAudioTalkback.stdout ? 'with two-way audio' : '',
+        );
+
+      // Start the stream from nexus
+      this.NexusStreamer.startLiveStream(
+        request.sessionID,
+        ffmpegStreaming.stdin,
+        this.deviceData.audio_enabled === true && ffmpegStreaming.stdio[3] ? ffmpegStreaming.stdio[3] : null,
+        this.deviceData.audio_enabled === true &&
+          this.deviceData.has_speaker === true &&
+          this.deviceData.has_microphone === true &&
+          ffmpegAudioTalkback.stdout
+          ? ffmpegAudioTalkback.stdout
+          : null,
+      );
 
       // Store our ffmpeg sessions
       ffmpegStreaming && this.currentSessions[request.sessionID].ffmpeg.push(ffmpegStreaming); // Store ffmpeg process ID
@@ -788,25 +808,23 @@ export default class NestCamera extends HomeKitDevice {
     }
 
     if (request.type === this.hap.StreamRequestTypes.STOP && typeof this.currentSessions[request.sessionID] === 'object') {
-      if (ffmpegAudioTalkback !== null) {
-        this.NexusStreamer.stopTalkStream(request.sessionID);
-      }
       this.NexusStreamer.stopLiveStream(request.sessionID);
-      this.currentSessions[request.sessionID].rtpSplitter && this.currentSessions[request.sessionID].rtpSplitter.close();
 
-      // Close off any running ffmpeg processes we created
-      this.currentSessions[request.sessionID].ffmpeg &&
-        this.currentSessions[request.sessionID].ffmpeg.forEach((ffmpeg) => {
-          ffmpeg && ffmpeg.kill('SIGKILL'); // Kill this ffmpeg process
-        });
-      this.controller.forceStopStreamingSession(request.sessionID);
-      delete this.currentSessions[request.sessionID]; // this session has finished
-      this.log.info('Live stream stopped from "%s"', this.deviceData.description);
+      // Close off any running ffmpeg and/or splitter processes we created
+      if (typeof this.currentSessions[request.sessionID]?.rtpSplitter?.close === 'function') {
+        this.currentSessions[request.sessionID].rtpSplitter.close();
+      }
+      this.currentSessions[request.sessionID].ffmpeg.forEach((ffmpeg) => {
+        ffmpeg.kill('SIGKILL');
+      });
+
+      delete this.currentSessions[request.sessionID];
+
+      this?.log?.info && this.log.info('Live stream stopped from "%s"', this.deviceData.description);
     }
 
     if (request.type === this.hap.StreamRequestTypes.RECONFIGURE && typeof this.currentSessions[request.sessionID] === 'object') {
-      // <---- TODO
-      // this.log.info('Reconfiguration request for live stream on "%s"', this.deviceData.description);
+      this?.log?.debug && this.log.debug('Unsupported reconfiguration request for live stream on "%s"', this.deviceData.description);
     }
 
     if (typeof callback === 'function') {
@@ -818,9 +836,6 @@ export default class NestCamera extends HomeKitDevice {
     if (typeof deviceData !== 'object' || this.controller === undefined || this.NexusStreamer === undefined) {
       return;
     }
-
-    let operatingModeService = this.controller?.recordingManagement?.operatingModeService;
-    let recordingManagementService = this.controller?.recordingManagement?.recordingManagementService;
 
     // For non-HKSV enabled devices, we will process any activity zone changes to add or remove any motion services
     if (deviceData.hksv === false && JSON.stringify(deviceData.activity_zones) !== JSON.stringify(this.deviceData.activity_zones)) {
@@ -844,13 +859,13 @@ export default class NestCamera extends HomeKitDevice {
       });
     }
 
-    if (deviceData.hksv === true && operatingModeService !== undefined) {
-      // Update camera off/on status for HKSV
-      operatingModeService.updateCharacteristic(
+    if (this.operatingModeService !== undefined) {
+      // Update camera off/on status
+      // 0 = Enabled
+      // 1 = Disabled
+      this.operatingModeService.updateCharacteristic(
         this.hap.Characteristic.ManuallyDisabled,
-        deviceData.streaming_enabled === true
-          ? this.hap.Characteristic.ManuallyDisabled.ENABLED
-          : this.hap.Characteristic.ManuallyDisabled.DISABLED,
+        deviceData.streaming_enabled === true ? 0 : 1,
       );
 
       if (deviceData.has_statusled === true && typeof deviceData.statusled_brightness === 'number') {
@@ -858,26 +873,28 @@ export default class NestCamera extends HomeKitDevice {
         // 0 = auto
         // 1 = low
         // 2 = high
-        operatingModeService.updateCharacteristic(
+        this.operatingModeService.updateCharacteristic(
           this.hap.Characteristic.CameraOperatingModeIndicator,
-          deviceData.statusled_brightness !== 1
-            ? this.hap.Characteristic.CameraOperatingModeIndicator.ENABLE
-            : this.hap.Characteristic.CameraOperatingModeIndicator.DISABLE,
+          deviceData.statusled_brightness !== 1,
         );
       }
-      if (deviceData.has_irled === true && deviceData.irled_enabled === true) {
+
+      if (deviceData.has_irled === true) {
         // Set nightvision status in HomeKit
-        operatingModeService.updateCharacteristic(this.hap.Characteristic.NightVision, deviceData.irled_enabled);
+        this.operatingModeService.updateCharacteristic(this.hap.Characteristic.NightVision, deviceData.irled_enabled);
+      }
+
+      if (deviceData.has_video_flip === true) {
+        // Update image flip status
+        this.operatingModeService.updateCharacteristic(this.hap.Characteristic.ImageRotation, deviceData.video_flipped === true ? 180 : 0);
       }
     }
 
-    if (deviceData.hksv === true && recordingManagementService !== undefined) {
+    if (deviceData.hksv === true && this.controller?.recordingManagement?.recordingManagementService !== undefined) {
       // Update recording audio status
-      recordingManagementService.updateCharacteristic(
+      this.controller.recordingManagement.recordingManagementService.updateCharacteristic(
         this.hap.Characteristic.RecordingAudioActive,
-        deviceData.audio_enabled === true
-          ? this.hap.Characteristic.RecordingAudioActive.ENABLE
-          : this.hap.Characteristic.RecordingAudioActive.DISABLE,
+        deviceData.audio_enabled === true ? 1 : 0,
       );
     }
 
@@ -907,21 +924,15 @@ export default class NestCamera extends HomeKitDevice {
       // For a HKSV enabled camera, we will use this to trigger the starting of the HKSV recording if the camera is active
       if (event.types.includes('motion') === true) {
         if (this.motionTimer === undefined) {
-          if (this?.log?.info) {
-            if (deviceData.hksv === true) {
-              this.log.info(
-                'Motion detected at "%s" %s',
-                this.deviceData.description,
-                this.controller.recordingManagement.operatingModeService.getCharacteristic(this.hap.Characteristic.HomeKitCameraActive)
-                  .value === this.hap.Characteristic.HomeKitCameraActive.OFF
-                  ? 'but HSKV recording disabled'
-                  : '',
-              );
-            }
-            if (deviceData.hksv === false) {
-              this.log.info('Motion detected at "%s"', this.deviceData.description);
-            }
-          }
+          this?.log?.info &&
+            this.log.info(
+              'Motion detected at "%s" %s',
+              this.deviceData.description,
+              this.controller.recordingManagement.operatingModeService.getCharacteristic(this.hap.Characteristic.HomeKitCameraActive)
+                .value === 0
+                ? 'but video recording disabled'
+                : '',
+            );
         }
 
         event.zone_ids.forEach((zoneID) => {
@@ -1035,135 +1046,123 @@ export default class NestCamera extends HomeKitDevice {
     }
   }
 
-  createCameraHKSVServices() {
-    if (
-      this.deviceData.hksv !== true ||
-      this.controller === undefined ||
-      this.controller?.recordingManagement?.recordingManagementService === undefined ||
-      this.controller?.recordingManagement?.operatingModeService === undefined
-    ) {
+  createCameraServices() {
+    if (this.controller === undefined) {
       return;
     }
 
-    let recordingManagementService = this.controller.recordingManagement.recordingManagementService;
-    let operatingModeService = this.controller.recordingManagement.operatingModeService;
-
-    if (this.deviceData.has_statusled === true) {
-      if (operatingModeService.testCharacteristic(this.hap.Characteristic.CameraOperatingModeIndicator) === false) {
-        operatingModeService.addOptionalCharacteristic(this.hap.Characteristic.CameraOperatingModeIndicator);
+    this.operatingModeService = this.controller?.recordingManagement?.operatingModeService;
+    if (this.operatingModeService === undefined) {
+      // Add in operating mode service for a non-hksv camera/doorbell
+      // Allow us to change things such as night vision, camera indicator etc within HomeKit fpr those also:-)
+      this.operatingModeService = this.accessory.getService(this.hap.Service.CameraOperatingMode);
+      if (this.operatingModeService === undefined) {
+        this.operatingModeService = this.accessory.addService(this.hap.Service.CameraOperatingMode, '', 1);
       }
+    }
 
-      // Setup set callbacks for characteristics
-      operatingModeService.getCharacteristic(this.hap.Characteristic.CameraOperatingModeIndicator).onSet((value) => {
+    // Setup set callbacks for characteristics
+    if (this.deviceData.has_statusled === true && this.operatingModeService !== undefined) {
+      if (this.operatingModeService.testCharacteristic(this.hap.Characteristic.CameraOperatingModeIndicator) === false) {
+        this.operatingModeService.addOptionalCharacteristic(this.hap.Characteristic.CameraOperatingModeIndicator);
+      }
+      this.operatingModeService.getCharacteristic(this.hap.Characteristic.CameraOperatingModeIndicator).onSet((value) => {
         // 0 = auto, 1 = low, 2 = high
         // We'll use auto mode for led on and low for led off
-        if (
-          (this.deviceData.statusled_brightness === 1 && value === this.hap.Characteristic.CameraOperatingModeIndicator.ENABLE) ||
-          (this.deviceData.statusled_brightness !== 1 && value === this.hap.Characteristic.CameraOperatingModeIndicator.DISABLE)
-        ) {
-          // only change status led value if different than on-device
-          this.set({ 'statusled.brightness': value === this.hap.Characteristic.CameraOperatingModeIndicator.ENABLE ? 0 : 1 });
-          if (this.log.info) {
-            this.log.info(
-              'Recording status LED on "%s" was turned',
-              this.deviceData.description,
-              value === this.hap.Characteristic.CameraOperatingModeIndicator.ENABLE ? 'on' : 'off',
-            );
-          }
+        this.set({ 'statusled.brightness': value === true ? 0 : 1 });
+        if (this?.log?.info) {
+          this.log.info('Recording status LED on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
         }
       });
 
-      operatingModeService.getCharacteristic(this.hap.Characteristic.CameraOperatingModeIndicator).onGet(() => {
-        return this.deviceData.statusled_brightness !== 1
-          ? this.hap.Characteristic.CameraOperatingModeIndicator.ENABLE
-          : this.hap.Characteristic.CameraOperatingModeIndicator.DISABLE;
+      this.operatingModeService.getCharacteristic(this.hap.Characteristic.CameraOperatingModeIndicator).onGet(() => {
+        return this.deviceData.statusled_brightness !== 1;
       });
     }
-    if (this.deviceData.has_irled === true) {
-      if (operatingModeService.testCharacteristic(this.hap.Characteristic.NightVision) === false) {
-        operatingModeService.addOptionalCharacteristic(this.hap.Characteristic.NightVision);
+
+    if (this.deviceData.has_irled === true && this.operatingModeService !== undefined) {
+      if (this.operatingModeService.testCharacteristic(this.hap.Characteristic.NightVision) === false) {
+        this.operatingModeService.addOptionalCharacteristic(this.hap.Characteristic.NightVision);
       }
 
-      operatingModeService.getCharacteristic(this.hap.Characteristic.NightVision).onSet((value) => {
-        if (this.deviceData.irled_enabled !== value) {
-          // only change IRLed status value if different than on-device
-          this.set({ 'irled.state': value === true ? 'auto_on' : 'always_off' });
+      this.operatingModeService.getCharacteristic(this.hap.Characteristic.NightVision).onSet((value) => {
+        // only change IRLed status value if different than on-device
+        this.set({ 'irled.state': value === true ? 'auto_on' : 'always_off' });
 
-          if (this.log.info) {
-            this.log.info('Night vision on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
-          }
+        if (this?.log?.info) {
+          this.log.info('Night vision on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
         }
       });
 
-      operatingModeService.getCharacteristic(this.hap.Characteristic.NightVision).onGet(() => {
+      this.operatingModeService.getCharacteristic(this.hap.Characteristic.NightVision).onGet(() => {
         return this.deviceData.irled_enabled;
       });
     }
 
-    if (this.deviceData.has_microphone === true) {
-      recordingManagementService.getCharacteristic(this.hap.Characteristic.RecordingAudioActive).onSet((value) => {
-        if (
-          (this.deviceData.audio_enabled === false && value === this.hap.Characteristic.RecordingAudioActive.ENABLE) ||
-          (this.deviceData.audio_enabled === true && value === this.hap.Characteristic.RecordingAudioActive.DISABLE)
-        ) {
-          // only change audio recording value if different than on-device
-
-          this.set({ 'audio.enabled': value === this.hap.Characteristic.RecordingAudioActive.ENABLE ? true : false });
-          if (this.log.info) {
-            this.log.info(
-              'Audio recording on "%s" was turned',
-              this.deviceData.description,
-              value === this.hap.Characteristic.RecordingAudioActive.ENABLE ? 'on' : 'off',
-            );
+    if (this.operatingModeService !== undefined) {
+      this.operatingModeService.getCharacteristic(this.hap.Characteristic.HomeKitCameraActive).onSet((value) => {
+        if (value !== this.operatingModeService.getCharacteristic(this.hap.Characteristic.HomeKitCameraActive).value) {
+          // Make sure only updating status if HomeKit value *actually changes*
+          if ((this.deviceData.streaming_enabled === false && value === 1) || (this.deviceData.streaming_enabled === true && value === 0)) {
+            // Camera state does not reflect requested state, so fix
+            this.set({ 'streaming.enabled': value === 1 ? true : false });
+            if (this.log.info) {
+              this.log.info('Camera on "%s" was turned', this.deviceData.description, value === 1 ? 'on' : 'off');
+            }
           }
         }
       });
 
-      recordingManagementService.getCharacteristic(this.hap.Characteristic.RecordingAudioActive).onGet(() => {
-        return this.deviceData.audio_enabled === true
-          ? this.hap.Characteristic.RecordingAudioActive.ENABLE
-          : this.hap.Characteristic.RecordingAudioActive.DISABLE;
+      this.operatingModeService.getCharacteristic(this.hap.Characteristic.HomeKitCameraActive).onGet(() => {
+        return this.deviceData.streaming_enabled === true ? 1 : 0;
       });
     }
 
-    operatingModeService.getCharacteristic(this.hap.Characteristic.HomeKitCameraActive).onSet((value) => {
-      if (value !== operatingModeService.getCharacteristic(this.hap.Characteristic.HomeKitCameraActive).value) {
-        // Make sure only updating status if HomeKit value *actually changes*
-        if (
-          (this.deviceData.streaming_enabled === false && value === this.hap.Characteristic.HomeKitCameraActive.ON) ||
-          (this.deviceData.streaming_enabled === true && value === this.hap.Characteristic.HomeKitCameraActive.OFF)
-        ) {
-          // Camera state does not reflect HKSV requested state, so fix
-          this.set({ 'streaming.enabled': value === this.hap.Characteristic.HomeKitCameraActive.ON ? true : false });
-          if (this.log.info) {
-            this.log.info(
-              'Camera on "%s" was turned',
-              this.deviceData.description,
-              value === this.hap.Characteristic.HomeKitCameraActive.ON ? 'on' : 'off',
-            );
-          }
-        }
-        if (typeof this.motionServices?.[1]?.service === 'object') {
-          // Clear any inflight motion regardless of state-change
-          this.motionServices[1].service.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
-        }
+    if (this.deviceData.has_video_flip === true && this.operatingModeService !== undefined) {
+      if (this.operatingModeService.testCharacteristic(this.hap.Characteristic.ImageRotation) === false) {
+        this.operatingModeService.addOptionalCharacteristic(this.hap.Characteristic.ImageRotation);
       }
-    });
 
-    operatingModeService.getCharacteristic(this.hap.Characteristic.HomeKitCameraActive).onGet(() => {
-      return this.deviceData.streaming_enabled === true
-        ? this.hap.Characteristic.HomeKitCameraActive.ON
-        : this.hap.Characteristic.HomeKitCameraActive.OFF;
-    });
+      this.operatingModeService.getCharacteristic(this.hap.Characteristic.ImageRotation).onGet(() => {
+        return this.deviceData.video_flipped === true ? 180 : 0;
+      });
+    }
+
+    if (this.deviceData.has_irled === true && this.operatingModeService !== undefined) {
+      if (this.operatingModeService.testCharacteristic(this.hap.Characteristic.ManuallyDisabled) === false) {
+        this.operatingModeService.addOptionalCharacteristic(this.hap.Characteristic.ManuallyDisabled);
+      }
+
+      this.operatingModeService.getCharacteristic(this.hap.Characteristic.ManuallyDisabled).onGet(() => {
+        return this.deviceData.streaming_enabled === true ? 0 : 1;
+      });
+    }
+
+    if (this.deviceData.has_microphone === true && this.controller?.recordingManagement?.recordingManagementService !== undefined) {
+      this.controller.recordingManagement.recordingManagementService
+        .getCharacteristic(this.hap.Characteristic.RecordingAudioActive)
+        .onSet((value) => {
+          this.set({ 'audio.enabled': value === 1 ? true : false });
+          if (this?.log?.info) {
+            this.log.info('Audio recording on "%s" was turned', this.deviceData.description, value === 1 ? 'on' : 'off');
+          }
+        });
+
+      this.controller.recordingManagement.recordingManagementService
+        .getCharacteristic(this.hap.Characteristic.RecordingAudioActive)
+        .onGet(() => {
+          return this.deviceData.audio_enabled === true ? 1 : 0;
+        });
+    }
   }
 
   generateControllerOptions() {
     // Setup HomeKit controller camera/doorbell options
     let controllerOptions = {
-      cameraStreamCount: 2, // HomeKit requires at least 2 streams, but 1 is also just fine
+      cameraStreamCount: this.deviceData.maxStreams,
       delegate: this,
       streamingOptions: {
-        supportedCryptoSuites: [HAP.SRTPCryptoSuites.NONE, HAP.SRTPCryptoSuites.AES_CM_128_HMAC_SHA1_80],
+        supportedCryptoSuites: [this.hap.SRTPCryptoSuites.NONE, this.hap.SRTPCryptoSuites.AES_CM_128_HMAC_SHA1_80],
         video: {
           resolutions: [
             // width, height, framerate
@@ -1183,17 +1182,17 @@ export default class NestCamera extends HomeKitDevice {
             [320, 180, 15],
           ],
           codec: {
-            type: HAP.VideoCodecType.H264,
-            profiles: [HAP.H264Profile.BASELINE, HAP.H264Profile.MAIN, HAP.H264Profile.HIGH],
-            levels: [HAP.H264Level.LEVEL3_1, HAP.H264Level.LEVEL3_2, HAP.H264Level.LEVEL4_0],
+            type: this.hap.VideoCodecType.H264,
+            profiles: [this.hap.H264Profile.BASELINE, this.hap.H264Profile.MAIN, this.hap.H264Profile.HIGH],
+            levels: [this.hap.H264Level.LEVEL3_1, this.hap.H264Level.LEVEL3_2, this.hap.H264Level.LEVEL4_0],
           },
         },
         audio: {
           twoWayAudio: this.deviceData.has_speaker === true && this.deviceData.has_microphone === true,
           codecs: [
             {
-              type: HAP.AudioStreamingCodecType.AAC_ELD,
-              samplerate: HAP.AudioStreamingSamplerate.KHZ_16,
+              type: this.hap.AudioStreamingCodecType.AAC_ELD,
+              samplerate: this.hap.AudioStreamingSamplerate.KHZ_16,
               audioChannel: 1,
             },
           ],
@@ -1207,11 +1206,11 @@ export default class NestCamera extends HomeKitDevice {
       controllerOptions.recording = {
         delegate: this,
         options: {
-          overrideEventTriggerOptions: [HAP.EventTriggerOption.MOTION],
+          overrideEventTriggerOptions: [this.hap.EventTriggerOption.MOTION],
           mediaContainerConfiguration: [
             {
               fragmentLength: 4000,
-              type: HAP.MediaContainerType.FRAGMENTED_MP4,
+              type: this.hap.MediaContainerType.FRAGMENTED_MP4,
             },
           ],
           prebufferLength: 4000, // Seems to always be 4000???
@@ -1234,16 +1233,16 @@ export default class NestCamera extends HomeKitDevice {
               [320, 180, 15],
             ],
             parameters: {
-              profiles: [HAP.H264Profile.BASELINE, HAP.H264Profile.MAIN, HAP.H264Profile.HIGH],
-              levels: [HAP.H264Level.LEVEL3_1, HAP.H264Level.LEVEL3_2, HAP.H264Level.LEVEL4_0],
+              profiles: [this.hap.H264Profile.BASELINE, this.hap.H264Profile.MAIN, this.hap.H264Profile.HIGH],
+              levels: [this.hap.H264Level.LEVEL3_1, this.hap.H264Level.LEVEL3_2, this.hap.H264Level.LEVEL4_0],
             },
-            type: HAP.VideoCodecType.H264,
+            type: this.hap.VideoCodecType.H264,
           },
           audio: {
             codecs: [
               {
-                type: HAP.AudioRecordingCodecType.AAC_LC,
-                samplerate: HAP.AudioRecordingSamplerate.KHZ_16,
+                type: this.hap.AudioRecordingCodecType.AAC_LC,
+                samplerate: this.hap.AudioRecordingSamplerate.KHZ_16,
                 audioChannel: 1,
               },
             ],

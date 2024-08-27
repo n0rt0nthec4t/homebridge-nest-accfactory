@@ -55,9 +55,8 @@ export default class NestDoorbell extends NestCamera {
         if (value !== this.deviceData.indoor_chime_enabled) {
           // only change indoor chime status value if different than on-device
           this.set({ 'doorbell.indoor_chime.enabled': value });
-          if (this?.log?.info) {
-            this.log.info('Indoor chime on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
-          }
+
+          this?.log?.info && this.log.info('Indoor chime on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
         }
       });
 
@@ -71,15 +70,15 @@ export default class NestDoorbell extends NestCamera {
       this.accessory.removeService(this.switchService);
     }
 
-    // Setup HomeKit Secure Video characteristics after we have a controller created
-    this.createCameraHKSVServices();
+    // Setup additional services/characteristics after we have a controller created
+    this.createCameraServices();
 
     // Setup our streaming object
     this.NexusStreamer = new NexusStreamer(this.deviceData, { log: this.log });
 
     // Setup linkage to EveHome app if configured todo so
     if (
-      this.deviceData?.eveApp === true &&
+      this.deviceData?.eveHistory === true &&
       typeof this.motionServices?.[1]?.service === 'object' &&
       typeof this.historyService?.linkToEveHome === 'function'
     ) {
@@ -98,11 +97,10 @@ export default class NestDoorbell extends NestCamera {
   removeServices() {
     super.removeServices();
 
-    clearTimeout(this.doorbellTimer);
+    this.doorbellTimer = clearTimeout(this.doorbellTimer);
     if (this.switchService !== undefined) {
       this.accessory.removeService(this.switchService);
     }
-    this.doorbellTimer = undefined;
     this.switchService = undefined;
   }
 
@@ -154,15 +152,11 @@ export default class NestDoorbell extends NestCamera {
 
         if (deviceData.indoor_chime_enabled === false || deviceData.quiet_time_enabled === true) {
           // Indoor chime is disabled or quiet time is enabled, so we won't 'ring' the doorbell
-          if (this?.log?.warn) {
-            this.log.warn('Doorbell pressed on "%s" but indoor chime is silenced', this.deviceData.description);
-          }
+          this?.log?.warn && this.log.warn('Doorbell rung at "%s" but indoor chime is silenced', this.deviceData.description);
         }
         if (deviceData.indoor_chime_enabled === true && deviceData.quiet_time_enabled === false) {
           // Indoor chime is enabled and quiet time isn't enabled, so 'ring' the doorbell
-          if (this?.log?.info) {
-            this.log.info('Doorbell pressed on "%s"', this.deviceData.description);
-          }
+          this?.log?.info && this.log.info('Doorbell rung at "%s"', this.deviceData.description);
           this.controller.ringDoorbell();
         }
 

@@ -1,7 +1,7 @@
 // Nest Protect
 // Part of homebridge-nest-accfactory
 //
-// Code version 21/8/2024
+// Code version 27/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -67,7 +67,11 @@ export default class NestProtect extends HomeKitDevice {
     }
 
     // Setup linkage to EveHome app if configured todo so
-    if (this.deviceData?.eveApp === true && this.smokeService !== undefined && typeof this.historyService?.linkToEveHome === 'function') {
+    if (
+      this.deviceData?.eveHistory === true &&
+      this.smokeService !== undefined &&
+      typeof this.historyService?.linkToEveHome === 'function'
+    ) {
       this.historyService.linkToEveHome(this.smokeService, {
         description: this.deviceData.description,
         getcommand: this.#EveHomeGetcommand.bind(this),
@@ -165,7 +169,7 @@ export default class NestProtect extends HomeKitDevice {
     }
 
     // Notify Eve App of device status changes if linked
-    if (this.deviceData.eveApp === true && typeof this.historyService?.updateEveHome === 'function') {
+    if (this.deviceData.eveHistory === true && typeof this.historyService?.updateEveHome === 'function') {
       // Update our internal data with properties Eve will need to process
       this.deviceData.latest_alarm_test = deviceData.latest_alarm_test;
       this.deviceData.self_test_in_progress = deviceData.self_test_in_progress;
