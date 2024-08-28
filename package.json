@@ -35,7 +35,6 @@
         "homebridge",
         "homebridge-plugin",
         "hksv",
-        "hap-nodejs",
         "nest",
         "doorbell",
         "camera",
