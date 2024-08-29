@@ -2,12 +2,9 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 27/8/2024
+// Code version 28/8/2024
 // Mark Hulskamp
 'use strict';
-
-// Define HAP module requirements
-import HAP from 'hap-nodejs';
 
 // Define external module requirements
 import axios from 'axios';
@@ -934,21 +931,21 @@ export default class NestAccfactory {
           if (object.object_key === deviceData.uuid && deviceData.excluded === false) {
             // Device isn't marked as excluded, so create the required HomeKit accessories based upon the device data
             if (deviceData.device_type === NestAccfactory.DeviceType.THERMOSTAT && typeof NestThermostat === 'function') {
-              // Nest Thermostat(s)
+              // Nest Thermostat(s) - Categories.THERMOSTAT = 9
               let tempDevice = new NestThermostat(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
-              tempDevice.add('Nest Thermostat', HAP.Categories.THERMOSTAT, true);
+              tempDevice.add('Nest Thermostat', 9, true);
             }
 
             if (deviceData.device_type === NestAccfactory.DeviceType.TEMPSENSOR && typeof NestTemperatureSensor === 'function') {
-              // Nest Temperature Sensor
+              // Nest Temperature Sensor - Categories.SENSOR = 10
               let tempDevice = new NestTemperatureSensor(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
-              tempDevice.add('Nest Temperature Sensor', HAP.Categories.SENSOR, true);
+              tempDevice.add('Nest Temperature Sensor', 10, true);
             }
 
             if (deviceData.device_type === NestAccfactory.DeviceType.SMOKESENSOR && typeof NestProtect === 'function') {
-              // Nest Protect(s)
+              // Nest Protect(s) - Categories.SENSOR = 10
               let tempDevice = new NestProtect(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
-              tempDevice.add('Nest Protect', HAP.Categories.SENSOR, true);
+              tempDevice.add('Nest Protect', 10, true);
             }
 
             if (
@@ -958,12 +955,14 @@ export default class NestAccfactory {
             ) {
               let accessoryName = 'Nest ' + deviceData.model.replace(/\s*(?:\([^()]*\))/gi, '');
               if (deviceData.device_type === NestAccfactory.DeviceType.CAMERA) {
+                // Nest Camera(s) - Categories.IP_CAMERA = 17
                 let tempDevice = new NestCamera(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
-                tempDevice.add(accessoryName, HAP.Categories.IP_CAMERA, true);
+                tempDevice.add(accessoryName, 17, true);
               }
               if (deviceData.device_type === NestAccfactory.DeviceType.DOORBELL) {
+                // Nest Doorbell(s) - Categories.VIDEO_DOORBELL = 18
                 let tempDevice = new NestDoorbell(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
-                tempDevice.add(accessoryName, HAP.Categories.VIDEO_DOORBELL, true);
+                tempDevice.add(accessoryName, 18, true);
               }
 
               // Setup polling loop for camera/doorbell zone data if not already created.
@@ -1199,9 +1198,9 @@ export default class NestAccfactory {
             }
 
             if (deviceData.device_type === NestAccfactory.DeviceType.WEATHER && typeof NestWeather === 'function') {
-              // Nest 'Virtual' weather station
+              // Nest 'Virtual' weather station - Categories.SENSOR = 10
               let tempDevice = new NestWeather(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
-              tempDevice.add('Nest Weather', HAP.Categories.SENSOR, true);
+              tempDevice.add('Nest Weather', 10, true);
 
               // Setup polling loop for weather data if not already created
               if (typeof this.#rawData[object.object_key]?.timers?.weather === 'undefined') {

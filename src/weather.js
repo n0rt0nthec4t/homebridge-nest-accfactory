@@ -1,13 +1,12 @@
 // Nest 'virtual' weather station
 // Part of homebridge-nest-accfactory
 //
-// Code version 27/8/2024
+// Code version 28/8/2024
 // Mark Hulskamp
 'use strict';
 
 // Define our modules
 import HomeKitDevice from './HomeKitDevice.js';
-import HAP from 'hap-nodejs';
 
 export default class NestWeather extends HomeKitDevice {
   batteryService = undefined;
@@ -42,48 +41,54 @@ export default class NestWeather extends HomeKitDevice {
     this.batteryService.setHiddenService(true);
 
     // Add custom weather service and characteristics if they have been defined
-    if (HAP.Service?.EveAirPressureSensor !== undefined) {
-      this.airPressureService = this.accessory.getService(HAP.Service.EveAirPressureSensor);
+    if (this.hap.Service?.EveAirPressureSensor !== undefined) {
+      this.airPressureService = this.accessory.getService(this.hap.Service.EveAirPressureSensor);
       if (this.airPressureService === undefined) {
-        this.airPressureService = this.accessory.addService(HAP.Service.EveAirPressureSensor, '', 1);
+        this.airPressureService = this.accessory.addService(this.hap.Service.EveAirPressureSensor, '', 1);
       }
     }
 
     if (
-      HAP.Characteristic?.ForecastDay !== undefined &&
-      this.temperatureService.testCharacteristic(HAP.Characteristic.ForecastDay) === false
+      this.hap.Characteristic?.ForecastDay !== undefined &&
+      this.temperatureService.testCharacteristic(this.hap.Characteristic.ForecastDay) === false
     ) {
-      this.temperatureService.addCharacteristic(HAP.Characteristic.ForecastDay);
+      this.temperatureService.addCharacteristic(this.hap.Characteristic.ForecastDay);
     }
     if (
-      HAP.Characteristic?.ObservationStation !== undefined &&
-      this.temperatureService.testCharacteristic(HAP.Characteristic.ObservationStation) === false
+      this.hap.Characteristic?.ObservationStation !== undefined &&
+      this.temperatureService.testCharacteristic(this.hap.Characteristic.ObservationStation) === false
     ) {
-      this.temperatureService.addCharacteristic(HAP.Characteristic.ObservationStation);
-    }
-    if (HAP.Characteristic?.Condition !== undefined && this.temperatureService.testCharacteristic(HAP.Characteristic.Condition) === false) {
-      this.temperatureService.addCharacteristic(HAP.Characteristic.Condition);
+      this.temperatureService.addCharacteristic(this.hap.Characteristic.ObservationStation);
     }
     if (
-      HAP.Characteristic?.WindDirection !== undefined &&
-      this.temperatureService.testCharacteristic(HAP.Characteristic.WindDirection) === false
+      this.hap.Characteristic?.Condition !== undefined &&
+      this.temperatureService.testCharacteristic(this.hap.Characteristic.Condition) === false
     ) {
-      this.temperatureService.addCharacteristic(HAP.Characteristic.WindDirection);
-    }
-    if (HAP.Characteristic?.WindSpeed !== undefined && this.temperatureService.testCharacteristic(HAP.Characteristic.WindSpeed) === false) {
-      this.temperatureService.addCharacteristic(HAP.Characteristic.WindSpeed);
+      this.temperatureService.addCharacteristic(this.hap.Characteristic.Condition);
     }
     if (
-      HAP.Characteristic?.SunriseTime !== undefined &&
-      this.temperatureService.testCharacteristic(HAP.Characteristic.SunriseTime) === false
+      this.hap.Characteristic?.WindDirection !== undefined &&
+      this.temperatureService.testCharacteristic(this.hap.Characteristic.WindDirection) === false
     ) {
-      this.temperatureService.addCharacteristic(HAP.Characteristic.SunriseTime);
+      this.temperatureService.addCharacteristic(this.hap.Characteristic.WindDirection);
     }
     if (
-      HAP.Characteristic?.SunsetTime !== undefined &&
-      this.temperatureService.testCharacteristic(HAP.Characteristic.SunsetTime) === false
+      this.hap.Characteristic?.WindSpeed !== undefined &&
+      this.temperatureService.testCharacteristic(this.hap.Characteristic.WindSpeed) === false
     ) {
-      this.temperatureService.addCharacteristic(HAP.Characteristic.SunsetTime);
+      this.temperatureService.addCharacteristic(this.hap.Characteristic.WindSpeed);
+    }
+    if (
+      this.hap.Characteristic?.SunriseTime !== undefined &&
+      this.temperatureService.testCharacteristic(this.hap.Characteristic.SunriseTime) === false
+    ) {
+      this.temperatureService.addCharacteristic(this.hap.Characteristic.SunriseTime);
+    }
+    if (
+      this.hap.Characteristic?.SunsetTime !== undefined &&
+      this.temperatureService.testCharacteristic(this.hap.Characteristic.SunsetTime) === false
+    ) {
+      this.temperatureService.addCharacteristic(this.hap.Characteristic.SunsetTime);
     }
 
     // Setup linkage to EveHome app if configured todo so
@@ -126,61 +131,61 @@ export default class NestWeather extends HomeKitDevice {
     this.humidityService.updateCharacteristic(this.hap.Characteristic.CurrentRelativeHumidity, deviceData.current_humidity);
 
     if (this.airPressureService !== undefined) {
-      //this.airPressureService.updateCharacteristic(HAP.Characteristic.EveAirPressure, 0);   // Where from??
-      this.airPressureService.updateCharacteristic(HAP.Characteristic.EveElevation, deviceData.elevation);
+      //this.airPressureService.updateCharacteristic(this.hap.Characteristic.EveAirPressure, 0);   // Where from??
+      this.airPressureService.updateCharacteristic(this.hap.Characteristic.EveElevation, deviceData.elevation);
     }
 
     // Update custom characteristics if present on the accessory
     if (
-      HAP.Characteristic?.ForecastDay !== undefined &&
-      this.temperatureService.testCharacteristic(HAP.Characteristic.ForecastDay) === true &&
+      this.hap.Characteristic?.ForecastDay !== undefined &&
+      this.temperatureService.testCharacteristic(this.hap.Characteristic.ForecastDay) === true &&
       this.deviceData?.forecast !== undefined
     ) {
-      this.temperatureService.updateCharacteristic(HAP.Characteristic.ForecastDay, deviceData.forecast);
+      this.temperatureService.updateCharacteristic(this.hap.Characteristic.ForecastDay, deviceData.forecast);
     }
     if (
-      HAP.Characteristic?.ObservationStation !== undefined &&
-      this.temperatureService.testCharacteristic(HAP.Characteristic.ObservationStation) === true &&
+      this.hap.Characteristic?.ObservationStation !== undefined &&
+      this.temperatureService.testCharacteristic(this.hap.Characteristic.ObservationStation) === true &&
       this.deviceData?.station !== undefined
     ) {
-      this.temperatureService.updateCharacteristic(HAP.Characteristic.ObservationStation, deviceData.station);
+      this.temperatureService.updateCharacteristic(this.hap.Characteristic.ObservationStation, deviceData.station);
     }
     if (
-      HAP.Characteristic?.Condition !== undefined &&
-      this.temperatureService.testCharacteristic(HAP.Characteristic.Condition) === true &&
+      this.hap.Characteristic?.Condition !== undefined &&
+      this.temperatureService.testCharacteristic(this.hap.Characteristic.Condition) === true &&
       this.deviceData?.condition !== undefined
     ) {
-      this.temperatureService.updateCharacteristic(HAP.Characteristic.Condition, deviceData.condition);
+      this.temperatureService.updateCharacteristic(this.hap.Characteristic.Condition, deviceData.condition);
     }
     if (
-      HAP.Characteristic?.WindDirection !== undefined &&
-      this.temperatureService.testCharacteristic(HAP.Characteristic.WindDirection) === true &&
+      this.hap.Characteristic?.WindDirection !== undefined &&
+      this.temperatureService.testCharacteristic(this.hap.Characteristic.WindDirection) === true &&
       this.deviceData?.wind_direction !== undefined
     ) {
-      this.temperatureService.updateCharacteristic(HAP.Characteristic.WindDirection, deviceData.wind_direction);
+      this.temperatureService.updateCharacteristic(this.hap.Characteristic.WindDirection, deviceData.wind_direction);
     }
     if (
-      HAP.Characteristic?.WindSpeed !== undefined &&
-      this.temperatureService.testCharacteristic(HAP.Characteristic.WindSpeed) === true &&
+      this.hap.Characteristic?.WindSpeed !== undefined &&
+      this.temperatureService.testCharacteristic(this.hap.Characteristic.WindSpeed) === true &&
       this.deviceData?.wind_speed !== undefined
     ) {
-      this.temperatureService.updateCharacteristic(HAP.Characteristic.WindSpeed, deviceData.wind_speed);
+      this.temperatureService.updateCharacteristic(this.hap.Characteristic.WindSpeed, deviceData.wind_speed);
     }
     if (
-      HAP.Characteristic?.SunriseTime !== undefined &&
-      this.temperatureService.testCharacteristic(HAP.Characteristic.SunriseTime) === true &&
+      this.hap.Characteristic?.SunriseTime !== undefined &&
+      this.temperatureService.testCharacteristic(this.hap.Characteristic.SunriseTime) === true &&
       this.deviceData?.sunrise !== undefined
     ) {
       let dateString = new Date(deviceData.sunrise * 1000).toLocaleTimeString();
-      this.temperatureService.updateCharacteristic(HAP.Characteristic.SunriseTime, dateString);
+      this.temperatureService.updateCharacteristic(this.hap.Characteristic.SunriseTime, dateString);
     }
     if (
-      HAP.Characteristic?.SunsetTime !== undefined &&
-      this.temperatureService.testCharacteristic(HAP.Characteristic.SunsetTime) === true &&
+      this.hap.Characteristic?.SunsetTime !== undefined &&
+      this.temperatureService.testCharacteristic(this.hap.Characteristic.SunsetTime) === true &&
       this.deviceData?.sunset !== undefined
     ) {
       let dateString = new Date(deviceData.sunset * 1000).toLocaleTimeString();
-      this.temperatureService.updateCharacteristic(HAP.Characteristic.SunsetTime, dateString);
+      this.temperatureService.updateCharacteristic(this.hap.Characteristic.SunsetTime, dateString);
     }
 
     // If we have the history service running, record temperature and humity every 5mins

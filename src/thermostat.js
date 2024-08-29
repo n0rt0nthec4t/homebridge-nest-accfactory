@@ -188,6 +188,7 @@ export default class NestThermostat extends HomeKitDevice {
     if (this.occupancyService.testCharacteristic(this.hap.Characteristic.StatusFault) === false) {
       this.occupancyService.addCharacteristic(this.hap.Characteristic.StatusFault);
     }
+    this.thermostatService.addLinkedService(this.occupancyService);
 
     // Setup battery service if not already present on the accessory
     this.batteryService = this.accessory.getService(this.hap.Service.Battery);
@@ -203,6 +204,8 @@ export default class NestThermostat extends HomeKitDevice {
       if (this.fanService === undefined) {
         this.fanService = this.accessory.addService(this.hap.Service.Fanv2, '', 1);
       }
+      this.thermostatService.addLinkedService(this.fanService);
+
       this.fanService.getCharacteristic(this.hap.Characteristic.Active).onSet((value) => {
         this.setFan(value);
       });
@@ -221,6 +224,8 @@ export default class NestThermostat extends HomeKitDevice {
       if (this.dehumidifierService === undefined) {
         this.dehumidifierService = this.accessory.addService(this.hap.Service.HumidifierDehumidifier, '', 1);
       }
+      this.thermostatService.addLinkedService(this.dehumidifierService);
+
       this.dehumidifierService.getCharacteristic(this.hap.Characteristic.TargetHumidifierDehumidifierState).setProps({
         validValues: [this.hap.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER],
       });
@@ -244,6 +249,7 @@ export default class NestThermostat extends HomeKitDevice {
       if (this.humidityService === undefined) {
         this.humidityService = this.accessory.addService(this.hap.Service.HumiditySensor, '', 1);
       }
+      this.thermostatService.addLinkedService(this.humidityService);
     }
     if (this.deviceData?.humiditySensor === false && this.humidityService !== undefined) {
       // No longer have a seperate humidity sensor configure and service present, so removed it
@@ -630,6 +636,7 @@ export default class NestThermostat extends HomeKitDevice {
       if (deviceData.has_fan === true && this.deviceData.has_fan === false && this.fanService === undefined) {
         // Fan has been added
         this.fanService = this.accessory.addService(this.hap.Service.Fanv2, '', 1);
+        this.thermostatService.addLinkedService(this.fanService);
 
         this.fanService.getCharacteristic(this.hap.Characteristic.Active).onSet((value) => {
           this.setFan(value);
@@ -658,6 +665,7 @@ export default class NestThermostat extends HomeKitDevice {
       if (deviceData.has_dehumidifier === true && this.deviceData.has_dehumidifier === false && this.dehumidifierService === undefined) {
         // Dehumidifier has been added
         this.dehumidifierService = this.accessory.addService(this.hap.Service.HumidifierDehumidifier, '', 1);
+        this.thermostatService.addLinkedService(this.dehumidifierService);
 
         this.dehumidifierService.getCharacteristic(this.hap.Characteristic.TargetHumidifierDehumidifierState).setProps({
           validValues: [this.hap.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER],

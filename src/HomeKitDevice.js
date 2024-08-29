@@ -37,7 +37,7 @@
 // HomeKitDevice.updateServices(deviceData)
 // HomeKitDevice.messageServices(type, message)
 //
-// Code version 24/8/2024
+// Code version 28/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -210,7 +210,7 @@ export default class HomeKitDevice {
 
     // Setup our history service if module has been defined and requested to be active for this device
     if (typeof HomeKitDevice?.HISTORY === 'function' && this.historyService === undefined && useHistoryService === true) {
-      this.historyService = new HomeKitDevice.HISTORY(this.accessory, this.log, {});
+      this.historyService = new HomeKitDevice.HISTORY(this.accessory, this.log, this.hap, {});
     }
 
     if (typeof this.addServices === 'function') {

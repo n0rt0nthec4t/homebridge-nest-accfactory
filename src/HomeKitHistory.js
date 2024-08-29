@@ -8,11 +8,8 @@
 // -- Eve Degree/Weather2 history
 // -- Eve Water guard history
 //
-// Version 21/8/2024
+// Version 28/8/2024
 // Mark Hulskamp
-
-// Define HAP-NodeJS requirements
-import HAP from 'hap-nodejs';
 
 // Define nodejs module requirements
 import { setTimeout } from 'node:timers';
@@ -28,12 +25,13 @@ const DAYSOFWEEK = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
 // Create the history object
 export default class HomeKitHistory {
-  log = undefined;
+  accessory = undefined; // Accessory service for this history
+  hap = undefined; // HomeKit Accessory Protocol API stub
+  log = undefined; // Logging function object
   maxEntries = MAX_HISTORY_SIZE; // used for rolling history. if 0, means no rollover
-  accessory = undefined;
   EveHome = undefined;
 
-  constructor(accessory, log, options) {
+  constructor(accessory, log, api, options) {
     // Validate the passed in logging object. We are expecting certain functions to be present
     if (
       typeof log?.info === 'function' &&
@@ -55,6 +53,20 @@ export default class HomeKitHistory {
       }
     }
 
+    // Workout if we're running under HomeBridge or HAP-NodeJS library
+    if (typeof api?.version === 'number' && typeof api?.hap === 'object' && typeof api?.HAPLibraryVersion === 'undefined') {
+      // We have the HomeBridge version number and hap API object
+      this.hap = api.hap;
+    }
+
+    if (typeof api?.HAPLibraryVersion === 'function' && typeof api?.version === 'undefined' && typeof api?.hap === 'undefined') {
+      // As we're missing the HomeBridge entry points but have the HAP library version
+      this.hap = api;
+    }
+
+    // Dynamically create the additional services and characteristics
+    this.#createHomeKitServicesAndCharacteristics();
+
     // Setup HomeKitHistory using HAP-NodeJS library
     if (typeof accessory?.username !== 'undefined') {
       // Since we have a username for the accessory, we'll assume this is not running under Homebridge
@@ -67,7 +79,7 @@ export default class HomeKitHistory {
       this.storageKey = util.format('History.%s.json', accessory.UUID);
     }
 
-    this.storage = HAP.HAPStorage.storage();
+    this.storage = this.hap.HAPStorage.storage();
 
     this.historyData = this.storage.getItem(this.storageKey);
     if (typeof this.historyData !== 'object') {
@@ -105,7 +117,7 @@ export default class HomeKitHistory {
       timegap = 0; // Zero minimum time gap between entries
     }
     switch (service.UUID) {
-      case HAP.Service.GarageDoorOpener.UUID: {
+      case this.hap.Service.GarageDoorOpener.UUID: {
         // Garage door history
         // entry.time => unix time in seconds
         // entry.status => 0 = closed, 1 = open
@@ -117,7 +129,7 @@ export default class HomeKitHistory {
         break;
       }
 
-      case HAP.Service.MotionSensor.UUID: {
+      case this.hap.Service.MotionSensor.UUID: {
         // Motion sensor history
         // entry.time => unix time in seconds
         // entry.status => 0 = motion cleared, 1 = motion detected
@@ -129,8 +141,8 @@ export default class HomeKitHistory {
         break;
       }
 
-      case HAP.Service.Window.UUID:
-      case HAP.Service.WindowCovering.UUID: {
+      case this.hap.Service.Window.UUID:
+      case this.hap.Service.WindowCovering.UUID: {
         // Window and Window Covering history
         // entry.time => unix time in seconds
         // entry.status => 0 = closed, 1 = open
@@ -144,8 +156,8 @@ export default class HomeKitHistory {
         break;
       }
 
-      case HAP.Service.HeaterCooler.UUID:
-      case HAP.Service.Thermostat.UUID: {
+      case this.hap.Service.HeaterCooler.UUID:
+      case this.hap.Service.Thermostat.UUID: {
         // Thermostat and Heater/Cooler history
         // entry.time => unix time in seconds
         // entry.status => 0 = off, 1 = fan, 2 = heating, 3 = cooling, 4 = dehumidifying
@@ -163,9 +175,9 @@ export default class HomeKitHistory {
         break;
       }
 
-      case HAP.Service.EveAirPressureSensor.UUID:
-      case HAP.Service.AirQualitySensor.UUID:
-      case HAP.Service.TemperatureSensor.UUID: {
+      case this.hap.Service.EveAirPressureSensor.UUID:
+      case this.hap.Service.AirQualitySensor.UUID:
+      case this.hap.Service.TemperatureSensor.UUID: {
         // Temperature sensor history
         // entry.time => unix time in seconds
         // entry.temperature => current temperature in degress C
@@ -202,7 +214,7 @@ export default class HomeKitHistory {
         break;
       }
 
-      case HAP.Service.Valve.UUID: {
+      case this.hap.Service.Valve.UUID: {
         // Water valve history
         // entry.time => unix time in seconds
         // entry.status => 0 = valve closed, 1 = valve opened
@@ -218,7 +230,7 @@ export default class HomeKitHistory {
         break;
       }
 
-      case HAP.Characteristic.WaterLevel.UUID: {
+      case this.hap.Characteristic.WaterLevel.UUID: {
         // Water level history
         // entry.time => unix time in seconds
         // entry.level => water level as percentage
@@ -230,7 +242,7 @@ export default class HomeKitHistory {
         break;
       }
 
-      case HAP.Service.LeakSensor.UUID: {
+      case this.hap.Service.LeakSensor.UUID: {
         // Leak sensor history
         // entry.time => unix time in seconds
         // entry.status => 0 = no leak, 1 = leak
@@ -242,7 +254,7 @@ export default class HomeKitHistory {
         break;
       }
 
-      case HAP.Service.Outlet.UUID: {
+      case this.hap.Service.Outlet.UUID: {
         // Power outlet history
         // entry.time => unix time in seconds
         // entry.status => 0 = off, 1 = on
@@ -260,7 +272,7 @@ export default class HomeKitHistory {
         break;
       }
 
-      case HAP.Service.Doorbell.UUID: {
+      case this.hap.Service.Doorbell.UUID: {
         // Doorbell press history
         // entry.time => unix time in seconds
         // entry.status => 0 = not pressed, 1 = doorbell pressed
@@ -272,7 +284,7 @@ export default class HomeKitHistory {
         break;
       }
 
-      case HAP.Service.SmokeSensor.UUID: {
+      case this.hap.Service.SmokeSensor.UUID: {
         // Smoke sensor history
         // entry.time => unix time in seconds
         // entry.status => 0 = smoke cleared, 1 = smoke detected
@@ -509,19 +521,19 @@ export default class HomeKitHistory {
     }
 
     switch (service.UUID) {
-      case HAP.Service.ContactSensor.UUID:
-      case HAP.Service.Door.UUID:
-      case HAP.Service.Window.UUID:
-      case HAP.Service.GarageDoorOpener.UUID: {
+      case this.hap.Service.ContactSensor.UUID:
+      case this.hap.Service.Door.UUID:
+      case this.hap.Service.Window.UUID:
+      case this.hap.Service.GarageDoorOpener.UUID: {
         // treat these as EveHome Door
-        // Inverse status used for all UUID types except HAP.Service.ContactSensor.UUID
+        // Inverse status used for all UUID types except this.hap.Service.ContactSensor.UUID
 
         // Setup the history service and the required characteristics for this service UUID type
         // Callbacks setup below after this is created
         let historyService = this.#createHistoryService(service, [
-          HAP.Characteristic.EveLastActivation,
-          HAP.Characteristic.EveOpenDuration,
-          HAP.Characteristic.EveTimesOpened,
+          this.hap.Characteristic.EveLastActivation,
+          this.hap.Characteristic.EveOpenDuration,
+          this.hap.Characteristic.EveTimesOpened,
         ]);
 
         let tempHistory = this.getHistory(service.UUID, service.subtype);
@@ -535,7 +547,7 @@ export default class HomeKitHistory {
           linkedservice: service,
           type: service.UUID,
           sub: service.subtype,
-          evetype: service.UUID === HAP.Service.ContactSensor.UUID ? 'contact' : 'door',
+          evetype: service.UUID === this.hap.Service.ContactSensor.UUID ? 'contact' : 'door',
           fields: '0601',
           entry: 0,
           count: tempHistory.length,
@@ -545,30 +557,30 @@ export default class HomeKitHistory {
 
         // Setup initial values and callbacks for charateristics we are using
         service.updateCharacteristic(
-          HAP.Characteristic.EveTimesOpened,
+          this.hap.Characteristic.EveTimesOpened,
           this.entryCount(this.EveHome.type, this.EveHome.sub, { status: 1 }),
         ); // Count of entries based upon status = 1, opened
-        service.updateCharacteristic(HAP.Characteristic.EveLastActivation, this.#EveLastEventTime());
+        service.updateCharacteristic(this.hap.Characteristic.EveLastActivation, this.#EveLastEventTime());
 
         // Setup callbacks for characteristics
-        service.getCharacteristic(HAP.Characteristic.EveTimesOpened).onGet(() => {
+        service.getCharacteristic(this.hap.Characteristic.EveTimesOpened).onGet(() => {
           return this.entryCount(this.EveHome.type, this.EveHome.sub, { status: 1 }); // Count of entries based upon status = 1, opened
         });
 
-        service.getCharacteristic(HAP.Characteristic.EveLastActivation).onGet(() => {
+        service.getCharacteristic(this.hap.Characteristic.EveLastActivation).onGet(() => {
           return this.#EveLastEventTime(); // time of last event in seconds since first event
         });
         break;
       }
 
-      case HAP.Service.WindowCovering.UUID: {
+      case this.hap.Service.WindowCovering.UUID: {
         // Treat as Eve MotionBlinds
 
         // Setup the history service and the required characteristics for this service UUID type
         // Callbacks setup below after this is created
         let historyService = this.#createHistoryService(service, [
-          HAP.Characteristic.EveGetConfiguration,
-          HAP.Characteristic.EveSetConfiguration,
+          this.hap.Characteristic.EveGetConfiguration,
+          this.hap.Characteristic.EveSetConfiguration,
         ]);
 
         let tempHistory = this.getHistory(service.UUID, service.subtype);
@@ -594,7 +606,7 @@ export default class HomeKitHistory {
         //18      TargetPosition
         //19      PositionState
 
-        service.getCharacteristic(HAP.Characteristic.EveGetConfiguration).onGet(() => {
+        service.getCharacteristic(this.hap.Characteristic.EveGetConfiguration).onGet(() => {
           let value = util.format(
             '0002 5500 0302 %s 9b04 %s 1e02 5500 0c',
             numberToEveHexString(2979, 4), // firmware version (build xxxx)
@@ -604,7 +616,7 @@ export default class HomeKitHistory {
           return encodeEveData(value);
         });
 
-        service.getCharacteristic(HAP.Characteristic.EveSetConfiguration).onSet((value) => {
+        service.getCharacteristic(this.hap.Characteristic.EveSetConfiguration).onSet((value) => {
           //let processedData = {};
           let valHex = decodeEveData(value);
           let index = 0;
@@ -645,7 +657,7 @@ export default class HomeKitHistory {
 
                 //console.log('move', moveCommand, moveAmount);
 
-                let currentPosition = service.getCharacteristic(HAP.Characteristic.CurrentPosition).value;
+                let currentPosition = service.getCharacteristic(this.hap.Characteristic.CurrentPosition).value;
                 if (data === '015802') {
                   currentPosition = currentPosition + 1;
                 }
@@ -653,8 +665,8 @@ export default class HomeKitHistory {
                   currentPosition = currentPosition - 1;
                 }
                 //console.log('move', currentPosition, data);
-                service.updateCharacteristic(HAP.Characteristic.CurrentPosition, currentPosition);
-                service.updateCharacteristic(HAP.Characteristic.TargetPosition, currentPosition);
+                service.updateCharacteristic(this.hap.Characteristic.CurrentPosition, currentPosition);
+                service.updateCharacteristic(this.hap.Characteristic.TargetPosition, currentPosition);
                 break;
               }
 
@@ -669,21 +681,21 @@ export default class HomeKitHistory {
         break;
       }
 
-      case HAP.Service.HeaterCooler.UUID:
-      case HAP.Service.Thermostat.UUID: {
+      case this.hap.Service.HeaterCooler.UUID:
+      case this.hap.Service.Thermostat.UUID: {
         // treat these as EveHome Thermo
 
         // Setup the history service and the required characteristics for this service UUID type
         // Callbacks setup below after this is created
         let historyService = this.#createHistoryService(service, [
-          HAP.Characteristic.EveValvePosition,
-          HAP.Characteristic.EveFirmware,
-          HAP.Characteristic.EveProgramData,
-          HAP.Characteristic.EveProgramCommand,
-          HAP.Characteristic.StatusActive,
-          HAP.Characteristic.CurrentTemperature,
-          HAP.Characteristic.TemperatureDisplayUnits,
-          HAP.Characteristic.LockPhysicalControls,
+          this.hap.Characteristic.EveValvePosition,
+          this.hap.Characteristic.EveFirmware,
+          this.hap.Characteristic.EveProgramData,
+          this.hap.Characteristic.EveProgramCommand,
+          this.hap.Characteristic.StatusActive,
+          this.hap.Characteristic.CurrentTemperature,
+          this.hap.Characteristic.TemperatureDisplayUnits,
+          this.hap.Characteristic.LockPhysicalControls,
         ]);
 
         let tempHistory = this.getHistory(service.UUID, service.subtype);
@@ -719,16 +731,16 @@ export default class HomeKitHistory {
 
         // Setup initial values and callbacks for charateristics we are using
         service.updateCharacteristic(
-          HAP.Characteristic.EveFirmware,
+          this.hap.Characteristic.EveFirmware,
           encodeEveData(util.format('2c %s be', numberToEveHexString(this.EveThermoPersist.firmware, 4))),
         ); // firmware version (build xxxx)));
 
-        service.updateCharacteristic(HAP.Characteristic.EveProgramData, this.#EveThermoGetDetails(options.getcommand));
-        service.getCharacteristic(HAP.Characteristic.EveProgramData).onGet(() => {
+        service.updateCharacteristic(this.hap.Characteristic.EveProgramData, this.#EveThermoGetDetails(options.getcommand));
+        service.getCharacteristic(this.hap.Characteristic.EveProgramData).onGet(() => {
           return this.#EveThermoGetDetails(options.getcommand);
         });
 
-        service.getCharacteristic(HAP.Characteristic.EveProgramCommand).onSet((value) => {
+        service.getCharacteristic(this.hap.Characteristic.EveProgramCommand).onSet((value) => {
           let programs = [];
           let processedData = {};
           let valHex = decodeEveData(value);
@@ -916,12 +928,12 @@ export default class HomeKitHistory {
         break;
       }
 
-      case HAP.Service.EveAirPressureSensor.UUID: {
+      case this.hap.Service.EveAirPressureSensor.UUID: {
         // treat these as EveHome Weather (2015)
 
         // Setup the history service and the required characteristics for this service UUID type
         // Callbacks setup below after this is created
-        let historyService = this.#createHistoryService(service, [HAP.Characteristic.EveFirmware]);
+        let historyService = this.#createHistoryService(service, [this.hap.Characteristic.EveFirmware]);
 
         let tempHistory = this.getHistory(service.UUID, service.subtype);
         let historyreftime = tempHistory.length === 0 ? this.historyData.reset - EPOCH_OFFSET : tempHistory[0].time - EPOCH_OFFSET;
@@ -938,19 +950,24 @@ export default class HomeKitHistory {
           send: 0,
         };
 
-        service.updateCharacteristic(HAP.Characteristic.EveFirmware, encodeEveData(util.format('01 %s be', numberToEveHexString(809, 4))));
+        service.updateCharacteristic(
+          this.hap.Characteristic.EveFirmware,
+          encodeEveData(util.format('01 %s be', numberToEveHexString(809, 4))),
+        );
         break;
       }
 
-      case HAP.Service.AirQualitySensor.UUID:
-      case HAP.Service.TemperatureSensor.UUID: {
+      case this.hap.Service.AirQualitySensor.UUID:
+      case this.hap.Service.TemperatureSensor.UUID: {
         // treat these as EveHome Room(s)
 
         // Setup the history service and the required characteristics for this service UUID type
         // Callbacks setup below after this is created
         let historyService = this.#createHistoryService(service, [
-          HAP.Characteristic.EveFirmware,
-          service.UUID === HAP.Service.AirQualitySensor.UUID ? HAP.Characteristic.VOCDensity : HAP.Characteristic.TemperatureDisplayUnits,
+          this.hap.Characteristic.EveFirmware,
+          service.UUID === this.hap.Service.AirQualitySensor.UUID
+            ? this.hap.Characteristic.VOCDensity
+            : this.hap.Characteristic.TemperatureDisplayUnits,
         ]);
 
         let tempHistory = this.getHistory(service.UUID, service.subtype);
@@ -959,7 +976,7 @@ export default class HomeKitHistory {
           historyreftime = tempHistory[0].time - EPOCH_OFFSET;
         }
 
-        if (service.UUID === HAP.Service.AirQualitySensor.UUID) {
+        if (service.UUID === this.hap.Service.AirQualitySensor.UUID) {
           // Eve Room 2 (2018)
           this.EveHome = {
             service: historyService,
@@ -975,15 +992,15 @@ export default class HomeKitHistory {
           };
 
           service.updateCharacteristic(
-            HAP.Characteristic.EveFirmware,
+            this.hap.Characteristic.EveFirmware,
             encodeEveData(util.format('27 %s be', numberToEveHexString(1416, 4))),
           ); // firmware version (build xxxx)));
 
           // Need to ensure HomeKit accessory which has Air Quality service also has temperature & humidity services.
-          // Temperature service needs characteristic HAP.Characteristic.TemperatureDisplayUnits set to CELSIUS
+          // Temperature service needs characteristic this.hap.Characteristic.TemperatureDisplayUnits set to CELSIUS
         }
 
-        if (service.UUID === HAP.Service.TemperatureSensor.UUID) {
+        if (service.UUID === this.hap.Service.TemperatureSensor.UUID) {
           // Eve Room (2015)
           this.EveHome = {
             service: historyService,
@@ -999,27 +1016,30 @@ export default class HomeKitHistory {
           };
 
           service.updateCharacteristic(
-            HAP.Characteristic.EveFirmware,
+            this.hap.Characteristic.EveFirmware,
             encodeEveData(util.format('02 %s be', numberToEveHexString(1151, 4))),
           ); // firmware version (build xxxx)));
 
           // Temperature needs to be in Celsius
-          service.updateCharacteristic(HAP.Characteristic.TemperatureDisplayUnits, HAP.Characteristic.TemperatureDisplayUnits.CELSIUS);
+          service.updateCharacteristic(
+            this.hap.Characteristic.TemperatureDisplayUnits,
+            this.hap.Characteristic.TemperatureDisplayUnits.CELSIUS,
+          );
         }
         break;
       }
 
-      case HAP.Service.MotionSensor.UUID: {
+      case this.hap.Service.MotionSensor.UUID: {
         // treat these as EveHome Motion
 
         // Setup the history service and the required characteristics for this service UUID type
         // Callbacks setup below after this is created
         let historyService = this.#createHistoryService(service, [
-          HAP.Characteristic.EveSensitivity,
-          HAP.Characteristic.EveDuration,
-          HAP.Characteristic.EveLastActivation,
-          // HAP.Characteristic.EveGetConfiguration,
-          // HAP.Characteristic.EveSetConfiguration,
+          this.hap.Characteristic.EveSensitivity,
+          this.hap.Characteristic.EveDuration,
+          this.hap.Characteristic.EveLastActivation,
+          // this.hap.Characteristic.EveGetConfiguration,
+          // this.hap.Characteristic.EveSetConfiguration,
         ]);
 
         let tempHistory = this.getHistory(service.UUID, service.subtype);
@@ -1045,35 +1065,35 @@ export default class HomeKitHistory {
         this.EveMotionPersist = {
           duration: typeof options?.EveMotion_duration === 'number' ? options.EveMotion_duration : 5, // default 5 seconds
           sensitivity:
-            typeof options?.EveMotion_sensitivity === 'number' ? options.EveMotion_sensivity : HAP.Characteristic.EveSensitivity.HIGH, // default sensitivity
+            typeof options?.EveMotion_sensitivity === 'number' ? options.EveMotion_sensivity : this.hap.Characteristic.EveSensitivity.HIGH, // default sensitivity
           ledmotion: options?.EveMotion_ledmotion === true, // off
         };
 
         // Setup initial values and callbacks for charateristics we are using
-        service.updateCharacteristic(HAP.Characteristic.EveLastActivation, this.#EveLastEventTime());
+        service.updateCharacteristic(this.hap.Characteristic.EveLastActivation, this.#EveLastEventTime());
 
-        service.getCharacteristic(HAP.Characteristic.EveLastActivation).onGet(() => {
+        service.getCharacteristic(this.hap.Characteristic.EveLastActivation).onGet(() => {
           return this.#EveLastEventTime(); // time of last event in seconds since first event
         });
 
-        service.updateCharacteristic(HAP.Characteristic.EveSensitivity, this.EveMotionPersist.sensitivity);
-        service.getCharacteristic(HAP.Characteristic.EveSensitivity).onGet(() => {
+        service.updateCharacteristic(this.hap.Characteristic.EveSensitivity, this.EveMotionPersist.sensitivity);
+        service.getCharacteristic(this.hap.Characteristic.EveSensitivity).onGet(() => {
           return this.EveMotionPersist.sensitivity;
         });
-        service.getCharacteristic(HAP.Characteristic.EveSensitivity).onSet((value) => {
+        service.getCharacteristic(this.hap.Characteristic.EveSensitivity).onSet((value) => {
           this.EveMotionPersist.sensitivity = value;
         });
 
-        service.updateCharacteristic(HAP.Characteristic.EveDuration, this.EveMotionPersist.duration);
-        service.getCharacteristic(HAP.Characteristic.EveDuration).onGet(() => {
+        service.updateCharacteristic(this.hap.Characteristic.EveDuration, this.EveMotionPersist.duration);
+        service.getCharacteristic(this.hap.Characteristic.EveDuration).onGet(() => {
           return this.EveMotionPersist.duration;
         });
-        service.getCharacteristic(HAP.Characteristic.EveDuration).onSet((value) => {
+        service.getCharacteristic(this.hap.Characteristic.EveDuration).onSet((value) => {
           this.EveMotionPersist.duration = value;
         });
 
-        /*service.updateCharacteristic(HAP.Characteristic.EveGetConfiguration, encodeEveData('300100'));
-                service.getCharacteristic(HAP.Characteristic.EveGetConfiguration).onGet(() => {
+        /*service.updateCharacteristic(this.hap.Characteristic.EveGetConfiguration, encodeEveData('300100'));
+                service.getCharacteristic(this.hap.Characteristic.EveGetConfiguration).onGet(() => {
                     let value = util.format(
                         '0002 2500 0302 %s 9b04 %s 8002 ffff 1e02 2500 0c',
                         numberToEveHexString(1144, 4),  // firmware version (build xxxx)
@@ -1084,7 +1104,7 @@ export default class HomeKitHistory {
 
                     return encodeEveData(value));
                 });
-                service.getCharacteristic(HAP.Characteristic.EveSetConfiguration).onSet((value) => {
+                service.getCharacteristic(this.hap.Characteristic.EveSetConfiguration).onSet((value) => {
                     let valHex = decodeEveData(value);
                     let index = 0;
                     while (index < valHex.length) {
@@ -1115,15 +1135,15 @@ export default class HomeKitHistory {
         break;
       }
 
-      case HAP.Service.SmokeSensor.UUID: {
+      case this.hap.Service.SmokeSensor.UUID: {
         // treat these as EveHome Smoke
 
         // Setup the history service and the required characteristics for this service UUID type
         // Callbacks setup below after this is created
         let historyService = this.#createHistoryService(service, [
-          HAP.Characteristic.EveGetConfiguration,
-          HAP.Characteristic.EveSetConfiguration,
-          HAP.Characteristic.EveDeviceStatus,
+          this.hap.Characteristic.EveGetConfiguration,
+          this.hap.Characteristic.EveSetConfiguration,
+          this.hap.Characteristic.EveDeviceStatus,
         ]);
 
         let tempHistory = this.getHistory(service.UUID, service.subtype);
@@ -1162,22 +1182,22 @@ export default class HomeKitHistory {
 
         // Setup initial values and callbacks for charateristics we are using
         service.updateCharacteristic(
-          HAP.Characteristic.EveDeviceStatus,
-          this.#EveSmokeGetDetails(options.getcommand, HAP.Characteristic.EveDeviceStatus),
+          this.hap.Characteristic.EveDeviceStatus,
+          this.#EveSmokeGetDetails(options.getcommand, this.hap.Characteristic.EveDeviceStatus),
         );
-        service.getCharacteristic(HAP.Characteristic.EveDeviceStatus).onGet(() => {
-          return this.#EveSmokeGetDetails(options.getcommand, HAP.Characteristic.EveDeviceStatus);
+        service.getCharacteristic(this.hap.Characteristic.EveDeviceStatus).onGet(() => {
+          return this.#EveSmokeGetDetails(options.getcommand, this.hap.Characteristic.EveDeviceStatus);
         });
 
         service.updateCharacteristic(
-          HAP.Characteristic.EveGetConfiguration,
-          this.#EveSmokeGetDetails(options.getcommand, HAP.Characteristic.EveGetConfiguration),
+          this.hap.Characteristic.EveGetConfiguration,
+          this.#EveSmokeGetDetails(options.getcommand, this.hap.Characteristic.EveGetConfiguration),
         );
-        service.getCharacteristic(HAP.Characteristic.EveGetConfiguration).onGet(() => {
-          return this.#EveSmokeGetDetails(options.getcommand, HAP.Characteristic.EveGetConfiguration);
+        service.getCharacteristic(this.hap.Characteristic.EveGetConfiguration).onGet(() => {
+          return this.#EveSmokeGetDetails(options.getcommand, this.hap.Characteristic.EveGetConfiguration);
         });
 
-        service.getCharacteristic(HAP.Characteristic.EveSetConfiguration).onSet((value) => {
+        service.getCharacteristic(this.hap.Characteristic.EveSetConfiguration).onSet((value) => {
           // Loop through set commands passed to us
           let processedData = {};
           let valHex = decodeEveData(value);
@@ -1223,8 +1243,8 @@ export default class HomeKitHistory {
         break;
       }
 
-      case HAP.Service.Valve.UUID:
-      case HAP.Service.IrrigationSystem.UUID: {
+      case this.hap.Service.Valve.UUID:
+      case this.hap.Service.IrrigationSystem.UUID: {
         // treat an irrigation system as EveHome Aqua
         // Under this, any valve history will be presented under this. We don't log our History under irrigation service ID at all
 
@@ -1233,14 +1253,14 @@ export default class HomeKitHistory {
         // Setup the history service and the required characteristics for this service UUID type
         // Callbacks setup below after this is created
         let historyService = this.#createHistoryService(service, [
-          HAP.Characteristic.EveGetConfiguration,
-          HAP.Characteristic.EveSetConfiguration,
-          HAP.Characteristic.LockPhysicalControls,
+          this.hap.Characteristic.EveGetConfiguration,
+          this.hap.Characteristic.EveSetConfiguration,
+          this.hap.Characteristic.LockPhysicalControls,
         ]);
 
         let tempHistory = this.getHistory(
-          HAP.Service.Valve.UUID,
-          service.UUID === HAP.Service.IrrigationSystem.UUID ? null : service.subtype,
+          this.hap.Service.Valve.UUID,
+          service.UUID === this.hap.Service.IrrigationSystem.UUID ? null : service.subtype,
         );
         let historyreftime = this.historyData.reset - EPOCH_OFFSET;
         if (tempHistory.length !== 0) {
@@ -1250,8 +1270,8 @@ export default class HomeKitHistory {
         this.EveHome = {
           service: historyService,
           linkedservice: service,
-          type: HAP.Service.Valve.UUID,
-          sub: service.UUID === HAP.Service.IrrigationSystem.UUID ? null : service.subtype,
+          type: this.hap.Service.Valve.UUID,
+          sub: service.UUID === this.hap.Service.IrrigationSystem.UUID ? null : service.subtype,
           evetype: 'aqua',
           fields: '1f01 2a08 2302',
           entry: 0,
@@ -1273,12 +1293,12 @@ export default class HomeKitHistory {
         };
 
         // Setup initial values and callbacks for charateristics we are using
-        service.updateCharacteristic(HAP.Characteristic.EveGetConfiguration, this.#EveAquaGetDetails(options.getcommand));
-        service.getCharacteristic(HAP.Characteristic.EveGetConfiguration).onGet(() => {
+        service.updateCharacteristic(this.hap.Characteristic.EveGetConfiguration, this.#EveAquaGetDetails(options.getcommand));
+        service.getCharacteristic(this.hap.Characteristic.EveGetConfiguration).onGet(() => {
           return this.#EveAquaGetDetails(options.getcommand);
         });
 
-        service.getCharacteristic(HAP.Characteristic.EveSetConfiguration).onSet((value) => {
+        service.getCharacteristic(this.hap.Characteristic.EveSetConfiguration).onSet((value) => {
           // Loop through set commands passed to us
           let programs = [];
           let processedData = {};
@@ -1467,9 +1487,10 @@ export default class HomeKitHistory {
 
               case 'b1': {
                 // Child lock on/off. Seems data packet is always same (0100)
-                // inspect 'HAP.Characteristic.LockPhysicalControls)' for actual status
+                // inspect 'this.hap.Characteristic.LockPhysicalControls)' for actual status
                 this.EveAquaPersist.childlock =
-                  service.getCharacteristic(HAP.Characteristic.LockPhysicalControls).value === HAP.Characteristic.CONTROL_LOCK_ENABLED
+                  service.getCharacteristic(this.hap.Characteristic.LockPhysicalControls).value ===
+                  this.hap.Characteristic.CONTROL_LOCK_ENABLED
                     ? true
                     : false;
                 processedData.childlock = this.EveAquaPersist.childlock;
@@ -1492,18 +1513,18 @@ export default class HomeKitHistory {
         break;
       }
 
-      case HAP.Service.Outlet.UUID: {
+      case this.hap.Service.Outlet.UUID: {
         // treat these as EveHome energy
         // TODO - schedules
 
         // Setup the history service and the required characteristics for this service UUID type
         // Callbacks setup below after this is created
         let historyService = this.#createHistoryService(service, [
-          HAP.Characteristic.EveFirmware,
-          HAP.Characteristic.EveElectricalVoltage,
-          HAP.Characteristic.EveElectricalCurrent,
-          HAP.Characteristic.EveElectricalWattage,
-          HAP.Characteristic.EveTotalConsumption,
+          this.hap.Characteristic.EveFirmware,
+          this.hap.Characteristic.EveElectricalVoltage,
+          this.hap.Characteristic.EveElectricalCurrent,
+          this.hap.Characteristic.EveElectricalWattage,
+          this.hap.Characteristic.EveTotalConsumption,
         ]);
 
         let tempHistory = this.getHistory(service.UUID, service.subtype);
@@ -1526,43 +1547,46 @@ export default class HomeKitHistory {
         };
 
         // Setup initial values and callbacks for charateristics we are using
-        service.updateCharacteristic(HAP.Characteristic.EveFirmware, encodeEveData(util.format('29 %s be', numberToEveHexString(807, 4))));
+        service.updateCharacteristic(
+          this.hap.Characteristic.EveFirmware,
+          encodeEveData(util.format('29 %s be', numberToEveHexString(807, 4))),
+        );
 
         service.updateCharacteristic(
-          HAP.Characteristic.EveElectricalCurrent,
-          this.#EveEnergyGetDetails(options.getcommand, HAP.Characteristic.EveElectricalCurrent),
+          this.hap.Characteristic.EveElectricalCurrent,
+          this.#EveEnergyGetDetails(options.getcommand, this.hap.Characteristic.EveElectricalCurrent),
         );
-        service.getCharacteristic(HAP.Characteristic.EveElectricalCurrent).onGet(() => {
-          return this.#EveEnergyGetDetails(options.getcommand, HAP.Characteristic.EveElectricalCurrent);
+        service.getCharacteristic(this.hap.Characteristic.EveElectricalCurrent).onGet(() => {
+          return this.#EveEnergyGetDetails(options.getcommand, this.hap.Characteristic.EveElectricalCurrent);
         });
 
         service.updateCharacteristic(
-          HAP.Characteristic.EveElectricalVoltage,
-          this.#EveEnergyGetDetails(options.getcommand, HAP.Characteristic.EveElectricalVoltage),
+          this.hap.Characteristic.EveElectricalVoltage,
+          this.#EveEnergyGetDetails(options.getcommand, this.hap.Characteristic.EveElectricalVoltage),
         );
-        service.getCharacteristic(HAP.Characteristic.EveElectricalVoltage).onGet(() => {
-          return this.#EveEnergyGetDetails(options.getcommand, HAP.Characteristic.EveElectricalVoltage);
+        service.getCharacteristic(this.hap.Characteristic.EveElectricalVoltage).onGet(() => {
+          return this.#EveEnergyGetDetails(options.getcommand, this.hap.Characteristic.EveElectricalVoltage);
         });
 
         service.updateCharacteristic(
-          HAP.Characteristic.EveElectricalWattage,
-          this.#EveEnergyGetDetails(options.getcommand, HAP.Characteristic.EveElectricalWattage),
+          this.hap.Characteristic.EveElectricalWattage,
+          this.#EveEnergyGetDetails(options.getcommand, this.hap.Characteristic.EveElectricalWattage),
         );
-        service.getCharacteristic(HAP.Characteristic.EveElectricalWattage).onGet(() => {
-          return this.#EveEnergyGetDetails(options.getcommand, HAP.Characteristic.EveElectricalWattage);
+        service.getCharacteristic(this.hap.Characteristic.EveElectricalWattage).onGet(() => {
+          return this.#EveEnergyGetDetails(options.getcommand, this.hap.Characteristic.EveElectricalWattage);
         });
         break;
       }
 
-      case HAP.Service.LeakSensor.UUID: {
+      case this.hap.Service.LeakSensor.UUID: {
         // treat these as EveHome Water Guard
 
         // Setup the history service and the required characteristics for this service UUID type
         // Callbacks setup below after this is created
         let historyService = this.#createHistoryService(service, [
-          HAP.Characteristic.EveGetConfiguration,
-          HAP.Characteristic.EveSetConfiguration,
-          HAP.Characteristic.StatusFault,
+          this.hap.Characteristic.EveGetConfiguration,
+          this.hap.Characteristic.EveSetConfiguration,
+          this.hap.Characteristic.StatusFault,
         ]);
 
         let tempHistory = this.getHistory(service.UUID, service.subtype);
@@ -1593,12 +1617,12 @@ export default class HomeKitHistory {
         };
 
         // Setup initial values and callbacks for charateristics we are using
-        service.updateCharacteristic(HAP.Characteristic.EveGetConfiguration, this.#EveWaterGuardGetDetails(options.getcommand));
-        service.getCharacteristic(HAP.Characteristic.EveGetConfiguration).onGet(() => {
+        service.updateCharacteristic(this.hap.Characteristic.EveGetConfiguration, this.#EveWaterGuardGetDetails(options.getcommand));
+        service.getCharacteristic(this.hap.Characteristic.EveGetConfiguration).onGet(() => {
           return this.#EveWaterGuardGetDetails(options.getcommand);
         });
 
-        service.getCharacteristic(HAP.Characteristic.EveSetConfiguration).onSet((value) => {
+        service.getCharacteristic(this.hap.Characteristic.EveSetConfiguration).onSet((value) => {
           let valHex = decodeEveData(value);
           let index = 0;
           while (index < valHex.length) {
@@ -1624,12 +1648,15 @@ export default class HomeKitHistory {
                 // 03 - alarm test
                 if (data === '03') {
                   // Simulate a leak test
-                  service.updateCharacteristic(HAP.Characteristic.LeakDetected, HAP.Characteristic.LeakDetected.LEAK_DETECTED);
+                  service.updateCharacteristic(this.hap.Characteristic.LeakDetected, this.hap.Characteristic.LeakDetected.LEAK_DETECTED);
                   this.EveWaterGuardPersist.lastalarmtest = Math.floor(Date.now() / 1000); // Now time for last test
 
                   setTimeout(() => {
                     // Clear our simulated leak test after 5 seconds
-                    service.updateCharacteristic(HAP.Characteristic.LeakDetected, HAP.Characteristic.LeakDetected.LEAK_NOT_DETECTED);
+                    service.updateCharacteristic(
+                      this.hap.Characteristic.LeakDetected,
+                      this.hap.Characteristic.LeakDetected.LEAK_NOT_DETECTED,
+                    );
                   }, 5000);
                 }
                 if (data === '00' || data === '01') {
@@ -1652,20 +1679,20 @@ export default class HomeKitHistory {
 
     // Setup callbacks if our service successfully created
     if (typeof this?.EveHome?.service === 'object') {
-      this.EveHome.service.getCharacteristic(HAP.Characteristic.EveResetTotal).onGet(() => {
+      this.EveHome.service.getCharacteristic(this.hap.Characteristic.EveResetTotal).onGet(() => {
         // time since history reset
         return this.historyData.reset - EPOCH_OFFSET;
       });
-      this.EveHome.service.getCharacteristic(HAP.Characteristic.EveHistoryStatus).onGet(() => {
+      this.EveHome.service.getCharacteristic(this.hap.Characteristic.EveHistoryStatus).onGet(() => {
         return this.#EveHistoryStatus();
       });
-      this.EveHome.service.getCharacteristic(HAP.Characteristic.EveHistoryEntries).onGet(() => {
+      this.EveHome.service.getCharacteristic(this.hap.Characteristic.EveHistoryEntries).onGet(() => {
         return this.#EveHistoryEntries();
       });
-      this.EveHome.service.getCharacteristic(HAP.Characteristic.EveHistoryRequest).onSet((value) => {
+      this.EveHome.service.getCharacteristic(this.hap.Characteristic.EveHistoryRequest).onSet((value) => {
         this.#EveHistoryRequest(value);
       });
-      this.EveHome.service.getCharacteristic(HAP.Characteristic.EveSetTime).onSet((value) => {
+      this.EveHome.service.getCharacteristic(this.hap.Characteristic.EveSetTime).onSet((value) => {
         this.#EveSetTime(value);
       });
 
@@ -1679,42 +1706,42 @@ export default class HomeKitHistory {
     }
 
     switch (service.UUID) {
-      case HAP.Service.SmokeSensor.UUID: {
+      case this.hap.Service.SmokeSensor.UUID: {
         service.updateCharacteristic(
-          HAP.Characteristic.EveDeviceStatus,
-          this.#EveSmokeGetDetails(getcommand, HAP.Characteristic.EveDeviceStatus),
+          this.hap.Characteristic.EveDeviceStatus,
+          this.#EveSmokeGetDetails(getcommand, this.hap.Characteristic.EveDeviceStatus),
         );
         service.updateCharacteristic(
-          HAP.Characteristic.EveGetConfiguration,
-          this.#EveSmokeGetDetails(getcommand, HAP.Characteristic.EveGetConfiguration),
+          this.hap.Characteristic.EveGetConfiguration,
+          this.#EveSmokeGetDetails(getcommand, this.hap.Characteristic.EveGetConfiguration),
         );
         break;
       }
 
-      case HAP.Service.HeaterCooler.UUID:
-      case HAP.Service.Thermostat.UUID: {
-        service.updateCharacteristic(HAP.Characteristic.EveProgramCommand, this.#EveThermoGetDetails(getcommand));
+      case this.hap.Service.HeaterCooler.UUID:
+      case this.hap.Service.Thermostat.UUID: {
+        service.updateCharacteristic(this.hap.Characteristic.EveProgramCommand, this.#EveThermoGetDetails(getcommand));
         break;
       }
 
-      case HAP.Service.Valve.UUID:
-      case HAP.Service.IrrigationSystem.UUID: {
-        service.updateCharacteristic(HAP.Characteristic.EveGetConfiguration, this.#EveAquaGetDetails(getcommand));
+      case this.hap.Service.Valve.UUID:
+      case this.hap.Service.IrrigationSystem.UUID: {
+        service.updateCharacteristic(this.hap.Characteristic.EveGetConfiguration, this.#EveAquaGetDetails(getcommand));
         break;
       }
 
-      case HAP.Service.Outlet.UUID: {
+      case this.hap.Service.Outlet.UUID: {
         service.updateCharacteristic(
-          HAP.Characteristic.EveElectricalWattage,
-          this.#EveEnergyGetDetails(getcommand, HAP.Characteristic.EveElectricalWattage),
+          this.hap.Characteristic.EveElectricalWattage,
+          this.#EveEnergyGetDetails(getcommand, this.hap.Characteristic.EveElectricalWattage),
         );
         service.updateCharacteristic(
-          HAP.Characteristic.EveElectricalVoltage,
-          this.#EveEnergyGetDetails(getcommand, HAP.Characteristic.EveElectricalVoltage),
+          this.hap.Characteristic.EveElectricalVoltage,
+          this.#EveEnergyGetDetails(getcommand, this.hap.Characteristic.EveElectricalVoltage),
         );
         service.updateCharacteristic(
-          HAP.Characteristic.EveElectricalCurrent,
-          this.#EveEnergyGetDetails(getcommand, HAP.Characteristic.EveElectricalCurrent),
+          this.hap.Characteristic.EveElectricalCurrent,
+          this.#EveEnergyGetDetails(getcommand, this.hap.Characteristic.EveElectricalCurrent),
         );
         break;
       }
@@ -1930,13 +1957,13 @@ export default class HomeKitHistory {
       energyDetails = getOptions(energyDetails);
     }
 
-    if (returnForCharacteristic.UUID === HAP.Characteristic.EveElectricalWattage.UUID && typeof energyDetails?.watts === 'number') {
+    if (returnForCharacteristic.UUID === this.hap.Characteristic.EveElectricalWattage.UUID && typeof energyDetails?.watts === 'number') {
       returnValue = energyDetails.watts;
     }
-    if (returnForCharacteristic.UUID === HAP.Characteristic.EveElectricalVoltage.UUID && typeof energyDetails?.volts === 'number') {
+    if (returnForCharacteristic.UUID === this.hap.Characteristic.EveElectricalVoltage.UUID && typeof energyDetails?.volts === 'number') {
       returnValue = energyDetails.volts;
     }
-    if (returnForCharacteristic.UUID === HAP.Characteristic.EveElectricalCurrent.UUID && typeof energyDetails?.amps === 'number') {
+    if (returnForCharacteristic.UUID === this.hap.Characteristic.EveElectricalCurrent.UUID && typeof energyDetails?.amps === 'number') {
       returnValue = energyDetails.amps;
     }
 
@@ -1952,7 +1979,7 @@ export default class HomeKitHistory {
       this.EveSmokePersist = getOptions(this.EveSmokePersist);
     }
 
-    if (returnForCharacteristic.UUID === HAP.Characteristic.EveGetConfiguration.UUID) {
+    if (returnForCharacteristic.UUID === this.hap.Characteristic.EveGetConfiguration.UUID) {
       let value = util.format(
         '0002 1800 0302 %s 9b04 %s 8608 %s 1e02 1800 0c',
         numberToEveHexString(this.EveSmokePersist.firmware, 4), // firmware version (build xxxx)
@@ -1962,7 +1989,7 @@ export default class HomeKitHistory {
       returnValue = encodeEveData(value);
     }
 
-    if (returnForCharacteristic.UUID === HAP.Characteristic.EveDeviceStatus.UUID) {
+    if (returnForCharacteristic.UUID === this.hap.Characteristic.EveDeviceStatus.UUID) {
       // Status bits
       //  0 = Smoked Detected
       //  1 = Heat Detected
@@ -1977,8 +2004,8 @@ export default class HomeKitHistory {
       // 25 = alarm muted
       let value = 0x00000000;
       if (
-        this.EveHome.linkedservice.getCharacteristic(HAP.Characteristic.SmokeDetected).value ===
-        HAP.Characteristic.SmokeDetected.SMOKE_DETECTED
+        this.EveHome.linkedservice.getCharacteristic(this.hap.Characteristic.SmokeDetected).value ===
+        this.hap.Characteristic.SmokeDetected.SMOKE_DETECTED
       ) {
         value |= 1 << 0; // 1st bit, smoke detected
       }
@@ -2315,9 +2342,9 @@ export default class HomeKitHistory {
 
   #createHistoryService(service, characteristics) {
     // Setup the history service
-    let historyService = this.accessory.getService(HAP.Service.EveHomeHistory);
+    let historyService = this.accessory.getService(this.hap.Service.EveHomeHistory);
     if (historyService === undefined) {
-      historyService = this.accessory.addService(HAP.Service.EveHomeHistory, '', 1);
+      historyService = this.accessory.addService(this.hap.Service.EveHomeHistory, '', 1);
     }
 
     // Add in any specified characteristics
@@ -2328,6 +2355,425 @@ export default class HomeKitHistory {
     });
 
     return historyService;
+  }
+
+  #createHomeKitServicesAndCharacteristics() {
+    const createCustomCharacteristic = (name, uuid, props, values) => {
+      let className = name.replace(/(\s*)/g, '');
+
+      if (this.hap.Characteristic[className] === undefined) {
+        // Create the custom characteristic
+        this.hap.Characteristic[className] = {
+          [className]: class extends this.hap.Characteristic {
+            static UUID = uuid;
+
+            constructor() {
+              super(name, uuid, props);
+              this.value = this.getDefaultValue();
+            }
+          },
+        }[className];
+
+        // Add in any static defines for the object
+        if (typeof values === 'object') {
+          Object.entries(values).forEach(([key, value]) => {
+            this.hap.Characteristic[className][key] = value;
+          });
+        }
+      }
+    };
+
+    const createCustomService = (name, uuid, required, optional) => {
+      let className = name.replace(/(\s*)/g, '');
+      if (this.hap.Service[className] === undefined) {
+        this.hap.Service[className] = {
+          [className]: class extends this.hap.Service {
+            static UUID = uuid;
+
+            constructor(name, subtype) {
+              super(name, uuid, subtype);
+
+              // Add in any required characteristics for the service
+              if (typeof required === 'object') {
+                for (const Characteristic of required) {
+                  this.addCharacteristic(Characteristic);
+                }
+              }
+
+              // Add in any optional characteristics for the service
+              if (typeof optional === 'object') {
+                for (const Characteristic of optional) {
+                  this.addOptionalCharacteristic(Characteristic);
+                }
+              }
+            }
+          },
+        }[className];
+      }
+    };
+
+    createCustomCharacteristic('Eve Reset Total', 'E863F112-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.UINT32,
+      unit: this.hap.Units.SECONDS, // since 2001/01/01
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY, this.hap.Perms.PAIRED_WRITE],
+    });
+
+    createCustomCharacteristic('Eve History Status', 'E863F116-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.DATA,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY, this.hap.Perms.HIDDEN],
+    });
+
+    createCustomCharacteristic('Eve History Entries', 'E863F117-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.DATA,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY, this.hap.Perms.HIDDEN],
+    });
+
+    createCustomCharacteristic('Eve History Request', 'E863F11C-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.DATA,
+      perms: [this.hap.Perms.PAIRED_WRITE, this.hap.Perms.HIDDEN],
+    });
+
+    createCustomCharacteristic('Eve Set Time', 'E863F121-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.DATA,
+      perms: [this.hap.Perms.PAIRED_WRITE, this.hap.Perms.HIDDEN],
+    });
+
+    createCustomCharacteristic('Eve Valve Position', 'E863F12E-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.UINT8,
+      unit: this.hap.Units.PERCENTAGE,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+    });
+
+    createCustomCharacteristic('Eve Last Activation', 'E863F11A-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.UINT32,
+      unit: this.hap.Units.SECONDS,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+    });
+
+    createCustomCharacteristic('Eve Times Opened', 'E863F129-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.UINT32,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+    });
+
+    createCustomCharacteristic('Eve Closed Duration', 'E863F118-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.UINT32,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+    });
+
+    createCustomCharacteristic('Eve Opened Duration', 'E863F119-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.UINT32,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+    });
+    createCustomCharacteristic('Eve Program Command', 'E863F12C-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.DATA,
+      perms: [this.hap.Perms.PAIRED_WRITE, this.hap.Perms.HIDDEN],
+    });
+
+    createCustomCharacteristic('Eve Program Data', 'E863F12F-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.DATA,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+    });
+
+    createCustomCharacteristic('Eve Electrical Voltage', 'E863F10A-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.FLOAT,
+      unit: 'V',
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+    });
+
+    createCustomCharacteristic('Eve Electrical Current', 'E863F126-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.FLOAT,
+      unit: 'A',
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+    });
+
+    createCustomCharacteristic('Eve Total Consumption', 'E863F10C-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.FLOAT,
+      unit: 'kWh',
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+    });
+
+    createCustomCharacteristic('Eve Electrical Wattage', 'E863F10D-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.FLOAT,
+      unit: 'W',
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+    });
+
+    createCustomCharacteristic('Eve Get Configuration', 'E863F131-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.DATA,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+    });
+
+    createCustomCharacteristic('Eve Set Configuration', 'E863F11D-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.DATA,
+      perms: [this.hap.Perms.PAIRED_WRITE, this.hap.Perms.HIDDEN],
+    });
+
+    createCustomCharacteristic('Eve Firmware', 'E863F11E-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.DATA,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.PAIRED_WRITE, this.hap.Perms.NOTIFY],
+    });
+
+    createCustomCharacteristic(
+      'Eve Motion Sensitivity',
+      'E863F120-079E-48FF-8F27-9C2605A29F52',
+      {
+        format: this.hap.Formats.UINT8,
+        perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.PAIRED_WRITE, this.hap.Perms.NOTIFY],
+        minValue: 0,
+        maxValue: 7,
+        validValues: [0, 4, 7],
+      },
+      { HIGH: 0, MEDIUM: 4, LOW: 7 },
+    );
+
+    createCustomCharacteristic('Eve Motion Duration', 'E863F12D-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.UINT16,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.PAIRED_WRITE, this.hap.Perms.NOTIFY],
+      minValue: 5,
+      maxValue: 54000,
+      validValues: [5, 10, 20, 30, 60, 120, 300, 600, 1200, 1800, 3600, 7200, 10800, 18000, 36000, 43200, 54000],
+    });
+
+    createCustomCharacteristic(
+      'Eve Device Status',
+      'E863F134-079E-48FF-8F27-9C2605A29F52',
+      {
+        format: this.hap.Formats.UINT32,
+        perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+      },
+      {
+        SMOKE_DETECTED: 1 << 0,
+        HEAT_DETECTED: 1 << 1,
+        ALARM_TEST_ACTIVE: 1 << 2,
+        SMOKE_SENSOR_ERROR: 1 << 5,
+        HEAT_SENSOR_ERROR: 1 << 7,
+        SMOKE_CHAMBER_ERROR: 1 << 9,
+        SMOKE_SENSOR_DEACTIVATED: 1 << 14,
+        FLASH_STATUS_LED: 1 << 15,
+        ALARM_PAUSED: 1 << 24,
+        ALARM_MUTED: 1 << 25,
+      },
+    );
+
+    createCustomCharacteristic('Eve Air Pressure', 'E863F10F-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.UINT16,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+      unit: 'hPa',
+      minValue: 700,
+      maxValue: 1100,
+    });
+
+    createCustomCharacteristic('Eve Elevation', 'E863F130-079E-48FF-8F27-9C2605A29F52', {
+      format: this.hap.Formats.INT,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.PAIRED_WRITE, this.hap.Perms.NOTIFY],
+      unit: 'm',
+      minValue: -430,
+      maxValue: 8850,
+      minStep: 10,
+    });
+
+    createCustomCharacteristic('Eve VOC Level', 'E863F10B-079E-48FF-8F27-9C2605A29F5', {
+      format: this.hap.Formats.UINT16,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+      unit: 'ppm',
+      minValue: 5,
+      maxValue: 5000,
+      minStep: 5,
+    });
+
+    createCustomCharacteristic(
+      'Eve Weather Trend',
+      'E863F136-079E-48FF-8F27-9C2605A29F52',
+      {
+        format: this.hap.Formats.UINT8,
+        perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+        minValue: 0,
+        maxValue: 15,
+        minStep: 1,
+      },
+      {
+        BLANK: 0,
+        SUN: 1,
+        CLOUDS_SUN: 3,
+        RAIN: 4,
+        RAIN_WIND: 12,
+      },
+    );
+
+    createCustomCharacteristic('Apparent Temperature', 'C1283352-3D12-4777-ACD5-4734760F1AC8', {
+      format: this.hap.Formats.FLOAT,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+      unit: this.hap.Units.CELSIUS,
+      minValue: -40,
+      maxValue: 100,
+      minStep: 0.1,
+    });
+
+    createCustomCharacteristic('Cloud Cover', '64392FED-1401-4F7A-9ADB-1710DD6E3897', {
+      format: this.hap.Formats.UINT8,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+      unit: this.hap.Units.PERCENTAGE,
+      minValue: 0,
+      maxValue: 100,
+    });
+
+    createCustomCharacteristic('Condition', 'CD65A9AB-85AD-494A-B2BD-2F380084134D', {
+      format: this.hap.Formats.STRING,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+    });
+
+    createCustomCharacteristic('Condition Category', 'CD65A9AB-85AD-494A-B2BD-2F380084134C', {
+      format: this.hap.Formats.UINT8,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+      minValue: 0,
+      maxValue: 9,
+    });
+
+    createCustomCharacteristic('Dew Point', '095C46E2-278E-4E3C-B9E7-364622A0F501', {
+      format: this.hap.Formats.FLOAT,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+      unit: this.hap.Units.CELSIUS,
+      minValue: -40,
+      maxValue: 100,
+      minStep: 0.1,
+    });
+
+    createCustomCharacteristic('Forecast Day', '57F1D4B2-0E7E-4307-95B5-808750E2C1C7', {
+      format: this.hap.Formats.STRING,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+    });
+
+    createCustomCharacteristic('Maximum Wind Speed', '6B8861E5-D6F3-425C-83B6-069945FFD1F1', {
+      format: this.hap.Formats.FLOAT,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+      unit: 'km/h',
+      minValue: 0,
+      maxValue: 150,
+      minStep: 0.1,
+    });
+
+    createCustomCharacteristic('Minimum Temperature', '707B78CA-51AB-4DC9-8630-80A58F07E411', {
+      format: this.hap.Formats.FLOAT,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+      unit: this.hap.Units.CELSIUS,
+      minValue: -40,
+      maxValue: 100,
+      minStep: 0.1,
+    });
+
+    createCustomCharacteristic('Observation Station', 'D1B2787D-1FC4-4345-A20E-7B5A74D693ED', {
+      format: this.hap.Formats.STRING,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+    });
+
+    createCustomCharacteristic('Observation Time', '234FD9F1-1D33-4128-B622-D052F0C402AF', {
+      format: this.hap.Formats.STRING,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+    });
+
+    createCustomCharacteristic('Ozone', 'BBEFFDDD-1BCD-4D75-B7CD-B57A90A04D13', {
+      format: this.hap.Formats.UINT8,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+      unit: 'DU',
+      minValue: 0,
+      maxValue: 500,
+    });
+
+    createCustomCharacteristic('Rain', 'F14EB1AD-E000-4EF4-A54F-0CF07B2E7BE7', {
+      format: this.hap.Formats.BOOL,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+    });
+
+    createCustomCharacteristic('Rain Last Hour', '10C88F40-7EC4-478C-8D5A-BD0C3CCE14B7', {
+      format: this.hap.Formats.UINT16,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+      unit: 'mm',
+      minValue: 0,
+      maxValue: 200,
+    });
+
+    createCustomCharacteristic('Rain Probability', 'FC01B24F-CF7E-4A74-90DB-1B427AF1FFA3', {
+      format: this.hap.Formats.UINT8,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+      unit: this.hap.Units.PERCENTAGE,
+      minValue: 0,
+      maxValue: 100,
+    });
+
+    createCustomCharacteristic('Total Rain', 'CCC04890-565B-4376-B39A-3113341D9E0F', {
+      format: this.hap.Formats.UINT16,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+      unit: 'mm',
+      minValue: 0,
+      maxValue: 2000,
+    });
+
+    createCustomCharacteristic('Snow', 'F14EB1AD-E000-4CE6-BD0E-384F9EC4D5DD', {
+      format: this.hap.Formats.BOOL,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+    });
+
+    createCustomCharacteristic('Solar Radiation', '1819A23E-ECAB-4D39-B29A-7364D299310B', {
+      format: this.hap.Formats.UINT16,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+      unit: 'W/m²',
+      minValue: 0,
+      maxValue: 2000,
+    });
+
+    createCustomCharacteristic('Sunrise Time', '0D96F60E-3688-487E-8CEE-D75F05BB3008', {
+      format: this.hap.Formats.STRING,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+    });
+
+    createCustomCharacteristic('Sunset Time', '3DE24EE0-A288-4E15-A5A8-EAD2451B727C', {
+      format: this.hap.Formats.STRING,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+    });
+
+    createCustomCharacteristic('UV Index', '05BA0FE0-B848-4226-906D-5B64272E05CE', {
+      format: this.hap.Formats.UINT8,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+      minValue: 0,
+      maxValue: 16,
+    });
+
+    createCustomCharacteristic('Visibility', 'D24ECC1E-6FAD-4FB5-8137-5AF88BD5E857', {
+      format: this.hap.Formats.UINT8,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+      unit: 'km',
+      minValue: 0,
+      maxValue: 100,
+    });
+
+    createCustomCharacteristic('Wind Direction', '46F1284C-1912-421B-82F5-EB75008B167E', {
+      format: this.hap.Formats.STRING,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+    });
+
+    createCustomCharacteristic('Wind Speed', '49C8AE5A-A3A5-41AB-BF1F-12D5654F9F41', {
+      format: this.hap.Formats.FLOAT,
+      perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+      unit: 'km/h',
+      minValue: 0,
+      maxValue: 150,
+      minStep: 0.1,
+    });
+
+    // EveHomeHistory Service
+    createCustomService('Eve Home History', 'E863F007-079E-48FF-8F27-9C2605A29F52', [
+      this.hap.Characteristic.EveResetTotal,
+      this.hap.Characteristic.EveHistoryStatus,
+      this.hap.Characteristic.EveHistoryEntries,
+      this.hap.Characteristic.EveHistoryRequest,
+      this.hap.Characteristic.EveSetTime,
+    ]);
+
+    // Eve custom air pressure service
+    createCustomService('Eve Air Pressure Sensor', 'E863F00A-079E-48FF-8F27-9C2605A29F52', [
+      this.hap.Characteristic.EveAirPressure,
+      this.hap.Characteristic.EveElevation,
+    ]);
   }
 }
 
@@ -2385,766 +2831,3 @@ function EveHexStringToNumber(string, precision) {
   }
   return number;
 }
-
-// Define HomeKit characteristics
-
-// Eve Reset Total
-export class EveResetTotal extends HAP.Characteristic {
-  static UUID = 'E863F112-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve Reset Total', EveResetTotal.UUID, {
-      format: HAP.Formats.UINT32,
-      unit: HAP.Units.SECONDS, // since 2001/01/01
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY, HAP.Perms.PAIRED_WRITE],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveResetTotal = EveResetTotal;
-
-// EveHistoryStatus
-export class EveHistoryStatus extends HAP.Characteristic {
-  static UUID = 'E863F116-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve History Status', EveHistoryStatus.UUID, {
-      format: HAP.Formats.DATA,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY, HAP.Perms.HIDDEN],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveHistoryStatus = EveHistoryStatus;
-
-// EveHistoryEntries
-export class EveHistoryEntries extends HAP.Characteristic {
-  static UUID = 'E863F117-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve History Entries', EveHistoryEntries.UUID, {
-      format: HAP.Formats.DATA,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY, HAP.Perms.HIDDEN],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveHistoryEntries = EveHistoryEntries;
-
-// EveHistoryRequest
-export class EveHistoryRequest extends HAP.Characteristic {
-  static UUID = 'E863F11C-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve History Request', EveHistoryRequest.UUID, {
-      format: HAP.Formats.DATA,
-      perms: [HAP.Perms.PAIRED_WRITE, HAP.Perms.HIDDEN],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveHistoryRequest = EveHistoryRequest;
-
-// EveSetTime
-export class EveSetTime extends HAP.Characteristic {
-  static UUID = 'E863F121-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve SetTime', EveSetTime.UUID, {
-      format: HAP.Formats.DATA,
-      perms: [HAP.Perms.PAIRED_WRITE, HAP.Perms.HIDDEN],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveSetTime = EveSetTime;
-
-export class EveValvePosition extends HAP.Characteristic {
-  static UUID = 'E863F12E-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve Valve Position', EveValvePosition.UUID, {
-      format: HAP.Formats.UINT8,
-      unit: HAP.Units.PERCENTAGE,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveValvePosition = EveValvePosition;
-
-export class EveLastActivation extends HAP.Characteristic {
-  static UUID = 'E863F11A-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve Last Activation', EveLastActivation.UUID, {
-      format: HAP.Formats.UINT32,
-      unit: HAP.Units.SECONDS,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveLastActivation = EveLastActivation;
-
-export class EveTimesOpened extends HAP.Characteristic {
-  static UUID = 'E863F129-079E-48FF-8F27-9C2605A29F52';
-  constructor() {
-    super('Eve Times Opened', EveTimesOpened.UUID, {
-      format: HAP.Formats.UINT32,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveTimesOpened = EveTimesOpened;
-
-export class EveClosedDuration extends HAP.Characteristic {
-  static UUID = 'E863F118-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve Closed Duration', EveClosedDuration.UUID, {
-      format: HAP.Formats.UINT32,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveClosedDuration = EveClosedDuration;
-
-export class EveOpenDuration extends HAP.Characteristic {
-  static UUID = 'E863F119-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve Opened Duration', EveOpenDuration.UUID, {
-      format: HAP.Formats.UINT32,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveOpenDuration = EveOpenDuration;
-
-export class EveProgramCommand extends HAP.Characteristic {
-  static UUID = 'E863F12C-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve Program Command', EveProgramCommand.UUID, {
-      format: HAP.Formats.DATA,
-      perms: [HAP.Perms.PAIRED_WRITE, HAP.Perms.HIDDEN],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveProgramCommand = EveProgramCommand;
-
-export class EveProgramData extends HAP.Characteristic {
-  static UUID = 'E863F12F-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve Program Data', EveProgramData.UUID, {
-      format: HAP.Formats.DATA,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveProgramData = EveProgramData;
-
-export class EveElectricalVoltage extends HAP.Characteristic {
-  static UUID = 'E863F10A-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve Voltage', EveElectricalVoltage.UUID, {
-      format: HAP.Formats.FLOAT,
-      unit: 'V',
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveElectricalVoltage = EveElectricalVoltage;
-
-export class EveElectricalCurrent extends HAP.Characteristic {
-  static UUID = 'E863F126-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve Current', EveElectricalCurrent.UUID, {
-      format: HAP.Formats.FLOAT,
-      unit: 'A',
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveElectricalCurrent = EveElectricalCurrent;
-
-export class EveTotalConsumption extends HAP.Characteristic {
-  static UUID = 'E863F10C-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve Total Consumption', EveTotalConsumption.UUID, {
-      format: HAP.Formats.FLOAT,
-      unit: 'kWh',
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveTotalConsumption = EveTotalConsumption;
-
-export class EveElectricalWattage extends HAP.Characteristic {
-  static UUID = 'E863F10D-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve Watts', EveElectricalWattage.UUID, {
-      format: HAP.Formats.FLOAT,
-      unit: 'W',
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveElectricalWattage = EveElectricalWattage;
-
-export class EveGetConfiguration extends HAP.Characteristic {
-  static UUID = 'E863F131-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve Get Configuration', EveGetConfiguration.UUID, {
-      format: HAP.Formats.DATA,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveGetConfiguration = EveGetConfiguration;
-
-export class EveSetConfiguration extends HAP.Characteristic {
-  static UUID = 'E863F11D-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve Set Configuration', EveSetConfiguration.UUID, {
-      format: HAP.Formats.DATA,
-      perms: [HAP.Perms.PAIRED_WRITE, HAP.Perms.HIDDEN],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveSetConfiguration = EveSetConfiguration;
-
-export class EveFirmware extends HAP.Characteristic {
-  static UUID = 'E863F11E-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve Firmware', EveFirmware.UUID, {
-      format: HAP.Formats.DATA,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.PAIRED_WRITE, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveFirmware = EveFirmware;
-
-export class EveSensitivity extends HAP.Characteristic {
-  static UUID = 'E863F120-079E-48FF-8F27-9C2605A29F52';
-  static HIGH = 0;
-  static MEDIUM = 4;
-  static LOW = 7;
-
-  constructor() {
-    super('Eve Motion Sensitivity', EveSensitivity.UUID, {
-      format: HAP.Formats.UINT8,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.PAIRED_WRITE, HAP.Perms.NOTIFY],
-      minValue: 0,
-      maxValue: 7,
-      validValues: [0, 4, 7],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveSensitivity = EveSensitivity;
-
-export class EveDuration extends HAP.Characteristic {
-  static UUID = 'E863F12D-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve Motion Duration', EveDuration.UUID, {
-      format: HAP.Formats.UINT16,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.PAIRED_WRITE, HAP.Perms.NOTIFY],
-      minValue: 5,
-      maxValue: 54000,
-      validValues: [5, 10, 20, 30, 60, 120, 300, 600, 1200, 1800, 3600, 7200, 10800, 18000, 36000, 43200, 54000],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveDuration = EveDuration;
-
-export class EveDeviceStatus extends HAP.Characteristic {
-  static UUID = 'E863F134-079E-48FF-8F27-9C2605A29F52';
-  static SMOKE_DETECTED = 1 << 0;
-  static HEAT_DETECTED = 1 << 1;
-  static ALARM_TEST_ACTIVE = 1 << 2;
-  static SMOKE_SENSOR_ERROR = 1 << 5;
-  static HEAT_SENSOR_ERROR = 1 << 7;
-  static SMOKE_CHAMBER_ERROR = 1 << 9;
-  static SMOKE_SENSOR_DEACTIVATED = 1 << 14;
-  static FLASH_STATUS_LED = 1 << 15;
-  static ALARM_PAUSED = 1 << 24;
-  static ALARM_MUTED = 1 << 25;
-
-  constructor() {
-    super('Eve Device Status', EveDeviceStatus.UUID, {
-      format: HAP.Formats.UINT32,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveDeviceStatus = EveDeviceStatus;
-
-export class EveAirPressure extends HAP.Characteristic {
-  static UUID = 'E863F10F-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve Air Pressure', EveAirPressure.UUID, {
-      format: HAP.Formats.UINT16,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-      unit: 'hPa',
-      minValue: 700,
-      maxValue: 1100,
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveAirPressure = EveAirPressure;
-
-export class EveElevation extends HAP.Characteristic {
-  static UUID = 'E863F130-079E-48FF-8F27-9C2605A29F52';
-
-  constructor() {
-    super('Eve Elevation', EveElevation.UUID, {
-      format: HAP.Formats.INT,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.PAIRED_WRITE, HAP.Perms.NOTIFY],
-      unit: 'm',
-      minValue: -430,
-      maxValue: 8850,
-      minStep: 10,
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveElevation = EveElevation;
-
-export class EveVOCLevel extends HAP.Characteristic {
-  static UUID = 'E863F10B-079E-48FF-8F27-9C2605A29F5';
-
-  constructor() {
-    super('VOC Level', EveVOCLevel.UUID, {
-      format: HAP.Formats.UINT16,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-      unit: 'ppm',
-      minValue: 5,
-      maxValue: 5000,
-      minStep: 5,
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveVOCLevel = EveVOCLevel;
-
-export class EveWeatherTrend extends HAP.Characteristic {
-  static UUID = 'E863F136-079E-48FF-8F27-9C2605A29F52';
-  static BLANK = 0; // also: 2, 8, 10
-  static SUN = 1; // also: 9
-  static CLOUDS_SUN = 3; // also: 11
-  static RAIN = 4; // also: 5, 6, 7
-  static RAIN_WIND = 12; // also: 13, 14, 15
-
-  constructor() {
-    super('Eve Weather Trend', EveWeatherTrend.UUID, {
-      format: HAP.Formats.UINT8,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-      minValue: 0,
-      maxValue: 15,
-      minStep: 1,
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.EveWeatherTrend = EveWeatherTrend;
-
-// EveHomeHistory Service
-export class EveHomeHistory extends HAP.Service {
-  static UUID = 'E863F007-079E-48FF-8F27-9C2605A29F52';
-
-  constructor(displayName, subtype) {
-    super(displayName, EveHomeHistory.UUID, subtype);
-
-    // Required Characteristics
-    this.addCharacteristic(HAP.Characteristic.EveResetTotal);
-    this.addCharacteristic(HAP.Characteristic.EveHistoryStatus);
-    this.addCharacteristic(HAP.Characteristic.EveHistoryEntries);
-    this.addCharacteristic(HAP.Characteristic.EveHistoryRequest);
-    this.addCharacteristic(HAP.Characteristic.EveSetTime);
-  }
-}
-HAP.Service.EveHomeHistory = EveHomeHistory;
-
-// Eve custom air pressure service
-export class EveAirPressureSensor extends HAP.Service {
-  static UUID = 'E863F00A-079E-48FF-8F27-9C2605A29F52';
-
-  constructor(displayName, subtype) {
-    super(displayName, EveAirPressureSensor.UUID, subtype);
-
-    // Required Characteristics
-    this.addCharacteristic(HAP.Characteristic.EveAirPressure);
-    this.addCharacteristic(HAP.Characteristic.EveElevation);
-  }
-}
-HAP.Service.EveAirPressureSensor = EveAirPressureSensor;
-
-// Other UUIDs Eve Home recognises
-export class ApparentTemperature extends HAP.Characteristic {
-  static UUID = 'C1283352-3D12-4777-ACD5-4734760F1AC8';
-
-  constructor() {
-    super('Apparent Temperature', ApparentTemperature.UUID, {
-      format: HAP.Formats.FLOAT,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-      unit: HAP.Units.CELSIUS,
-      minValue: -40,
-      maxValue: 100,
-      minStep: 0.1,
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.ApparentTemperature = ApparentTemperature;
-
-export class CloudCover extends HAP.Characteristic {
-  static UUID = '64392FED-1401-4F7A-9ADB-1710DD6E3897';
-
-  constructor() {
-    super('Cloud Cover', CloudCover.UUID, {
-      format: HAP.Formats.UINT8,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-      unit: HAP.Units.PERCENTAGE,
-      minValue: 0,
-      maxValue: 100,
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.CloudCover = CloudCover;
-
-export class Condition extends HAP.Characteristic {
-  static UUID = 'CD65A9AB-85AD-494A-B2BD-2F380084134D';
-
-  constructor() {
-    super('Condition', Condition.UUID, {
-      format: HAP.Formats.STRING,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.Condition = Condition;
-
-export class ConditionCategory extends HAP.Characteristic {
-  static UUID = 'CD65A9AB-85AD-494A-B2BD-2F380084134C';
-
-  constructor() {
-    super('Condition Category', ConditionCategory.UUID, {
-      format: HAP.Formats.UINT8,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-      minValue: 0,
-      maxValue: 9,
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.ConditionCategory = ConditionCategory;
-
-export class DewPoint extends HAP.Characteristic {
-  static UUID = '095C46E2-278E-4E3C-B9E7-364622A0F501';
-
-  constructor() {
-    super('Dew Point', DewPoint.UUID, {
-      format: HAP.Formats.FLOAT,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-      unit: HAP.Units.CELSIUS,
-      minValue: -40,
-      maxValue: 100,
-      minStep: 0.1,
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.DewPoint = DewPoint;
-
-export class ForecastDay extends HAP.Characteristic {
-  static UUID = '57F1D4B2-0E7E-4307-95B5-808750E2C1C7';
-
-  constructor() {
-    super('Day', ForecastDay.UUID, {
-      format: HAP.Formats.STRING,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.ForecastDay = ForecastDay;
-
-export class MaximumWindSpeed extends HAP.Characteristic {
-  static UUID = '6B8861E5-D6F3-425C-83B6-069945FFD1F1';
-
-  constructor() {
-    super('Maximum Wind Speed', MaximumWindSpeed.UUID, {
-      format: HAP.Formats.FLOAT,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-      unit: 'km/h',
-      minValue: 0,
-      maxValue: 150,
-      minStep: 0.1,
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.MaximumWindSpeed = MaximumWindSpeed;
-
-export class MinimumTemperature extends HAP.Characteristic {
-  static UUID = '707B78CA-51AB-4DC9-8630-80A58F07E411';
-
-  constructor() {
-    super('Maximum Wind Speed', MinimumTemperature.UUID, {
-      format: HAP.Formats.FLOAT,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-      unit: HAP.Units.CELSIUS,
-      minValue: -40,
-      maxValue: 100,
-      minStep: 0.1,
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.MinimumTemperature = MinimumTemperature;
-
-export class ObservationStation extends HAP.Characteristic {
-  static UUID = 'D1B2787D-1FC4-4345-A20E-7B5A74D693ED';
-
-  constructor() {
-    super('Observation Station', ObservationStation.UUID, {
-      format: HAP.Formats.STRING,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.ObservationStation = ObservationStation;
-
-export class ObservationTime extends HAP.Characteristic {
-  static UUID = '234FD9F1-1D33-4128-B622-D052F0C402AF';
-
-  constructor() {
-    super('Observation Time', ObservationTime.UUID, {
-      format: HAP.Formats.STRING,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.ObservationTime = ObservationTime;
-
-export class Ozone extends HAP.Characteristic {
-  static UUID = 'BBEFFDDD-1BCD-4D75-B7CD-B57A90A04D13';
-
-  constructor() {
-    super('Ozone', Ozone.UUID, {
-      format: HAP.Formats.UINT8,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-      unit: 'DU',
-      minValue: 0,
-      maxValue: 500,
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.Ozone = Ozone;
-
-export class Rain extends HAP.Characteristic {
-  static UUID = 'F14EB1AD-E000-4EF4-A54F-0CF07B2E7BE7';
-
-  constructor() {
-    super('Rain', Rain.UUID, {
-      format: HAP.Formats.BOOL,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.Rain = Rain;
-
-export class RainLastHour extends HAP.Characteristic {
-  static UUID = '10C88F40-7EC4-478C-8D5A-BD0C3CCE14B7';
-
-  constructor() {
-    super('Rain Last Hour', RainLastHour.UUID, {
-      format: HAP.Formats.UINT16,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-      unit: 'mm',
-      minValue: 0,
-      maxValue: 200,
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.RainLastHour = RainLastHour;
-
-export class RainProbability extends HAP.Characteristic {
-  static UUID = 'FC01B24F-CF7E-4A74-90DB-1B427AF1FFA3';
-
-  constructor() {
-    super('Rain Probability', RainProbability.UUID, {
-      format: HAP.Formats.UINT8,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-      unit: HAP.Units.PERCENTAGE,
-      minValue: 0,
-      maxValue: 100,
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.RainProbability = RainProbability;
-
-export class TotalRain extends HAP.Characteristic {
-  static UUID = 'CCC04890-565B-4376-B39A-3113341D9E0F';
-
-  constructor() {
-    super('Total Rain', TotalRain.UUID, {
-      format: HAP.Formats.UINT16,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-      unit: 'mm',
-      minValue: 0,
-      maxValue: 2000,
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.TotalRain = TotalRain;
-
-export class Snow extends HAP.Characteristic {
-  static UUID = 'F14EB1AD-E000-4CE6-BD0E-384F9EC4D5DD';
-
-  constructor() {
-    super('Snow', Snow.UUID, {
-      format: HAP.Formats.BOOL,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.Snow = Snow;
-
-export class SolarRadiation extends HAP.Characteristic {
-  static UUID = '1819A23E-ECAB-4D39-B29A-7364D299310B';
-
-  constructor() {
-    super('Solar Radiation', SolarRadiation.UUID, {
-      format: HAP.Formats.UINT16,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-      unit: 'W/m²',
-      minValue: 0,
-      maxValue: 2000,
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.SolarRadiation = SolarRadiation;
-
-export class SunriseTime extends HAP.Characteristic {
-  static UUID = '0D96F60E-3688-487E-8CEE-D75F05BB3008';
-  constructor() {
-    super('Sunrise', SunriseTime.UUID, {
-      format: HAP.Formats.STRING,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.SunriseTime = SunriseTime;
-
-export class SunsetTime extends HAP.Characteristic {
-  static UUID = '3DE24EE0-A288-4E15-A5A8-EAD2451B727C';
-
-  constructor() {
-    super('Sunset', SunsetTime.UUID, {
-      format: HAP.Formats.STRING,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.SunsetTime = SunsetTime;
-
-export class UVIndex extends HAP.Characteristic {
-  static UUID = '05BA0FE0-B848-4226-906D-5B64272E05CE';
-
-  constructor() {
-    super('UV Index', UVIndex.UUID, {
-      format: HAP.Formats.UINT8,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-      minValue: 0,
-      maxValue: 16,
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.UVIndex = UVIndex;
-
-export class Visibility extends HAP.Characteristic {
-  static UUID = 'D24ECC1E-6FAD-4FB5-8137-5AF88BD5E857';
-
-  constructor() {
-    super('Visibility', Visibility.UUID, {
-      format: HAP.Formats.UINT8,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-      unit: 'km',
-      minValue: 0,
-      maxValue: 100,
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.Visibility = Visibility;
-
-export class WindDirection extends HAP.Characteristic {
-  static UUID = '46F1284C-1912-421B-82F5-EB75008B167E';
-  constructor() {
-    super('Wind Direction', WindDirection.UUID, {
-      format: HAP.Formats.STRING,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.WindDirection = WindDirection;
-
-export class WindSpeed extends HAP.Characteristic {
-  static UUID = '49C8AE5A-A3A5-41AB-BF1F-12D5654F9F41';
-
-  constructor() {
-    super('Wind Speed', WindSpeed.UUID, {
-      format: HAP.Formats.FLOAT,
-      perms: [HAP.Perms.PAIRED_READ, HAP.Perms.NOTIFY],
-      unit: 'km/h',
-      minValue: 0,
-      maxValue: 150,
-      minStep: 0.1,
-    });
-    this.value = this.getDefaultValue();
-  }
-}
-HAP.Characteristic.WindSpeed = WindSpeed;
