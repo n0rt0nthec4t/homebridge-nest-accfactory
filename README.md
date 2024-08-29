@@ -11,7 +11,7 @@
 
 </span>
 
-Formally known as 'Nest_accfactory', this is a Homebridge plugin I have developed to allow Nest devices to be used with HomeKit including having support for HomeKit Secure Video on doorbells and camera devices
+Formally known as [Nest_accfactory](https://github.com/n0rt0nthec4t/Nest_accfactory), this is a Homebridge plugin I have developed to allow Nest devices to be used with HomeKit including having support for HomeKit Secure Video on doorbells and camera devices
 
 **HomeKit Secure Video Support is disabled by default and needs to be explicitly enabled by the user**
 
