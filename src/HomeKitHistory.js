@@ -1065,7 +1065,9 @@ export default class HomeKitHistory {
         this.EveMotionPersist = {
           duration: typeof options?.EveMotion_duration === 'number' ? options.EveMotion_duration : 5, // default 5 seconds
           sensitivity:
-            typeof options?.EveMotion_sensitivity === 'number' ? options.EveMotion_sensivity : this.hap.Characteristic.EveMotionSensitivity.HIGH, // default sensitivity
+            typeof options?.EveMotion_sensitivity === 'number'
+              ? options.EveMotion_sensivity
+              : this.hap.Characteristic.EveMotionSensitivity.HIGH, // default sensitivity
           ledmotion: options?.EveMotion_ledmotion === true, // off
         };
 

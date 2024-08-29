@@ -1,7 +1,7 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 27/8/2024
+// Code version 29/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -30,7 +30,7 @@ const VideoCodecs = {
   H264_OMX: 'h264_omx',
   LIBX264: 'libx264',
   H264_V4L2M2M: 'h264_v4l2m2m', // Not coded yet
-  H264_QSV: ' h264_qsv', // Not coded yet
+  H264_QSV: 'h264_qsv', // Not coded yet
 };
 
 // Audio codecs we use
@@ -251,7 +251,7 @@ export default class NestCamera extends HomeKitDevice {
       ' -f mp4' + // output is an mp4
       ' pipe:1'; // output to stdout
 
-    this.HKSVRecorder.ffmpeg = child_process.spawn(path.resolve(this.deviceData.ffmpegPath + '/ffmpeg'), commandLine.split(' '), {
+    this.HKSVRecorder.ffmpeg = child_process.spawn(path.resolve(this.deviceData.ffmpeg.path + '/ffmpeg'), commandLine.split(' '), {
       env: process.env,
       stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
     }); // Extra pipe, #3 for audio data
@@ -570,7 +570,7 @@ export default class NestCamera extends HomeKitDevice {
       return;
     }
 
-    if (this.deviceData?.ffmpegPath === undefined && request.type === this.hap.StreamRequestTypes.START) {
+    if (this.deviceData?.ffmpeg.path === undefined && request.type === this.hap.StreamRequestTypes.START) {
       this?.log?.warn &&
         this.log.warn(
           'Request received to start live video for "%s" however we do not have an ffmpeg binary present',
@@ -593,7 +593,9 @@ export default class NestCamera extends HomeKitDevice {
         ' -use_wallclock_as_timestamps 1' +
         //   ' -f h264 -thread_queue_size 1024 -copytb 1 -i pipe:0' + // Video data only on stdin
         ' -f h264 -thread_queue_size 1024 -i pipe:0' + // Video data only on stdin
-        (this.deviceData.audio_enabled === true ? ' -f aac -thread_queue_size 1024 -i pipe:3' : ''); // Audio data only on extra pipe created in spawn command
+        (this.deviceData.audio_enabled === true && this.deviceData.ffmpeg['libfdk_aac'] === true
+          ? ' -f aac -thread_queue_size 1024 -i pipe:3'
+          : ''); // Audio data only on extra pipe created in spawn command
 
       // Build our video command for ffmpeg
       commandLine =
@@ -622,7 +624,7 @@ export default class NestCamera extends HomeKitDevice {
         request.video.mtu;
 
       // We have seperate video and audio streams that need to be muxed together if audio enabled
-      if (this.deviceData.audio_enabled === true) {
+      if (this.deviceData.audio_enabled === true && this.deviceData.ffmpeg['libfdk_aac'] === true) {
         commandLine =
           commandLine +
           ' -map 1:a' + // pipe:3, the second input is audio data
@@ -660,7 +662,7 @@ export default class NestCamera extends HomeKitDevice {
       }
 
       // Start our ffmpeg streaming process and stream from nexus
-      let ffmpegStreaming = child_process.spawn(path.resolve(this.deviceData.ffmpegPath + '/ffmpeg'), commandLine.split(' '), {
+      let ffmpegStreaming = child_process.spawn(path.resolve(this.deviceData.ffmpeg.path + '/ffmpeg'), commandLine.split(' '), {
         env: process.env,
         stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
       }); // Extra pipe, #3 for audio data
@@ -680,9 +682,15 @@ export default class NestCamera extends HomeKitDevice {
         }
       });
 
-      // We only create the rtpsplitter and ffmpeg processs if twoway audio is supported AND audio enabled on camera/doorbell
+      // We only enable two/way audio on camera/doorbell if we have the required libraries in ffmpeg AND two-way/audio is enabled
       let ffmpegAudioTalkback = null; // No ffmpeg process for return audio yet
-      if (this.deviceData.audio_enabled === true && this.deviceData.has_speaker === true && this.deviceData.has_microphone === true) {
+      if (
+        this.deviceData.ffmpeg.libspeex === true &&
+        this.deviceData.ffmpeg['libfdk-aac'] === true &&
+        this.deviceData.audio_enabled === true &&
+        this.deviceData.has_speaker === true &&
+        this.deviceData.has_microphone === true
+      ) {
         // Setup RTP splitter for two/away audio
         this.currentSessions[request.sessionID].rtpSplitter = dgram.createSocket('udp4');
         this.currentSessions[request.sessionID].rtpSplitter.bind(this.currentSessions[request.sessionID].rptSplitterPort);
@@ -724,7 +732,7 @@ export default class NestCamera extends HomeKitDevice {
           ' -ar 16k' +
           ' -f data pipe:1';
 
-        ffmpegAudioTalkback = child_process.spawn(path.resolve(this.deviceData.ffmpegPath + '/ffmpeg'), commandLine.split(' '), {
+        ffmpegAudioTalkback = child_process.spawn(path.resolve(this.deviceData.ffmpeg.path + '/ffmpeg'), commandLine.split(' '), {
           env: process.env,
         });
 
@@ -791,13 +799,8 @@ export default class NestCamera extends HomeKitDevice {
       this.NexusStreamer.startLiveStream(
         request.sessionID,
         ffmpegStreaming.stdin,
-        this.deviceData.audio_enabled === true && ffmpegStreaming.stdio[3] ? ffmpegStreaming.stdio[3] : null,
-        this.deviceData.audio_enabled === true &&
-          this.deviceData.has_speaker === true &&
-          this.deviceData.has_microphone === true &&
-          ffmpegAudioTalkback.stdout
-          ? ffmpegAudioTalkback.stdout
-          : null,
+        ffmpegStreaming.stdio[3] ? ffmpegStreaming.stdio[3] : null,
+        ffmpegAudioTalkback.stdout ? ffmpegAudioTalkback.stdout : null,
       );
 
       // Store our ffmpeg sessions

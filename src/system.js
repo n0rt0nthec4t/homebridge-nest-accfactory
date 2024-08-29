@@ -2,7 +2,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 28/8/2024
+// Code version 29/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -23,8 +23,8 @@ import { fileURLToPath } from 'node:url';
 
 // Import our modules
 import HomeKitDevice from './HomeKitDevice.js';
-//import NestCamera from './camera.js';
-//import NestDoorbell from './doorbell.js';
+import NestCamera from './camera.js';
+import NestDoorbell from './doorbell.js';
 let NestCamera = undefined;
 let NestDoorbell = undefined;
 import NestProtect from './protect.js';
@@ -37,7 +37,6 @@ const CAMERAZONEPOLLING = 30000; // Camera zones changes polling timer
 const WEATHERPOLLING = 300000; // Weather data polling timer
 const NESTAPITIMEOUT = 10000; // Nest API timeout
 const USERAGENT = 'Nest/5.75.0 (iOScom.nestlabs.jasper.release) os=17.4.1'; // User Agent string
-const FFMPEGLIBARIES = ['libspeex', 'libx264', 'libfdk-aac']; // ffmpeg libraries we require for camera/doorbell(s)
 const FFMPEGVERSION = '6.0'; // Minimum version of ffmpeg we require
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
@@ -109,54 +108,77 @@ export default class NestAccfactory {
 
     // Check if a ffmpeg binary exists in current path OR the specific path via configuration
     // If using HomeBridge, the default path will be where the Homebridge user folder is, otherwise the current directory
-    this.config.options.ffmpegPath =
+    this.config.options.ffmpeg = {};
+    this.config.options.ffmpeg['path'] =
       typeof this.config.options?.ffmpegPath === 'string' && this.config.options.ffmpegPath !== ''
         ? this.config.options.ffmpegPath
         : typeof api?.user?.storagePath === 'function'
           ? api.user.storagePath()
           : __dirname;
 
-    if (fs.existsSync(path.resolve(this.config.options.ffmpegPath + '/ffmpeg')) === false) {
+    this.config.options.ffmpeg['version'] = undefined;
+    this.config.options.ffmpeg['libspeex'] = false;
+    this.config.options.ffmpeg['libx264'] = false;
+    this.config.options.ffmpeg['libfdk-aac'] = false;
+
+    if (fs.existsSync(path.resolve(this.config.options.ffmpeg.path + '/ffmpeg')) === false) {
       if (this?.log?.warn) {
-        this.log.warn('No ffmpeg binary found in "%s"', this.config.options.ffmpegPath);
+        this.log.warn('No ffmpeg binary found in "%s"', this.config.options.ffmpeg.path);
         this.log.warn('Streaming/recording video will be unavailable for cameras/doorbells');
       }
 
       // If we flag ffmpegPath as undefined, no video streaming/record support enabled for camers/doorbells
-      this.config.options.ffmpegPath = undefined;
+      this.config.options.ffmpeg.path = undefined;
     }
 
-    if (fs.existsSync(path.resolve(this.config.options.ffmpegPath + '/ffmpeg')) === true) {
-      let ffmpegProcess = child_process.spawnSync(path.resolve(this.config.options.ffmpegPath + '/ffmpeg'), ['-version'], {
+    if (fs.existsSync(path.resolve(this.config.options.ffmpeg.path + '/ffmpeg')) === true) {
+      let ffmpegProcess = child_process.spawnSync(path.resolve(this.config.options.ffmpeg.path + '/ffmpeg'), ['-version'], {
         env: process.env,
       });
       if (ffmpegProcess.stdout !== null) {
-        // Determine ffmpeg version. Flatten version number into 0.xxxxxxx number for later comparision
-        let ffmpegVersion = parseFloat(
-          ffmpegProcess.stdout
-            .toString()
-            .match(/(?:ffmpeg version:(\d+)\.)?(?:(\d+)\.)?(?:(\d+)\.\d+)(.*?)/gim)[0]
-            .replace(/\./gi, ''),
-        );
+        // Determine ffmpeg version
+        this.config.options.ffmpeg.version = ffmpegProcess.stdout
+          .toString()
+          .match(/(?:ffmpeg version:(\d+)\.)?(?:(\d+)\.)?(?:(\d+)\.\d+)(.*?)/gim)[0];
 
         // Determine what libraries ffmpeg is compiled with
-        let matchingLibraries = 0;
-        FFMPEGLIBARIES.forEach((libraryName) => {
-          if (ffmpegProcess.stdout.toString().includes('--enable-' + libraryName) === true) {
-            matchingLibraries++; // One more found library
-          }
-        });
+        this.config.options.ffmpeg['libspeex'] = ffmpegProcess.stdout.toString().includes('--enable-libspeex') === true;
+        this.config.options.ffmpeg['libx264'] = ffmpegProcess.stdout.toString().includes('--enable-libx264') === true;
+        this.config.options.ffmpeg['libfdk-aac'] = ffmpegProcess.stdout.toString().includes('--enable-libfdk-aac') === true;
 
-        if (matchingLibraries !== FFMPEGLIBARIES.length || ffmpegVersion < parseFloat(FFMPEGVERSION.toString().replace(/\./gi, ''))) {
-          if (this?.log?.warn) {
-            this.log.warn('ffmpeg binary in "%s" does not meet the minimum requirements.', this.config.options.ffmpegPath);
-            this.log.warn('Minimum binary version is "%s"', FFMPEGVERSION);
-            this.log.warn('Minimum compiled in libraries are "%s"', FFMPEGLIBARIES);
-            this.log.warn('Streaming video and recording will be unavailable');
-          }
+        if (
+          this.config.options.ffmpeg.version.replace(/\./gi, '') < parseFloat(FFMPEGVERSION.toString().replace(/\./gi, '')) ||
+          this.config.options.ffmpeg['libspeex'] === false ||
+          this.config.options.ffmpeg['libx264'] === false ||
+          this.config.options.ffmpeg['libfdk-aac'] === false
+        ) {
+          this?.log?.warn && this.log.warn('ffmpeg binary in "%s" does not meet the minimum requirements', this.config.options.ffmpeg.path);
+          if (this.config.options.ffmpeg.version.replace(/\./gi, '') < parseFloat(FFMPEGVERSION.toString().replace(/\./gi, ''))) {
+            this?.log?.warn &&
+              this.log.warn(
+                'Minimum binary version is "%s", however the installed version is "%s"',
+                FFMPEGVERSION,
+                this.config.options.ffmpeg.version,
+              );
+            this?.log?.warn && this.log.warn('Stream video/recording from camera/doorbells will be unavailable');
 
-          // If we flag ffmpegPath as undefined, no video streaming/record support
-          this.config.options.ffmpegPath = undefined;
+            this.config.options.ffmpeg.path = undefined; // No ffmpeg since below min version
+          }
+          if (
+            this.config.options.ffmpeg['libspeex'] === false &&
+            (this.config.options.ffmpeg['libx264'] === true && this.config.options.ffmpeg['libfdk-aac']) === true
+          ) {
+            this?.log?.warn && this.log.warn('Missing libspeex in ffmpeg binary, two-way audio on camera/doorbells will be unavailable');
+          }
+          if (this.config.options.ffmpeg['libx264'] === true && this.config.options.ffmpeg['libfdk-aac'] === false) {
+            this?.log?.warn && this.log.warn('Missing libfdk-aac in ffmpeg binary, audio from camera/doorbells will be unavailable');
+          }
+          if (this.config.options.ffmpeg['libx264'] === false) {
+            this?.log?.warn &&
+              this.log.warn('Missing libx264 in ffmpeg binary, stream video/recording from camera/doorbells will be unavailable');
+
+            this.config.options.ffmpeg.path = undefined; // No ffmpeg since we do not have all the required libraries
+          }
         }
       }
     }
@@ -2293,7 +2315,7 @@ export default class NestAccfactory {
               ? this.config.devices[tempDevice.serial_number].motionCooldown
               : 60;
           tempDevice.chimeSwitch = this.config?.devices?.[tempDevice.serial_number]?.chimeSwitch === true; // Config option for chime switch
-          tempDevice.ffmpegPath = this.config.options.ffmpegPath; // path to ffmpeg. No ffmpeg = undefined
+          tempDevice.ffmpeg = this.config.options.ffmpeg; // ffmpeg details, path, libraries. No ffmpeg = undefined
           (tempDevice.maxStreams =
             typeof this.config.options?.maxStreams === 'number' ? this.config.options.maxStreams : this.deviceData.hksv === true ? 1 : 2),
             (devices[tempDevice.serial_number] = tempDevice); // Store processed device
