@@ -8,7 +8,7 @@
 // -- Eve Degree/Weather2 history
 // -- Eve Water guard history
 //
-// Version 28/8/2024
+// Version 29/8/2024
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -1035,8 +1035,8 @@ export default class HomeKitHistory {
         // Setup the history service and the required characteristics for this service UUID type
         // Callbacks setup below after this is created
         let historyService = this.#createHistoryService(service, [
-          this.hap.Characteristic.EveSensitivity,
-          this.hap.Characteristic.EveDuration,
+          this.hap.Characteristic.EveMotionSensitivity,
+          this.hap.Characteristic.EveMotionDuration,
           this.hap.Characteristic.EveLastActivation,
           // this.hap.Characteristic.EveGetConfiguration,
           // this.hap.Characteristic.EveSetConfiguration,
@@ -1065,7 +1065,7 @@ export default class HomeKitHistory {
         this.EveMotionPersist = {
           duration: typeof options?.EveMotion_duration === 'number' ? options.EveMotion_duration : 5, // default 5 seconds
           sensitivity:
-            typeof options?.EveMotion_sensitivity === 'number' ? options.EveMotion_sensivity : this.hap.Characteristic.EveSensitivity.HIGH, // default sensitivity
+            typeof options?.EveMotion_sensitivity === 'number' ? options.EveMotion_sensivity : this.hap.Characteristic.EveMotionSensitivity.HIGH, // default sensitivity
           ledmotion: options?.EveMotion_ledmotion === true, // off
         };
 
@@ -1076,19 +1076,19 @@ export default class HomeKitHistory {
           return this.#EveLastEventTime(); // time of last event in seconds since first event
         });
 
-        service.updateCharacteristic(this.hap.Characteristic.EveSensitivity, this.EveMotionPersist.sensitivity);
-        service.getCharacteristic(this.hap.Characteristic.EveSensitivity).onGet(() => {
+        service.updateCharacteristic(this.hap.Characteristic.EveMotionSensitivity, this.EveMotionPersist.sensitivity);
+        service.getCharacteristic(this.hap.Characteristic.EveMotionSensitivity).onGet(() => {
           return this.EveMotionPersist.sensitivity;
         });
-        service.getCharacteristic(this.hap.Characteristic.EveSensitivity).onSet((value) => {
+        service.getCharacteristic(this.hap.Characteristic.EveMotionSensitivity).onSet((value) => {
           this.EveMotionPersist.sensitivity = value;
         });
 
-        service.updateCharacteristic(this.hap.Characteristic.EveDuration, this.EveMotionPersist.duration);
-        service.getCharacteristic(this.hap.Characteristic.EveDuration).onGet(() => {
+        service.updateCharacteristic(this.hap.Characteristic.EveMotionDuration, this.EveMotionPersist.duration);
+        service.getCharacteristic(this.hap.Characteristic.EveMotionDuration).onGet(() => {
           return this.EveMotionPersist.duration;
         });
-        service.getCharacteristic(this.hap.Characteristic.EveDuration).onSet((value) => {
+        service.getCharacteristic(this.hap.Characteristic.EveMotionDuration).onSet((value) => {
           this.EveMotionPersist.duration = value;
         });
 
