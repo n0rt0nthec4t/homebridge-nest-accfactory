@@ -86,6 +86,11 @@
                         "description": "Enable HomeKit Secure Video for supported camera(s) and doorbell(s)",
                         "type": "boolean",
                         "default": false
+                    },
+                    "ffmpegPath": {
+                        "title": "Path to ffmpeg binary",
+                        "type": "string",
+                        "placeholder": "Path to an ffmpeg binary. By default, we look in HomeBridge user path"
                     }
                 }
             }

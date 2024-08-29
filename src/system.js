@@ -25,8 +25,6 @@ import { fileURLToPath } from 'node:url';
 import HomeKitDevice from './HomeKitDevice.js';
 import NestCamera from './camera.js';
 import NestDoorbell from './doorbell.js';
-let NestCamera = undefined;
-let NestDoorbell = undefined;
 import NestProtect from './protect.js';
 import NestTemperatureSensor from './tempsensor.js';
 import NestWeather from './weather.js';
@@ -117,9 +115,9 @@ export default class NestAccfactory {
           : __dirname;
 
     this.config.options.ffmpeg['version'] = undefined;
-    this.config.options.ffmpeg['libspeex'] = false;
-    this.config.options.ffmpeg['libx264'] = false;
-    this.config.options.ffmpeg['libfdk-aac'] = false;
+    this.config.options.ffmpeg.libspeex = false;
+    this.config.options.ffmpeg.libx264 = false;
+    this.config.options.ffmpeg.libfdk_aac = false;
 
     if (fs.existsSync(path.resolve(this.config.options.ffmpeg.path + '/ffmpeg')) === false) {
       if (this?.log?.warn) {
@@ -142,15 +140,15 @@ export default class NestAccfactory {
           .match(/(?:ffmpeg version:(\d+)\.)?(?:(\d+)\.)?(?:(\d+)\.\d+)(.*?)/gim)[0];
 
         // Determine what libraries ffmpeg is compiled with
-        this.config.options.ffmpeg['libspeex'] = ffmpegProcess.stdout.toString().includes('--enable-libspeex') === true;
-        this.config.options.ffmpeg['libx264'] = ffmpegProcess.stdout.toString().includes('--enable-libx264') === true;
-        this.config.options.ffmpeg['libfdk-aac'] = ffmpegProcess.stdout.toString().includes('--enable-libfdk-aac') === true;
+        this.config.options.ffmpeg.libspeex = ffmpegProcess.stdout.toString().includes('--enable-libspeex') === true;
+        this.config.options.ffmpeg.libx264 = ffmpegProcess.stdout.toString().includes('--enable-libx264') === true;
+        this.config.options.ffmpeg.libfdk_aac = ffmpegProcess.stdout.toString().includes('--enable-libfdk-aac') === true;
 
         if (
           this.config.options.ffmpeg.version.replace(/\./gi, '') < parseFloat(FFMPEGVERSION.toString().replace(/\./gi, '')) ||
-          this.config.options.ffmpeg['libspeex'] === false ||
-          this.config.options.ffmpeg['libx264'] === false ||
-          this.config.options.ffmpeg['libfdk-aac'] === false
+          this.config.options.ffmpeg.libspeex === false ||
+          this.config.options.ffmpeg.libx264 === false ||
+          this.config.options.ffmpeg.libfdk_aac === false
         ) {
           this?.log?.warn && this.log.warn('ffmpeg binary in "%s" does not meet the minimum requirements', this.config.options.ffmpeg.path);
           if (this.config.options.ffmpeg.version.replace(/\./gi, '') < parseFloat(FFMPEGVERSION.toString().replace(/\./gi, ''))) {
@@ -165,15 +163,15 @@ export default class NestAccfactory {
             this.config.options.ffmpeg.path = undefined; // No ffmpeg since below min version
           }
           if (
-            this.config.options.ffmpeg['libspeex'] === false &&
-            (this.config.options.ffmpeg['libx264'] === true && this.config.options.ffmpeg['libfdk-aac']) === true
+            this.config.options.ffmpeg.libspeex === false &&
+            (this.config.options.ffmpeg.libx264 === true && this.config.options.ffmpeg.libfdk_aac) === true
           ) {
             this?.log?.warn && this.log.warn('Missing libspeex in ffmpeg binary, two-way audio on camera/doorbells will be unavailable');
           }
-          if (this.config.options.ffmpeg['libx264'] === true && this.config.options.ffmpeg['libfdk-aac'] === false) {
-            this?.log?.warn && this.log.warn('Missing libfdk-aac in ffmpeg binary, audio from camera/doorbells will be unavailable');
+          if (this.config.options.ffmpeg.libx264 === true && this.config.options.ffmpeg.libfdk_aac === false) {
+            this?.log?.warn && this.log.warn('Missing libfdk_aac in ffmpeg binary, audio from camera/doorbells will be unavailable');
           }
-          if (this.config.options.ffmpeg['libx264'] === false) {
+          if (this.config.options.ffmpeg.libx264 === false) {
             this?.log?.warn &&
               this.log.warn('Missing libx264 in ffmpeg binary, stream video/recording from camera/doorbells will be unavailable');
 

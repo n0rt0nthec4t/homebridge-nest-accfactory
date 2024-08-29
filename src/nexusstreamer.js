@@ -134,7 +134,6 @@ export default class NexusStreamer {
     outputTimer: undefined, // Timer for non-block loop stream outputs
     packets: [], // Incoming packets
     messages: [], // Incoming messages
-    //buffer: [], // Saved audio/video packets
     video: {}, // Video stream details
     audio: {}, // Audio stream details
     outputs: {}, // Output streams ie: buffer, live, record
@@ -218,6 +217,7 @@ export default class NexusStreamer {
     // This process will also handle the rolling-buffer size we require
     // Record streams will always start from the beginning of the buffer (tail)
     // Live streams will always start from the end of the buffer (head)
+    //let lastTimeVideo = Date.now();
     this.nexusTalk.outputTimer = setInterval(() => {
       // Output the packet data to any streams running, either a 'live' or 'recording' stream
       Object.values(this.nexusTalk.outputs).forEach((output) => {
