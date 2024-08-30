@@ -1353,6 +1353,7 @@ export default class NestAccfactory {
       'nest.resource.NestAgateDisplayResource',
       'nest.resource.NestOnyxResource',
       'google.resource.GoogleZirconium1Resource',
+      'google.resource.GoogleBismuth1Resource',
     ];
     Object.entries(this.#rawData)
       .filter(
@@ -1372,6 +1373,9 @@ export default class NestAccfactory {
             RESTTypeData.model = 'Thermostat';
             if (value.value.device_info.typeName === 'nest.resource.NestLearningThermostat3Resource') {
               RESTTypeData.model = 'Learning Thermostat (3rd Gen)';
+            }
+            if (value.value.device_info.typeName === 'google.resource.GoogleBismuth1Resource') {
+              RESTTypeData.model = 'Learning Thermostat (4th Gen)';
             }
             if (value.value.device_info.typeName === 'nest.resource.NestAgateDisplayResource') {
               RESTTypeData.model = 'Thermostat E';

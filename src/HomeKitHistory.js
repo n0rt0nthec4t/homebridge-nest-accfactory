@@ -2122,7 +2122,7 @@ export default class HomeKitHistory {
                 numberToEveHexString(historyEntry.status === 0 ? parseInt('111', 2) : parseInt('101', 2), 2), // Field mask, 111 is for sending water usage when a valve is recorded as closed, 101 is for when valve is recorded as opened, no water usage is sent
                 numberToEveHexString(historyEntry.status, 2),
                 historyEntry.status === 0 ? numberToEveHexString(Math.floor(parseFloat(historyEntry.water) * 1000), 16) : '', // water used in millilitres if valve closed entry (64bit value)
-                numberToEveHexString(3120, 4), // battery millivolts - 3120mv which think should be 100% for an eve aqua running on 2 x AAs??
+                numberToEveHexString(3120, 4), // battery millivolts - 3120mv which think should be 100% for an eve aqua running on 2 x AAs?
               );
               break;
             }

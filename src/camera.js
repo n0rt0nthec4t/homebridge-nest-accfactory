@@ -1,7 +1,7 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 29/8/2024
+// Code version 30/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -44,7 +44,7 @@ const CAMERAOFFLINEJPGFILE = 'Nest_camera_offline.jpg'; // Camera offline jpg im
 const CAMERAOFFJPGFILE = 'Nest_camera_off.jpg'; // Camera video off jpg image file
 const MP4BOX = 'mp4box'; // MP4 box fragement event for HKSV recording
 const USERAGENT = 'Nest/5.75.0 (iOScom.nestlabs.jasper.release) os=17.4.1'; // User Agent string
-
+const SNAPSHOTCACHETIMEOUT = 30000; // Timeout for retaining snapshot image (in milliseconds)
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 
 export default class NestCamera extends HomeKitDevice {
@@ -54,6 +54,7 @@ export default class NestCamera extends HomeKitDevice {
   operatingModeService = undefined; // Link to camera/doorbell operating mode service
   personTimer = undefined; // Cooldown timer for person/face events
   motionTimer = undefined; // Cooldown timer for motion events
+  snapshotTimer = undefined; // Timer for cached snapshot images
   cameraOfflineImage = undefined; // JPG image buffer for camera offline
   cameraVideoOffImage = undefined; // JPG image buffer for camera video off
   lastSnapshotImage = undefined; // JPG image buffer for last camera snapshot
@@ -186,6 +187,7 @@ export default class NestCamera extends HomeKitDevice {
     // Audio if enabled on camera/doorbell && audio recording configured for HKSV
     let includeAudio =
       this.deviceData.audio_enabled === true &&
+      this.deviceData.libfdk_aac === true &&
       this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.RecordingAudioActive)
         .value === 1;
     let recordCodec = VideoCodecs.LIBX264;
@@ -441,20 +443,17 @@ export default class NestCamera extends HomeKitDevice {
             this.snapshotEvent.done = true; // Successfully got the snapshot for the event
             imageBuffer = response.data;
           })
-          .catch(() => {
+          // eslint-disable-next-line no-unused-vars
+          .catch((error) => {
             // Empty
           });
       }
-      if (this.deviceData.hksv === true || imageBuffer === undefined) {
-        // Camera/doorbell has HKSV OR the image buffer is empty still, so do direct grab from Nest API
+      if (imageBuffer === undefined) {
+        // Camera/doorbell image buffer is empty still, so do direct grab from Nest API
         let request = {
           method: 'get',
-          url:
-            this.deviceData.nexus_api_http_server_url +
-            '/get_image?uuid=' +
-            this.deviceData.uuid.split('.')[1] +
-            '&width=' +
-            snapshotRequestDetails.width,
+          url: this.deviceData.nexus_api_http_server_url + '/get_image?uuid=' + this.deviceData.uuid.split('.')[1],
+          // + '&width=' + snapshotRequestDetails.width,
           headers: {
             'User-Agent': USERAGENT,
             accept: '*/*',
@@ -470,8 +469,16 @@ export default class NestCamera extends HomeKitDevice {
             }
 
             imageBuffer = response.data;
+            this.lastSnapshotImage = response.data;
+
+            // Keep this snapshot image cached for a certain period
+            this.snapshotTimer = clearTimeout(this.snapshotTimer);
+            this.snapshotTimer = setTimeout(() => {
+              this.lastSnapshotImage = undefined;
+            }, SNAPSHOTCACHETIMEOUT);
           })
-          .catch(() => {
+          // eslint-disable-next-line no-unused-vars
+          .catch((error) => {
             // Empty
           });
       }
@@ -490,7 +497,7 @@ export default class NestCamera extends HomeKitDevice {
     if (imageBuffer === undefined) {
       // If we get here, we have no snapshot image
       // We'll use the last success snapshop as long as its within a certain time period
-      this.log.warn('Unable to obtain live snapshot. Using cached image');
+      imageBuffer = this.lastSnapshotImage;
     }
 
     callback(imageBuffer?.length === 0 ? 'No Camera/Doorbell snapshot obtained' : null, imageBuffer);
@@ -573,7 +580,7 @@ export default class NestCamera extends HomeKitDevice {
     if (this.deviceData?.ffmpeg.path === undefined && request.type === this.hap.StreamRequestTypes.START) {
       this?.log?.warn &&
         this.log.warn(
-          'Request received to start live video for "%s" however we do not have an ffmpeg binary present',
+          'Received request to start live video for "%s" however we do not have an ffmpeg binary present',
           this.deviceData.description,
         );
 
