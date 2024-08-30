@@ -57,3 +57,62 @@ Google Accounts require an "issueToken" and "cookie". The values of "issueToken"
 11. In the Headers tab, under Request Headers, copy the entire cookie (include the whole string which is several lines long and has many field/value pairs - do not include the cookie: name). This is your "Cookie" which can be entered into the plugin-configuration within Homebridge.
 
 **Do not log out of home.nest.com, as this will invalidate your credentials. Just close the browser tab**
+
+## config.json configuration
+
+When using the plugin configuration using [homebridge-config-ui-x](https://github.com/homebridge/homebridge-config-ui-x), the config.json will be updated/generated with the configuration options available via the web-form. Additional options can be specified in the config.json directly.
+
+Sample config.json entries below
+```
+{
+    "nest": {
+        "access_token": "<nest access token>",
+        "fieldTest": false
+    },
+    "google": {
+        "issuetoken": "<google issue token>",
+        "cookie": "<google cookie>",
+        "fieldTest": false
+    },
+    "options": {
+        "eveHistory": true,
+        "weather": true,
+        "elevation": 600,
+        "hksv": false
+    },
+    "devices": {
+        "XXXXXXXX": {
+            "exclude": false
+        },
+    },
+    "platform": "NestAccfactory"
+}
+```
+
+#### options
+
+The following options are available in the config.json options object. These apply to all discovered devices.
+
+| Name              | Description                                                                                   | Type      |
+|-------------------|-----------------------------------------------------------------------------------------------|-----------|
+| ffmegPath         | Path to an ffmpeg binary for us to use. Will look in current directory by default             | string    |
+| eveHistory        | Provide history in EveHome application where applicable                                       | boolean   |
+| weather           | Virtual weather station for each Nest/Google home we discover                                 | boolean   |
+| elevation         | Height above sea level for the weather station                                                | number    |
+| hksv              | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                           | boolean   |
+| maxStreams        | Maximum number of concurrent video streams in HomeKit for supported camera(s) and doorbell(s) | number    |
+
+#### devices
+
+The following options are available on a per-device level in the config.json devices object. The device is specified by using its serial number (in uppercase)
+
+| Name              | Description                                                                                   | Type      |
+|-------------------|-----------------------------------------------------------------------------------------------|-----------|
+| exclude           | Exclude the device                                                                            | boolean   |
+| eveHistory        | Provide history in EveHome application where applicable for the specific device               | boolean   |
+| chimeSwitch       | Create a switch for supported doorbell(s) which allows the indoor chime to be turned on/off   | boolean   |
+| humiditySensor    | Create a seperate humidity sensor for supported Thermostat(s)                                 | boolean   |
+| elevation         | Height above sea level for the specific weather station                                       | number    |
+| doorbellCooldown  |                                                                                               | number    | 
+| motionCooldown    |                                                                                               | number    |
+| personCooldown    |                                                                                               | number    | 
