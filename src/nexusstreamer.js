@@ -128,7 +128,6 @@ export default class NexusStreamer {
     authorised: false, // Have wee been authorised
     host: '', // Host to connect to or connected too
     socket: null, // TCP socket object
-    watchDogTimer: undefined, // Timer for camera stream on/off etc
     pingTimer: undefined, // Timer object for ping interval
     stalledTimer: undefined, // Timer object for no receieved data
     outputTimer: undefined, // Timer for non-block loop stream outputs
@@ -217,14 +216,33 @@ export default class NexusStreamer {
     // This process will also handle the rolling-buffer size we require
     // Record streams will always start from the beginning of the buffer (tail)
     // Live streams will always start from the end of the buffer (head)
-    //let lastTimeVideo = Date.now();
+    let lastTimeVideo = Date.now();
     this.nexusTalk.outputTimer = setInterval(() => {
-      // Output the packet data to any streams running, either a 'live' or 'recording' stream
+      let dateNow = Date.now();
+      let outputVideoFrame = dateNow > lastTimeVideo + 90000 / 30;
       Object.values(this.nexusTalk.outputs).forEach((output) => {
+        // Monitor for camera going offline and/or video enabled/disabled
+        // We'll insert the appropriate video frame into the stream
+        if (this.online === false && this.cameraOfflineFrame !== undefined && outputVideoFrame === true) {
+          // Camera is offline so feed in our custom h264 frame and AAC silence
+          output.buffer.push({ type: 'video', time: dateNow, data: this.cameraOfflineFrame });
+          output.buffer.push({ type: 'audio', time: dateNow, data: AACAudioSilence });
+          lastTimeVideo = dateNow;
+        }
+        if (this.online === true && this.videoEnabled === false && this.cameraVideoOffFrame !== undefined && outputVideoFrame === true) {
+          // Camera video is turned off so feed in our custom h264 frame and AAC silence
+          output.buffer.push({ type: 'video', time: dateNow, data: this.cameraVideoOffFrame });
+          output.buffer.push({ type: 'audio', time: dateNow, data: AACAudioSilence });
+          lastTimeVideo = dateNow;
+        }
+
+        // Keep our 'main' rolling buffer under a certain size
+        // Live/record buffers will always reduce in length in the next section
         if (output.type === 'buffer' && output.buffer.length > 1000) {
-          // Keep our 'main' rolling buffer under a certain size
           output.buffer.shift();
         }
+
+        // Output the packet data to any streams running, either a 'live' or 'recording' stream
         if (output.type === 'live' || output.type === 'record') {
           let packet = output.buffer.shift();
           if (packet?.type === 'video' && typeof output?.video?.write === 'function') {
@@ -241,14 +259,14 @@ export default class NexusStreamer {
 
   // Class functions
   startBuffering() {
-    if (typeof this.nexusTalk.outputs['buffer'] === 'undefined') {
+    if (this.nexusTalk.outputs?.buffer === undefined) {
       // No active buffer session, start connection to nexus
       if (this.nexusTalk.socket === null && typeof this.nexusTalk.host === 'string' && this.nexusTalk.host !== '') {
         this.#connect(this.nexusTalk.host);
         this?.log?.debug && this.log.debug('Started buffering from "%s"', this.nexusTalk.host);
       }
 
-      this.nexusTalk.outputs['buffer'] = {
+      this.nexusTalk.outputs.buffer = {
         type: 'buffer',
         video: null,
         audio: null,
@@ -364,7 +382,7 @@ export default class NexusStreamer {
       video: videoStream,
       audio: audioStream,
       talk: null,
-      buffer: typeof this.nexusTalk.outputs['buffer']?.buffer === 'object' ? this.nexusTalk.outputs['buffer'].buffer : [],
+      buffer: this.nexusTalk.outputs?.buffer !== undefined ? this.nexusTalk.outputs.buffer.buffer : [],
     };
 
     // Finally we've started the recording stream
@@ -380,7 +398,6 @@ export default class NexusStreamer {
 
     // If we have no more output streams active, we'll close the socket to nexus
     if (Object.keys(this.nexusTalk.outputs).length === 0) {
-      this.nexusTalk.watchDogTimer = clearInterval(this.nexusTalk.watchDogTimer);
       this.#close(true);
     }
   }
@@ -394,20 +411,18 @@ export default class NexusStreamer {
 
     // If we have no more output streams active, we'll close the socket to nexus
     if (Object.keys(this.nexusTalk.outputs).length === 0) {
-      this.nexusTalk.watchDogTimer = clearInterval(this.nexusTalk.watchDogTimer);
       this.#close(true);
     }
   }
 
   stopBuffering() {
-    if (typeof this.nexusTalk.outputs['buffer'] === 'object') {
+    if (this.nexusTalk.outputs?.buffer !== undefined) {
       this?.log?.debug && this.log.debug('Stopped buffering from "%s"', this.nexusTalk.host);
-      delete this.nexusTalk.outputs['buffer'];
+      delete this.nexusTalk.outputs.buffer;
     }
 
     // If we have no more output streams active, we'll close the socket to nexus
     if (Object.keys(this.nexusTalk.outputs).length === 0) {
-      this.nexusTalk.watchDogTimer = clearInterval(this.nexusTalk.watchDogTimer);
       this.#close(true);
     }
   }
@@ -494,7 +509,7 @@ export default class NexusStreamer {
         }
         let normalClose = this.weDidClose; // Cache this, so can reset it below before we take action
 
-        this.nexusTalk.stalledTimer = clearTimeout(this.nexusTalk.stalledTimer); // Clear watchdog timer
+        this.nexusTalk.stalledTimer = clearTimeout(this.nexusTalk.stalledTimer); // Clear stalled timer
         this.nexusTalk.pingTimer = clearInterval(this.nexusTalk.pingTimer); // Clear ping timer
         this.nexusTalk.authorised = false; // Since connection close, we can't be authorised anymore
         this.nexusTalk.socket = null; // Clear socket object
@@ -511,34 +526,6 @@ export default class NexusStreamer {
         }
       });
     }
-
-    // Create non-blocking loop to monitor for camera going offline and/or video enabled/disabled
-    // We'll use this to insert our own 'frames' into the video stream seamlessly at around 30fps
-    this?.log?.debug && this.log.debug('Created watchdog process for "%s"', host);
-    let lastTimeVideo = Date.now();
-    this.nexusTalk.watchDogTimer = clearInterval(this.nexusTalk.watchDogTimer);
-    this.nexusTalk.watchDogTimer = setInterval(() => {
-      Object.values(this.nexusTalk.outputs).forEach((output) => {
-        let outputVideoFrame = Date.now() > lastTimeVideo + 90000 / 30;
-        if (this.online === false && Buffer.isBuffer(this.cameraOfflineFrame) === true && outputVideoFrame === true) {
-          // Camera is offline so feed in our custom h264 frame and AAC silence
-          output.buffer.push({ type: 'video', time: Date.now(), data: this.cameraOfflineFrame });
-          output.buffer.push({ type: 'audio', time: Date.now(), data: AACAudioSilence });
-          lastTimeVideo = Date.now();
-        }
-        if (
-          this.videoEnabled === false &&
-          this.online === true &&
-          Buffer.isBuffer(this.cameraVideoOffFrame) === true &&
-          outputVideoFrame === true
-        ) {
-          // Camera video is turned off so feed in our custom h264 frame and AAC silence
-          output.buffer.push({ type: 'video', time: Date.now(), data: this.cameraVideoOffFrame });
-          output.buffer.push({ type: 'audio', time: Date.now(), data: AACAudioSilence });
-          lastTimeVideo = Date.now();
-        }
-      });
-    }, 0);
   }
 
   #close(sendStop) {

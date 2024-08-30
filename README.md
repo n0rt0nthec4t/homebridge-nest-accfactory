@@ -19,7 +19,7 @@ Formally known as [Nest_accfactory](https://github.com/n0rt0nthec4t/Nest_accfact
 
 The following Nest devices are supported
 
-* Nest Thermostats (Gen 1, Gen 2, Gen 3, E)
+* Nest Thermostats (Gen 1, Gen 2, Gen 3, E, 2020, Gen 4)
 * Nest Protects (Gen 1, Gen 2)
 * Nest Temp Sensors
 * Nest Cameras (Cam Indoor, IQ Indoor, Outdoor, IQ Outdoor)
