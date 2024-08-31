@@ -309,14 +309,7 @@ export default class NestCamera extends HomeKitDevice {
       }
     });
 
-    this.NexusStreamer.startRecordStream(
-      'HKSV' + HKSVRecordingStreamID,
-      this.HKSVRecorder.ffmpeg,
-      this.HKSVRecorder.video,
-      this.HKSVRecorder.audio,
-      true,
-      0,
-    );
+    this.NexusStreamer.startRecordStream('HKSV' + HKSVRecordingStreamID, this.HKSVRecorder.video, this.HKSVRecorder.audio, true, 0);
     this.log.info(
       'Recording started from "%s" %s %s',
       this.deviceData.description,

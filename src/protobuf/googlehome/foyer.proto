@@ -3,187 +3,208 @@ syntax = "proto3";
 package google.internal.home.foyer.v1;
 
 message StructuresService {
-    message GetHomeGraphRequest {
-        string requestId = 3; // 64 hex characters - random is OK
-        int32 unknown1 = 4; // always 1?
-        int32 unknown2 = 5; // always 1?
+  message GetHomeGraphRequest {
+    enum DefaultHiddenDeviceType {
+      DEVICE_TYPE_UNKNOWN = 0;
+      DEVICE_TYPE_TOPAZ = 1;
+      DEVICE_TYPE_KRYPTONITE = 2;
+      DEVICE_TYPE_ANTIGUA = 3;
+      DEVICE_TYPE_NEST_TAG = 4;
+      DEVICE_TYPE_NEST_HEATLINK = 5;
     }
 
-    message GetHomeGraphResponse {
-        uint64 responseTimestamp = 1; // Epoch in ms for this response
-        repeated Home homes = 2;
-    }
+    string requestId = 3; // 64 hex characters - random is OK
+    int32 unknown1 = 4; // always 1?
+    int32 unknown2 = 5; // always 1?
+    repeated DefaultHiddenDeviceType deviceTypesToUnhideArray = 10;
+  }
 
-    message Home {
-        string uuid = 1;
-        string name = 2;
-        Address address = 3;
-        EmailAddress emailAddress = 4;
-        repeated Room rooms = 6;
-        repeated Device devices = 7;
-    }
+  message GetHomeGraphResponse {
+    uint64 responseTimestamp = 1; // Epoch in ms for this response
+    repeated Home homes = 2;
+  }
 
-    message Address {
-        string line1 = 1;
-        string line2 = 2;
-        uint64 timeCreated = 5;
-    }
+  message Home {
+    string uuid = 1;
+    string name = 2;
+    Address address = 3;
+    EmailAddress emailAddress = 4;
+    repeated Room rooms = 6;
+    repeated Device devices = 7;
+  }
 
-    message EmailAddress {
-        string value = 1;
-        // field #4 has an unknown varint (1)
-    }
+  message Address {
+    string line1 = 1;
+    string line2 = 2;
+    uint64 timeCreated = 5;
+  }
 
-    message Room {
-        string uuid = 1;
-        string name = 3;
-        google.protobuf.StringValue type = 4;
-        repeated Device devices = 5;
-    }
+  message EmailAddress {
+    string value = 1;
+    // field #4 has an unknown varint (1)
+  }
+
+  message Room {
+    string uuid = 1;
+    string name = 3;
+    google.protobuf.StringValue type = 4;
+    repeated Device devices = 5;
+  }
 
   message Device {
     message Id {
-        string googleUuid = 1;
-        ThirdPartyId thirdPartyId = 2;
+      string googleUuid = 1;
+      ThirdPartyId thirdPartyId = 2;
     }
 
     message ThirdPartyId {
-        string idType = 1;
-        string id = 2;
+      string idType = 1;
+      string id = 2;
     }
 
     message OtherThirdPartyIds {
-        repeated ThirdPartyId otherThirdPartyId = 1;
+      repeated ThirdPartyId otherThirdPartyId = 1;
     }
 
     Id id = 1;
     OtherThirdPartyIds otherIds = 39;
-    }
+  }
 }
 
 message CameraService {
-    message SendTalkbackRequest {
-        enum TalkbackCommand {
-            COMMAND_UNSPECIFIED = 0;
-            COMMAND_START = 1;
-            COMMAND_STOP = 2;
-        }
-
-        google.protobuf.StringValue googleDeviceId = 1;
-            string streamId = 2;
-            TalkbackCommand command = 3;
-        }
-
-        message SendTalkbackResponse {
-
-        }
-
-        message SendCameraViewIntentRequest {
-            enum ViewIntentCommand {
-                VIEW_INTENT_UNSPECIFIED = 0;
-                VIEW_INTENT_START = 1;
-            }
-
-            message ViewIntentRequest {
-                google.protobuf.StringValue googleDeviceId = 1;
-                ViewIntentCommand command = 2;
-            }
-
-            ViewIntentRequest request = 1;
-        }
-
-        message SendCameraViewIntentResponse {
-
+  message SendTalkbackRequest {
+    enum TalkbackCommand {
+      COMMAND_UNSPECIFIED = 0;
+      COMMAND_START = 1;
+      COMMAND_STOP = 2;
     }
 
-    message JoinStreamRequest {
-        enum JoinStreamRequest_StreamContext {
-            STREAM_CONTEXT_UNSPECIFIED = 0;
-            STREAM_CONTEXT_DEFAULT = 1;
-            STREAM_CONTEXT_SETUP = 2;
-        }
+    google.protobuf.StringValue googleDeviceId = 1;
+    string streamId = 2;
+    TalkbackCommand command = 3;
+  }
 
-        enum JoinStreamRequest_EndStreamReason {
-            REASON_UNSPECIFIED = 0;
-            REASON_UNKNOWN = 1;
-            REASON_USER_EXITED_SESSION = 2;
-            REASON_VIDEO_TIME_OUT = 3;
-            REASON_AUDIO_TIME_OUT = 4;
-            REASON_NETWORK_FAILURE = 5;
-            REASON_INCOMPATIBLE_VIDEO_CODEC = 6;
-            REASON_AUDIO_ENCODE_ERROR = 7;
-            REASON_AUDIO_DECODE_ERROR = 8;
-        }
+  message SendTalkbackResponse {
 
-        enum JoinStreamRequest_VideoResolution {
-            VIDEO_RESOLUTION_UNSPECIFIED = 0;
-            VIDEO_RESOLUTION_STANDARD = 1;
-            VIDEO_RESOLUTION_FULL_HIGH = 2;
-        }
+  }
 
-        string sdp = 1;
-        string deviceId = 2;
-        string command = 3;
-        string streamId = 4;
-        bool local = 5;
-        JoinStreamRequest_StreamContext streamContext = 6;
-        JoinStreamRequest_EndStreamReason endStreamReason = 7;
-        JoinStreamRequest_VideoResolution requestedVideoResolution = 8;
+  message SendCameraViewIntentRequest {
+    enum ViewIntentCommand {
+      VIEW_INTENT_UNSPECIFIED = 0;
+      VIEW_INTENT_START = 1;
     }
 
-    message JoinStreamResponse {
-        enum StreamTerminationStatus {
-            STATUS_UNSPECIFIED = 0;
-            STATUS_STREAM_TERMINATED = 1;
-            STATUS_STREAM_NOT_TERMINATED = 2; // e.g. invalid stream ID specified
-        }
-
-        enum StreamExtensionStatus {
-            STATUS_UNSPECIFIED = 0;
-            STATUS_STREAM_EXTENDED = 1;
-            STATUS_STREAM_NOT_EXTENDED = 2; // e.g. invalid stream ID specified
-        }
-
-        string sdp = 1;
-        string responseType = 2;
-        string streamId = 3;
-        StreamTerminationStatus streamTerminationStatus = 4;
-        StreamExtensionStatus streamExtensionStatus = 5;
+    message ViewIntentRequest {
+      google.protobuf.StringValue googleDeviceId = 1;
+      ViewIntentCommand command = 2;
     }
+
+    ViewIntentRequest request = 1;
+  }
+
+  message SendCameraViewIntentResponse {
+
+  }
+
+  message JoinStreamRequest {
+    enum JoinStreamRequest_StreamContext {
+      STREAM_CONTEXT_UNSPECIFIED = 0;
+      STREAM_CONTEXT_DEFAULT = 1;
+      STREAM_CONTEXT_SETUP = 2;
+    }
+
+    enum JoinStreamRequest_EndStreamReason {
+      REASON_UNSPECIFIED = 0;
+      REASON_UNKNOWN = 1;
+      REASON_USER_EXITED_SESSION = 2;
+      REASON_VIDEO_TIME_OUT = 3;
+      REASON_AUDIO_TIME_OUT = 4;
+      REASON_NETWORK_FAILURE = 5;
+      REASON_INCOMPATIBLE_VIDEO_CODEC = 6;
+      REASON_AUDIO_ENCODE_ERROR = 7;
+      REASON_AUDIO_DECODE_ERROR = 8;
+    }
+
+    enum JoinStreamRequest_VideoResolution {
+      VIDEO_RESOLUTION_UNSPECIFIED = 0;
+      VIDEO_RESOLUTION_STANDARD = 1;
+      VIDEO_RESOLUTION_FULL_HIGH = 2;
+    }
+
+    string sdp = 1;
+    string deviceId = 2;
+    string command = 3;
+    string streamId = 4;
+    bool local = 5;
+    JoinStreamRequest_StreamContext streamContext = 6;
+    JoinStreamRequest_EndStreamReason endStreamReason = 7;
+    JoinStreamRequest_VideoResolution requestedVideoResolution = 8;
+  }
+
+  message JoinStreamResponse {
+    enum StreamTerminationStatus {
+      STATUS_UNSPECIFIED = 0;
+      STATUS_STREAM_TERMINATED = 1;
+      STATUS_STREAM_NOT_TERMINATED = 2; // e.g. invalid stream ID specified
+    }
+
+    enum StreamExtensionStatus {
+      STATUS_UNSPECIFIED = 0;
+      STATUS_STREAM_EXTENDED = 1;
+      STATUS_STREAM_NOT_EXTENDED = 2; // e.g. invalid stream ID specified
+    }
+
+    string sdp = 1;
+    string responseType = 2;
+    string streamId = 3;
+    StreamTerminationStatus streamTerminationStatus = 4;
+    StreamExtensionStatus streamExtensionStatus = 5;
+  }
 }
 
 // let request = { device: { googleDeviceId: x, service: { value: 'nest-home-assistant-prod' } }, trait: { category: 'cameraStream', updateTrait: { name: 'cameraStreamLiveViewImage', value: { intValue: 1 } } } }
 
 message HomeControlService {
-    message UpdateTraitsRequest {
-        message Request {
-            TargetDevice device = 1;
-            TraitToUpdate trait = 2;
-        }
-
-        message TargetDevice {
-            string googleDeviceId = 1;
-            google.protobuf.StringValue service = 2;
-        }
-
-        message TraitToUpdate {
-            string category = 1;
-            UpdateTrait updateTrait = 2;
-        }
-
-        message UpdateTrait {
-            string name = 1;
-            TraitValue value = 2;
-        }
-
-        message TraitValue {
-            int32 intValue = 4;
-        }
-
-        Request request = 1;
+  message UpdateTraitsRequest {
+    message Request {
+      TargetDevice device = 1;
+      TraitToUpdate trait = 2;
     }
 
-    message UpdateTraitsResponse {
-
+    message TargetDevice {
+      string googleDeviceId = 1;
+      google.protobuf.StringValue service = 2;
     }
+
+    message TraitToUpdate {
+      string category = 1;
+      UpdateTrait updateTrait = 2;
+    }
+
+    message UpdateTrait {
+      string name = 1;
+      TraitValue value = 2;
+    }
+
+    message TraitValue {
+      string string = 3;
+      int32 intValue = 4;
+      Properties properties = 5;
+      PropertyArray array = 6;
+    }
+
+    message PropertyArray {
+      repeated TraitValue values = 1;
+    }
+
+    message Properties {
+      repeated UpdateTrait properties = 1;
+    }
+
+    Request request = 1;
+  }
+
+  message UpdateTraitsResponse {
+
+  }
 }

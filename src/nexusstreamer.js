@@ -5,7 +5,7 @@
 // for live viewing and/or recording
 //
 // Mark Hulskamp
-// 27/8/2024
+// 30/8/2024
 'use strict';
 
 // Define external library requirements
@@ -129,7 +129,7 @@ export default class NexusStreamer {
     host: '', // Host to connect to or connected too
     socket: null, // TCP socket object
     pingTimer: undefined, // Timer object for ping interval
-    stalledTimer: undefined, // Timer object for no receieved data
+    stalledTimer: undefined, // Timer object for no received data
     outputTimer: undefined, // Timer for non-block loop stream outputs
     packets: [], // Incoming packets
     messages: [], // Incoming messages
@@ -212,7 +212,7 @@ export default class NexusStreamer {
       }
     }
 
-    // Start a non-blocking loop for output to the various streams which connected to our streamer object
+    // Start a non-blocking loop for output to the various streams which connect to our streamer object
     // This process will also handle the rolling-buffer size we require
     // Record streams will always start from the beginning of the buffer (tail)
     // Live streams will always start from the end of the buffer (head)
@@ -242,7 +242,7 @@ export default class NexusStreamer {
           output.buffer.shift();
         }
 
-        // Output the packet data to any streams running, either a 'live' or 'recording' stream
+        // Output the packet data to any streams 'live' or 'recording' streams
         if (output.type === 'live' || output.type === 'record') {
           let packet = output.buffer.shift();
           if (packet?.type === 'video' && typeof output?.video?.write === 'function') {
@@ -291,6 +291,8 @@ export default class NexusStreamer {
     }
 
     if (talkbackStream !== null && typeof talkbackStream === 'object') {
+      let talkbackTimeout = undefined;
+
       talkbackStream.on('error', () => {
         // EPIPE errors??
       });
@@ -299,7 +301,8 @@ export default class NexusStreamer {
         // Received audio data to send onto nexus for output to camera/doorbell
         this.#AudioPayload(data);
 
-        setTimeout(() => {
+        talkbackTimeout = clearTimeout(talkbackTimeout);
+        talkbackTimeout = setTimeout(() => {
           // no audio received in 500ms, so mark end of stream
           this.#AudioPayload(Buffer.alloc(0));
         }, 500);
@@ -311,7 +314,7 @@ export default class NexusStreamer {
       this.#connect(this.nexusTalk.host);
     }
 
-    // Add video/audio/talkback streams for our ffmpeg router to handle
+    // Add video/audio streams for our output loop to handle outputting to
     this.nexusTalk.outputs[sessionID] = {
       type: 'live',
       video: videoStream,
@@ -330,59 +333,33 @@ export default class NexusStreamer {
       );
   }
 
-  startRecordStream(sessionID, ffmpegRecord, videoStream, audioStream) {
+  startRecordStream(sessionID, videoStream, audioStream) {
     // Setup error catching for video/audio streams
-    videoStream &&
+    if (videoStream !== null && typeof videoStream === 'object') {
       videoStream.on('error', () => {
         // EPIPE errors??
       });
-    audioStream &&
+    }
+
+    if (audioStream !== null && typeof audioStream === 'object') {
       audioStream.on('error', () => {
         // EPIPE errors??
       });
+    }
 
     if (this.nexusTalk.socket === null && typeof this.nexusTalk.host === 'string' && this.nexusTalk.host !== '') {
       // We do not have an active socket connection, so startup connection to nexus
       this.#connect(this.nexusTalk.host);
     }
 
-    // Output from the requested time position in the buffer until one index before the end of buffer
-    /*  let doneAlign = typeof alignToSPSFrame === 'undefined' || alignToSPSFrame === true ? false : true;
-    if (this.buffer.active === true) {
-      let sentElements = 0;
-      for (let bufferIndex = 0; bufferIndex < this.buffer.buffer.length; bufferIndex++) {
-        if (fromTime === 0 || (fromTime !== 0 && this.buffer.buffer[bufferIndex].synctime >= fromTime)) {
-          if (
-            doneAlign === false &&
-            this.buffer.buffer[bufferIndex].type === 'video' &&
-            (this.buffer.buffer[bufferIndex].data && this.buffer.buffer[bufferIndex].data[0] & 0x1f) === H264NALUnitType.SPS
-          ) {
-            doneAlign = true;
-          }
-          if (doneAlign === true) {
-            // This is a recording streaming stream, and we have been initally aligned to a h264 SPS frame, so send on data now
-            if (this.buffer.buffer[bufferIndex].type === 'video' && videoStream !== null) {
-              // H264 NAL Units '0001' are required to be added to beginning of any video data we output
-              videoStream.write(Buffer.concat([H264NALStartcode, this.buffer.buffer[bufferIndex].data]));
-            }
-            if (this.buffer.buffer[bufferIndex].type === 'audio' && audioStream !== null) {
-              audioStream.write(this.buffer.buffer[bufferIndex].data);
-            }
-            sentElements++; // Increment the number of elements we output from the buffer
-          }
-        }
-      }
-      this?.log?.debug &&
-        this.log.debug('Recording stream "%s" requested buffered data first. Sent "%s" buffered elements', sessionID, sentElements);
-    } */
-
-    // Add video/audio streams for our ffmpeg router to handle outputting to
+    // Add video/audio streams for our output loop to handle outputting to
     this.nexusTalk.outputs[sessionID] = {
       type: 'record',
       video: videoStream,
       audio: audioStream,
       talk: null,
-      buffer: this.nexusTalk.outputs?.buffer !== undefined ? this.nexusTalk.outputs.buffer.buffer : [],
+      // eslint-disable-next-line no-undef
+      buffer: this.nexusTalk.outputs?.buffer !== undefined ? structuredClone(this.nexusTalk.outputs.buffer.buffer) : [],
     };
 
     // Finally we've started the recording stream
@@ -396,7 +373,7 @@ export default class NexusStreamer {
       delete this.nexusTalk.outputs[sessionID];
     }
 
-    // If we have no more output streams active, we'll close the socket to nexus
+    // If we have no more output streams active, we'll close the connection to nexus
     if (Object.keys(this.nexusTalk.outputs).length === 0) {
       this.#close(true);
     }
@@ -409,7 +386,7 @@ export default class NexusStreamer {
       delete this.nexusTalk.outputs[sessionID];
     }
 
-    // If we have no more output streams active, we'll close the socket to nexus
+    // If we have no more output streams active, we'll close the connection to nexus
     if (Object.keys(this.nexusTalk.outputs).length === 0) {
       this.#close(true);
     }
@@ -421,7 +398,7 @@ export default class NexusStreamer {
       delete this.nexusTalk.outputs.buffer;
     }
 
-    // If we have no more output streams active, we'll close the socket to nexus
+    // If we have no more output streams active, we'll close the connection to nexus
     if (Object.keys(this.nexusTalk.outputs).length === 0) {
       this.#close(true);
     }
@@ -862,7 +839,7 @@ export default class NexusStreamer {
         this.nexusTalk.video.packet_time += packet.timestamp_delta;
         output.buffer.push({
           type: 'video',
-          time: this.nexusTalk.video.start_time + this.nexusTalk.video.timestamp_delta,
+          time: this.nexusTalk.video.packet_time,
           data: packet.payload,
         });
       }
@@ -872,7 +849,7 @@ export default class NexusStreamer {
         this.nexusTalk.audio.packet_time += packet.timestamp_delta;
         output.buffer.push({
           type: 'audio',
-          time: this.nexusTalk.audio.start_time + this.nexusTalk.audio.timestamp_delta,
+          time: this.nexusTalk.audio.packet_time,
           data: packet.payload,
         });
       }
