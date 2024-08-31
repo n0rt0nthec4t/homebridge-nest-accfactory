@@ -13,8 +13,6 @@
 
 Formally known as [Nest_accfactory](https://github.com/n0rt0nthec4t/Nest_accfactory), this is a Homebridge plugin I have developed to allow Nest devices to be used with HomeKit including having support for HomeKit Secure Video on doorbells and camera devices
 
-**HomeKit Secure Video Support is disabled by default and needs to be explicitly enabled by the user**
-
 ## Supported Devices
 
 The following Nest devices are supported
@@ -93,26 +91,26 @@ Sample config.json entries below
 
 The following options are available in the config.json options object. These apply to all discovered devices.
 
-| Name              | Description                                                                                   | Type      |
+| Name              | Description                                                                                   | Default   |
 |-------------------|-----------------------------------------------------------------------------------------------|-----------|
-| ffmegPath         | Path to an ffmpeg binary for us to use. Will look in current directory by default             | string    |
-| eveHistory        | Provide history in EveHome application where applicable                                       | boolean   |
-| weather           | Virtual weather station for each Nest/Google home we discover                                 | boolean   |
-| elevation         | Height above sea level for the weather station                                                | number    |
-| hksv              | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                           | boolean   |
-| maxStreams        | Maximum number of concurrent video streams in HomeKit for supported camera(s) and doorbell(s) | number    |
+| ffmegPath         | Path to an ffmpeg binary for us to use. Will look in current directory by default             |           |
+| eveHistory        | Provide history in EveHome application where applicable                                       | true      |
+| weather           | Virtual weather station for each Nest/Google home we discover                                 | false     |
+| elevation         | Height above sea level for the weather station                                                | 0         |
+| hksv              | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                           | false     |
+| maxStreams        | Maximum number of concurrent video streams in HomeKit for supported camera(s) and doorbell(s) | 2         |
 
 #### devices
 
 The following options are available on a per-device level in the config.json devices object. The device is specified by using its serial number (in uppercase)
 
-| Name              | Description                                                                                   | Type      |
+| Name              | Description                                                                                   | Default   |
 |-------------------|-----------------------------------------------------------------------------------------------|-----------|
-| exclude           | Exclude the device                                                                            | boolean   |
-| eveHistory        | Provide history in EveHome application where applicable for the specific device               | boolean   |
-| chimeSwitch       | Create a switch for supported doorbell(s) which allows the indoor chime to be turned on/off   | boolean   |
-| humiditySensor    | Create a seperate humidity sensor for supported Thermostat(s)                                 | boolean   |
-| elevation         | Height above sea level for the specific weather station                                       | number    |
-| doorbellCooldown  |                                                                                               | number    | 
-| motionCooldown    |                                                                                               | number    |
-| personCooldown    |                                                                                               | number    | 
+| exclude           | Exclude the device                                                                            | false     |
+| eveHistory        | Provide history in EveHome application where applicable for the specific device               | true      |
+| chimeSwitch       | Create a switch for supported doorbell(s) which allows the indoor chime to be turned on/off   | false     |
+| humiditySensor    | Create a seperate humidity sensor for supported Thermostat(s)                                 | false     |
+| elevation         | Height above sea level for the specific weather station                                       | 0         |
+| doorbellCooldown  |                                                                                               | 60        | 
+| motionCooldown    |                                                                                               | 120       |
+| personCooldown    |                                                                                               | 60        | 
