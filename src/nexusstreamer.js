@@ -5,7 +5,7 @@
 // for live viewing and/or recording
 //
 // Mark Hulskamp
-// 30/8/2024
+// 31/8/2024
 'use strict';
 
 // Define external library requirements
@@ -146,26 +146,15 @@ export default class NexusStreamer {
   uuid = undefined;
 
   constructor(deviceData, options) {
-    let resourcePath = path.resolve(__dirname + '/res'); // Default location for *.h264 files
-
-    if (typeof options === 'object') {
-      if (
-        typeof options?.log?.info === 'function' &&
-        typeof options?.log?.success === 'function' &&
-        typeof options?.log?.warn === 'function' &&
-        typeof options?.log?.error === 'function' &&
-        typeof options?.log?.debug === 'function'
-      ) {
-        this.log = options.log;
-      }
-
-      if (
-        typeof options?.resourcePath === 'string' &&
-        options.resourcePath !== '' &&
-        fs.existsSync(path.resolve(options.resourcePath)) === true
-      ) {
-        resourcePath = path.resolve(options.resourcePath);
-      }
+    // Setup logger object if passed as option
+    if (
+      typeof options?.log?.info === 'function' &&
+      typeof options?.log?.success === 'function' &&
+      typeof options?.log?.warn === 'function' &&
+      typeof options?.log?.error === 'function' &&
+      typeof options?.log?.debug === 'function'
+    ) {
+      this.log = options.log;
     }
 
     // Store data we need from the device data passed it
@@ -183,9 +172,19 @@ export default class NexusStreamer {
     this.nexusTalk.host = deviceData?.direct_nexustalk_host; // Host we'll connect to
 
     this.pendingHost = null;
-    this.weDidClose = true; // Flag if we did teh socket close gracefully
+    this.weDidClose = true; // Flag if we did the socket close gracefully
 
-    // buffer for camera offline image in .h264 frame
+    // Setup location for *.h264 frame files. This can be overriden by a passed in option
+    let resourcePath = path.resolve(__dirname + '/res'); // Default location for *.h264 files
+    if (
+      typeof options?.resourcePath === 'string' &&
+      options.resourcePath !== '' &&
+      fs.existsSync(path.resolve(options.resourcePath)) === true
+    ) {
+      resourcePath = path.resolve(options.resourcePath);
+    }
+
+    // load buffer for camera offline image in .h264 frame
     if (fs.existsSync(path.resolve(resourcePath + '/' + CAMERAOFFLINEH264FILE)) === true) {
       this.cameraOfflineFrame = fs.readFileSync(path.resolve(resourcePath + '/' + CAMERAOFFLINEH264FILE));
       // remove any H264 NALU from beginning of any video data. We do this as they are added later when output by our ffmpeg router
@@ -194,7 +193,7 @@ export default class NexusStreamer {
       }
     }
 
-    // buffer for camera stream off image in .h264 frame
+    // load buffer for camera stream off image in .h264 frame
     if (fs.existsSync(path.resolve(resourcePath + '/' + CAMERAOFFH264FILE)) === true) {
       this.cameraVideoOffFrame = fs.readFileSync(path.resolve(resourcePath + '/' + CAMERAOFFH264FILE));
       // remove any H264 NALU from beginning of any video data. We do this as they are added later when output by our ffmpeg router
@@ -203,7 +202,7 @@ export default class NexusStreamer {
       }
     }
 
-    // buffer for camera stream connecting image in .h264 frame
+    // load buffer for camera stream connecting image in .h264 frame
     if (fs.existsSync(path.resolve(resourcePath + '/' + CAMERACONNECTING264FILE) === true)) {
       this.cameraConnectingVideoFrame = fs.readFileSync(path.resolve(resourcePath + '/' + CAMERACONNECTING264FILE));
       // remove any H264 NALU from beginning of any video data. We do this as they are added later when output by our ffmpeg router
@@ -255,6 +254,11 @@ export default class NexusStreamer {
         }
       });
     }, 0);
+
+    // If specified option to start buffering, kick off
+    if (typeof options?.buffer === 'boolean' && options.buffer === true) {
+      this.startBuffering();
+    }
   }
 
   // Class functions

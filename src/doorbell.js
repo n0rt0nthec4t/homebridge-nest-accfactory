@@ -1,7 +1,7 @@
 // Nest Doorbell(s)
 // Part of homebridge-nest-accfactory
 //
-// Code version 21/8/2024
+// Code version 31/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -10,7 +10,6 @@ import { setTimeout, clearTimeout } from 'node:timers';
 
 // Define external module requirements
 import NestCamera from './camera.js';
-import NexusStreamer from './nexusstreamer.js';
 
 export default class NestDoorbell extends NestCamera {
   doorbellTimer = undefined; // Cooldown timer for doorbell events
@@ -22,21 +21,17 @@ export default class NestDoorbell extends NestCamera {
 
   // Class functions
   addServices() {
+    // Setup some details around the doorbell BEFORE will call out parent addServices function
     this.createCameraMotionServices();
-
-    // Setup HomeKit doorbell controller
     this.controller = new this.hap.DoorbellController(this.generateControllerOptions());
     this.accessory.configureController(this.controller);
+
+    // Call parent to setup the common camera things. Once we return, we can add in the specifics for our doorbell
+    let postSetupDetails = super.addServices();
 
     // Setup additional HomeKit services and characteristics we'll use
     if (this.controller.doorbellService.testCharacteristic(this.hap.Characteristic.StatusActive) === false) {
       this.controller.doorbellService.addCharacteristic(this.hap.Characteristic.StatusActive);
-    }
-    if (this.controller.microphoneService.testCharacteristic(this.hap.Characteristic.StatusActive) === false) {
-      this.controller.microphoneService.addCharacteristic(this.hap.Characteristic.StatusActive);
-    }
-    if (this.controller.speakerService.testCharacteristic(this.hap.Characteristic.StatusActive) === false) {
-      this.controller.speakerService.addCharacteristic(this.hap.Characteristic.StatusActive);
     }
 
     if (this.deviceData.has_indoor_chime === true && this.deviceData.chimeSwitch === true) {
@@ -70,26 +65,7 @@ export default class NestDoorbell extends NestCamera {
       this.accessory.removeService(this.switchService);
     }
 
-    // Setup additional services/characteristics after we have a controller created
-    this.createCameraServices();
-
-    // Setup our streaming object
-    this.NexusStreamer = new NexusStreamer(this.deviceData, { log: this.log });
-
-    // Setup linkage to EveHome app if configured todo so
-    if (
-      this.deviceData?.eveHistory === true &&
-      typeof this.motionServices?.[1]?.service === 'object' &&
-      typeof this.historyService?.linkToEveHome === 'function'
-    ) {
-      this.historyService.linkToEveHome(this.motionServices[1].service, {
-        description: this.deviceData.description,
-      });
-    }
-
     // Create extra details for output
-    let postSetupDetails = [];
-    this.deviceData.hksv === true && postSetupDetails.push('Using HomeKit Secure Video');
     this.switchService !== undefined && postSetupDetails.push('Chime switch');
     return postSetupDetails;
   }

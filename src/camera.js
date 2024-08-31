@@ -1,7 +1,7 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 30/8/2024
+// Code version 31/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -50,7 +50,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a define
 export default class NestCamera extends HomeKitDevice {
   controller = undefined; // HomeKit Camera/Doorbell controller service
   NexusStreamer = undefined; // Object for the NexusTalk Streamer
-  motionServices = {}; // Object of Camera/Doorbell motion sensor(s)
+  motionServices = undefined; // Object of Camera/Doorbell motion sensor(s)
   operatingModeService = undefined; // Link to camera/doorbell operating mode service
   personTimer = undefined; // Cooldown timer for person/face events
   motionTimer = undefined; // Cooldown timer for motion events
@@ -74,7 +74,6 @@ export default class NestCamera extends HomeKitDevice {
     // HKSV stuff
     this.HKSVRecordingConfiguration = {}; // HomeKit Secure Video recording configuration
     this.HKSVRecorder = {
-      record: false, // Tracks updateRecordingActive. default is not recording, but HomeKit will select the current state
       ffmpeg: null, // ffmpeg process for recording
       video: null, // video input stream
       audio: null, // audio input stream
@@ -100,11 +99,16 @@ export default class NestCamera extends HomeKitDevice {
 
   // Class functions
   addServices() {
-    this.createCameraMotionServices();
+    // setup motion services
+    if (this.motionServices === undefined) {
+      this.createCameraMotionServices();
+    }
 
     // Setup HomeKit camera controller
-    this.controller = new this.hap.CameraController(this.generateControllerOptions());
-    this.accessory.configureController(this.controller);
+    if (this.controller === undefined) {
+      this.controller = new this.hap.CameraController(this.generateControllerOptions());
+      this.accessory.configureController(this.controller);
+    }
 
     // Setup additional HomeKit services and characteristics we'll use
     if (this.controller.microphoneService.testCharacteristic(this.hap.Characteristic.StatusActive) === false) {
@@ -118,7 +122,15 @@ export default class NestCamera extends HomeKitDevice {
     this.createCameraServices();
 
     // Setup our streaming object
-    this.NexusStreamer = new NexusStreamer(this.deviceData, { log: this.log });
+    // We'll also start pre-buffering if required for HSKV
+    this.NexusStreamer = new NexusStreamer(this.deviceData, {
+      log: this.log,
+      buffer:
+        this.deviceData.hksv === true &&
+        this?.controller?.recordingManagement?.recordingManagementService !== undefined &&
+        this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.Active).value ===
+          this.hap.Characteristic.Active.ACTIVE,
+    });
 
     // Setup linkage to EveHome app if configured todo so
     if (
@@ -133,8 +145,7 @@ export default class NestCamera extends HomeKitDevice {
 
     // Create extra details for output
     let postSetupDetails = [];
-    this.deviceData.hksv === true && postSetupDetails.push('Using HomeKit Secure Video');
-    this.switchService !== undefined && postSetupDetails.push('Chime switch');
+    this.deviceData.hksv === true && postSetupDetails.push('HomeKit Secure Video');
     return postSetupDetails;
   }
 
@@ -187,7 +198,7 @@ export default class NestCamera extends HomeKitDevice {
     // Audio if enabled on camera/doorbell && audio recording configured for HKSV
     let includeAudio =
       this.deviceData.audio_enabled === true &&
-      this.deviceData.libfdk_aac === true &&
+      this.deviceData.ffmpeg.libfdk_aac === true &&
       this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.RecordingAudioActive)
         .value === 1;
     let recordCodec = VideoCodecs.LIBX264;
@@ -291,31 +302,29 @@ export default class NestCamera extends HomeKitDevice {
     });
 
     this.HKSVRecorder.ffmpeg.on('exit', (code, signal) => {
-      this.HKSVRecorder.audio && this.HKSVRecorder.audio.end(); // Tidy up our created extra pipe
-      if (signal !== 'SIGKILL') {
-        this.log.debug('FFmpeg recorder process exited', code, signal);
+      if (signal !== 'SIGKILL' || signal === null) {
+        this?.log?.error &&
+          this.log.error('ffmpeg recording process for "%s" stopped unexpectedly. Exit code was "%s"', this.deviceData.description, code);
       }
+      this.HKSVRecorder.audio && this.HKSVRecorder.audio.end(); // Tidy up our created extra pipe
     });
 
+    // eslint-disable-next-line no-unused-vars
     this.HKSVRecorder.ffmpeg.on('error', (error) => {
-      this.log.debug('FFmpeg recorder process error', error);
+      // Empty
     });
 
     // ffmpeg outputs to stderr
     this.HKSVRecorder.ffmpeg.stderr.on('data', (data) => {
       if (data.toString().includes('frame=') === false) {
         // Monitor ffmpeg output while testing. Use 'ffmpeg as a debug option'
-        this.log.debug(data.toString());
+        this?.log?.debug && this.log.debug(data.toString());
       }
     });
 
     this.NexusStreamer.startRecordStream('HKSV' + HKSVRecordingStreamID, this.HKSVRecorder.video, this.HKSVRecorder.audio, true, 0);
-    this.log.info(
-      'Recording started from "%s" %s %s',
-      this.deviceData.description,
-      includeAudio === false ? 'without audio' : '',
-      recordCodec !== VideoCodecs.COPY ? 'using H264 encoder ' + recordCodec : '',
-    );
+    this?.log?.info &&
+      this.log.info('Started recording from "%s" %s', this.deviceData.description, includeAudio === false ? 'without audio' : '');
 
     // Loop generating MOOF/MDAT box pairs for HomeKit Secure Video.
     // HAP-NodeJS cancels this async generator function when recording completes also
@@ -359,11 +368,11 @@ export default class NestCamera extends HomeKitDevice {
 
     // Log recording finished messages depending on reason
     if (closeReason === this.hap.HDSProtocolSpecificErrorReason.NORMAL) {
-      this?.log?.info && this.log.info('Recording completed from "%s"', this.deviceData.description);
+      this?.log?.success && this.log.success('Completed recording from "%s"', this.deviceData.description);
     } else {
       this?.log?.warn &&
         this.log.warn(
-          'Recording completed with error from "%s". Reason was "%s"',
+          'Recording from "%s" completed with error. Reason was "%s"',
           this.deviceData.description,
           this.hap.HDSProtocolSpecificErrorReason[closeReason],
         );
@@ -372,9 +381,7 @@ export default class NestCamera extends HomeKitDevice {
 
   updateRecordingActive(enableHKSVRecordings) {
     // We'll use the change here to determine if we start/stop any buffering.
-    // Also track the HomeKit status here as gets called multiple times with no change
-    // Might be fixed in HAP-NodeJS 11.x or later, but we'll keep our internal check
-    if (enableHKSVRecordings === this.HKSVRecorder.record || this.NexusStreamer === undefined) {
+    if (this.NexusStreamer === undefined) {
       return;
     }
 
@@ -389,8 +396,6 @@ export default class NestCamera extends HomeKitDevice {
       this.NexusStreamer.stopBuffering();
       this?.log?.info && this.log.info('Pre-buffering stopped for "%s"', this.deviceData.description);
     }
-
-    this.HKSVRecorder.record = enableHKSVRecordings;
   }
 
   updateRecordingConfiguration(HKSVRecordingConfiguration) {
@@ -677,9 +682,19 @@ export default class NestCamera extends HomeKitDevice {
 
       ffmpegStreaming.on('exit', (code, signal) => {
         if (signal !== 'SIGKILL' || signal === null) {
-          this.log.info('FFmpeg Audio/Video streaming processes stopped', code, signal);
+          this?.log?.error &&
+            this.log.error(
+              'ffmpeg video/audio live streaming process for "%s" stopped unexpectedly. Exit code was "%s"',
+              this.deviceData.description,
+              code,
+            );
           this.controller.forceStopStreamingSession(request.sessionID);
         }
+      });
+
+      // eslint-disable-next-line no-unused-vars
+      ffmpegStreaming.on('error', (error) => {
+        // Empty
       });
 
       // We only enable two/way audio on camera/doorbell if we have the required libraries in ffmpeg AND two-way/audio is enabled
@@ -736,8 +751,21 @@ export default class NestCamera extends HomeKitDevice {
           env: process.env,
         });
 
+        ffmpegAudioTalkback.on('exit', (code, signal) => {
+          if (signal !== 'SIGKILL' || signal === null) {
+            this?.log?.error &&
+              this.log.error(
+                'ffmpeg audio talkback streaming process for "%s" stopped unexpectedly. Exit code was "%s"',
+                this.deviceData.description,
+                code,
+              );
+            this.controller.forceStopStreamingSession(request.sessionID);
+          }
+        });
+
+        // eslint-disable-next-line no-unused-vars
         ffmpegAudioTalkback.on('error', (error) => {
-          this?.log?.debug && this.log.debug('FFmpeg failed to start Nest camera talkback audio process', error.message);
+          // Empty
         });
 
         // ffmpeg console output is via stderr
@@ -931,7 +959,9 @@ export default class NestCamera extends HomeKitDevice {
             this.log.info(
               'Motion detected at "%s" %s',
               this.deviceData.description,
-              this.operatingModeService.getCharacteristic(this.hap.Characteristic.HomeKitCameraActive).value === 0
+              this?.controller?.recordingManagement?.recordingManagementService !== undefined &&
+                this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.Active).value ===
+                  this.hap.Characteristic.Active.INACTIVE
                 ? 'but video recording disabled'
                 : '',
             );
@@ -945,7 +975,7 @@ export default class NestCamera extends HomeKitDevice {
             // Trigger motion for matching zone of not aleady active
             this.motionServices[zoneID].service.updateCharacteristic(this.hap.Characteristic.MotionDetected, true);
 
-            // Log motion srarted into history
+            // Log motion started into history
             if (typeof this.historyService?.addHistory === 'function') {
               this.historyService.addHistory(this.motionServices[zoneID].service, {
                 time: Math.floor(Date.now() / 1000),
@@ -955,7 +985,7 @@ export default class NestCamera extends HomeKitDevice {
           }
         });
 
-        // Clear any motion active timer so we can extend of more motion detected
+        // Clear any motion active timer so we can extend if more motion detected
         clearTimeout(this.motionTimer);
         this.motionTimer = setTimeout(() => {
           event.zone_ids.forEach((zoneID) => {
@@ -963,7 +993,7 @@ export default class NestCamera extends HomeKitDevice {
               // Mark associted motion services as motion not detected
               this.motionServices[zoneID].service.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
 
-              // Log motion srarted into history
+              // Log motion started into history
               if (typeof this.historyService?.addHistory === 'function') {
                 this.historyService.addHistory(this.motionServices[zoneID].service, {
                   time: Math.floor(Date.now() / 1000),
