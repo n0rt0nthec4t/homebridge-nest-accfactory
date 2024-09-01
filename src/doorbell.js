@@ -61,7 +61,7 @@ export default class NestDoorbell extends NestCamera {
     }
     if (this.switchService !== undefined && this.deviceData.chimeSwitch === false) {
       // No longer required to have the switch service
-      // This is to handle Homebridge cached restored accessories
+      // This is to handle Homebridge cached restored accessories and if configuration options have changed
       this.accessory.removeService(this.switchService);
     }
 
