@@ -1,11 +1,12 @@
-// nexusstreamer device class
+// nexusstreamer
+// Part of homebridge-nest-accfactory
 //
 // Buffers a single audio/video stream from Nest 'nexus' systems.
 // Allows multiple HomeKit devices to connect to the single stream
 // for live viewing and/or recording
 //
+// Code version 2/9/2024
 // Mark Hulskamp
-// 1/9/2024
 'use strict';
 
 // Define external library requirements
@@ -237,7 +238,8 @@ export default class NexusStreamer {
 
         // Keep our 'main' rolling buffer under a certain size
         // Live/record buffers will always reduce in length in the next section
-        if (output.type === 'buffer' && output.buffer.length > 1000) {
+        // <---- maybe make this time based x time since firts packet in buffer?
+        if (output.type === 'buffer' && output.buffer.length > 1500) {
           output.buffer.shift();
         }
 

@@ -2,7 +2,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 29/8/2024
+// Code version 2/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -2310,12 +2310,12 @@ export default class NestAccfactory {
               : 60;
           tempDevice.motionCooldown =
             typeof this.config?.devices?.[tempDevice.serial_number]?.motionCooldown === 'number'
-              ? this.config.devices[tempDevice.serial_number].personCooldown
-              : 120;
-          tempDevice.personCooldown =
-            typeof this.config?.devices?.[tempDevice.serial_number]?.personCooldown === 'number'
               ? this.config.devices[tempDevice.serial_number].motionCooldown
               : 60;
+          tempDevice.personCooldown =
+            typeof this.config?.devices?.[tempDevice.serial_number]?.personCooldown === 'number'
+              ? this.config.devices[tempDevice.serial_number].personCooldown
+              : 120;
           tempDevice.chimeSwitch = this.config?.devices?.[tempDevice.serial_number]?.chimeSwitch === true; // Config option for chime switch
           tempDevice.ffmpeg = this.config.options.ffmpeg; // ffmpeg details, path, libraries. No ffmpeg = undefined
           (tempDevice.maxStreams =

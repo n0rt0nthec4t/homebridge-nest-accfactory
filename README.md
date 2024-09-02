@@ -19,9 +19,9 @@ The following Nest devices are supported
 
 * Nest Thermostats (Gen 1, Gen 2, Gen 3, E, 2020, Gen 4)
 * Nest Protects (Gen 1, Gen 2)
-* Nest Temp Sensors
+* Nest Temp Sensors (Gen 1)
 * Nest Cameras (Cam Indoor, IQ Indoor, Outdoor, IQ Outdoor)
-* Nest Hello (Wired Gen 1)
+* Nest Doorbells (Gen 1)
 
 The accessory supports connection to Nest using a Nest account OR a Google (migrated Nest account) account.
 
@@ -111,6 +111,6 @@ The following options are available on a per-device level in the config.json dev
 | chimeSwitch       | Create a switch for supported doorbell(s) which allows the indoor chime to be turned on/off   | false     |
 | humiditySensor    | Create a seperate humidity sensor for supported Thermostat(s)                                 | false     |
 | elevation         | Height above sea level for the specific weather station                                       | 0         |
-| doorbellCooldown  |                                                                                               | 60        | 
-| motionCooldown    |                                                                                               | 120       |
-| personCooldown    |                                                                                               | 60        | 
+| doorbellCooldown  | Time in seconds between doorbell press events                                                 | 60        | 
+| motionCooldown    | Time in seconds between detected motion events                                                | 60        |
+| personCooldown    | Time in seconds between detected person events                                                | 120       | 
