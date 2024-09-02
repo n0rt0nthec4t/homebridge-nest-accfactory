@@ -161,13 +161,13 @@ export default class HomeKitDevice {
     // Special case for Homebridge 'restored' accessories. Pain in the arse
     // Remove all services accept on the accessory EXCEPT for the accessory information service
     // These will be added back via the 'addServices' call we execute below
-    if (this.accessory !== undefined) {
+    /*  if (this.accessory !== undefined) {
       this.accessory.services.forEach((service) => {
         if (service.UUID !== this.hap.Service.AccessoryInformation.UUID) {
           this.accessory.removeService(service);
         }
       });
-    }
+    } */
 
     // If we do not have an existing accessory object, create a new one
     if (this.accessory === undefined && this.#platform !== undefined) {

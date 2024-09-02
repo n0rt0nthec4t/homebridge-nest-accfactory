@@ -5,7 +5,7 @@
 // for live viewing and/or recording
 //
 // Mark Hulskamp
-// 31/8/2024
+// 1/9/2024
 'use strict';
 
 // Define external library requirements
@@ -100,8 +100,8 @@ const ClientType = {
   IOS: 2,
   WEB: 3,
 };
-/*
-const H264NALUnitType = {
+
+/*const H264NALUnitType = {
   STAP_A: 0x18,
   FU_A: 0x1c,
   NON_IDR: 0x01,
@@ -110,8 +110,8 @@ const H264NALUnitType = {
   SPS: 0x07,
   PPS: 0x08,
   AUD: 0x09,
-};
-*/
+};*/
+
 const H264NALStartcode = Buffer.from([0x00, 0x00, 0x00, 0x01]);
 const AACAudioSilence = Buffer.from([0x21, 0x10, 0x01, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
@@ -272,9 +272,6 @@ export default class NexusStreamer {
 
       this.nexusTalk.outputs.buffer = {
         type: 'buffer',
-        video: null,
-        audio: null,
-        talk: null,
         buffer: [],
       };
     }
@@ -361,9 +358,8 @@ export default class NexusStreamer {
       type: 'record',
       video: videoStream,
       audio: audioStream,
-      talk: null,
       // eslint-disable-next-line no-undef
-      buffer: this.nexusTalk.outputs?.buffer !== undefined ? structuredClone(this.nexusTalk.outputs.buffer.buffer) : [],
+      buffer: this.nexusTalk.outputs?.buffer?.buffer !== undefined ? structuredClone(this.nexusTalk.outputs.buffer.buffer) : [],
     };
 
     // Finally we've started the recording stream
@@ -732,17 +728,17 @@ export default class NexusStreamer {
         if (stream.codec_type === CodecType.H264) {
           this.nexusTalk.video = {
             channel_id: stream.channel_id,
-            start_time: stream.start_time * 1000,
+            start_time: Date.now() + stream.start_time,
             sample_rate: stream.sample_rate,
-            packet_time: stream.start_time * 1000,
+            timestamp_delta: 0,
           };
         }
         if (stream.codec_type === CodecType.AAC || stream.codec_type === CodecType.OPUS || stream.codec_type === CodecType.SPEEX) {
           this.nexusTalk.audio = {
             channel_id: stream.channel_id,
-            start_time: stream.start_time * 1000,
+            start_time: Date.now() + stream.start_time,
             sample_rate: stream.sample_rate,
-            packet_time: stream.start_time * 1000,
+            timestamp_delta: 0,
           };
         }
       });
@@ -840,20 +836,20 @@ export default class NexusStreamer {
     Object.values(this.nexusTalk.outputs).forEach((output) => {
       // Handle video packet
       if (packet.channel_id === this.nexusTalk.video.channel_id) {
-        this.nexusTalk.video.packet_time += packet.timestamp_delta;
+        this.nexusTalk.video.timestamp_delta += packet.timestamp_delta;
         output.buffer.push({
           type: 'video',
-          time: this.nexusTalk.video.packet_time,
+          time: this.nexusTalk.video.start_time + this.nexusTalk.video.timestamp_delta,
           data: packet.payload,
         });
       }
 
       // Handle audio packet
       if (packet.channel_id === this.nexusTalk.audio.channel_id) {
-        this.nexusTalk.audio.packet_time += packet.timestamp_delta;
+        this.nexusTalk.audio.timestamp_delta += packet.timestamp_delta;
         output.buffer.push({
           type: 'audio',
-          time: this.nexusTalk.audio.packet_time,
+          time: this.nexusTalk.audio.start_time + this.nexusTalk.audio.timestamp_delta,
           data: packet.payload,
         });
       }

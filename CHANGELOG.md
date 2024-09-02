@@ -9,8 +9,9 @@ Currently all releases are considered 'alpha' status, where things may or may no
 ## v0.0.4 (alpha)
 
 - Camera/Doorbell support for snapshots and live video re-introduced
-- HomeKit Secure Video recording support may or may not work
+- HomeKit Secure Video recording support re-introduced
 - Should support Nest Thermostat 4th Gen (untested)
+- *might* have finally resolved audio sync issues for both live and recording
 
 ## v0.0.1 (2024-08-27)
 
