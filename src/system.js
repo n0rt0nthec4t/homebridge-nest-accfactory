@@ -2,7 +2,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2/9/2024
+// Code version 3/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -63,7 +63,7 @@ export default class NestAccfactory {
 
   cachedAccessories = []; // Track restored cached accessories
 
-  // Internal data we use within the platform accessory for various things
+  // Internal data only for this class
   #connections = {}; // Array of confirmed connections, indexed by type
   #rawData = {}; // Cached copy of data from both Rest and Protobuf APIs
   #eventEmitter = new EventEmitter(); // Used for object messaging from this platform
@@ -122,7 +122,7 @@ export default class NestAccfactory {
     if (fs.existsSync(path.resolve(this.config.options.ffmpeg.path + '/ffmpeg')) === false) {
       if (this?.log?.warn) {
         this.log.warn('No ffmpeg binary found in "%s"', this.config.options.ffmpeg.path);
-        this.log.warn('Streaming/recording video will be unavailable for cameras/doorbells');
+        this.log.warn('Streaming and of recording video will be unavailable for cameras/doorbells');
       }
 
       // If we flag ffmpegPath as undefined, no video streaming/record support enabled for camers/doorbells

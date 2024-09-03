@@ -12,6 +12,10 @@ Currently all releases are considered 'alpha' status, where things may or may no
 - HomeKit Secure Video recording support re-introduced
 - Should support Nest Thermostat 4th Gen (untested)
 - *might* have finally resolved audio sync issues for both live and recording
+- Depending on the libraries present in ffmpeg binary, we limit functionality for camera/doorbells
+    - missing libspeex = no two-way audio
+    - missing libfdk_aac = no audio
+    - missing libx264 = no streaming/recording
 
 ## v0.0.1 (2024-08-27)
 

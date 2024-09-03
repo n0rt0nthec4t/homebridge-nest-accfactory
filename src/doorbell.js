@@ -1,7 +1,7 @@
 // Nest Doorbell(s)
 // Part of homebridge-nest-accfactory
 //
-// Code version 31/8/2024
+// Code version 3/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -29,20 +29,12 @@ export default class NestDoorbell extends NestCamera {
     // Call parent to setup the common camera things. Once we return, we can add in the specifics for our doorbell
     let postSetupDetails = super.addServices();
 
-    // Setup additional HomeKit services and characteristics we'll use
-    if (this.controller.doorbellService.testCharacteristic(this.hap.Characteristic.StatusActive) === false) {
-      this.controller.doorbellService.addCharacteristic(this.hap.Characteristic.StatusActive);
-    }
-
     if (this.deviceData.has_indoor_chime === true && this.deviceData.chimeSwitch === true) {
       // Add service to allow automation and enabling/disabling indoor chiming.
       // This needs to be explically enabled via a configuration option for the device
       this.switchService = this.accessory.getService(this.hap.Service.Switch);
       if (this.switchService === undefined) {
         this.switchService = this.accessory.addService(this.hap.Service.Switch, '', 1);
-      }
-      if (this.switchService.testCharacteristic(this.hap.Characteristic.StatusActive) === false) {
-        this.switchService.addCharacteristic(this.hap.Characteristic.StatusActive);
       }
 
       // Setup set callback for this switch service
@@ -81,19 +73,15 @@ export default class NestDoorbell extends NestCamera {
   }
 
   updateServices(deviceData) {
-    if (typeof deviceData !== 'object' || (this.controller === undefined && this.controller?.doorbellService === undefined)) {
+    if (typeof deviceData !== 'object' || this.controller === undefined) {
       return;
     }
 
     // Get the camera class todo all its updates first, then we'll handle the doorbell specific stuff
     super.updateServices(deviceData);
 
-    // Update online status of Doorbell in HomeKit
-    this.controller.doorbellService.updateCharacteristic(this.hap.Characteristic.StatusActive, deviceData.online);
-
     if (this.switchService !== undefined) {
       // Update status of indoor chime enable/disable switch
-      this.switchService.updateCharacteristic(this.hap.Characteristic.StatusActive, deviceData.online);
       this.switchService.updateCharacteristic(this.hap.Characteristic.On, deviceData.indoor_chime_enabled);
     }
 
@@ -103,13 +91,7 @@ export default class NestDoorbell extends NestCamera {
         // Cooldown for doorbell button being pressed (filters out constant pressing for time period)
         // Start this before we process further
         this.doorbellTimer = setTimeout(() => {
-          // Clear snapshot event image after timeout
-          this.snapshotEvent = {
-            type: '',
-            time: 0,
-            id: 0,
-            done: false,
-          };
+          this.snapshotEvent = undefined; // Clear snapshot event image after timeout
           this.doorbellTimer = undefined; // No doorbell timer active
         }, this.deviceData.doorbellCooldown * 1000);
 

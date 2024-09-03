@@ -37,7 +37,7 @@
 // HomeKitDevice.updateServices(deviceData)
 // HomeKitDevice.messageServices(type, message)
 //
-// Code version 28/8/2024
+// Code version 3/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -61,7 +61,7 @@ export default class HomeKitDevice {
   hap = undefined; // HomeKit Accessory Protocol API stub
   log = undefined; // Logging function object
 
-  // Internal data we use within the accessory for various things
+  // Internal data only for this class
   #platform = undefined; // Homebridge platform api
   #eventEmitter = undefined; // Event emitter to use for comms
 
@@ -105,7 +105,6 @@ export default class HomeKitDevice {
     }
 
     // Make copy of current data and store in this object
-
     // eslint-disable-next-line no-undef
     this.deviceData = structuredClone(deviceData);
 
@@ -158,17 +157,6 @@ export default class HomeKitDevice {
       return;
     }
 
-    // Special case for Homebridge 'restored' accessories. Pain in the arse
-    // Remove all services accept on the accessory EXCEPT for the accessory information service
-    // These will be added back via the 'addServices' call we execute below
-    /*  if (this.accessory !== undefined) {
-      this.accessory.services.forEach((service) => {
-        if (service.UUID !== this.hap.Service.AccessoryInformation.UUID) {
-          this.accessory.removeService(service);
-        }
-      });
-    } */
-
     // If we do not have an existing accessory object, create a new one
     if (this.accessory === undefined && this.#platform !== undefined) {
       // Create HomeBridge platform accessory
@@ -202,11 +190,6 @@ export default class HomeKitDevice {
       informationService.updateCharacteristic(this.hap.Characteristic.FirmwareRevision, this.deviceData.software_version);
     }
     informationService.updateCharacteristic(this.hap.Characteristic.Name, this.deviceData.description);
-
-    // Restore any data we have stored in this.accessory.context
-    if (this.#platform !== undefined) {
-      this.#platform.updatePlatformAccessories([this.accessory]);
-    }
 
     // Setup our history service if module has been defined and requested to be active for this device
     if (typeof HomeKitDevice?.HISTORY === 'function' && this.historyService === undefined && useHistoryService === true) {
