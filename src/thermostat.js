@@ -1,7 +1,7 @@
 // Nest Thermostat
 // Part of homebridge-nest-accfactory
 //
-// Code version 27/8/2024
+// Code version 3/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -216,6 +216,7 @@ export default class NestThermostat extends HomeKitDevice {
     if (this.deviceData?.has_fan === false && this.fanService !== undefined) {
       // No longer have a Fan configured and service present, so removed it
       this.accessory.removeService(this.fanService);
+      this.fanService === undefined;
     }
 
     // Setup dehumifider service if supported by the thermostat and not already present on the accessory
@@ -241,6 +242,7 @@ export default class NestThermostat extends HomeKitDevice {
     if (this.deviceData?.has_dehumidifier === false && this.dehumidifierService !== undefined) {
       // No longer have a dehumidifier configured and service present, so removed it
       this.accessory.removeService(this.dehumidifierService);
+      this.dehumidifierService = undefined;
     }
 
     // Setup humdity service if configured to be seperate and not already present on the accessory
@@ -254,6 +256,7 @@ export default class NestThermostat extends HomeKitDevice {
     if (this.deviceData?.humiditySensor === false && this.humidityService !== undefined) {
       // No longer have a seperate humidity sensor configure and service present, so removed it
       this.accessory.removeService(this.humidityService);
+      this.humidityService = undefined;
     }
 
     // Setup linkage to EveHome app if configured todo so

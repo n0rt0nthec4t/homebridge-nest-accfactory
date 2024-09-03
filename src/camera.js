@@ -180,7 +180,7 @@ export default class NestCamera extends HomeKitDevice {
       (this.deviceData.audio_enabled === true &&
       this.deviceData?.ffmpeg?.libfdk_aac === true &&
       this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.RecordingAudioActive)
-        .value === 1
+        .value === this.hap.Characteristic.RecordingAudioActive.ENABLE
         ? ' -f aac -i pipe:3'
         : ''); // Audio data only on extra pipe created in spawn command
 
@@ -224,7 +224,7 @@ export default class NestCamera extends HomeKitDevice {
       this.deviceData.audio_enabled === true &&
       this.deviceData?.ffmpeg?.libfdk_aac === true &&
       this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.RecordingAudioActive)
-        .value === 1
+        .value === this.hap.Characteristic.RecordingAudioActive.ENABLE
     ) {
       let audioSampleRates = ['8', '16', '24', '32', '44.1', '48'];
 
@@ -945,7 +945,9 @@ export default class NestCamera extends HomeKitDevice {
       // Update recording audio status
       this.controller.recordingManagement.recordingManagementService.updateCharacteristic(
         this.hap.Characteristic.RecordingAudioActive,
-        deviceData.audio_enabled === true ? 1 : 0,
+        deviceData.audio_enabled === true
+          ? this.hap.Characteristic.RecordingAudioActive.ENABLE
+          : this.hap.Characteristic.RecordingAudioActive.DISABLE,
       );
     }
 
@@ -1155,18 +1157,27 @@ export default class NestCamera extends HomeKitDevice {
       this.operatingModeService.getCharacteristic(this.hap.Characteristic.HomeKitCameraActive).onSet((value) => {
         if (value !== this.operatingModeService.getCharacteristic(this.hap.Characteristic.HomeKitCameraActive).value) {
           // Make sure only updating status if HomeKit value *actually changes*
-          if ((this.deviceData.streaming_enabled === false && value === 1) || (this.deviceData.streaming_enabled === true && value === 0)) {
+          if (
+            (this.deviceData.streaming_enabled === false && value === this.hap.Characteristic.HomeKitCameraActive.ON) ||
+            (this.deviceData.streaming_enabled === true && value === this.hap.Characteristic.HomeKitCameraActive.OFF)
+          ) {
             // Camera state does not reflect requested state, so fix
-            this.set({ 'streaming.enabled': value === 1 ? true : false });
+            this.set({ 'streaming.enabled': value === this.hap.Characteristic.HomeKitCameraActive.ON ? true : false });
             if (this.log.info) {
-              this.log.info('Camera on "%s" was turned', this.deviceData.description, value === 1 ? 'on' : 'off');
+              this.log.info(
+                'Camera on "%s" was turned',
+                this.deviceData.description,
+                value === this.hap.Characteristic.HomeKitCameraActive.ON ? 'on' : 'off',
+              );
             }
           }
         }
       });
 
       this.operatingModeService.getCharacteristic(this.hap.Characteristic.HomeKitCameraActive).onGet(() => {
-        return this.deviceData.streaming_enabled === true ? 1 : 0;
+        return this.deviceData.streaming_enabled === true
+          ? this.hap.Characteristic.HomeKitCameraActive.ON
+          : this.hap.Characteristic.HomeKitCameraActive.OFF;
       });
     }
 
@@ -1194,10 +1205,17 @@ export default class NestCamera extends HomeKitDevice {
       this.controller.recordingManagement.recordingManagementService
         .getCharacteristic(this.hap.Characteristic.RecordingAudioActive)
         .onSet((value) => {
-          if ((this.deviceData.audio_enabled === true && value === 0) || (this.deviceData.audio_enabled === false && value === 1)) {
-            this.set({ 'audio.enabled': value === 1 ? true : false });
+          if (
+            (this.deviceData.audio_enabled === true && value === this.hap.Characteristic.RecordingAudioActive.DISABLE) ||
+            (this.deviceData.audio_enabled === false && value === this.hap.Characteristic.RecordingAudioActive.ENABLE)
+          ) {
+            this.set({ 'audio.enabled': value === this.hap.Characteristic.RecordingAudioActive.ENABLE ? true : false });
             if (this?.log?.info) {
-              this.log.info('Audio recording on "%s" was turned', this.deviceData.description, value === 1 ? 'on' : 'off');
+              this.log.info(
+                'Audio recording on "%s" was turned',
+                this.deviceData.description,
+                value === this.hap.Characteristic.RecordingAudioActive.ENABLE ? 'on' : 'off',
+              );
             }
           }
         });
@@ -1205,7 +1223,9 @@ export default class NestCamera extends HomeKitDevice {
       this.controller.recordingManagement.recordingManagementService
         .getCharacteristic(this.hap.Characteristic.RecordingAudioActive)
         .onGet(() => {
-          return this.deviceData.audio_enabled === true ? 1 : 0;
+          return this.deviceData.audio_enabled === true
+            ? this.hap.Characteristic.RecordingAudioActive.ENABLE
+            : this.hap.Characteristic.RecordingAudioActive.DISABLE;
         });
     }
   }

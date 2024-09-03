@@ -29,10 +29,10 @@ export default class NestDoorbell extends NestCamera {
     // Call parent to setup the common camera things. Once we return, we can add in the specifics for our doorbell
     let postSetupDetails = super.addServices();
 
+    this.switchService = this.accessory.getService(this.hap.Service.Switch);
     if (this.deviceData.has_indoor_chime === true && this.deviceData.chimeSwitch === true) {
       // Add service to allow automation and enabling/disabling indoor chiming.
       // This needs to be explically enabled via a configuration option for the device
-      this.switchService = this.accessory.getService(this.hap.Service.Switch);
       if (this.switchService === undefined) {
         this.switchService = this.accessory.addService(this.hap.Service.Switch, '', 1);
       }
@@ -51,10 +51,11 @@ export default class NestDoorbell extends NestCamera {
         return this.deviceData.indoor_chime_enabled === true;
       });
     }
-    if (this.switchService !== undefined && this.deviceData.chimeSwitch === false) {
+    if (this.switchService !== undefined && (this.deviceData.has_indoor_chime === false || this.deviceData.chimeSwitch === false)) {
       // No longer required to have the switch service
       // This is to handle Homebridge cached restored accessories and if configuration options have changed
       this.accessory.removeService(this.switchService);
+      this.switchService === undefined;
     }
 
     // Create extra details for output
