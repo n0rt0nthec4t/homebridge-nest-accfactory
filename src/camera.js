@@ -633,7 +633,6 @@ export default class NestCamera extends HomeKitDevice {
         ' -map 0:v' + // stdin, the first input is video data
         ' -codec:v copy' +
         ' -fps_mode passthrough' +
-        ' -reset_timestamps 1' +
         ' -video_track_timescale 90000' +
         ' -payload_type ' +
         request.video.pt +
@@ -758,7 +757,7 @@ export default class NestCamera extends HomeKitDevice {
           '-hide_banner -nostats' +
           ' -protocol_whitelist pipe,udp,rtp' +
           ' -f sdp' +
-          ' -codec:a libkdf_aac' +
+          ' -codec:a libfdk_aac' +
           ' -i pipe:0' +
           ' -map 0:a' +
           ' -codec:a libspeex' +
