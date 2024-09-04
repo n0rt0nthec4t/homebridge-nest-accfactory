@@ -320,7 +320,7 @@ export default class Streamer {
   }
 
   addToOutput(type, time, data) {
-    if (typeof type !== 'string' || type === '' || typeof time !== 'string' || time === '') {
+    if (typeof type !== 'string' || type === '' || typeof time !== 'number' || time === 0) {
       return;
     }
 

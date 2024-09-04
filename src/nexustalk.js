@@ -553,7 +553,7 @@ export default class NexusTalk extends Streamer {
     // Handle audio packet
     if (packet.channel_id === this.audio.channel_id) {
       this.audio.timestamp_delta += packet.timestamp_delta;
-      this.addToOutput('audio', this.audio.start_time + this.audio.timestamp_deltaa, packet.payload);
+      this.addToOutput('audio', this.audio.start_time + this.audio.timestamp_delta, packet.payload);
     }
   }
 
