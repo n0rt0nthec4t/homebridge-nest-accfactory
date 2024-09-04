@@ -44,7 +44,7 @@ export default class Streamer {
   socket = null; // TCP socket object
 
   // Internal data only for this class
-  #outputTimer = undefined; // Timer for non-block loop stream outputs
+  #outputTimer = undefined; // Timer for non-blocking loop to stream output data
   #outputs = {}; // Output streams ie: buffer, live, record
 
   constructor(deviceData, options) {
@@ -99,7 +99,7 @@ export default class Streamer {
     let lastTimeVideo = Date.now();
     this.#outputTimer = setInterval(() => {
       let dateNow = Date.now();
-      let outputVideoFrame = dateNow > lastTimeVideo + 90000 / 30;
+      let outputVideoFrame = dateNow > lastTimeVideo + 90000 / 30;  // 30 or 15 fps?
       Object.values(this.#outputs).forEach((output) => {
         // Monitor for camera going offline and/or video enabled/disabled
         // We'll insert the appropriate video frame into the stream
@@ -118,8 +118,8 @@ export default class Streamer {
 
         // Keep our 'main' rolling buffer under a certain size
         // Live/record buffers will always reduce in length in the next section
-        // <---- maybe make this time based x time since firts packet in buffer?
-        if (output.type === 'buffer' && output.buffer.length > 1500) {
+        // <---- maybe make this time based x time since first packet in buffer?
+        if (output.type === 'buffer' && output.buffer.length > 1250) {
           output.buffer.shift();
         }
 
