@@ -16,6 +16,9 @@ Currently all releases are considered 'alpha' status, where things may or may no
     - missing libspeex = no two-way audio
     - missing libfdk_aac = no audio
     - missing libx264 = no streaming/recording
+- Cleanup fix for when removing a camera/doorbell from Nest/Google
+- Fix for virtual weather device when missing configured city and/or state details
+- Underlying code changes to camera/doorbell streaming code to allow support newer Nest/Google devices
 
 ## v0.0.1 (2024-08-27)
 

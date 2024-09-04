@@ -162,8 +162,6 @@ message CameraService {
   }
 }
 
-// let request = { device: { googleDeviceId: x, service: { value: 'nest-home-assistant-prod' } }, trait: { category: 'cameraStream', updateTrait: { name: 'cameraStreamLiveViewImage', value: { intValue: 1 } } } }
-
 message HomeControlService {
   message UpdateTraitsRequest {
     message Request {

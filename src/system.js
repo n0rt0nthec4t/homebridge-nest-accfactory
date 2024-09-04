@@ -2,7 +2,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 3/9/2024
+// Code version 4/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -122,7 +122,7 @@ export default class NestAccfactory {
     if (fs.existsSync(path.resolve(this.config.options.ffmpeg.path + '/ffmpeg')) === false) {
       if (this?.log?.warn) {
         this.log.warn('No ffmpeg binary found in "%s"', this.config.options.ffmpeg.path);
-        this.log.warn('Streaming and of recording video will be unavailable for cameras/doorbells');
+        this.log.warn('Stream video/recording from camera/doorbells will be unavailable');
       }
 
       // If we flag ffmpegPath as undefined, no video streaming/record support enabled for camers/doorbells
@@ -150,7 +150,8 @@ export default class NestAccfactory {
           this.config.options.ffmpeg.libx264 === false ||
           this.config.options.ffmpeg.libfdk_aac === false
         ) {
-          this?.log?.warn && this.log.warn('ffmpeg binary in "%s" does not meet the minimum requirements', this.config.options.ffmpeg.path);
+          this?.log?.warn &&
+            this.log.warn('ffmpeg binary in "%s" does not meet the minimum support requirements', this.config.options.ffmpeg.path);
           if (this.config.options.ffmpeg.version.replace(/\./gi, '') < parseFloat(FFMPEGVERSION.toString().replace(/\./gi, ''))) {
             this?.log?.warn &&
               this.log.warn(
@@ -1372,16 +1373,16 @@ export default class NestAccfactory {
             RESTTypeData.software_version = value.value.device_identity.softwareVersion;
             RESTTypeData.model = 'Thermostat';
             if (value.value.device_info.typeName === 'nest.resource.NestLearningThermostat3Resource') {
-              RESTTypeData.model = 'Learning Thermostat (3rd Gen)';
+              RESTTypeData.model = 'Learning Thermostat (3rd gen)';
             }
             if (value.value.device_info.typeName === 'google.resource.GoogleBismuth1Resource') {
-              RESTTypeData.model = 'Learning Thermostat (4th Gen)';
+              RESTTypeData.model = 'Learning Thermostat (4th gen)';
             }
             if (value.value.device_info.typeName === 'nest.resource.NestAgateDisplayResource') {
               RESTTypeData.model = 'Thermostat E';
             }
             if (value.value.device_info.typeName === 'nest.resource.NestOnyxResource') {
-              RESTTypeData.model = 'Thermostat E (1st Gen)';
+              RESTTypeData.model = 'Thermostat E (1st gen)';
             }
             if (value.value.device_info.typeName === 'google.resource.GoogleZirconium1Resource') {
               RESTTypeData.model = 'Thermostat (2020 Model)';
@@ -1598,16 +1599,16 @@ export default class NestAccfactory {
             RESTTypeData.software_version = value.value.current_version;
             RESTTypeData.model = 'Thermostat';
             if (value.value.serial_number.serial_number.substring(0, 2) === '15') {
-              RESTTypeData.model = 'Thermostat E (1st Gen)'; // Nest Thermostat E
+              RESTTypeData.model = 'Thermostat E (1st gen)'; // Nest Thermostat E
             }
             if (value.value.serial_number.serial_number.substring(0, 2) === '09') {
-              RESTTypeData.model = 'Thermostat (3rd Gen)'; // Nest Thermostat 3rd Gen
+              RESTTypeData.model = 'Thermostat (3rd gen)'; // Nest Thermostat 3rd Gen
             }
             if (value.value.serial_number.serial_number.substring(0, 2) === '02') {
-              RESTTypeData.model = 'Thermostat (2nd Gen)'; // Nest Thermostat 2nd Gen
+              RESTTypeData.model = 'Thermostat (2nd gen)'; // Nest Thermostat 2nd Gen
             }
             if (value.value.serial_number.serial_number.substring(0, 2) === '01') {
-              RESTTypeData.model = 'Thermostat (1st Gen)'; // Nest Thermostat 1st Gen
+              RESTTypeData.model = 'Thermostat (1st gen)'; // Nest Thermostat 1st Gen
             }
             RESTTypeData.current_humidity = value.value.current_humidity;
             RESTTypeData.temperature_scale = value.value.temperature_scale;
@@ -1950,10 +1951,10 @@ export default class NestAccfactory {
           data.model = data.model + ' (battery'; // Battery powered
         }
         if (data.serial_number.substring(0, 2) === '06') {
-          data.model = data.model + ', 2nd Gen)'; // Nest Protect 2nd Gen
+          data.model = data.model + ', 2nd gen)'; // Nest Protect 2nd Gen
         }
         if (data.serial_number.substring(0, 2) === '05') {
-          data.model = data.model + ', 1st Gen)'; // Nest Protect 1st Gen
+          data.model = data.model + ', 1st gen)'; // Nest Protect 1st Gen
         }
         let description = typeof data?.description === 'string' ? data.description : '';
         let location = typeof data?.location === 'string' ? data.location : '';
@@ -2176,9 +2177,10 @@ export default class NestAccfactory {
         let tempDevice = {};
         try {
           if (value.source === NestAccfactory.DataSource.PROTOBUF) {
-            /*
-            let RESTTypeData = {};
-            RESTTypeData.mac_address = value.value.wifi_interface.macAddress.toString('hex');
+            /*  let RESTTypeData = {};
+            //RESTTypeData.mac_address = value.value.wifi_interface.macAddress.toString('hex');
+            // Use a Nest Labs prefix for first 6 digits, followed by a CRC24 based off serial number for last 6 digits.
+            RESTTypeData.mac_address = '18B430' + crc24(value.value.device_identity.serialNumber.toUpperCase()).toUpperCase();
             RESTTypeData.serial_number = value.value.device_identity.serialNumber;
             RESTTypeData.software_version = value.value.device_identity.softwareVersion;
             RESTTypeData.model = 'Camera';
@@ -2192,19 +2194,19 @@ export default class NestAccfactory {
               RESTTypeData.model = 'Cam (wired)';
             }
             if (value.value.device_info.typeName === 'google.resource.VenusResource') {
-              RESTTypeData.model = 'Doorbell (wired, 2nd Gen)';
+              RESTTypeData.model = 'Doorbell (wired, 2nd gen)';
             }
             if (value.value.device_info.typeName === 'nest.resource.NestCamIndoorResource') {
-              RESTTypeData.model = 'Cam Indoor (1st Gen)';
+              RESTTypeData.model = 'Cam Indoor (1st gen)';
             }
             if (value.value.device_info.typeName === 'nest.resource.NestCamIQResource') {
               RESTTypeData.model = 'Cam IQ';
             }
             if (value.value.device_info.typeName === 'nest.resource.NestCamIQOutdoorResource') {
-              RESTTypeData.model = 'Cam Outdoor (1st Gen)';
+              RESTTypeData.model = 'Cam Outdoor (1st gen)';
             }
             if (value.value.device_info.typeName === 'nest.resource.NestHelloResource') {
-              RESTTypeData.model = 'Doorbell (wired, 1st Gen)';
+              RESTTypeData.model = 'Doorbell (wired, 1st gen)';
             }
             if (value.value.device_info.typeName === 'google.resource.AzizResource') {
               RESTTypeData.model = 'Cam with Floodlight (wired)';
@@ -2224,8 +2226,6 @@ export default class NestAccfactory {
               value.value?.doorbell_indoor_chime_settings?.chimeType === 'CHIME_TYPE_ELECTRONIC';
             RESTTypeData.indoor_chime_enabled = value.value?.doorbell_indoor_chime_settings?.chimeEnabled === true;
             RESTTypeData.streaming_enabled = value.value?.recording_toggle?.currentCameraState === 'CAMERA_ON';
-            RESTTypeData.direct_nexustalk_host =
-              typeof value.value?.streaming_protocol?.directHost?.value === 'string' ? value.value.streaming_protocol.directHost.value : '';
             //RESTTypeData.has_irled =
             //RESTTypeData.irled_enabled =
             //RESTTypeData.has_statusled =
@@ -2252,6 +2252,10 @@ export default class NestAccfactory {
             RESTTypeData.migration_in_progress =
               value.value?.camera_migration_status?.state?.progress !== 'PROGRESS_NONE' &&
               value.value?.camera_migration_status?.state?.progress !== 'PROGRESS_COMPLETE';
+            RESTTypeData.streaming_protocols =
+              value.value?.streaming_protocol?.supportedProtocols !== undefined ? value.value.streaming_protocol.supportedProtocols : [];
+            RESTTypeData.streaming_host =
+              typeof value.value?.streaming_protocol?.directHost?.value === 'string' ? value.value.streaming_protocol.directHost.value : '';
 
             tempDevice = process_camera_doorbell_data(object_key, RESTTypeData);
             */
@@ -2267,7 +2271,6 @@ export default class NestAccfactory {
             RESTTypeData.description = value.value?.description;
             RESTTypeData.location = get_location_name(value.value.structure_id, value.value.where_id);
             RESTTypeData.streaming_enabled = value.value.streaming_state.includes('enabled') === true;
-            RESTTypeData.direct_nexustalk_host = value.value.direct_nexustalk_host;
             RESTTypeData.nexus_api_http_server_url = value.value.nexus_api_http_server_url;
             RESTTypeData.online = value.value.streaming_state.includes('offline') === false;
             RESTTypeData.audio_enabled = value.value.audio_input_enabled === true;
@@ -2284,7 +2287,8 @@ export default class NestAccfactory {
             RESTTypeData.has_motion_detection = value.value.capabilities.includes('detectors.on_camera') === true;
             RESTTypeData.activity_zones = value.value.activity_zones; // structure elements we added
             RESTTypeData.alerts = typeof value.value?.alerts === 'object' ? value.value.alerts : [];
-            RESTTypeData.streaming_protocols = ['NEXUSTALK'];
+            RESTTypeData.streaming_protocols = ['PROTOCOL_NEXUSTALK'];
+            RESTTypeData.streaming_host = value.value.direct_nexustalk_host;
             RESTTypeData.quiet_time_enabled = false;
             RESTTypeData.camera_type = value.value.camera_type;
             RESTTypeData.migration_in_progress =
@@ -2423,8 +2427,8 @@ export default class NestAccfactory {
             let RESTTypeData = {};
             RESTTypeData.postal_code = value.value.postal_code;
             RESTTypeData.country_code = value.value.country_code;
-            RESTTypeData.city = value.value.city;
-            RESTTypeData.state = value.value.state;
+            RESTTypeData.city = typeof value.value?.city === 'string' ? value.value.city : '';
+            RESTTypeData.state = typeof value.value?.state === 'string' ? value.value.state : '';
             RESTTypeData.latitude = value.value.latitude;
             RESTTypeData.longitude = value.value.longitude;
             RESTTypeData.description =
