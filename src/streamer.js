@@ -99,7 +99,7 @@ export default class Streamer {
     let lastTimeVideo = Date.now();
     this.#outputTimer = setInterval(() => {
       let dateNow = Date.now();
-      let outputVideoFrame = dateNow > lastTimeVideo + 90000 / 30;  // 30 or 15 fps?
+      let outputVideoFrame = dateNow > lastTimeVideo + 90000 / 30; // 30 or 15 fps?
       Object.values(this.#outputs).forEach((output) => {
         // Monitor for camera going offline and/or video enabled/disabled
         // We'll insert the appropriate video frame into the stream

@@ -18,7 +18,8 @@ Currently all releases are considered 'alpha' status, where things may or may no
     - missing libx264 = no streaming/recording
 - Cleanup fix for when removing a camera/doorbell from Nest/Google
 - Fix for virtual weather device when missing configured city and/or state details
-- Underlying code changes to camera/doorbell streaming code to allow support newer Nest/Google devices
+- Fix for retrieving data from Nest systems when using both a Nest and Google accounts
+- Initial support newer Nest/Google camera/doorbell devices (streaming/recording - coming)
 
 ## v0.0.1 (2024-08-27)
 

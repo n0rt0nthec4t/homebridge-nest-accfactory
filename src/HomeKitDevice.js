@@ -37,7 +37,7 @@
 // HomeKitDevice.updateServices(deviceData)
 // HomeKitDevice.messageServices(type, message)
 //
-// Code version 3/9/2024
+// Code version 6/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -393,14 +393,13 @@ export default class HomeKitDevice {
       return;
     }
 
-    // <---- TODO
-    // Send event with data to get. Once get has completed, callback will be called with the requested data
-    //this.#eventEmitter.emit(HomeKitDevice.GET, this.deviceData.uuid, values);
-    //
-    // await ....
-    // return gottenValues;
-    // <---- TODO
-    // Probable need some sort of await event
+    // Send event with data to get
+    // Once get has completed, we'll get an eevent back with the requested data
+    this.#eventEmitter.emit(HomeKitDevice.GET, this.deviceData.uuid, values);
+
+    // This should always return, but we probably should put in a timeout?
+    let results = await EventEmitter.once(this.#eventEmitter, HomeKitDevice.GET + '->' + this.deviceData.uuid);
+    return results?.[0];
   }
 
   async #message(type, message) {

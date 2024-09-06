@@ -1,7 +1,7 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 4/9/2024
+// Code version 5/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -17,9 +17,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Define external module requirements
-import axios from 'axios';
-
 // Define our modules
 import HomeKitDevice from './HomeKitDevice.js';
 import NexusTalk from './nexustalk.js';
@@ -29,7 +26,6 @@ let WebRTC = undefined;
 const CAMERAOFFLINEJPGFILE = 'Nest_camera_offline.jpg'; // Camera offline jpg image file
 const CAMERAOFFJPGFILE = 'Nest_camera_off.jpg'; // Camera video off jpg image file
 const MP4BOX = 'mp4box'; // MP4 box fragement event for HKSV recording
-const USERAGENT = 'Nest/5.75.0 (iOScom.nestlabs.jasper.release) os=17.4.1'; // User Agent string
 const SNAPSHOTCACHETIMEOUT = 30000; // Timeout for retaining snapshot image (in milliseconds)
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 
@@ -134,7 +130,9 @@ export default class NestCamera extends HomeKitDevice {
     // Create extra details for output
     let postSetupDetails = [];
     this.deviceData.hksv === true &&
-      postSetupDetails.push('HomeKit Secure Video' + (this.streamer?.isBuffering() === true ? ' and recording buffer' : ''));
+      postSetupDetails.push(
+        'HomeKit Secure Video support' + (this.streamer?.isBuffering() === true ? ' and recording buffer started' : ''),
+      );
     return postSetupDetails;
   }
 
@@ -248,10 +246,13 @@ export default class NestCamera extends HomeKitDevice {
       ' -b:v ' +
       this.#recordingConfig.videoCodec.parameters.bitRate +
       'k' +
-      ' -fps_mode passthrough' +
+      ' -pix_fmt yuv420p' +
+      ' -enc_time_base -1' +
+      ' -fps_mode vfr' +
+      //' -fps_mode passthrough' +
       ' -movflags frag_keyframe+empty_moov+default_base_moof' +
-      ' -reset_timestamps 1' +
-      ' -video_track_timescale 90000' +
+      //' -reset_timestamps 1' +
+      //' -video_track_timescale 90000' +
       ' -bufsize ' +
       2 * this.#recordingConfig.videoCodec.parameters.bitRate +
       'k';
@@ -436,17 +437,16 @@ export default class NestCamera extends HomeKitDevice {
   }
 
   updateRecordingActive(enableRecording) {
-    if (enableRecording === true) {
+    if (enableRecording === true && this.streamer?.isBuffering() === false) {
       // Start a buffering stream for this camera/doorbell. Ensures motion captures all video on motion trigger
       // Required due to data delays by on prem Nest to cloud to HomeKit accessory to iCloud etc
       // Make sure have appropriate bandwidth!!!
       this?.log?.info && this.log.info('Recording was turned on for "%s"', this.deviceData.description);
-
-      this.streamer?.isBuffering() === false && this.streamer.startBuffering();
+      this.streamer.startBuffering();
     }
 
-    if (enableRecording === false) {
-      this.streamer?.isBuffering() === true && this.streamer.stopBuffering();
+    if (enableRecording === false && this.streamer?.isBuffering() === true) {
+      this.streamer.stopBuffering();
       this?.log?.warn && this.log.warn('Recording was turned off for "%s"', this.deviceData.description);
     }
   }
@@ -463,80 +463,16 @@ export default class NestCamera extends HomeKitDevice {
     let imageBuffer = undefined;
 
     if (this.deviceData.streaming_enabled === true && this.deviceData.online === true) {
-      if (
-        this.deviceData.hksv === false &&
-        typeof this.snapshotEvent === 'object' &&
-        this.snapshotEvent.type !== '' &&
-        this.snapshotEvent.done === false
-      ) {
-        // Grab event snapshot from camera/doorbell stream for a non-HKSV camera
-        let request = {
-          method: 'get',
-          url:
-            this.deviceData.nexus_api_http_server_url +
-            '/event_snapshot/' +
-            this.deviceData.uuid.split('.')[1] +
-            '/' +
-            this.snapshotEvent.id +
-            '?crop_type=timeline&width=' +
-            snapshotRequestDetails.width +
-            '&cachebuster=' +
-            Math.floor(Date.now() / 1000),
-          headers: {
-            'User-Agent': USERAGENT,
-            accept: '*/*',
-            [this.deviceData.apiAccess.key]: this.deviceData.apiAccess.value + this.deviceData.apiAccess.token,
-          },
-          responseType: 'arraybuffer',
-          timeout: 3000,
-        };
-        await axios(request)
-          .then((response) => {
-            if (typeof response.status !== 'number' || response.status !== 200) {
-              throw new Error('Nest Camera API snapshot failed with error');
-            }
+      let response = await this.get({ camera_snapshot: '' });
+      if (Buffer.isBuffer(response?.camera_snapshot) === true) {
+        imageBuffer = response.camera_snapshot;
+        this.lastSnapshotImage = response.camera_snapshot;
 
-            this.snapshotEvent.done = true; // Successfully got the snapshot for the event
-            imageBuffer = response.data;
-          })
-          // eslint-disable-next-line no-unused-vars
-          .catch((error) => {
-            // Empty
-          });
-      }
-      if (imageBuffer === undefined) {
-        // Camera/doorbell image buffer is empty still, so do direct grab from Nest API
-        let request = {
-          method: 'get',
-          url: this.deviceData.nexus_api_http_server_url + '/get_image?uuid=' + this.deviceData.uuid.split('.')[1],
-          // + '&width=' + snapshotRequestDetails.width,
-          headers: {
-            'User-Agent': USERAGENT,
-            accept: '*/*',
-            [this.deviceData.apiAccess.key]: this.deviceData.apiAccess.value + this.deviceData.apiAccess.token,
-          },
-          responseType: 'arraybuffer',
-          timeout: 3000,
-        };
-        await axios(request)
-          .then((response) => {
-            if (typeof response.status !== 'number' || response.status !== 200) {
-              throw new Error('Nest Camera API snapshot failed with error');
-            }
-
-            imageBuffer = response.data;
-            this.lastSnapshotImage = response.data;
-
-            // Keep this snapshot image cached for a certain period
-            this.snapshotTimer = clearTimeout(this.snapshotTimer);
-            this.snapshotTimer = setTimeout(() => {
-              this.lastSnapshotImage = undefined;
-            }, SNAPSHOTCACHETIMEOUT);
-          })
-          // eslint-disable-next-line no-unused-vars
-          .catch((error) => {
-            // Empty
-          });
+        // Keep this snapshot image cached for a certain period
+        this.snapshotTimer = clearTimeout(this.snapshotTimer);
+        this.snapshotTimer = setTimeout(() => {
+          this.lastSnapshotImage = undefined;
+        }, SNAPSHOTCACHETIMEOUT);
       }
     }
 
@@ -1015,7 +951,7 @@ export default class NestCamera extends HomeKitDevice {
       // For a HKSV enabled camera, we will use this to trigger the starting of the HKSV recording if the camera is active
       if (event.types.includes('motion') === true) {
         if (this.motionTimer === undefined && this.deviceData.hksv === false) {
-          this?.log?.info && this.log.info('Motion detected at "%s" %s', this.deviceData.description);
+          this?.log?.info && this.log.info('Motion detected at "%s"', this.deviceData.description);
         }
 
         event.zone_ids.forEach((zoneID) => {
@@ -1071,21 +1007,12 @@ export default class NestCamera extends HomeKitDevice {
           // Cooldown for person being detected
           // Start this before we process further
           this.personTimer = setTimeout(() => {
-            this.snapshotEvent = undefined; // Clear snapshot event image after timeout
             this.personTimer = undefined; // No person timer active
           }, this.deviceData.personCooldown * 1000);
 
-          // Check which zone triggered the person alert and update associated motion sensor(s)
-          this.snapshotEvent = {
-            type: 'person',
-            time: event.playback_time,
-            id: event.id,
-            done: false,
-          };
-
           if (event.types.includes('motion') === false) {
             // If person/face events doesn't include a motion event, add in here
-            // This will handle all the motion trigging stuff
+            // This will handle all the motion triggering stuff
             event.types.push('motion');
           }
         }

@@ -1,7 +1,7 @@
 // Nest Doorbell(s)
 // Part of homebridge-nest-accfactory
 //
-// Code version 4/9/2024
+// Code version 6/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -92,22 +92,8 @@ export default class NestDoorbell extends NestCamera {
         // Cooldown for doorbell button being pressed (filters out constant pressing for time period)
         // Start this before we process further
         this.doorbellTimer = setTimeout(() => {
-          this.snapshotEvent = undefined; // Clear snapshot event image after timeout
           this.doorbellTimer = undefined; // No doorbell timer active
         }, this.deviceData.doorbellCooldown * 1000);
-
-        if (event.types.includes('motion') === false) {
-          // No motion event with the doorbell alert, add one to trigger HKSV recording if configured
-          // seems in HomeKit, EventTriggerOption.DOORBELL gets ignored
-          event.types.push('motion');
-        }
-
-        this.snapshotEvent = {
-          type: 'ring',
-          time: event.playback_time,
-          id: event.id,
-          done: false,
-        };
 
         if (deviceData.indoor_chime_enabled === false || deviceData.quiet_time_enabled === true) {
           // Indoor chime is disabled or quiet time is enabled, so we won't 'ring' the doorbell

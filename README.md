@@ -93,12 +93,12 @@ The following options are available in the config.json options object. These app
 
 | Name              | Description                                                                                   | Default   |
 |-------------------|-----------------------------------------------------------------------------------------------|-----------|
-| ffmegPath         | Path to an ffmpeg binary for us to use. Will look in current directory by default             |           |
-| eveHistory        | Provide history in EveHome application where applicable                                       | true      |
-| weather           | Virtual weather station for each Nest/Google home we discover                                 | false     |
 | elevation         | Height above sea level for the weather station                                                | 0         |
+| eveHistory        | Provide history in EveHome application where applicable                                       | true      |
+| ffmegPath         | Path to an ffmpeg binary for us to use. Will look in current directory by default             |           |
 | hksv              | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                           | false     |
 | maxStreams        | Maximum number of concurrent video streams in HomeKit for supported camera(s) and doorbell(s) | 2         |
+| weather           | Virtual weather station for each Nest/Google home we discover                                 | false     |
 
 #### devices
 
@@ -106,11 +106,12 @@ The following options are available on a per-device level in the config.json dev
 
 | Name              | Description                                                                                   | Default   |
 |-------------------|-----------------------------------------------------------------------------------------------|-----------|
-| exclude           | Exclude the device                                                                            | false     |
-| eveHistory        | Provide history in EveHome application where applicable for the specific device               | true      |
 | chimeSwitch       | Create a switch for supported doorbell(s) which allows the indoor chime to be turned on/off   | false     |
-| humiditySensor    | Create a seperate humidity sensor for supported Thermostat(s)                                 | false     |
-| elevation         | Height above sea level for the specific weather station                                       | 0         |
 | doorbellCooldown  | Time in seconds between doorbell press events                                                 | 60        | 
+| elevation         | Height above sea level for the specific weather station                                       | 0         |
+| eveHistory        | Provide history in EveHome application where applicable for the specific device               | true      |
+| exclude           | Exclude the device                                                                            | false     |
+| humiditySensor    | Create a seperate humidity sensor for supported thermostat(s)                                 | false     |
+| localAccess       | Enable local video streaming for supported supported camera(s) and doorbell(s)                | false     |    
 | motionCooldown    | Time in seconds between detected motion events                                                | 60        |
 | personCooldown    | Time in seconds between detected person events                                                | 120       | 
