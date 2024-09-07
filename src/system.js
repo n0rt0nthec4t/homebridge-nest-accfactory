@@ -1,8 +1,7 @@
-/* eslint-disable @stylistic/indent */
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 6/9/2024
+// Code version 7/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -58,8 +57,10 @@ export default class NestAccfactory {
     PROTOBUF: 'PROTOBUF', // From the protobuf API
   };
 
-  static GoogleConnection = 'google';
-  static NestConnection = 'nest';
+  static GoogleConnection = 'google'; // Google account connection
+  static NestConnection = 'nest'; // Nest account connection
+  static SDMConnection = 'sdm'; // NOT coded, but here for future reference
+  static HomeFoyerConnection = 'foyer'; // Google Home foyer connection
 
   cachedAccessories = []; // Track restored cached accessories
 
@@ -524,7 +525,7 @@ export default class NestAccfactory {
     axios(request)
       .then(async (response) => {
         if (typeof response.status !== 'number' || response.status !== 200) {
-          throw new Error('REST API HTTP get data failed with error');
+          throw new Error('REST API subscription failed with error');
         }
 
         let data = {};
@@ -598,14 +599,15 @@ export default class NestAccfactory {
               await axios(request)
                 .then((response) => {
                   if (typeof response.status !== 'number' || response.status !== 200) {
-                    throw new Error('Nest Camera API HTTP get failed with error');
+                    throw new Error('REST API had error retrieving camera/doorbell details');
                   }
 
                   value.value.properties = response.data.items[0].properties;
                 })
-                // eslint-disable-next-line no-unused-vars
                 .catch((error) => {
-                  this?.log?.debug && this.log.debug('Error retrieving camera/doorbell additional device properties');
+                  this?.log?.debug &&
+                    this?.log?.debug &&
+                    this.log.debug('REST API had error retrieving camera/doorbell details. Error was "%s"', error?.code);
                 });
 
               value.value.activity_zones =
@@ -628,7 +630,7 @@ export default class NestAccfactory {
               await axios(request)
                 .then((response) => {
                   if (typeof response.status !== 'number' || response.status !== 200) {
-                    throw new Error('Nest Camera Zones API HTTP get failed with error');
+                    throw new Error('REST API had error retrieving camera/doorbell activity zones');
                   }
 
                   let zones = [];
@@ -645,9 +647,10 @@ export default class NestAccfactory {
 
                   value.value.activity_zones = zones;
                 })
-                // eslint-disable-next-line no-unused-vars
                 .catch((error) => {
-                  this?.log?.debug && this?.log?.debug && this.log.debug('Error retrieving camera/doorbell activity zones');
+                  this?.log?.debug &&
+                    this?.log?.debug &&
+                    this.log.debug('REST API had error retrieving camera/doorbell activity zones. Error was "%s"', error?.code);
                 });
             }
 
@@ -714,7 +717,7 @@ export default class NestAccfactory {
       })
       .catch((error) => {
         if (error?.code !== 'ECONNRESET') {
-          this?.log?.error && this.log.error('REST API subscribe failed. Will retry');
+          this?.log?.error && this.log.error('REST API subscription failed with error "%s"', error?.code);
         }
       })
       .finally(() => {
@@ -806,7 +809,7 @@ export default class NestAccfactory {
     axios(request)
       .then(async (response) => {
         if (typeof response.status !== 'number' || response.status !== 200) {
-          throw new Error('protobuf API HTTP get data failed with error');
+          throw new Error('protobuf API had error perform trait observe');
         }
 
         let deviceChanges = []; // No protobuf API devices changes to start with
@@ -923,7 +926,7 @@ export default class NestAccfactory {
       })
       .catch((error) => {
         if (error?.code !== 'ECONNRESET') {
-          this?.log?.error && this.log.error('Protobuf observe error occured. Will retry');
+          this?.log?.error && this.log.error('protobuf API had error perform trait observe. Error was "%s"', error?.code);
         }
       })
       .finally(() => {
@@ -956,6 +959,9 @@ export default class NestAccfactory {
       Object.values(deviceChanges)
         .filter((object) => object.change === 'add')
         .forEach((object) => {
+          if (object.object_key === deviceData.uuid && deviceData.excluded === true) {
+            this?.log?.warn && this.log.warn('Device "%s" ignored due to it being marked as excluded', deviceData.description);
+          }
           if (object.object_key === deviceData.uuid && deviceData.excluded === false) {
             // Device isn't marked as excluded, so create the required HomeKit accessories based upon the device data
             if (deviceData.device_type === NestAccfactory.DeviceType.THERMOSTAT && typeof NestThermostat === 'function') {
@@ -1020,7 +1026,7 @@ export default class NestAccfactory {
                     await axios(request)
                       .then((response) => {
                         if (typeof response.status !== 'number' || response.status !== 200) {
-                          throw new Error('Nest Camera Zones API HTTP get failed with error');
+                          throw new Error('REST API had error retrieving camera/doorbell activity zones');
                         }
 
                         let zones = [];
@@ -1042,9 +1048,16 @@ export default class NestAccfactory {
                           activity_zones: this.#rawData[object.object_key].value.activity_zones,
                         });
                       })
-                      // eslint-disable-next-line no-unused-vars
                       .catch((error) => {
-                        this?.log?.debug && this.log.debug('Error retrieving camera/doorbell activity zones');
+                        // Log debug message if wasn't a timeout
+                        if (error?.code !== 'ECONNABORTED') {
+                          this?.log?.debug &&
+                            this.log.debug(
+                              'REST API had error retrieving camera/doorbell activity zones for uuid "%s". Error was "%s"',
+                              object.object_key,
+                              error?.code,
+                            );
+                        }
                       });
                   }
                 }, CAMERAZONEPOLLING);
@@ -1148,7 +1161,7 @@ export default class NestAccfactory {
                     await axios(request)
                       .then((response) => {
                         if (typeof response.status !== 'number' || response.status !== 200) {
-                          throw new Error('Nest Camera Alert API HTTP get failed with error');
+                          throw new Error('REST API had error retrieving camera/doorbell activity notifications');
                         }
 
                         response.data.forEach((alert) => {
@@ -1175,9 +1188,16 @@ export default class NestAccfactory {
                           }
                         });
                       })
-                      // eslint-disable-next-line no-unused-vars
                       .catch((error) => {
-                        this?.log?.debug && this.log.debug('Error retrieving camera/doorbell activity notifications');
+                        // Log debug message if wasn't a timeout
+                        if (error?.code !== 'ECONNABORTED') {
+                          this?.log?.debug &&
+                            this.log.debug(
+                              'REST API had error retrieving camera/doorbell activity notifications for uuid "%s". Error was "%s"',
+                              object.object_key,
+                              error?.code,
+                            );
+                        }
                       });
 
                     this.#rawData[object.object_key].value.alerts = alerts;
@@ -1190,7 +1210,6 @@ export default class NestAccfactory {
                 }, CAMERAALERTPOLLING);
               }
             }
-
             if (deviceData.device_type === NestAccfactory.DeviceType.WEATHER && typeof NestWeather === 'function') {
               // Nest 'Virtual' weather station - Categories.SENSOR = 10
               let tempDevice = new NestWeather(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
@@ -1311,8 +1330,8 @@ export default class NestAccfactory {
             .filter((s) => s)
             .join(':')
             .toUpperCase();
-          delete data.mac_address;
         }
+        delete data.mac_address;
 
         processed = data;
         // eslint-disable-next-line no-unused-vars
@@ -1832,6 +1851,7 @@ export default class NestAccfactory {
             .join(':')
             .toUpperCase(); // Create mac_address in format of xx:xx:xx:xx:xx:xx
         }
+        delete data.mac_address;
 
         processed = data;
         // eslint-disable-next-line no-unused-vars
@@ -1958,8 +1978,8 @@ export default class NestAccfactory {
             .filter((s) => s)
             .join(':')
             .toUpperCase();
-          delete data.mac_address;
         }
+        delete data.mac_address;
 
         processed = data;
         // eslint-disable-next-line no-unused-vars
@@ -2112,8 +2132,8 @@ export default class NestAccfactory {
             .filter((s) => s)
             .join(':')
             .toUpperCase();
-          delete data.mac_address;
         }
+        delete data.mac_address;
 
         processed = data;
         // eslint-disable-next-line no-unused-vars
@@ -2146,7 +2166,7 @@ export default class NestAccfactory {
       .forEach(([object_key, value]) => {
         let tempDevice = {};
         try {
-          if (value.source === NestAccfactory.DataSource.PROTOBUF) {
+          if (value.source === NestAccfactory.DataSource.PROTOBUF && value.value?.streaming_protocol !== undefined) {
             let RESTTypeData = {};
             //RESTTypeData.mac_address = value.value.wifi_interface.macAddress.toString('hex');
             // Use a Nest Labs prefix for first 6 digits, followed by a CRC24 based off serial number for last 6 digits.
@@ -2227,7 +2247,7 @@ export default class NestAccfactory {
             tempDevice = process_camera_doorbell_data(object_key, RESTTypeData);
           }
 
-          if (value.source === NestAccfactory.DataSource.REST) {
+          if (value.source === NestAccfactory.DataSource.REST && value.value.properties['cc2migration.overview_state'] === 'NORMAL') {
             // We'll only use the REST API data for Camera's which have NOT been migrated to Google Home
             let RESTTypeData = {};
             RESTTypeData.mac_address = value.value.mac_address;
@@ -2259,9 +2279,6 @@ export default class NestAccfactory {
             RESTTypeData.camera_type = value.value.camera_type;
 
             tempDevice = process_camera_doorbell_data(object_key, RESTTypeData);
-
-            // If the camera/doorbell is being/or has been migrated to Google Home, we'll explicitly exclude this device from REST API data
-            tempDevice.excluded = value.value.properties['cc2migration.overview_state'] !== 'NORMAL' ? true : tempDevice.excluded;
           }
           // eslint-disable-next-line no-unused-vars
         } catch (error) {
@@ -2290,12 +2307,12 @@ export default class NestAccfactory {
             typeof this.config?.devices?.[tempDevice.serial_number]?.personCooldown === 'number'
               ? this.config.devices[tempDevice.serial_number].personCooldown
               : 120;
-          tempDevice.chimeSwitch = this.config?.devices?.[tempDevice.serial_number]?.chimeSwitch === true; // Switch to controll 'indoor' chime
-          tempDevice.localAccess = this.config?.devices?.[tempDevice.serial_number]?.localAccess === true; // Local video streaming access from camera/doorbells
+          tempDevice.chimeSwitch = this.config?.devices?.[tempDevice.serial_number]?.chimeSwitch === true; // Control 'indoor' chime by switch
+          tempDevice.localAccess = this.config?.devices?.[tempDevice.serial_number]?.localAccess === true; // Local network video streaming rather than from cloud from camera/doorbells
           tempDevice.ffmpeg = this.config.options.ffmpeg; // ffmpeg details, path, libraries. No ffmpeg = undefined
-          (tempDevice.maxStreams =
-            typeof this.config.options?.maxStreams === 'number' ? this.config.options.maxStreams : this.deviceData.hksv === true ? 1 : 2),
-            (devices[tempDevice.serial_number] = tempDevice); // Store processed device
+          tempDevice.maxStreams =
+            typeof this.config.options?.maxStreams === 'number' ? this.config.options.maxStreams : this.deviceData.hksv === true ? 1 : 2;
+          devices[tempDevice.serial_number] = tempDevice; // Store processed device
         }
       });
 
@@ -2650,7 +2667,7 @@ export default class NestAccfactory {
         }),
       );
 
-      if (setDataToEncode.length !== 0) {
+      if (setDataToEncode.length !== 0 && TraitMap !== null) {
         let encodedData = TraitMap.encode(TraitMap.fromObject({ set: setDataToEncode })).finish();
         let request = {
           method: 'post',
@@ -2670,12 +2687,12 @@ export default class NestAccfactory {
         axios(request)
           .then((response) => {
             if (typeof response.status !== 'number' || response.status !== 200) {
-              throw new Error('Protobuf API trait update failed');
+              throw new Error('protobuf API had error updating device traits');
             }
           })
-          // eslint-disable-next-line no-unused-vars
           .catch((error) => {
-            this?.log?.debug && this.log.debug('Protobuf API trait update for failed for uuid "%s"', deviceUUID);
+            this?.log?.debug &&
+              this.log.debug('protobuf API had error updating device traits for uuid "%s". Error was "%s"', deviceUUID, error?.code);
           });
       }
     }
@@ -2710,9 +2727,9 @@ export default class NestAccfactory {
                 throw new Error('REST API camera update for failed with error');
               }
             })
-            // eslint-disable-next-line no-unused-vars
             .catch((error) => {
-              this?.log?.debug && this.log.debug('REST API camera update for failed with error for uuid "%s"', deviceUUID);
+              this?.log?.debug &&
+                this.log.debug('REST API camera update for failed with error for uuid "%s". Error was "%s"', deviceUUID, error?.code);
             });
         }),
       );
@@ -2763,12 +2780,12 @@ export default class NestAccfactory {
             await axios(request)
               .then(async (response) => {
                 if (typeof response.status !== 'number' || response.status !== 200) {
-                  throw new Error('REST API update for failed with error');
+                  throw new Error('REST API property update for failed with error');
                 }
               })
-              // eslint-disable-next-line no-unused-vars
               .catch((error) => {
-                this?.log?.debug && this.log.debug('REST API update for failed with error for uuid "%s"', deviceUUID);
+                this?.log?.debug &&
+                  this.log.debug('REST API property update for failed with error for uuid "%s". Error was "%s"', deviceUUID, error?.code);
               });
           }
         }),
@@ -2786,24 +2803,81 @@ export default class NestAccfactory {
       values = {};
     }
 
-    try {
-      await Promise.all(
-        Object.entries(values).map(async ([key]) => {
-          // We'll return the data under the original key value
-          // By default, the returned value will be undefined. If call is successful, the key value will have the data requested
-          values[key] = undefined;
+    await Promise.all(
+      Object.entries(values).map(async ([key]) => {
+        // We'll return the data under the original key value
+        // By default, the returned value will be undefined. If call is successful, the key value will have the data requested
+        values[key] = undefined;
 
-          if (
-            this.#rawData[deviceUUID]?.source === NestAccfactory.DataSource.REST &&
-            key === 'camera_snapshot' &&
-            deviceUUID.startsWith('quartz.') === true
-          ) {
-            // Attempt to retrieve snapshot from camera via REST API
+        if (
+          this.#rawData[deviceUUID]?.source === NestAccfactory.DataSource.REST &&
+          key === 'camera_snapshot' &&
+          deviceUUID.startsWith('quartz.') === true
+        ) {
+          // Attempt to retrieve snapshot from camera via REST API
+          let request = {
+            method: 'get',
+            url: this.#rawData[deviceUUID].value.nexus_api_http_server_url + '/get_image?uuid=' + deviceUUID.split('.')[1],
+            headers: {
+              referer: 'https://' + this.#connections[this.#rawData[deviceUUID].connection].referer,
+              'User-Agent': USERAGENT,
+              accept: '*/*',
+              [this.#connections[this.#rawData[deviceUUID].connection].cameraAPI.key]:
+                this.#connections[this.#rawData[deviceUUID].connection].cameraAPI.value +
+                this.#connections[this.#rawData[deviceUUID].connection].cameraAPI.token,
+            },
+            responseType: 'arraybuffer',
+            timeout: 3000,
+          };
+
+          // if (typeof keyValue keyValue !== '')
+          /* (url =
+              this.#rawData[deviceUUID].value.nexus_api_http_server_url +
+              '/event_snapshot/' +
+              deviceUUID.split('.')[1] +
+              '/' +
+              id +
+              '?crop_type=timeline&cachebuster=' +
+              Math.floor(Date.now() / 1000)), */
+
+          await axios(request)
+            .then((response) => {
+              if (typeof response.status !== 'number' || response.status !== 200) {
+                throw new Error('REST API camera snapshot failed with error');
+              }
+
+              values[key] = response.data;
+            })
+            .catch((error) => {
+              this?.log?.debug &&
+                this.log.debug('REST API camera snapshot failed with error for uuid "%s". Error was "%s"', deviceUUID, error?.code);
+            });
+        }
+
+        if (
+          this.#rawData[deviceUUID]?.source === NestAccfactory.DataSource.PROTOBUF &&
+          this.#connections[this.#rawData[deviceUUID].connection].protobufRoot !== null &&
+          this.#rawData[deviceUUID]?.value?.device_identity?.vendorProductId !== undefined &&
+          key === 'camera_snapshot'
+        ) {
+          // Attempt to retrieve snapshot from camera via protobuf API
+          // First, request to get snapshot url image updated
+          let commandResponse = await this.#protobufCommand(deviceUUID, [
+            {
+              traitLabel: 'upload_live_image',
+              command: {
+                type_url: 'type.nestlabs.com/nest.trait.product.camera.UploadLiveImageTrait.UploadLiveImageRequest',
+                value: {},
+              },
+            },
+          ]);
+
+          if (commandResponse?.resourceCommandResponse?.[0]?.traitOperations?.[0]?.progress === 'COMPLETE') {
+            // Snapshot url image has beeen updated, so no retrieve it
             let request = {
               method: 'get',
-              url: this.#rawData[deviceUUID].value.nexus_api_http_server_url + '/get_image?uuid=' + deviceUUID.split('.')[1],
+              url: this.#rawData[deviceUUID].value.upload_live_image.liveImageUrl,
               headers: {
-                referer: 'https://' + this.#connections[this.#rawData[deviceUUID].connection].referer,
                 'User-Agent': USERAGENT,
                 accept: '*/*',
                 [this.#connections[this.#rawData[deviceUUID].connection].cameraAPI.key]:
@@ -2813,77 +2887,22 @@ export default class NestAccfactory {
               responseType: 'arraybuffer',
               timeout: 3000,
             };
-
-            // if (typeof keyValue keyValue !== '')
-            //this.#rawData[deviceUUID].value.nexus_api_http_server_url + '/event_snapshot/' + deviceUUID.split('.')[1] + '/' + this.snapshotEvent.id + '?crop_type=timeline&cachebuster=' + Math.floor(Date.now() / 1000),
-
             await axios(request)
               .then((response) => {
                 if (typeof response.status !== 'number' || response.status !== 200) {
-                  throw new Error('REST API camera snapshot failed with error');
+                  throw new Error('protobuf API camera snapshot failed with error');
                 }
 
                 values[key] = response.data;
               })
-              // eslint-disable-next-line no-unused-vars
               .catch((error) => {
-                this?.log?.debug && this.log.debug('REST API camera snapshot failed with error for uuid "%s"', deviceUUID);
+                this?.log?.debug &&
+                  this.log.debug('protobuf API camera snapshot failed with error for uuid "%s". Error was "%s"', deviceUUID, error?.code);
               });
           }
-
-          if (
-            this.#rawData[deviceUUID]?.source === NestAccfactory.DataSource.PROTOBUF &&
-            this.#connections[this.#rawData[deviceUUID].connection].protobufRoot !== null &&
-            this.#rawData[deviceUUID]?.value?.device_identity?.vendorProductId !== undefined &&
-            key === 'camera_snapshot'
-          ) {
-            // Attempt to retrieve snapshot from camera via protobuf API
-            // First, request to get snapshot updated
-            let commandResponse = await this.#protobufCommand(deviceUUID, [
-              {
-                traitLabel: 'upload_live_image',
-                command: {
-                  type_url: 'type.nestlabs.com/nest.trait.product.camera.UploadLiveImageTrait.UploadLiveImageRequest',
-                  value: {},
-                },
-              },
-            ]);
-
-            if (commandResponse?.resourceCommandResponse?.[0]?.traitOperations?.[0]?.progress === 'COMPLETE') {
-              // Attempt to retrieve snapshot from camera via REST API
-              let request = {
-                method: 'get',
-                url: this.#rawData[deviceUUID].value.upload_live_image.liveImageUrl,
-                headers: {
-                  'User-Agent': USERAGENT,
-                  accept: '*/*',
-                  [this.#connections[this.#rawData[deviceUUID].connection].cameraAPI.key]:
-                    this.#connections[this.#rawData[deviceUUID].connection].cameraAPI.value +
-                    this.#connections[this.#rawData[deviceUUID].connection].cameraAPI.token,
-                },
-                responseType: 'arraybuffer',
-                timeout: 3000,
-              };
-              await axios(request)
-                .then((response) => {
-                  if (typeof response.status !== 'number' || response.status !== 200) {
-                    throw new Error('protobuf API camera snapshot failed with error');
-                  }
-
-                  values[key] = response.data;
-                })
-                // eslint-disable-next-line no-unused-vars
-                .catch((error) => {
-                  this?.log?.debug && this.log.debug('protobuf API camera snapshot failed with erro');
-                });
-            }
-          }
-        }),
-      );
-      // eslint-disable-next-line no-unused-vars
-    } catch (error) {
-      // Empty
-    }
+        }
+      }),
+    );
 
     // Send results back via event
     this.#eventEmitter.emit(HomeKitDevice.GET + '->' + deviceUUID, values);
@@ -2907,7 +2926,7 @@ export default class NestAccfactory {
     await axios(request)
       .then((response) => {
         if (typeof response.status !== 'number' || response.status !== 200) {
-          throw new Error('REST Weather API retrieving details failed');
+          throw new Error('REST API failed to retireve weather details');
         }
 
         if (typeof response.data[latitude + ',' + longitude].current === 'object') {
@@ -2927,9 +2946,9 @@ export default class NestAccfactory {
           weatherData.forecast = response.data[latitude + ',' + longitude].forecast.daily[0].condition;
         }
       })
-      // eslint-disable-next-line no-unused-vars
       .catch((error) => {
-        this?.log?.debug && this.log.debug('REST Weather API retrieving details failed');
+        this?.log?.debug &&
+          this.log.debug('REST API failed to retireve weather details for uuid "%s". Error was "%s"', deviceUUID, error?.code);
       });
     return weatherData;
   }
@@ -2939,11 +2958,14 @@ export default class NestAccfactory {
       typeof deviceUUID !== 'string' ||
       typeof this.#rawData?.[deviceUUID] !== 'object' ||
       this.#rawData[deviceUUID]?.source !== NestAccfactory.DataSource.PROTOBUF ||
-      typeof commands !== 'object' ||
+      Array.isArray(commands === false) ||
       typeof this.#connections[this.#rawData[deviceUUID]?.connection] !== 'object'
     ) {
       return;
     }
+
+    let commandResponse = undefined;
+    let encodedData = undefined;
 
     // Build the protobuf command object for encoding
     let protobufElement = {
@@ -2957,47 +2979,52 @@ export default class NestAccfactory {
     // End code each of the commands
     protobufElement.resourceCommands.forEach((command) => {
       let trait = this.#connections[this.#rawData[deviceUUID].connection].protobufRoot.lookup(command.command.type_url.split('/')[1]);
-      command.command.value = trait.encode(trait.fromObject(command.command.value)).finish();
+      if (trait !== null) {
+        command.command.value = trait.encode(trait.fromObject(command.command.value)).finish();
+      }
     });
 
     let TraitMap = this.#connections[this.#rawData[deviceUUID].connection].protobufRoot.lookup(
       'nestlabs.gateway.v1.ResourceCommandRequest',
     );
-    let encodedData = TraitMap.encode(TraitMap.fromObject(protobufElement)).finish();
+    if (TraitMap !== null) {
+      encodedData = TraitMap.encode(TraitMap.fromObject(protobufElement)).finish();
+    }
 
-    let request = {
-      method: 'post',
-      url:
-        'https://' +
-        this.#connections[this.#rawData[deviceUUID].connection].protobufAPIHost +
-        '/nestlabs.gateway.v1.ResourceApi/SendCommand',
-      headers: {
-        'User-Agent': USERAGENT,
-        Authorization: 'Basic ' + this.#connections[this.#rawData[deviceUUID].connection].token,
-        'Content-Type': 'application/x-protobuf',
-        'X-Accept-Content-Transfer-Encoding': 'binary',
-        'X-Accept-Response-Streaming': 'true',
-      },
-      responseType: 'arraybuffer',
-      data: encodedData,
-    };
+    if (encodedData !== undefined) {
+      let request = {
+        method: 'post',
+        url:
+          'https://' +
+          this.#connections[this.#rawData[deviceUUID].connection].protobufAPIHost +
+          '/nestlabs.gateway.v1.ResourceApi/SendCommand',
+        headers: {
+          'User-Agent': USERAGENT,
+          Authorization: 'Basic ' + this.#connections[this.#rawData[deviceUUID].connection].token,
+          'Content-Type': 'application/x-protobuf',
+          'X-Accept-Content-Transfer-Encoding': 'binary',
+          'X-Accept-Response-Streaming': 'true',
+        },
+        responseType: 'arraybuffer',
+        data: encodedData,
+      };
 
-    let commandResponse = undefined;
-    await axios(request)
-      .then((response) => {
-        if (typeof response.status !== 'number' || response.status !== 200) {
-          throw new Error('protobuf command send failed with error');
-        }
+      await axios(request)
+        .then((response) => {
+          if (typeof response.status !== 'number' || response.status !== 200) {
+            throw new Error('protobuf command send failed with error');
+          }
 
-        commandResponse = this.#connections[this.#rawData[deviceUUID].connection].protobufRoot
-          .lookup('nestlabs.gateway.v1.ResourceCommandResponseFromAPI')
-          .decode(response.data)
-          .toJSON();
-      })
-      // eslint-disable-next-line no-unused-vars
-      .catch((error) => {
-        this?.log?.debug && this.log.debug('protobuf command send failed with error');
-      });
+          commandResponse = this.#connections[this.#rawData[deviceUUID].connection].protobufRoot
+            .lookup('nestlabs.gateway.v1.ResourceCommandResponseFromAPI')
+            .decode(response.data)
+            .toJSON();
+        })
+        .catch((error) => {
+          this?.log?.debug &&
+            this.log.debug('protobuf command send failed with error for uuid "%s". Error was "%s"', deviceUUID, error?.code);
+        });
+    }
 
     return commandResponse;
   }

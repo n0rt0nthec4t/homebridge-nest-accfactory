@@ -13,7 +13,7 @@
 // streamer.talkingAudio(talkingData)
 // streamer.update(deviceData) <- call super after
 //
-// Code version 4/9/2024
+// Code version 6/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -305,6 +305,11 @@ export default class Streamer {
     this.online = deviceData?.online === true;
     this.videoEnabled = deviceData?.streaming_enabled === true;
     this.audioEnabled = deviceData?.audio_enabled === true;
+
+    if (this.host !== deviceData.streaming_host) {
+      this.host = deviceData.streaming_host;
+      this?.log?.debug && this.log.debug('New streaming host has requested a new host "%s" for connection', this.host);
+    }
 
     if (this.online !== deviceData.online || this.videoEnabled !== deviceData.streaming_enabled) {
       // Online status or streaming status has changed has changed

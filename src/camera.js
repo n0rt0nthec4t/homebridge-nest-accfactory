@@ -1,7 +1,7 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 5/9/2024
+// Code version 7/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -246,13 +246,10 @@ export default class NestCamera extends HomeKitDevice {
       ' -b:v ' +
       this.#recordingConfig.videoCodec.parameters.bitRate +
       'k' +
-      ' -pix_fmt yuv420p' +
-      ' -enc_time_base -1' +
-      ' -fps_mode vfr' +
-      //' -fps_mode passthrough' +
+      ' -fps_mode passthrough' +
       ' -movflags frag_keyframe+empty_moov+default_base_moof' +
-      //' -reset_timestamps 1' +
-      //' -video_track_timescale 90000' +
+      ' -reset_timestamps 1' +
+      ' -video_track_timescale 90000' +
       ' -bufsize ' +
       2 * this.#recordingConfig.videoCodec.parameters.bitRate +
       'k';
@@ -950,7 +947,7 @@ export default class NestCamera extends HomeKitDevice {
       // Handle motion event
       // For a HKSV enabled camera, we will use this to trigger the starting of the HKSV recording if the camera is active
       if (event.types.includes('motion') === true) {
-        if (this.motionTimer === undefined && this.deviceData.hksv === false) {
+        if (this.motionTimer === undefined && (this.deviceData.hksv === false || this.streamer === undefined)) {
           this?.log?.info && this.log.info('Motion detected at "%s"', this.deviceData.description);
         }
 
@@ -999,7 +996,7 @@ export default class NestCamera extends HomeKitDevice {
       if (event.types.includes('person') === true || event.types.includes('face') === true) {
         if (this.personTimer === undefined) {
           // We don't have a person cooldown timer running, so we can process the 'person'/'face' event
-          if (this?.log?.info && this.deviceData.hksv === false) {
+          if (this?.log?.info && (this.deviceData.hksv === false || this.streamer === undefined)) {
             // We'll only log a person detected event if HKSV is disabled
             this.log.info('Person detected at "%s"', this.deviceData.description);
           }

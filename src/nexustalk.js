@@ -3,7 +3,7 @@
 //
 // Handles connection and data from Nest 'nexus' systems
 //
-// Code version 4/9/2024
+// Code version 6/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -227,11 +227,6 @@ export default class NexusTalk extends Streamer {
       if (this.socket !== null) {
         this.#Authenticate(true); // Update authorisation only if connected
       }
-    }
-
-    if (this.host !== deviceData.streaming_host) {
-      this.host = deviceData.streaming_host;
-      this?.log?.debug && this.log.debug('NexusTalk has requested a new host "%s" for connection', this.host);
     }
 
     // Let our parent handle the remaining updates
