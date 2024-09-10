@@ -1,7 +1,7 @@
 // Nest Protect
 // Part of homebridge-nest-accfactory
 //
-// Code version 30/8/2024
+// Code version 9/8/2024
 // Mark Hulskamp
 'use strict';
 
@@ -131,11 +131,11 @@ export default class NestProtect extends HomeKitDevice {
     );
 
     if (deviceData.smoke_status !== 0 && this.deviceData.smoke_status === 0) {
-      this?.log?.warn && this.log.warn('Smoke detected in "%s"', this.deviceData.description);
+      this?.log?.warn && this.log.warn('Smoke detected in "%s"', deviceData.description);
     }
 
     if (deviceData.smoke_status === 0 && this.deviceData.smoke_status !== 0) {
-      this?.log?.info && this.log.info('Smoke is nolonger detected in "%s"', this.deviceData.description);
+      this?.log?.info && this.log.info('Smoke is nolonger detected in "%s"', deviceData.description);
     }
 
     // Update carbon monoxide details
@@ -161,11 +161,11 @@ export default class NestProtect extends HomeKitDevice {
     );
 
     if (deviceData.co_status !== 0 && this.deviceData.co_status === 0) {
-      this?.log?.warn && this.log.warn('Abnormal carbon monoxide levels detected in "%s"', this.deviceData.description);
+      this?.log?.warn && this.log.warn('Abnormal carbon monoxide levels detected in "%s"', deviceData.description);
     }
 
     if (deviceData.co_status === 0 && this.deviceData.co_status !== 0) {
-      this?.log?.info && this.log.info('Carbon monoxide levels have returned to normal in "%s"', this.deviceData.description);
+      this?.log?.info && this.log.info('Carbon monoxide levels have returned to normal in "%s"', deviceData.description);
     }
 
     // Update motion service if present

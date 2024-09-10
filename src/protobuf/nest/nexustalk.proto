@@ -1,0 +1,181 @@
+syntax = "proto3";
+
+package nest.nexustalk.v1;
+
+enum Profile {
+    AVPROFILE_MOBILE_1 = 1;
+    AVPROFILE_HD_MAIN_1 = 2;
+    AUDIO_AAC = 3;
+    AUDIO_SPEEX = 4;
+    AUDIO_OPUS = 5;
+    VIDEO_H264_50KBIT_L12 = 6;
+    VIDEO_H264_530KBIT_L31 = 7;
+    VIDEO_H264_100KBIT_L30 = 8;
+    VIDEO_H264_2MBIT_L40 = 9;
+    VIDEO_H264_50KBIT_L12_THUMBNAIL = 10;
+    META = 11;
+    DIRECTORS_CUT = 12;
+    AUDIO_OPUS_LIVE = 13;
+    VIDEO_H264_L31 = 14;
+    VIDEO_H264_L40 = 15;
+}
+
+message Hello {
+    enum ProtocolVersion {
+        VERSION_1 = 1;
+        VERSION_2 = 2;
+        VERSION_3 = 3;
+    }
+
+    enum ClientType {
+        ANDROID = 1;
+        IOS = 2;
+        WEB = 3;
+    }
+
+    ProtocolVersion protocolVersion = 1;
+    string uuid = 2;
+    bool requireConnectedCamera = 3;
+    string sessionToken = 4;
+    bool isCamera = 5;
+    string deviceId = 6;
+    string userAgent = 7;
+    string serviceAccessKey = 8;
+    ClientType clientType = 9;
+    string wwnAccessToken = 10;
+    string encryptedDeviceId = 11;
+    bytes authoriseRequest = 12;
+    string clientIpAddress = 13;
+    bool requireOwnerServer = 15;
+}
+
+message AuthoriseRequest {
+    string sessionToken = 1;
+    string wwnAccessToken = 2;
+    string serviceAccessKey = 3;
+    string oliveToken = 4;
+}
+
+message Redirect {
+    string newHost = 1;
+    bool isTranscode = 2;
+}
+
+message Ok {
+    uint32 udpPort = 1;
+}
+
+message PlaybackPacket {
+    message DirectorsCutRegions {
+        uint32 id = 1;
+        uint32 left = 2;
+        uint32 right = 3;
+        uint32 top = 4;
+        uint32 bottom = 5;
+    }
+    uint32 sessionId = 1;
+    uint32 channelId = 2;
+    sint32 timestampDelta = 3;
+    bytes payload = 4;
+    uint64 latencyRtpSequence = 5;
+    uint64 latencyRtpSsrc = 6;
+    repeated DirectorsCutRegions directorsCutRegions = 7;
+}
+
+message PlaybackEnd {
+    enum Reason {
+        USER_ENDED_SESSION = 0;
+        ERROR_TIME_NOT_AVAILABLE = 1;
+        ERROR_PROFILE_NOT_AVAILABLE = 2;
+        ERROR_TRANSCODE_NOT_AVAILABLE = 3;
+        ERROR_LEAF_NODE_CANNOT_REACH_CAMERA = 4;
+        PLAY_END_SESSION_COMPLETE = 128;
+    }
+
+    uint32 sessionId = 1;
+    Reason reason = 2;
+}
+
+message PlaybackBegin {
+    enum CodecType {
+        SPEEX = 0;
+        PCM_S16_LE = 1;
+        H264 = 2;
+        AAC = 3;
+        OPUS = 4;
+        META = 5;
+        DIRECTORS_CUT = 6;
+    }
+
+    message Channels {
+        uint32 channelId = 1;
+        CodecType codecType = 2;
+        uint32 sampleRate = 3;
+        bytes privateData = 4;
+        double startTime = 5;
+        double rtpStartTime = 6;
+        uint32 udpSsrc = 7;
+        Profile profile = 8;
+    }
+    uint32 sessionId = 1;
+    repeated Channels channels = 2;
+    bytes srtpMasterKey = 3;
+    bytes srtpMasterSalt = 4;
+    uint32 fecKVal = 5;
+    uint32 fecNVal = 7;
+}
+
+message Error {
+    enum ErrorCode {
+        ERROR_CAMERA_NOT_CONNECTED = 1;
+        ERROR_ILLEGAL_PACKET = 2;
+        ERROR_AUTHORIZATION_FAILED = 3;
+        ERROR_NO_TRANSCODER_AVAILABLE = 4;
+        ERROR_TRANSCODE_PROXY_ERROR = 5;
+        ERROR_INTERNAL = 6;
+    }
+
+    ErrorCode code = 1;
+    string message = 2;
+}
+
+message TalkbackBegin {
+    string userId = 1;
+    uint32 sessionId = 2;
+    uint32 quickActionId = 3;
+    string deviceId = 4;
+}
+
+message TalkbackEnd {
+    string userId = 1;
+    uint32 sessionId = 2;
+    uint32 quickActionId = 3;
+    string deviceId = 4;
+}
+
+message StartPlayback {
+    enum ProfileNotFoundAction {
+        REDIRECT = 0;
+        USE_NEXT_AVAILABLE = 1;
+    }
+
+    uint32 sessionId = 1;
+    Profile profile = 2;
+    double startTime = 3;
+    bytes externalIp = 4;
+    uint32 externalPort = 5;
+    repeated Profile otherProfiles = 6;
+    ProfileNotFoundAction profileNotFoundAction = 7;
+}
+
+message StopPlayback {
+    uint32 sessionId = 1;
+}
+
+message AudioPayload {
+    bytes payload = 1;
+    uint32 sessionId = 2;
+    CodecType codec = 3;
+    uint32 sampleRate = 4;
+    uint32 latencyMeasureTag = 5;
+}

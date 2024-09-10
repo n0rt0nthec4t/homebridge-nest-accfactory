@@ -8,6 +8,8 @@
 // -- Eve Degree/Weather2 history
 // -- Eve Water guard history
 //
+// Credit to https://github.com/simont77/fakegato-history for the work on starting the EveHome comms protocol decoding
+//
 // Version 29/8/2024
 // Mark Hulskamp
 
@@ -2073,15 +2075,6 @@ export default class HomeKitHistory {
       numberToEveHexString(1, 8),
     ); // first entry
 
-    if (this?.log?.debug) {
-      this.log.debug(
-        '#EveHistoryStatus: history for "%s:%s" (%s) - Entries %s',
-        this.EveHome.type,
-        this.EveHome.sub,
-        this.EveHome.evetype,
-        this.EveHome.count,
-      );
-    }
     return encodeEveData(value);
   }
 
@@ -2299,26 +2292,11 @@ export default class HomeKitHistory {
       }
       if (this.EveHome.entry > this.EveHome.count) {
         // No more history data to send back
-        this?.log?.debug &&
-          this.log.debug(
-            '#EveHistoryEntries: sent "%s" entries to EveHome ("%s") for "%s:%s"',
-            this.EveHome.send,
-            this.EveHome.evetype,
-            this.EveHome.type,
-            this.EveHome.sub,
-          );
         this.EveHome.send = 0; // no more to send
         dataStream += '00';
       }
     } else {
       // We're not transferring any data back
-      this?.log?.debug &&
-        this.log.debug(
-          '#EveHistoryEntries: no more entries to send to EveHome ("%s") for "%s:%s',
-          this.EveHome.evetype,
-          this.EveHome.type,
-          this.EveHome.sub,
-        );
       this.EveHome.send = 0; // no more to send
       dataStream = '00';
     }

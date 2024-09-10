@@ -14,7 +14,7 @@
 // The accessory supports authentication to Nest/Google using either a Nest account OR Google (migrated Nest account) account.
 // "preliminary" support for using FieldTest account types also.
 //
-// Supports both Nest REST and protobuf APIs for communication to Nest systems
+// Supports both Nest REST and Protobuf APIs for communication
 //
 // Code version 21/8/2024
 // Mark Hulskamp

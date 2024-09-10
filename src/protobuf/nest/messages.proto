@@ -1,6 +1,28 @@
 syntax = "proto3";
 
+import "../nestlabs/gateway/v2.proto";
+
 package nest.messages;
+
+message IncomingMessage {
+    repeated nestlabs.gateway.v2.ResourceMeta resourceMetas = 1;
+    repeated nestlabs.gateway.v2.TraitState get = 3;
+}
+
+message StreamBody {
+    repeated IncomingMessage message = 1;
+    google.rpc.Status status = 2;
+    repeated bytes noop = 15;
+}
+
+message TraitSetRequest {
+    message TraitObject {
+        nestlabs.gateway.v2.TraitId traitId = 1;
+        google.protobuf.Any property = 2;
+    }
+
+    repeated TraitObject set = 1;
+}
 
 message SchemaVersion {
     uint32 currentVersion = 1;

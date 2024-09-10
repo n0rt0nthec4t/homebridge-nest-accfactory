@@ -13,7 +13,7 @@
 // streamer.talkingAudio(talkingData)
 // streamer.update(deviceData) <- call super after
 //
-// Code version 6/9/2024
+// Code version 11/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -35,17 +35,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a define
 
 // Streamer object
 export default class Streamer {
-  cameraOfflineFrame = undefined;
-  cameraVideoOffFrame = undefined;
-  videoEnabled = undefined;
-  audioEnabled = undefined;
-  online = undefined;
+  videoEnabled = undefined; // Video stream on camera enabled or not
+  audioEnabled = undefined; // Audio from camera enabled or not
+  online = undefined; // Camera online or not
   host = ''; // Host to connect to or connected too
-  socket = null; // TCP socket object
+  uuid = undefined; // UUID of the device connecting
+  connected = false; // Streamer connected to endpoint
 
   // Internal data only for this class
   #outputTimer = undefined; // Timer for non-blocking loop to stream output data
   #outputs = {}; // Output streams ie: buffer, live, record
+  #cameraOfflineFrame = undefined; // Camera offline video frame
+  #cameraVideoOffFrame = undefined; // Video turned off on camera video frame
 
   constructor(deviceData, options) {
     // Setup logger object if passed as option
@@ -63,6 +64,7 @@ export default class Streamer {
     this.online = deviceData?.online === true;
     this.videoEnabled = deviceData?.streaming_enabled === true;
     this.audioEnabled = deviceData?.audio_enabled === true;
+    this.uuid = deviceData?.uuid;
 
     // Setup location for *.h264 frame files. This can be overriden by a passed in option
     let resourcePath = path.resolve(__dirname + '/res'); // Default location for *.h264 files
@@ -76,19 +78,19 @@ export default class Streamer {
 
     // load buffer for camera offline image in .h264 frame
     if (fs.existsSync(path.resolve(resourcePath + '/' + CAMERAOFFLINEH264FILE)) === true) {
-      this.cameraOfflineFrame = fs.readFileSync(path.resolve(resourcePath + '/' + CAMERAOFFLINEH264FILE));
+      this.#cameraOfflineFrame = fs.readFileSync(path.resolve(resourcePath + '/' + CAMERAOFFLINEH264FILE));
       // remove any H264 NALU from beginning of any video data. We do this as they are added later when output by our ffmpeg router
-      if (this.cameraOfflineFrame.indexOf(H264NALStartcode) === 0) {
-        this.cameraOfflineFrame = this.cameraOfflineFrame.subarray(H264NALStartcode.length);
+      if (this.#cameraOfflineFrame.indexOf(H264NALStartcode) === 0) {
+        this.#cameraOfflineFrame = this.#cameraOfflineFrame.subarray(H264NALStartcode.length);
       }
     }
 
     // load buffer for camera stream off image in .h264 frame
     if (fs.existsSync(path.resolve(resourcePath + '/' + CAMERAOFFH264FILE)) === true) {
-      this.cameraVideoOffFrame = fs.readFileSync(path.resolve(resourcePath + '/' + CAMERAOFFH264FILE));
+      this.#cameraVideoOffFrame = fs.readFileSync(path.resolve(resourcePath + '/' + CAMERAOFFH264FILE));
       // remove any H264 NALU from beginning of any video data. We do this as they are added later when output by our ffmpeg router
-      if (this.cameraVideoOffFrame.indexOf(H264NALStartcode) === 0) {
-        this.cameraVideoOffFrame = this.cameraVideoOffFrame.subarray(H264NALStartcode.length);
+      if (this.#cameraVideoOffFrame.indexOf(H264NALStartcode) === 0) {
+        this.#cameraVideoOffFrame = this.#cameraVideoOffFrame.subarray(H264NALStartcode.length);
       }
     }
 
@@ -103,15 +105,15 @@ export default class Streamer {
       Object.values(this.#outputs).forEach((output) => {
         // Monitor for camera going offline and/or video enabled/disabled
         // We'll insert the appropriate video frame into the stream
-        if (this.online === false && this.cameraOfflineFrame !== undefined && outputVideoFrame === true) {
+        if (this.online === false && this.#cameraOfflineFrame !== undefined && outputVideoFrame === true) {
           // Camera is offline so feed in our custom h264 frame and AAC silence
-          output.buffer.push({ type: 'video', time: dateNow, data: this.cameraOfflineFrame });
+          output.buffer.push({ type: 'video', time: dateNow, data: this.#cameraOfflineFrame });
           output.buffer.push({ type: 'audio', time: dateNow, data: AACAudioSilence });
           lastTimeVideo = dateNow;
         }
-        if (this.online === true && this.videoEnabled === false && this.cameraVideoOffFrame !== undefined && outputVideoFrame === true) {
+        if (this.online === true && this.videoEnabled === false && this.#cameraVideoOffFrame !== undefined && outputVideoFrame === true) {
           // Camera video is turned off so feed in our custom h264 frame and AAC silence
-          output.buffer.push({ type: 'video', time: dateNow, data: this.cameraVideoOffFrame });
+          output.buffer.push({ type: 'video', time: dateNow, data: this.#cameraVideoOffFrame });
           output.buffer.push({ type: 'audio', time: dateNow, data: AACAudioSilence });
           lastTimeVideo = dateNow;
         }
@@ -150,10 +152,10 @@ export default class Streamer {
   startBuffering() {
     if (this.#outputs?.buffer === undefined) {
       // No active buffer session, start connection to streamer
-      if (this.socket === null && typeof this.host === 'string' && this.host !== '') {
+      if (this.connected === false && typeof this.host === 'string' && this.host !== '') {
         if (typeof this.connect === 'function') {
-          this.connect(this.host);
           this?.log?.debug && this.log.debug('Started buffering from "%s"', this.host);
+          this.connect(this.host);
         }
       }
 
@@ -199,7 +201,7 @@ export default class Streamer {
       });
     }
 
-    if (this.socket === null && typeof this.host === 'string' && this.host !== '') {
+    if (this.connected === false && typeof this.host === 'string' && this.host !== '') {
       // We do not have an active socket connection, so startup connection to host
       if (typeof this.connect === 'function') {
         this.connect(this.host);
@@ -218,9 +220,9 @@ export default class Streamer {
     // finally, we've started live stream
     this?.log?.debug &&
       this.log.debug(
-        'Started live stream from "%s" %s and sesssion id of "%s"',
+        'Started live stream from "%s" %s "%s"',
         this.host,
-        talkbackStream !== null && typeof talkbackStream === 'object' ? 'with two-way audio' : '',
+        talkbackStream !== null && typeof talkbackStream === 'object' ? 'with two-way audio and sesssion id of' : 'and sesssion id of',
         sessionID,
       );
   }
@@ -239,7 +241,7 @@ export default class Streamer {
       });
     }
 
-    if (this.socket === null && typeof this.host === 'string' && this.host !== '') {
+    if (this.connected === false && typeof this.host === 'string' && this.host !== '') {
       // We do not have an active socket connection, so startup connection to host
       if (typeof this.connect === 'function') {
         this.connect(this.host);
@@ -302,20 +304,21 @@ export default class Streamer {
       return;
     }
 
-    this.online = deviceData?.online === true;
-    this.videoEnabled = deviceData?.streaming_enabled === true;
-    this.audioEnabled = deviceData?.audio_enabled === true;
-
     if (this.host !== deviceData.streaming_host) {
       this.host = deviceData.streaming_host;
-      this?.log?.debug && this.log.debug('New streaming host has requested a new host "%s" for connection', this.host);
+      this?.log?.debug && this.log.debug('New streaming host has been requested for connection. Host requested is "%s"', this.host);
     }
 
-    if (this.online !== deviceData.online || this.videoEnabled !== deviceData.streaming_enabled) {
+    if (
+      this.online !== deviceData.online ||
+      this.videoEnabled !== deviceData.streaming_enabled ||
+      this.audioEnabled !== deviceData?.audio_enabled
+    ) {
       // Online status or streaming status has changed has changed
       this.online = deviceData?.online === true;
       this.videoEnabled = deviceData?.streaming_enabled === true;
-      if ((this.online === false || this.videoEnabled === false) && typeof this.close === 'function') {
+      this.audioEnabled = deviceData?.audio_enabled === true;
+      if ((this.online === false || this.videoEnabled === false || this.audioEnabled === false) && typeof this.close === 'function') {
         this.close(true); // as offline or streaming not enabled, close socket
       }
       if (this.online === true && this.videoEnabled === true && typeof this.connect === 'function') {

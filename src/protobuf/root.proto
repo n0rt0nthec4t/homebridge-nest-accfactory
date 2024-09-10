@@ -1,9 +1,7 @@
-// Protobuf schema for Nest Observe and Nest BatchUpdateState API calls
-
 syntax = "proto3";
 
-import "google/trait/product/camera.proto";
 import "nest/messages.proto";
+import "google/trait/product/camera.proto";
 import "nest/trait/audio.proto";
 import "nest/trait/detector.proto";
 import "nest/trait/hvac.proto";
@@ -39,26 +37,3 @@ import "weave/trait/security.proto";
 import "weave/trait/time.proto";
 import "nestlabs/gateway/v2.proto";
 import "nestlabs/history/v1.proto";
-import "googlehome/foyer.proto";
-
-package nest.rpc;
-
-message NestTraitSetRequest {
-    message TraitObject {
-        nestlabs.gateway.v2.TraitId traitId = 1;
-        google.protobuf.Any property = 2;
-    }
-
-    repeated TraitObject set = 1;
-}
-
-message NestIncomingMessage {
-    repeated nestlabs.gateway.v2.ResourceMeta resourceMetas = 1;
-    repeated nestlabs.gateway.v2.TraitState get = 3;
-}
-
-message StreamBody {
-    repeated NestIncomingMessage message = 1;
-    google.rpc.Status status = 2;
-    repeated bytes noop = 15;
-}

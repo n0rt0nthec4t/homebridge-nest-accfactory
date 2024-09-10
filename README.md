@@ -15,13 +15,13 @@ Formally known as [Nest_accfactory](https://github.com/n0rt0nthec4t/Nest_accfact
 
 ## Supported Devices
 
-The following Nest devices are supported
+The following Nest devices are known to be supported
 
-* Nest Thermostats (Gen 1, Gen 2, Gen 3, E, 2020, Gen 4)
-* Nest Protects (Gen 1, Gen 2)
-* Nest Temp Sensors (Gen 1)
+* Nest Thermostats (1st gen, 2nd gen, 3rd gen, E, 2020 mirror edition, 4th gen)
+* Nest Protects (1st and 2nd gen)
+* Nest Temp Sensors (1st gen)
 * Nest Cameras (Cam Indoor, IQ Indoor, Outdoor, IQ Outdoor)
-* Nest Doorbells (Gen 1)
+* Nest Doorbells (wired 1st gen)
 
 The accessory supports connection to Nest using a Nest account OR a Google (migrated Nest account) account.
 
@@ -114,4 +114,8 @@ The following options are available on a per-device level in the config.json dev
 | humiditySensor    | Create a seperate humidity sensor for supported thermostat(s)                                 | false     |
 | localAccess       | Enable local video streaming for supported supported camera(s) and doorbell(s)                | false     |    
 | motionCooldown    | Time in seconds between detected motion events                                                | 60        |
-| personCooldown    | Time in seconds between detected person events                                                | 120       | 
+| personCooldown    | Time in seconds between detected person events                                                | 120       |
+
+## Caveats
+
+homebridge-nest-accfactory and Nest_accfactory are both hobby projects of mine, provided as-is, with no warranty whatsoever. I've been running it successfully at my home, but your mileage might vary. If you do find an issue, please reachout and see what we can do

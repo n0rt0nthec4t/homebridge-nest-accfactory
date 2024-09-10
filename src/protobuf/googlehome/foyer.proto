@@ -15,7 +15,6 @@ message StructuresService {
 
     string requestId = 3; // 64 hex characters - random is OK
     int32 unknown1 = 4; // always 1?
-    int32 unknown2 = 5; // always 1?
     repeated DefaultHiddenDeviceType deviceTypesToUnhideArray = 10;
   }
 
@@ -28,15 +27,20 @@ message StructuresService {
     string uuid = 1;
     string name = 2;
     Address address = 3;
-    EmailAddress emailAddress = 4;
+    repeated EmailAddress linked_users = 4;
     repeated Room rooms = 6;
     repeated Device devices = 7;
   }
 
   message Address {
     string line1 = 1;
-    string line2 = 2;
+    message Coordinates {
+      double latitude = 1;
+      double longitude = 2;
+    }
+    Coordinates coordinates = 2;
     uint64 timeCreated = 5;
+    string timezone = 6;
   }
 
   message EmailAddress {
@@ -47,7 +51,10 @@ message StructuresService {
   message Room {
     string uuid = 1;
     string name = 3;
-    google.protobuf.StringValue type = 4;
+    message Category {
+      string name = 1;
+    }
+    Category category = 4;
     repeated Device devices = 5;
   }
 

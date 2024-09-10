@@ -37,7 +37,7 @@
 // HomeKitDevice.updateServices(deviceData)
 // HomeKitDevice.messageServices(type, message)
 //
-// Code version 6/9/2024
+// Code version 12/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -239,7 +239,7 @@ export default class HomeKitDevice {
     }
   }
 
-  async remove() {
+  remove() {
     this?.log?.warn && this.log.warn('Device "%s" has been removed', this.deviceData.description);
 
     if (this.#eventEmitter === undefined && typeof this.deviceData?.uuid === 'string' && this.deviceData.uuid !== '') {
@@ -249,7 +249,7 @@ export default class HomeKitDevice {
 
     if (typeof this.removeServices === 'function') {
       try {
-        await this.removeServices();
+        this.removeServices();
       } catch (error) {
         this?.log?.error && this.log.error('removeServices call for device "%s" failed. Error was', this.deviceData.description, error);
       }
@@ -278,7 +278,7 @@ export default class HomeKitDevice {
     // delete this;
   }
 
-  async update(deviceData, forceUpdate) {
+  update(deviceData, forceUpdate) {
     if (typeof deviceData !== 'object' || typeof forceUpdate !== 'boolean') {
       return;
     }
@@ -357,7 +357,7 @@ export default class HomeKitDevice {
 
       if (typeof this.updateServices === 'function') {
         try {
-          await this.updateServices(deviceData); // Pass updated data on for accessory to process as it needs
+          this.updateServices(deviceData); // Pass updated data on for accessory to process as it needs
         } catch (error) {
           this?.log?.error && this.log.error('updateServices call for device "%s" failed. Error was', this.deviceData.description, error);
         }
@@ -402,7 +402,7 @@ export default class HomeKitDevice {
     return results?.[0];
   }
 
-  async #message(type, message) {
+  #message(type, message) {
     switch (type) {
       case HomeKitDevice.ADD: {
         // Got message for device add
@@ -428,7 +428,7 @@ export default class HomeKitDevice {
         // This is not a message we know about, so pass onto accessory for it to perform any processing
         if (typeof this.messageServices === 'function') {
           try {
-            await this.messageServices(type, message);
+            this.messageServices(type, message);
           } catch (error) {
             this?.log?.error &&
               this.log.error('messageServices call for device "%s" failed. Error was', this.deviceData.description, error);

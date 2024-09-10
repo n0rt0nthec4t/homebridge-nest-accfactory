@@ -1,7 +1,7 @@
 // Nest Doorbell(s)
 // Part of homebridge-nest-accfactory
 //
-// Code version 6/9/2024
+// Code version 8/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -97,11 +97,11 @@ export default class NestDoorbell extends NestCamera {
 
         if (deviceData.indoor_chime_enabled === false || deviceData.quiet_time_enabled === true) {
           // Indoor chime is disabled or quiet time is enabled, so we won't 'ring' the doorbell
-          this?.log?.warn && this.log.warn('Doorbell rung at "%s" but indoor chime is silenced', this.deviceData.description);
+          this?.log?.warn && this.log.warn('Doorbell rung at "%s" but indoor chime is silenced', deviceData.description);
         }
         if (deviceData.indoor_chime_enabled === true && deviceData.quiet_time_enabled === false) {
           // Indoor chime is enabled and quiet time isn't enabled, so 'ring' the doorbell
-          this?.log?.info && this.log.info('Doorbell rung at "%s"', this.deviceData.description);
+          this?.log?.info && this.log.info('Doorbell rung at "%s"', deviceData.description);
           this.controller.ringDoorbell();
         }
 

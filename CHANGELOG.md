@@ -6,7 +6,13 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 Currently all releases are considered 'alpha' status, where things may or may not be working. Use at your own risk :-)
 
-## v0.0.4 (alpha)
+## v0.0.5 (alpha)
+
+- General code and bug fixes
+- External dependancy reductions
+    - dropped pbf and axios libraries
+
+## v0.0.4 (2024-09-07)
 
 - Camera/Doorbell support for snapshots and live video re-introduced
 - HomeKit Secure Video recording support re-introduced

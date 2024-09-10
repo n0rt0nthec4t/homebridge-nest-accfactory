@@ -1,7 +1,7 @@
 // Nest Thermostat
 // Part of homebridge-nest-accfactory
 //
-// Code version 3/9/2024
+// Code version 12/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -658,7 +658,7 @@ export default class NestThermostat extends HomeKitDevice {
       this?.log?.info &&
         this.log.info(
           'Fan setup on thermostat "%s" has changed. Fan was',
-          this.deviceData.description,
+          deviceData.description,
           this.fanService === undefined ? 'removed' : 'added',
         );
     }
@@ -693,7 +693,7 @@ export default class NestThermostat extends HomeKitDevice {
       this?.log?.info &&
         this.log.info(
           'Dehumidifier setup on thermostat "%s" has changed. Dehumidifier was',
-          this.deviceData.description,
+          deviceData.description,
           this.dehumidifierService === undefined ? 'removed' : 'added',
         );
     }
@@ -732,7 +732,7 @@ export default class NestThermostat extends HomeKitDevice {
         });
       }
 
-      this?.log?.info && this.log.info('Heating/cooling setup on thermostat on "%s" has changed', this.deviceData.description);
+      this?.log?.info && this.log.info('Heating/cooling setup on thermostat on "%s" has changed', deviceData.description);
     }
 
     // Update current mode temperatures
