@@ -1,7 +1,7 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 8/9/2024
+// Code version 12/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -37,14 +37,14 @@ export default class NestCamera extends HomeKitDevice {
   personTimer = undefined; // Cooldown timer for person/face events
   motionTimer = undefined; // Cooldown timer for motion events
   snapshotTimer = undefined; // Timer for cached snapshot images
-  cameraOfflineImage = undefined; // JPG image buffer for camera offline
-  cameraVideoOffImage = undefined; // JPG image buffer for camera video off
   lastSnapshotImage = undefined; // JPG image buffer for last camera snapshot
   snapshotEvent = undefined; // Event for which to get snapshot for
 
   // Internal data only for this class
   #hkSessions = []; // Track live and recording active sessions
   #recordingConfig = {}; // HomeKit Secure Video recording configuration
+  #cameraOfflineImage = undefined; // JPG image buffer for camera offline
+  #cameraVideoOffImage = undefined; // JPG image buffer for camera video off
 
   constructor(accessory, api, log, eventEmitter, deviceData) {
     super(accessory, api, log, eventEmitter, deviceData);
@@ -52,16 +52,14 @@ export default class NestCamera extends HomeKitDevice {
     // buffer for camera offline jpg image
     let imageFile = path.resolve(__dirname + '/res/' + CAMERAOFFLINEJPGFILE);
     if (fs.existsSync(imageFile) === true) {
-      this.cameraOfflineImage = fs.readFileSync(imageFile);
+      this.#cameraOfflineImage = fs.readFileSync(imageFile);
     }
 
     // buffer for camera stream off jpg image
     imageFile = path.resolve(__dirname + '/res/' + CAMERAOFFJPGFILE);
     if (fs.existsSync(imageFile) === true) {
-      this.cameraVideoOffImage = fs.readFileSync(imageFile);
+      this.#cameraVideoOffImage = fs.readFileSync(imageFile);
     }
-
-    this.set({ 'watermark.enabled': false }); // 'Try' to turn off Nest watermark in video stream
   }
 
   // Class functions
@@ -465,12 +463,14 @@ export default class NestCamera extends HomeKitDevice {
     });
 
     // ffmpeg outputs to stderr
+    /*
     this.#hkSessions[sessionID].ffmpeg.stderr.on('data', (data) => {
       if (data.toString().includes('frame=') === false) {
         // Monitor ffmpeg output while testing. Use 'ffmpeg as a debug option'
         this?.log?.debug && this.log.debug(data.toString());
       }
     });
+    */
 
     this.streamer !== undefined &&
       this.streamer.startRecordStream(
@@ -594,14 +594,14 @@ export default class NestCamera extends HomeKitDevice {
       }
     }
 
-    if (this.deviceData.streaming_enabled === false && this.deviceData.online === true && this.cameraVideoOffImage !== undefined) {
+    if (this.deviceData.streaming_enabled === false && this.deviceData.online === true && this.#cameraVideoOffImage !== undefined) {
       // Return 'camera switched off' jpg to image buffer
-      imageBuffer = this.cameraVideoOffImage;
+      imageBuffer = this.#cameraVideoOffImage;
     }
 
-    if (this.deviceData.online === false && this.cameraOfflineImage !== undefined) {
+    if (this.deviceData.online === false && this.#cameraOfflineImage !== undefined) {
       // Return 'camera offline' jpg to image buffer
-      imageBuffer = this.cameraOfflineImage;
+      imageBuffer = this.#cameraOfflineImage;
     }
 
     if (imageBuffer === undefined) {
@@ -778,12 +778,14 @@ export default class NestCamera extends HomeKitDevice {
       }); // Extra pipe, #3 for audio data
 
       // ffmpeg console output is via stderr
+      /*
       ffmpegStreaming.stderr.on('data', (data) => {
         if (data.toString().includes('frame=') === false) {
           // Monitor ffmpeg output while testing. Use 'ffmpeg as a debug option'
           this?.log?.debug && this.log.debug(data.toString());
         }
       });
+      */
 
       ffmpegStreaming.on('exit', (code, signal) => {
         if (signal !== 'SIGKILL' || signal === null) {
@@ -872,9 +874,11 @@ export default class NestCamera extends HomeKitDevice {
         });
 
         // ffmpeg console output is via stderr
+        /*
         ffmpegAudioTalkback.stderr.on('data', (data) => {
           this?.log?.debug && this.log.debug(data.toString());
         });
+        */
 
         // Write out SDP configuration
         // Tried to align the SDP configuration to what HomeKit has sent us in its audio request details

@@ -1,6 +1,5 @@
 syntax = "proto3";
 
-import "nest/messages.proto";
 import "google/trait/product/camera.proto";
 import "nest/trait/audio.proto";
 import "nest/trait/detector.proto";

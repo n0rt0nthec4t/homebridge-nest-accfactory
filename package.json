@@ -2,7 +2,7 @@
     "displayName": "Nest Accfactory",
     "name": "homebridge-nest-accfactory",
     "homepage": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory",
-    "version": "0.0.5-alpha.1",
+    "version": "0.0.5-alpha.2",
     "description": "Homebridge support for Nest/Google devices including HomeKit Secure Video (HKSV) support for doorbells and cameras",
     "license": "Apache-2.0",
     "author": "n0rt0nthec4t",
@@ -43,13 +43,14 @@
         "thermostat",
         "temperature",
         "smoke",
-        "sensor"
+        "sensor",
+        "floodlight"
     ],
     "devDependencies": {
         "@eslint/js": "^9.10.0",
-        "@stylistic/eslint-plugin": "^2.7.2",
+        "@stylistic/eslint-plugin": "^2.8.0",
         "@types/node": "^20.16.0",
-        "@typescript-eslint/parser": "^8.4.0",
+        "@typescript-eslint/parser": "^8.5.0",
         "homebridge": "^2.0.0-beta.0",
         "copyfiles": "^2.4.1",
         "eslint": "^9.10.0",

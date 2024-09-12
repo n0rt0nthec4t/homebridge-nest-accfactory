@@ -15,6 +15,7 @@ message StructuresService {
 
     string requestId = 3; // 64 hex characters - random is OK
     int32 unknown1 = 4; // always 1?
+    int32 unknown2 = 5; // always 1?
     repeated DefaultHiddenDeviceType deviceTypesToUnhideArray = 10;
   }
 

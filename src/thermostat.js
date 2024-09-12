@@ -1013,8 +1013,7 @@ export default class NestThermostat extends HomeKitDevice {
     }
 
     if (typeof EveHomeSetData?.vacation === 'boolean') {
-      this.deviceData.vacation_mode = EveHomeSetData.vacation.status;
-      this.set({ vacation_mode: this.deviceData.vacation_mode });
+      this.set({ vacation_mode: EveHomeSetData.vacation.status });
     }
     if (typeof EveHomeSetData?.programs === 'object') {
       /* EveHomeSetData.programs.forEach((day) => {

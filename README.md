@@ -20,7 +20,7 @@ The following Nest devices are known to be supported
 * Nest Thermostats (1st gen, 2nd gen, 3rd gen, E, 2020 mirror edition, 4th gen)
 * Nest Protects (1st and 2nd gen)
 * Nest Temp Sensors (1st gen)
-* Nest Cameras (Cam Indoor, IQ Indoor, Outdoor, IQ Outdoor)
+* Nest Cameras (Cam Indoor, IQ Indoor, Outdoor, IQ Outdoor, Cam with Floodlight)
 * Nest Doorbells (wired 1st gen)
 
 The accessory supports connection to Nest using a Nest account OR a Google (migrated Nest account) account.

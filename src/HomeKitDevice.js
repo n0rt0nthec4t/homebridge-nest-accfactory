@@ -381,6 +381,13 @@ export default class HomeKitDevice {
 
     // Send event with data to set
     this.#eventEmitter.emit(HomeKitDevice.SET, this.deviceData.uuid, values);
+
+    // Update the internal data for the set values, as could take sometime once we emit the event
+    Object.entries(values).forEach(([key, value]) => {
+      if (this.deviceData[key] !== undefined) {
+        this.deviceData[key] = value;
+      }
+    });
   }
 
   async get(values) {
@@ -394,7 +401,7 @@ export default class HomeKitDevice {
     }
 
     // Send event with data to get
-    // Once get has completed, we'll get an eevent back with the requested data
+    // Once get has completed, we'll get an event back with the requested data
     this.#eventEmitter.emit(HomeKitDevice.GET, this.deviceData.uuid, values);
 
     // This should always return, but we probably should put in a timeout?

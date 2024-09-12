@@ -3,7 +3,6 @@ syntax = "proto3";
 import "google/protobuf/any.proto";
 import "google/protobuf/field_mask.proto";
 import "google/protobuf/timestamp.proto";
-import "../../nest/messages.proto";
 import "../../nestlabs/gateway/v1.proto";
 
 package nestlabs.gateway.v2;
@@ -20,17 +19,22 @@ enum StateType {
     ACCEPTED = 2;
 }
 
+message SchemaVersion {
+    uint32 currentVersion = 1;
+    uint32 minCompatVersion = 2;
+}
+
 message TraitMeta {
     string traitLabel = 1;
     string type = 2;
-    nest.messages.SchemaVersion schemaVersion = 3;
+    SchemaVersion schemaVersion = 3;
 }
 
 message IfaceMeta {
     string ifaceLabel = 1;
     string type = 2;
     map<string, string> traitLabelMapping = 3;
-    nest.messages.SchemaVersion schemaVersion = 4;
+    SchemaVersion schemaVersion = 4;
 }
 
 message ResourceMeta {
@@ -84,11 +88,15 @@ message TraitOperationList {
 }
 
 message ObserveResponse {
-    repeated ResourceMeta resourceMetas = 1;
-    bool initialResourceMetasContinue = 2;
-    repeated TraitState traitStates = 3;
-    repeated TraitOperationList traitOperationLists = 4;
-    google.protobuf.Timestamp currentTime = 5;
+    message ObserveResponse {
+        repeated ResourceMeta resourceMetas = 1;
+        bool initialResourceMetasContinue = 2;
+        repeated TraitState traitStates = 3;
+        repeated TraitOperationList traitOperationLists = 4;
+        google.protobuf.Timestamp currentTime = 5;
+    }
+
+    repeated ObserveResponse observeResponse = 1;
 }
 
 service GatewayService {

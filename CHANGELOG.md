@@ -11,6 +11,9 @@ Currently all releases are considered 'alpha' status, where things may or may no
 - General code and bug fixes
 - External dependancy reductions
     - dropped pbf and axios libraries
+- Nest Cam with Floodlight support
+    - Control light on/off and brightness
+- Streaming/recording still coming for newer Nest/Google camera/doorbell devices
 
 ## v0.0.4 (2024-09-07)
 
