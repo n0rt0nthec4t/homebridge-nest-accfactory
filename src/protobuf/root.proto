@@ -23,6 +23,7 @@ import "nest/trait/service.proto";
 import "nest/trait/structure.proto";
 import "nest/trait/ui.proto";
 import "weave/common.proto";
+import "weave/trait/actuator.proto";
 import "weave/trait/audio.proto";
 import "weave/trait/description.proto";
 import "weave/trait/heartbeat.proto";

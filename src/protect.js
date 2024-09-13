@@ -1,7 +1,7 @@
 // Nest Protect
 // Part of homebridge-nest-accfactory
 //
-// Code version 9/8/2024
+// Code version 12/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -80,7 +80,7 @@ export default class NestProtect extends HomeKitDevice {
         EveSmoke_alarmtest: this.deviceData.self_test_in_progress,
         EveSmoke_heatstatus: this.deviceData.heat_status,
         EveSmoke_hushedstate: this.deviceData.hushed_state,
-        EveSmoke_statusled: this.deviceData.ntp_green_led,
+        EveSmoke_statusled: this.deviceData.ntp_green_led_enable,
         EveSmoke_smoketestpassed: this.deviceData.smoke_test_passed,
         EveSmoke_heattestpassed: this.deviceData.heat_test_passed,
       });
@@ -202,7 +202,7 @@ export default class NestProtect extends HomeKitDevice {
       this.deviceData.latest_alarm_test = deviceData.latest_alarm_test;
       this.deviceData.self_test_in_progress = deviceData.self_test_in_progress;
       this.deviceData.heat_status = deviceData.heat_status;
-      this.deviceData.ntp_green_led = deviceData.ntp_green_led;
+      this.deviceData.ntp_green_led_enable = deviceData.ntp_green_led_enable;
       this.deviceData.smoke_test_passed = deviceData.smoke_test_passed;
       this.deviceData.heat_test_passed = deviceData.heat_test_passed;
       this.historyService.updateEveHome(this.smokeService, this.#EveHomeGetcommand.bind(this));
@@ -216,7 +216,7 @@ export default class NestProtect extends HomeKitDevice {
       EveHomeGetData.lastalarmtest = this.deviceData.latest_alarm_test;
       EveHomeGetData.alarmtest = this.deviceData.self_test_in_progress;
       EveHomeGetData.heatstatus = this.deviceData.heat_status;
-      EveHomeGetData.statusled = this.deviceData.ntp_green_led;
+      EveHomeGetData.statusled = this.deviceData.ntp_green_led_enable;
       EveHomeGetData.smoketestpassed = this.deviceData.smoke_test_passed;
       EveHomeGetData.heattestpassed = this.deviceData.heat_test_passed;
       EveHomeGetData.hushedstate = this.deviceData.hushed_state;
@@ -233,7 +233,6 @@ export default class NestProtect extends HomeKitDevice {
       //this.log.info('Eve Smoke Alarm test', (EveHomeSetData.alarmtest === true ? 'start' : 'stop'));
     }
     if (typeof EveHomeSetData?.statusled === 'boolean') {
-      this.deviceData.ntp_green_led = EveHomeSetData.statusled; // Do quick status update as setting Nest values does take sometime
       this.set({ ntp_green_led_enable: EveHomeSetData.statusled });
     }
   }

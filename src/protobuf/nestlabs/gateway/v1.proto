@@ -260,12 +260,7 @@ message SendCommandResponse {
 }
 
 message BatchUpdateStateRequest {
-    message TraitObject {
-        nestlabs.gateway.v2.TraitId traitId = 1;
-        google.protobuf.Any property = 2;
-    }
-
-    repeated TraitObject batchUpdateStateRequest = 1;
+    repeated TraitUpdateStateRequest batchUpdateStateRequest = 1;
 }
 
 message BatchUpdateStateResponse {

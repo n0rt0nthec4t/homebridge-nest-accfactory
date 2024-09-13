@@ -6,14 +6,12 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 Currently all releases are considered 'alpha' status, where things may or may not be working. Use at your own risk :-)
 
-## v0.0.5 (alpha)
+## v0.0.5 (2024/09/13)
 
-- General code and bug fixes
-- External dependancy reductions
-    - dropped pbf and axios libraries
-- Nest Cam with Floodlight support
-    - Control light on/off and brightness
-- Streaming/recording still coming for newer Nest/Google camera/doorbell devices
+- General code cleanup and bug fixes
+- External dependancy reductions, dropped pbf and axios libraries
+- Nest Cam with Floodlight support with light on/off and brightness control
+- Fixed issued with setting range temperatures on Nest Thermostat(s)
 
 ## v0.0.4 (2024-09-07)
 
@@ -28,7 +26,7 @@ Currently all releases are considered 'alpha' status, where things may or may no
 - Cleanup fix for when removing a camera/doorbell from Nest/Google
 - Fix for virtual weather device when missing configured city and/or state details
 - Fix for retrieving data from Nest systems when using both a Nest and Google accounts
-- Initial support newer Nest/Google camera/doorbell devices (streaming/recording - coming)
+- Initial support for newer Nest/Google camera/doorbell devices (streaming/recording - coming)
 
 ## v0.0.1 (2024-08-27)
 

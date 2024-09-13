@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+import "google/protobuf/wrappers.proto";
+
+package weave.trait.actuator;
+
+message OnOffTrait {
+    message SetStateRequest {
+        bool on = 1;
+    }
+
+    bool on = 1;
+}

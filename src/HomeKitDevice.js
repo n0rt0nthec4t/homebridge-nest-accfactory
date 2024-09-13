@@ -37,7 +37,7 @@
 // HomeKitDevice.updateServices(deviceData)
 // HomeKitDevice.messageServices(type, message)
 //
-// Code version 12/9/2024
+// Code version 13/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -104,7 +104,8 @@ export default class HomeKitDevice {
       this.#eventEmitter.addListener(this.deviceData.uuid, this.#message.bind(this));
     }
 
-    // Make copy of current data and store in this object
+    // Make a clone of current data and store in this object
+    // Important that we done have a 'linked' cope of the object data
     // eslint-disable-next-line no-undef
     this.deviceData = structuredClone(deviceData);
 
@@ -149,7 +150,10 @@ export default class HomeKitDevice {
       this.deviceData.model === '' ||
       typeof this.deviceData?.manufacturer !== 'string' ||
       this.deviceData.manufacturer === '' ||
-      (this.#platform === undefined && typeof this.deviceData?.hkPairingCode !== 'string' && this.deviceData.hkPairingCode === '') ||
+      (this.#platform === undefined &&
+        typeof this.deviceData?.hkPairingCode !== 'string' &&
+        (new RegExp(/^([0-9]{3}-[0-9]{2}-[0-9]{3})$/).test(this.deviceData.hkPairingCode) === true ||
+          new RegExp(/^([0-9]{4}-[0-9]{4})$/).test(this.deviceData.hkPairingCode) === true)) ||
       (this.#platform === undefined &&
         typeof this.deviceData?.hkUsername !== 'string' &&
         new RegExp(/^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/).test(this.deviceData.hkUsername) === false)

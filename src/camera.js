@@ -99,7 +99,7 @@ export default class NestCamera extends HomeKitDevice {
             (value === true && this.deviceData.statusled_brightness !== 0) ||
             (value === false && this.deviceData.statusled_brightness !== 1)
           ) {
-            this.set({ 'statusled.brightness': value === true ? 0 : 1 });
+            this.set({ statusled_brightness: value === true ? 0 : 1 });
             if (this?.log?.info) {
               this.log.info('Recording status LED on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
             }
@@ -119,7 +119,7 @@ export default class NestCamera extends HomeKitDevice {
         this.operatingModeService.getCharacteristic(this.hap.Characteristic.NightVision).onSet((value) => {
           // only change IRLed status value if different than on-device
           if ((value === false && this.deviceData.irled_enabled === true) || (value === true && this.deviceData.irled_enabled === false)) {
-            this.set({ 'irled.state': value === true ? 'auto_on' : 'always_off' });
+            this.set({ irled_enabled: value === true ? 'auto_on' : 'always_off' });
 
             if (this?.log?.info) {
               this.log.info('Night vision on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
@@ -144,7 +144,7 @@ export default class NestCamera extends HomeKitDevice {
             (this.deviceData.streaming_enabled === true && value === true)
           ) {
             // Camera state does not reflect requested state, so fix
-            this.set({ 'streaming.enabled': value === false ? true : false });
+            this.set({ streaming_enabled: value === false ? true : false });
             if (this?.log?.info) {
               this.log.info('Camera on "%s" was turned', this.deviceData.description, value === false ? 'on' : 'off');
             }
@@ -178,7 +178,7 @@ export default class NestCamera extends HomeKitDevice {
               (this.deviceData.audio_enabled === true && value === this.hap.Characteristic.RecordingAudioActive.DISABLE) ||
               (this.deviceData.audio_enabled === false && value === this.hap.Characteristic.RecordingAudioActive.ENABLE)
             ) {
-              this.set({ 'audio.enabled': value === this.hap.Characteristic.RecordingAudioActive.ENABLE ? true : false });
+              this.set({ audio_enabled: value === this.hap.Characteristic.RecordingAudioActive.ENABLE ? true : false });
               if (this?.log?.info) {
                 this.log.info(
                   'Audio recording on "%s" was turned',
