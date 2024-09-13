@@ -1,7 +1,7 @@
 // Nest Cam with Floodlight
 // Part of homebridge-nest-accfactory
 //
-// Code version 12/9/2024
+// Code version 13/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -48,7 +48,7 @@ export default class NestFloodlight extends NestCamera {
         if (value !== this.deviceData.light_brightness) {
           this.set({ light_brightness: value });
 
-          this?.log?.info && this.log.info('Floodlight brightness on "%s" was set to "%s %"', this.deviceData.description);
+          this?.log?.info && this.log.info('Floodlight brightness on "%s" was set to "%s %"', this.deviceData.description, value);
         }
       });
 

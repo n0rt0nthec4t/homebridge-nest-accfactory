@@ -8,12 +8,12 @@
 //
 // The following functions should be overriden in your class which extends this
 //
-// streamer.connect(host)
-// streamer.close(stopStreamFirst)
+// streamer.connect()
+// streamer.close()
 // streamer.talkingAudio(talkingData)
 // streamer.update(deviceData) <- call super after
 //
-// Code version 11/9/2024
+// Code version 13/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -38,7 +38,6 @@ export default class Streamer {
   videoEnabled = undefined; // Video stream on camera enabled or not
   audioEnabled = undefined; // Audio from camera enabled or not
   online = undefined; // Camera online or not
-  host = ''; // Host to connect to or connected too
   uuid = undefined; // UUID of the device connecting
   connected = false; // Streamer connected to endpoint
 
@@ -152,11 +151,9 @@ export default class Streamer {
   startBuffering() {
     if (this.#outputs?.buffer === undefined) {
       // No active buffer session, start connection to streamer
-      if (this.connected === false && typeof this.host === 'string' && this.host !== '') {
-        if (typeof this.connect === 'function') {
-          this?.log?.debug && this.log.debug('Started buffering from "%s"', this.host);
-          this.connect(this.host);
-        }
+      if (this.connected === false && typeof this.connect === 'function') {
+        this?.log?.debug && this.log.debug('Started buffering for uuid "%s"', this.uuid);
+        this.connect();
       }
 
       this.#outputs.buffer = {
@@ -201,11 +198,9 @@ export default class Streamer {
       });
     }
 
-    if (this.connected === false && typeof this.host === 'string' && this.host !== '') {
-      // We do not have an active socket connection, so startup connection to host
-      if (typeof this.connect === 'function') {
-        this.connect(this.host);
-      }
+    if (this.connected === false && typeof this.connect === 'function') {
+      // We do not have an active connection, so startup connection
+      this.connect();
     }
 
     // Add video/audio streams for our output loop to handle outputting to
@@ -220,8 +215,8 @@ export default class Streamer {
     // finally, we've started live stream
     this?.log?.debug &&
       this.log.debug(
-        'Started live stream from "%s" %s "%s"',
-        this.host,
+        'Started live stream from uuid "%s" %s "%s"',
+        this.uuid,
         talkbackStream !== null && typeof talkbackStream === 'object' ? 'with two-way audio and sesssion id of' : 'and sesssion id of',
         sessionID,
       );
@@ -241,11 +236,9 @@ export default class Streamer {
       });
     }
 
-    if (this.connected === false && typeof this.host === 'string' && this.host !== '') {
-      // We do not have an active socket connection, so startup connection to host
-      if (typeof this.connect === 'function') {
-        this.connect(this.host);
-      }
+    if (this.connected === false && typeof this.connect === 'function') {
+      // We do not have an active connection, so startup connection
+      this.connect();
     }
 
     // Add video/audio streams for our output loop to handle outputting to
@@ -258,55 +251,50 @@ export default class Streamer {
     };
 
     // Finally we've started the recording stream
-    this?.log?.debug && this.log.debug('Started recording stream from "%s" with sesison id of "%s"', this.host, sessionID);
+    this?.log?.debug && this.log.debug('Started recording stream from uuid "%s" with sesison id of "%s"', this.uuid, sessionID);
   }
 
   stopRecordStream(sessionID) {
     // Request to stop a recording stream
-    if (typeof this.#outputs[sessionID] === 'object') {
-      this?.log?.debug && this.log.debug('Stopped recording stream from "%s"', this.host);
+    if (this.#outputs?.[sessionID] !== undefined) {
+      this?.log?.debug && this.log.debug('Stopped recording stream from uuid "%s"', this.uuid);
       delete this.#outputs[sessionID];
     }
 
-    // If we have no more output streams active, we'll close the connection to host
+    // If we have no more output streams active, we'll close the connection
     if (Object.keys(this.#outputs).length === 0 && typeof this.close === 'function') {
-      this.close(true);
+      this.close();
     }
   }
 
   stopLiveStream(sessionID) {
     // Request to stop an active live stream
-    if (typeof this.#outputs[sessionID] === 'object') {
-      this?.log?.debug && this.log.debug('Stopped live stream from "%s"', this.host);
+    if (this.#outputs?.[sessionID] !== undefined) {
+      this?.log?.debug && this.log.debug('Stopped live stream from uuid "%s"', this.uuid);
       delete this.#outputs[sessionID];
     }
 
-    // If we have no more output streams active, we'll close the connection to host
+    // If we have no more output streams active, we'll close the connection
     if (Object.keys(this.#outputs).length === 0 && typeof this.close === 'function') {
-      this.close(true);
+      this.close();
     }
   }
 
   stopBuffering() {
     if (this.#outputs?.buffer !== undefined) {
-      this?.log?.debug && this.log.debug('Stopped buffering from "%s"', this.host);
+      this?.log?.debug && this.log.debug('Stopped buffering from uuid "%s"', this.uuid);
       delete this.#outputs.buffer;
     }
 
-    // If we have no more output streams active, we'll close the connection to host
+    // If we have no more output streams active, we'll close the connection
     if (Object.keys(this.#outputs).length === 0 && typeof this.close === 'function') {
-      this.close(true);
+      this.close();
     }
   }
 
   update(deviceData) {
     if (typeof deviceData !== 'object') {
       return;
-    }
-
-    if (this.host !== deviceData.streaming_host) {
-      this.host = deviceData.streaming_host;
-      this?.log?.debug && this.log.debug('New streaming host has been requested for connection. Host requested is "%s"', this.host);
     }
 
     if (
@@ -319,10 +307,10 @@ export default class Streamer {
       this.videoEnabled = deviceData?.streaming_enabled === true;
       this.audioEnabled = deviceData?.audio_enabled === true;
       if ((this.online === false || this.videoEnabled === false || this.audioEnabled === false) && typeof this.close === 'function') {
-        this.close(true); // as offline or streaming not enabled, close socket
+        this.close(); // as offline or streaming not enabled, close streamer
       }
       if (this.online === true && this.videoEnabled === true && typeof this.connect === 'function') {
-        this.connect(this.host); // Connect to host for stream
+        this.connect(); // Connect for stream
       }
     }
   }

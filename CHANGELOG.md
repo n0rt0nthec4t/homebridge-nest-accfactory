@@ -6,7 +6,11 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 Currently all releases are considered 'alpha' status, where things may or may not be working. Use at your own risk :-)
 
-## v0.0.5 (2024/09/13)
+## v0.0.6 (2024-09-14)
+
+- Fix for two/way audio starting on non-enabled HKSV camera/doorbells
+
+## v0.0.5 (2024-09-13)
 
 - General code cleanup and bug fixes
 - External dependancy reductions, dropped pbf and axios libraries

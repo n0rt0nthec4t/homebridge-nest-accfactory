@@ -1,7 +1,7 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 12/9/2024
+// Code version 13/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -33,6 +33,7 @@ export default class NestCamera extends HomeKitDevice {
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
   motionServices = undefined; // Object of Camera/Doorbell motion sensor(s)
+  batteryService = undefined; // If a camera has a battery
   operatingModeService = undefined; // Link to camera/doorbell operating mode service
   personTimer = undefined; // Cooldown timer for person/face events
   motionTimer = undefined; // Cooldown timer for motion events

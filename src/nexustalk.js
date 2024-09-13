@@ -5,7 +5,7 @@
 //
 // Credit to https://github.com/Brandawg93/homebridge-nest-cam for the work on the Nest Camera comms code on which this is based
 //
-// Code version 11/9/2024
+// Code version 14/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -59,11 +59,11 @@ const PacketType = {
 export default class NexusTalk extends Streamer {
   token = undefined;
   tokenType = undefined;
-  id = undefined; // Session ID
   pingTimer = undefined; // Timer object for ping interval
   stalledTimer = undefined; // Timer object for no received data
   video = {}; // Video stream details
   audio = {}; // Audio stream details
+  host = ''; // Host to connect to or connected too
 
   // Internal data only for this class
   #protobufNexusTalk = undefined; // Protobuf for NexusTalk
@@ -71,6 +71,7 @@ export default class NexusTalk extends Streamer {
   #packets = []; // Incoming packets
   #messages = []; // Incoming messages
   #authorised = false; // Have we been authorised
+  #id = undefined; // Session ID
 
   constructor(deviceData, options) {
     super(deviceData, options);
@@ -98,7 +99,7 @@ export default class NexusTalk extends Streamer {
     this.pingTimer = clearInterval(this.pingTimer);
     this.stalledTimer = clearInterval(this.stalledTimer);
 
-    this.id = undefined; // No session ID yet
+    this.#id = undefined; // No session ID yet
 
     if (this.online === true && this.videoEnabled === true) {
       if (typeof host === 'undefined' || host === null) {
@@ -134,7 +135,7 @@ export default class NexusTalk extends Streamer {
         this.#authorised = false; // Since connection close, we can't be authorised anymore
         this.#socket = undefined; // Clear socket object
         this.connected = false;
-        this.id = undefined; // Not an active session anymore
+        this.#id = undefined; // Not an active session anymore
 
         if (hadError === true && this.haveOutputs() === true) {
           // We still have either active buffering occuring or output streams running
@@ -147,7 +148,7 @@ export default class NexusTalk extends Streamer {
 
   close(stopStreamFirst) {
     // Close an authenicated socket stream gracefully
-    if (this.#socket !== null) {
+    if (this.#socket !== undefined) {
       if (stopStreamFirst === true) {
         // Send a notifcation to nexus we're finished playback
         this.#stopNexusData();
@@ -157,7 +158,7 @@ export default class NexusTalk extends Streamer {
 
     this.connected = false;
     this.#socket = undefined;
-    this.id = undefined; // Not an active session anymore
+    this.#id = undefined; // Not an active session anymore
     this.#packets = [];
     this.#messages = [];
   }
@@ -171,9 +172,14 @@ export default class NexusTalk extends Streamer {
       // access token has changed so re-authorise
       this.token = deviceData.apiAccess.token;
 
-      if (this.#socket !== null) {
+      if (this.#socket !== undefined) {
         this.#Authenticate(true); // Update authorisation only if connected
       }
+    }
+
+    if (this.host !== deviceData.streaming_host) {
+      this.host = deviceData.streaming_host;
+      this?.log?.debug && this.log.debug('New host has been requested for connection. Host requested is "%s"', this.host);
     }
 
     // Let our parent handle the remaining updates
@@ -183,12 +189,12 @@ export default class NexusTalk extends Streamer {
   talkingAudio(talkingData) {
     // Encode audio packet for sending to camera
     if (typeof talkingData === 'object' && this.#protobufNexusTalk !== undefined) {
-      let TraitMap = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.StartPlayback');
+      let TraitMap = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.AudioPayload');
       if (TraitMap !== null) {
         let encodedData = TraitMap.encode(
           TraitMap.fromObject({
             payload: talkingData,
-            sessionId: this.id,
+            sessionId: this.#id,
             codec: 'SPEEX',
             sampleRate: 16000,
           }),
@@ -227,12 +233,12 @@ export default class NexusTalk extends Streamer {
   }
 
   #stopNexusData() {
-    if (this.id !== undefined && this.#protobufNexusTalk !== undefined) {
+    if (this.#id !== undefined && this.#protobufNexusTalk !== undefined) {
       let TraitMap = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.StopPlayback');
       if (TraitMap !== null) {
         let encodedData = TraitMap.encode(
           TraitMap.fromObject({
-            sessionId: this.id,
+            sessionId: this.#id,
           }),
         ).finish();
         this.#sendMessage(PacketType.STOP_PLAYBACK, encodedData);
@@ -241,7 +247,7 @@ export default class NexusTalk extends Streamer {
   }
 
   #sendMessage(type, data) {
-    if (this.#socket === null || this.#socket.readyState !== 'open' || (type !== PacketType.HELLO && this.#authorised === false)) {
+    if (this.#socket?.readyState !== 'open' || (type !== PacketType.HELLO && this.#authorised === false)) {
       // We're not connect and/or authorised yet, so 'cache' message for processing once this occurs
       this.#messages.push({ type: type, data: data });
       return;
@@ -358,11 +364,11 @@ export default class NexusTalk extends Streamer {
       });
 
       // Since this is the beginning of playback, clear any active buffers contents
-      this.id = decodedMessage.sessionId;
+      this.#id = decodedMessage.sessionId;
       this.#packets = [];
       this.#messages = [];
 
-      this?.log?.debug && this.log.debug('Playback started from "%s" with session ID "%s"', this.host, this.id);
+      this?.log?.debug && this.log.debug('Playback started from "%s" with session ID "%s"', this.host, this.#id);
     }
   }
 
@@ -381,7 +387,7 @@ export default class NexusTalk extends Streamer {
         // Setup listener for socket close event. Once socket is closed, we'll perform the re-connection
         this.#socket &&
           this.#socket.on('close', () => {
-            this.connect(this.host); // try reconnection
+            this.connect(); // try reconnection
           });
         this.close(false); // Close existing socket
       }, 8000);
@@ -405,7 +411,7 @@ export default class NexusTalk extends Streamer {
     if (typeof payload === 'object' && this.#protobufNexusTalk !== undefined) {
       let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.PlaybackEnd').decode(payload).toJSON();
 
-      if (this.id !== null && decodedMessage.reason === 'USER_ENDED_SESSION') {
+      if (this.#id !== undefined && decodedMessage.reason === 'USER_ENDED_SESSION') {
         // Normal playback ended ie: when we stopped playback
         this?.log?.debug && this.log.debug('Playback ended on "%s"', this.host);
       }
@@ -418,7 +424,7 @@ export default class NexusTalk extends Streamer {
         // Setup listener for socket close event. Once socket is closed, we'll perform the re-connection
         this.#socket &&
           this.#socket.on('close', () => {
-            this.connect(this.host); // try reconnection to existing host
+            this.connect(); // try reconnection to existing host
           });
         this.close(false); // Close existing socket
       }
@@ -443,7 +449,7 @@ export default class NexusTalk extends Streamer {
     // Decode talk begin packet
     if (typeof payload === 'object' && this.#protobufNexusTalk !== undefined) {
       let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.TalkbackBegin').decode(payload).toJSON();
-      this?.log?.debug && this.log.debug('Talkback started on "%s"', decodedMessage.deviceId);
+      this?.log?.debug && this.log.debug('Talkback started to uuid "%s" with id of "%s"', this.uuid, decodedMessage.deviceId);
     }
   }
 
@@ -451,7 +457,7 @@ export default class NexusTalk extends Streamer {
     // Decode talk end packet
     if (typeof payload === 'object' && this.#protobufNexusTalk !== undefined) {
       let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.TalkbackEnd').decode(payload).toJSON();
-      this?.log?.debug && this.log.debug('Talkback ended on "%s"', decodedMessage.device_id);
+      this?.log?.debug && this.log.debug('Talkback ended from uuid "%s" with id of "%s"', this.uuid, decodedMessage.deviceId);
     }
   }
 
