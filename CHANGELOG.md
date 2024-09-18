@@ -6,9 +6,10 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 Currently all releases are considered 'alpha' status, where things may or may not be working. Use at your own risk :-)
 
-## v0.0.7 ()
+## v0.0.7 (alpha)
 
-- Bug fixes
+- General code cleanup and bug fixes
+- Updated streaming/recording support for newer Nest/Google camera/doorbell devices
 
 ## v0.0.6 (2024-09-14)
 
