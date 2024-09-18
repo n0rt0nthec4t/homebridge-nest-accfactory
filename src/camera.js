@@ -1,7 +1,7 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 13/9/2024
+// Code version 16/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -20,8 +20,7 @@ import { fileURLToPath } from 'node:url';
 // Define our modules
 import HomeKitDevice from './HomeKitDevice.js';
 import NexusTalk from './nexustalk.js';
-//import WebRTC from './webrtc.js';
-let WebRTC = undefined;
+import WebRTC from './webrtc.js';
 
 const CAMERAOFFLINEJPGFILE = 'Nest_camera_offline.jpg'; // Camera offline jpg image file
 const CAMERAOFFJPGFILE = 'Nest_camera_off.jpg'; // Camera video off jpg image file
@@ -203,6 +202,7 @@ export default class NestCamera extends HomeKitDevice {
     // Depending on the streaming profiles that the camera supports, this will be either nexustalk or webrtc
     // We'll also start pre-buffering if required for HKSV
     if (this.deviceData.streaming_protocols.includes('PROTOCOL_WEBRTC') === true && this.streamer === undefined && WebRTC !== undefined) {
+      this?.log?.debug && this.log.debug('Using WebRTC streamer for "%s"', this.deviceData.description);
       this.streamer = new WebRTC(this.deviceData, {
         log: this.log,
         buffer:
@@ -218,6 +218,7 @@ export default class NestCamera extends HomeKitDevice {
       this.streamer === undefined &&
       NexusTalk !== undefined
     ) {
+      this?.log?.debug && this.log.debug('Using NexusTalk streamer for "%s"', this.deviceData.description);
       this.streamer = new NexusTalk(this.deviceData, {
         log: this.log,
         buffer:
@@ -253,6 +254,7 @@ export default class NestCamera extends HomeKitDevice {
       postSetupDetails.push(
         'HomeKit Secure Video support' + (this.streamer?.isBuffering() === true ? ' and recording buffer started' : ''),
       );
+    this.deviceData.localAccess === true && postSetupDetails.push('Local access');
     return postSetupDetails;
   }
 
@@ -326,84 +328,78 @@ export default class NestCamera extends HomeKitDevice {
     }
 
     // Build our ffmpeg command string for recording the video/audio stream
-    let commandLine =
-      '-hide_banner -nostats' +
-      ' -fflags +discardcorrupt' +
-      ' -max_delay 500000' +
-      ' -flags low_delay' +
-      ' -f h264 -i pipe:0' + // Video data only on stdin
-      (this.deviceData.audio_enabled === true &&
-      this.deviceData?.ffmpeg?.libfdk_aac === true &&
-      this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.RecordingAudioActive)
-        .value === this.hap.Characteristic.RecordingAudioActive.ENABLE
-        ? ' -f aac -i pipe:3'
-        : ''); // Audio data only on extra pipe created in spawn command
+    let commandLine = [
+      '-hide_banner',
+      '-nostats',
+      '-fflags +discardcorrupt',
+      '-max_delay 500000',
+      '-flags low_delay',
+      '-f h264',
+      '-i pipe:0',
+    ];
 
-    // Build our video command for ffmpeg
-    commandLine =
-      commandLine +
-      ' -map 0:v' + // stdin, the first input is video data
-      ' -codec:v libx264' +
-      ' -preset veryfast' +
-      ' -profile:v ' +
-      (this.#recordingConfig.videoCodec.parameters.profile === this.hap.H264Profile.HIGH
-        ? 'high'
-        : this.#recordingConfig.videoCodec.parameters.profile === this.hap.H264Profile.MAIN
-          ? 'main'
-          : 'baseline') +
-      ' -level:v ' +
-      (this.#recordingConfig.videoCodec.parameters.level === this.hap.H264Level.LEVEL4_0
-        ? '4.0'
-        : this.#recordingConfig.videoCodec.parameters.level === this.hap.H264Level.LEVEL3_2
-          ? '3.2'
-          : '3.1') +
-      ' -noautoscale' +
-      ' -bf 0' +
-      ' -filter:v fps=fps=' +
-      this.#recordingConfig.videoCodec.resolution[2] + // convert to framerate HomeKit has requested
-      ' -g:v ' +
-      (this.#recordingConfig.videoCodec.resolution[2] * this.#recordingConfig.videoCodec.parameters.iFrameInterval) / 1000 +
-      ' -b:v ' +
-      this.#recordingConfig.videoCodec.parameters.bitRate +
-      'k' +
-      ' -fps_mode passthrough' +
-      ' -movflags frag_keyframe+empty_moov+default_base_moof' +
-      ' -reset_timestamps 1' +
-      ' -video_track_timescale 90000' +
-      ' -bufsize ' +
-      2 * this.#recordingConfig.videoCodec.parameters.bitRate +
-      'k';
-
-    // We have seperate video and audio streams that need to be muxed together if audio enabled
+    let includeAudio = false;
     if (
       this.deviceData.audio_enabled === true &&
-      this.deviceData?.ffmpeg?.libfdk_aac === true &&
       this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.RecordingAudioActive)
-        .value === this.hap.Characteristic.RecordingAudioActive.ENABLE
+        .value === this.hap.Characteristic.RecordingAudioActive.ENABLE &&
+      ((this.streamer?.codecs?.audio === 'aac' && this.deviceData?.ffmpeg?.libfdk_aac === true) ||
+        (this.streamer?.codecs?.audio === 'opus' && this.deviceData?.ffmpeg?.libopus === true))
     ) {
-      let audioSampleRates = ['8', '16', '24', '32', '44.1', '48'];
-
-      commandLine =
-        commandLine +
-        ' -map 1:a' + // pipe:3, the second input is audio data
-        ' -codec:a libfdk_aac' +
-        ' -profile:a aac_low' + // HAP.AudioRecordingCodecType.AAC_LC
-        ' -ar ' +
-        audioSampleRates[this.#recordingConfig.audioCodec.samplerate] +
-        'k' +
-        ' -b:a ' +
-        this.#recordingConfig.audioCodec.bitrate +
-        'k' +
-        ' -ac ' +
-        this.#recordingConfig.audioCodec.audioChannels;
+      // audio data only on extra pipe created in spawn command
+      commandLine.push('-i pipe:3');
+      includeAudio = true;
     }
 
-    commandLine = commandLine + ' -f mp4 pipe:1'; // output to stdout in mp4
+    // Build our video command for ffmpeg
+    commandLine.push(
+      '-map 0:v',
+      '-codec:v libx264',
+      '-preset veryfast',
+      '-profile:v ' +
+        (this.#recordingConfig.videoCodec.parameters.profile === this.hap.H264Profile.HIGH
+          ? 'high'
+          : this.#recordingConfig.videoCodec.parameters.profile === this.hap.H264Profile.MAIN
+            ? 'main'
+            : 'baseline'),
+      '-level:v ' +
+        (this.#recordingConfig.videoCodec.parameters.level === this.hap.H264Level.LEVEL4_0
+          ? '4.0'
+          : this.#recordingConfig.videoCodec.parameters.level === this.hap.H264Level.LEVEL3_2
+            ? '3.2'
+            : '3.1'),
+      '-noautoscale',
+      '-bf 0',
+      '-filter:v fps=fps=' + this.#recordingConfig.videoCodec.resolution[2],
+      '-g:v ' + (this.#recordingConfig.videoCodec.resolution[2] * this.#recordingConfig.videoCodec.parameters.iFrameInterval) / 1000,
+      '-b:v ' + this.#recordingConfig.videoCodec.parameters.bitRate + 'k',
+      '-fps_mode passthrough',
+      '-movflags frag_keyframe+empty_moov+default_base_moof',
+      '-reset_timestamps 1',
+      '-video_track_timescale 90000',
+      '-bufsize ' + 2 * this.#recordingConfig.videoCodec.parameters.bitRate + 'k',
+    );
+
+    // We have seperate video and audio streams that need to be muxed together if audio enabled
+    if (includeAudio === true) {
+      let audioSampleRates = ['8', '16', '24', '32', '44.1', '48'];
+
+      commandLine.push(
+        '-map 1:a',
+        '-codec:a libfdk_aac',
+        '-profile:a aac_low',
+        '-ar ' + audioSampleRates[this.#recordingConfig.audioCodec.samplerate] + 'k',
+        '-b:a ' + this.#recordingConfig.audioCodec.bitrate + 'k',
+        '-ac ' + this.#recordingConfig.audioCodec.audioChannels,
+      );
+    }
+
+    commandLine.push('-f mp4 pipe:1'); // output to stdout in mp4
 
     this.#hkSessions[sessionID] = {};
     this.#hkSessions[sessionID].ffmpeg = child_process.spawn(
       path.resolve(this.deviceData.ffmpeg.path + '/ffmpeg'),
-      commandLine.split(' '),
+      commandLine.join(' ').split(' '),
       {
         env: process.env,
         stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
@@ -477,15 +473,11 @@ export default class NestCamera extends HomeKitDevice {
       this.streamer.startRecordStream(
         sessionID,
         this.#hkSessions[sessionID].ffmpeg.stdin,
-        this.#hkSessions[sessionID]?.ffmpeg?.stdio?.[3] ? this.#hkSessions[sessionID].ffmpeg.stdio[3] : null,
+        this.#hkSessions[sessionID]?.ffmpeg?.stdio?.[3] && includeAudio === true ? this.#hkSessions[sessionID].ffmpeg.stdio[3] : null,
       );
 
     this?.log?.info &&
-      this.log.info(
-        'Started recording from "%s" %s',
-        this.deviceData.description,
-        this.#hkSessions[sessionID]?.ffmpeg?.stdio?.[3] ? '' : 'without audio',
-      );
+      this.log.info('Started recording from "%s" %s', this.deviceData.description, includeAudio === false ? 'without audio' : '');
 
     // Loop generating MOOF/MDAT box pairs for HomeKit Secure Video.
     // HAP-NodeJS cancels this async generator function when recording completes also
@@ -701,92 +693,110 @@ export default class NestCamera extends HomeKitDevice {
 
     if (request.type === this.hap.StreamRequestTypes.START && this.streamer !== undefined && this.deviceData?.ffmpeg?.path !== undefined) {
       // Build our ffmpeg command string for the liveview video/audio stream
-      let commandLine =
-        '-hide_banner -nostats' +
-        ' -use_wallclock_as_timestamps 1' +
-        ' -fflags +discardcorrupt' +
-        ' -max_delay 500000' +
-        ' -flags low_delay' +
-        ' -f h264 -i pipe:0' + // Video data only on stdin
-        (this.deviceData.audio_enabled === true && this.deviceData?.ffmpeg?.libfdk_aac === true ? ' -f aac -i pipe:3' : ''); // Audio data only on extra pipe created in spawn command
+      let commandLine = [
+        '-hide_banner',
+        '-nostats',
+        '-use_wallclock_as_timestamps 1',
+        '-fflags +discardcorrupt',
+        '-max_delay 500000',
+        '-flags low_delay',
+        '-f h264',
+        '-i pipe:0',
+      ];
+
+      let includeAudio = false;
+      if (
+        this.deviceData.audio_enabled === true &&
+        this.streamer?.codecs?.audio === 'aac' &&
+        this.deviceData?.ffmpeg?.libfdk_aac === true
+      ) {
+        // aac udio data only on extra pipe created in spawn command
+        commandLine.push('-f aac -i pipe:3');
+        includeAudio = true;
+      }
+
+      if (this.deviceData.audio_enabled === true && this.streamer?.codecs?.audio === 'opus' && this.deviceData?.ffmpeg?.libopus === true) {
+        // opus audio data only on extra pipe created in spawn command
+        commandLine.push('-f aac -i pipe:3');
+        includeAudio = true;
+      }
 
       // Build our video command for ffmpeg
-      commandLine =
-        commandLine +
-        ' -map 0:v' + // stdin, the first input is video data
-        ' -codec:v copy' +
-        ' -fps_mode passthrough' +
-        ' -reset_timestamps 1' +
-        ' -video_track_timescale 90000' +
-        ' -payload_type ' +
-        request.video.pt +
-        ' -ssrc ' +
-        this.#hkSessions[request.sessionID].videoSSRC +
-        ' -f rtp' +
-        ' -srtp_out_suite ' +
-        this.hap.SRTPCryptoSuites[this.#hkSessions[request.sessionID].videoCryptoSuite] +
-        ' -srtp_out_params ' +
-        this.#hkSessions[request.sessionID].videoSRTP.toString('base64') +
-        ' srtp://' +
-        this.#hkSessions[request.sessionID].address +
-        ':' +
-        this.#hkSessions[request.sessionID].videoPort +
-        '?rtcpport=' +
-        this.#hkSessions[request.sessionID].videoPort +
-        '&pkt_size=' +
-        request.video.mtu;
-
-      // We have seperate video and audio streams that need to be muxed together if audio enabled
-      if (this.deviceData.audio_enabled === true && this.deviceData?.ffmpeg?.libfdk_aac === true) {
-        commandLine =
-          commandLine +
-          ' -map 1:a' + // pipe:3, the second input is audio data
-          ' -codec:a libfdk_aac' +
-          ' -profile:a aac_eld' + //+ this.hap.AudioStreamingCodecType.AAC_ELD
-          ' -flags +global_header' +
-          ' -ar ' +
-          request.audio.sample_rate +
-          'k' +
-          ' -b:a ' +
-          request.audio.max_bit_rate +
-          'k' +
-          ' -ac ' +
-          request.audio.channel +
-          ' -payload_type ' +
-          request.audio.pt +
-          ' -ssrc ' +
-          this.#hkSessions[request.sessionID].audioSSRC +
-          ' -f rtp' +
-          ' -srtp_out_suite ' +
-          this.hap.SRTPCryptoSuites[this.#hkSessions[request.sessionID].audioCryptoSuite] +
-          ' -srtp_out_params ' +
-          this.#hkSessions[request.sessionID].audioSRTP.toString('base64') +
+      commandLine.push(
+        '-map 0:v',
+        '-codec:v copy',
+        '-fps_mode passthrough',
+        '-reset_timestamps 1',
+        '-video_track_timescale 90000',
+        '-payload_type ' + request.video.pt,
+        '-ssrc ' + this.#hkSessions[request.sessionID].videoSSRC,
+        '-f rtp',
+        '-srtp_out_suite ' + this.hap.SRTPCryptoSuites[this.#hkSessions[request.sessionID].videoCryptoSuite],
+        '-srtp_out_params ' +
+          this.#hkSessions[request.sessionID].videoSRTP.toString('base64') +
           ' srtp://' +
           this.#hkSessions[request.sessionID].address +
           ':' +
-          this.#hkSessions[request.sessionID].audioPort +
+          this.#hkSessions[request.sessionID].videoPort +
           '?rtcpport=' +
-          this.#hkSessions[request.sessionID].audioPort +
-          '&localrtcpport=' +
-          this.#hkSessions[request.sessionID].localAudioPort +
-          '&pkt_size=188';
+          this.#hkSessions[request.sessionID].videoPort +
+          '&pkt_size=' +
+          request.video.mtu,
+      );
+
+      // We have seperate video and audio streams that need to be muxed together if audio enabled
+      if (includeAudio === true) {
+        if (request.audio.codec === this.hap.AudioStreamingCodecType.AAC_ELD) {
+          commandLine.push('-map 1:a', '-codec:a libfdk_aac', '-profile:a aac_eld');
+        }
+
+        if (request.audio.codec === this.hap.AudioStreamingCodecType.OPUS) {
+          commandLine.push(
+            '-map 1:a',
+            '-codec:a libopus',
+            '-application lowdelay',
+            '-frame_duration ' + request.audio.packet_time.toString(),
+          );
+        }
+
+        commandLine.push(
+          '-flags +global_header',
+          '-ar ' + request.audio.sample_rate + 'k',
+          '-b:a ' + request.audio.max_bit_rate + 'k',
+          '-ac ' + request.audio.channel,
+          '-payload_type ' + request.audio.pt,
+          '-ssrc ' + this.#hkSessions[request.sessionID].audioSSRC,
+          '-f rtp',
+          '-srtp_out_suite ' + this.hap.SRTPCryptoSuites[this.#hkSessions[request.sessionID].audioCryptoSuite],
+          '-srtp_out_params ' +
+            this.#hkSessions[request.sessionID].audioSRTP.toString('base64') +
+            ' srtp://' +
+            this.#hkSessions[request.sessionID].address +
+            ':' +
+            this.#hkSessions[request.sessionID].audioPort +
+            '?rtcpport=' +
+            this.#hkSessions[request.sessionID].audioPort +
+            '&localrtcpport=' +
+            this.#hkSessions[request.sessionID].localAudioPort +
+            '&pkt_size=188',
+        );
       }
 
       // Start our ffmpeg streaming process and stream from our streamer
-      let ffmpegStreaming = child_process.spawn(path.resolve(this.deviceData.ffmpeg.path + '/ffmpeg'), commandLine.split(' '), {
+      // video is pipe #1
+      // audio is pipe #3
+      let ffmpegStreaming = child_process.spawn(path.resolve(this.deviceData.ffmpeg.path + '/ffmpeg'), commandLine.join(' ').split(' '), {
         env: process.env,
         stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
-      }); // Extra pipe, #3 for audio data
+      });
 
       // ffmpeg console output is via stderr
-      /*
       ffmpegStreaming.stderr.on('data', (data) => {
         if (data.toString().includes('frame=') === false) {
           // Monitor ffmpeg output while testing. Use 'ffmpeg as a debug option'
           this?.log?.debug && this.log.debug(data.toString());
         }
       });
-      */
 
       ffmpegStreaming.on('exit', (code, signal) => {
         if (signal !== 'SIGKILL' || signal === null) {
@@ -796,7 +806,9 @@ export default class NestCamera extends HomeKitDevice {
               this.deviceData.description,
               code,
             );
-          this.controller.forceStopStreamingSession(request.sessionID);
+
+          // Clean up or streaming request, but calling it again with a 'STOP' reques
+          this.handleStreamRequest({ type: this.hap.StreamRequestTypes.STOP, sessionID: request.sessionID }, null);
         }
       });
 
@@ -839,21 +851,26 @@ export default class NestCamera extends HomeKitDevice {
         });
 
         // Build ffmpeg command
-        let commandLine =
-          '-hide_banner -nostats' +
-          ' -protocol_whitelist pipe,udp,rtp' +
-          ' -f sdp' +
-          ' -codec:a libfdk_aac' +
-          ' -i pipe:0' +
-          ' -map 0:a' +
-          ' -codec:a libspeex' +
-          ' -frames_per_packet 4' +
-          ' -vad 1' + // testing to filter background noise?
-          ' -ac 1' +
-          ' -ar 16k' +
-          ' -f data pipe:1';
+        let commandLine = [
+          '-hide_banner -nostats',
+          '-protocol_whitelist pipe,udp,rtp',
+          '-f sdp',
+          '-codec:a libfdk_aac',
+          '-i pipe:0',
+          '-map 0:a',
+        ];
 
-        ffmpegAudioTalkback = child_process.spawn(path.resolve(this.deviceData.ffmpeg.path + '/ffmpeg'), commandLine.split(' '), {
+        if (this.streamer.codecs.talk === 'speex') {
+          commandLine.push('-codec:a libspeex', '-frames_per_packet 4', '-vad 1', '-ac 1', '-ar 16k');
+        }
+
+        if (this.streamer.codecs.talk === 'opus') {
+          commandLine.push('-codec:a libopus', '-application lowdelay', '-ac 2', '-ar 48k');
+        }
+
+        commandLine.push('-f data pipe:1');
+
+        ffmpegAudioTalkback = child_process.spawn(path.resolve(this.deviceData.ffmpeg.path + '/ffmpeg'), commandLine.join(' ').split(' '), {
           env: process.env,
         });
 
@@ -865,7 +882,9 @@ export default class NestCamera extends HomeKitDevice {
                 this.deviceData.description,
                 code,
               );
-            this.controller.forceStopStreamingSession(request.sessionID);
+
+            // Clean up or streaming request, but calling it again with a 'STOP' request
+            this.handleStreamRequest({ type: this.hap.StreamRequestTypes.STOP, sessionID: request.sessionID }, null);
           }
         });
 
@@ -875,52 +894,47 @@ export default class NestCamera extends HomeKitDevice {
         });
 
         // ffmpeg console output is via stderr
-        /*
         ffmpegAudioTalkback.stderr.on('data', (data) => {
           this?.log?.debug && this.log.debug(data.toString());
         });
-        */
 
         // Write out SDP configuration
         // Tried to align the SDP configuration to what HomeKit has sent us in its audio request details
-        ffmpegAudioTalkback.stdin.write(
-          'v=0\n' +
-            'o=- 0 0 IN ' +
-            (this.#hkSessions[request.sessionID].ipv6 ? 'IP6' : 'IP4') +
-            ' ' +
-            this.#hkSessions[request.sessionID].address +
-            '\n' +
-            's=Nest Audio Talkback\n' +
-            'c=IN ' +
-            (this.#hkSessions[request.sessionID].ipv6 ? 'IP6' : 'IP4') +
-            ' ' +
-            this.#hkSessions[request.sessionID].address +
-            '\n' +
-            't=0 0\n' +
-            'm=audio ' +
-            this.#hkSessions[request.sessionID].audioTalkbackPort +
-            ' RTP/AVP ' +
-            request.audio.pt +
-            '\n' +
-            'b=AS:' +
-            request.audio.max_bit_rate +
-            '\n' +
-            'a=ptime:' +
-            request.audio.packet_time +
-            '\n' +
-            'a=rtpmap:' +
-            request.audio.pt +
-            ' MPEG4-GENERIC/' +
-            request.audio.sample_rate * 1000 +
-            '/1\n' +
+        let sdpResponse = [
+          'v=0',
+          'o=- 0 0 IN ' + (this.#hkSessions[request.sessionID].ipv6 ? 'IP6' : 'IP4') + ' ' + this.#hkSessions[request.sessionID].address,
+          's=HomeKit Audio Talkback',
+          'c=IN ' + (this.#hkSessions[request.sessionID].ipv6 ? 'IP6' : 'IP4') + ' ' + this.#hkSessions[request.sessionID].address,
+          't=0 0',
+          'm=audio ' + this.#hkSessions[request.sessionID].audioTalkbackPort + ' RTP/AVP ' + request.audio.pt,
+          'b=AS:' + request.audio.max_bit_rate,
+          'a=ptime:' + request.audio.packet_time,
+        ];
+
+        if (request.audio.codec === this.hap.AudioStreamingCodecType.AAC_ELD) {
+          sdpResponse.push(
+            'a=rtpmap:' + request.audio.pt + ' MPEG4-GENERIC/' + request.audio.sample_rate * 1000 + '/' + request.audio.channel,
             'a=fmtp:' +
-            request.audio.pt +
-            ' profile-level-id=1;mode=AAC-hbr;sizelength=13;indexlength=3;indexdeltalength=3;config=F8F0212C00BC00\n' +
-            'a=crypto:1 ' +
+              request.audio.pt +
+              ' profile-level-id=1;mode=AAC-hbr;sizelength=13;indexlength=3;indexdeltalength=3;config=F8F0212C00BC00',
+          );
+        }
+
+        if (request.audio.codec === this.hap.AudioStreamingCodecType.OPUS) {
+          sdpResponse.push(
+            'a=rtpmap:' + request.audio.pt + ' opus/' + request.audio.sample_rate * 1000 + '/' + request.audio.channel,
+            'a=fmtp:' + request.audio.pt + ' minptime=10;useinbandfec=1"',
+          );
+        }
+
+        sdpResponse.push(
+          'a=crypto:1 ' +
             this.hap.SRTPCryptoSuites[this.#hkSessions[request.sessionID].audioCryptoSuite] +
             ' inline:' +
             this.#hkSessions[request.sessionID].audioSRTP.toString('base64'),
         );
+
+        ffmpegAudioTalkback.stdin.write(sdpResponse.join('\r\n'));
         ffmpegAudioTalkback.stdin.end();
       }
 
@@ -949,6 +963,9 @@ export default class NestCamera extends HomeKitDevice {
 
     if (request.type === this.hap.StreamRequestTypes.STOP && typeof this.#hkSessions[request.sessionID] === 'object') {
       this.streamer !== undefined && this.streamer.stopLiveStream(request.sessionID);
+
+      // Close HomeKit session
+      this.controller.forceStopStreamingSession(request.sessionID);
 
       // Close off any running ffmpeg and/or splitter processes we created
       if (typeof this.#hkSessions[request.sessionID]?.rtpSplitter?.close === 'function') {
@@ -1207,7 +1224,7 @@ export default class NestCamera extends HomeKitDevice {
         audio: {
           twoWayAudio:
             this.deviceData?.ffmpeg?.libfdk_aac === true &&
-            this.deviceData?.ffmpeg?.libspeex === true &&
+            (this.deviceData?.ffmpeg?.libspeex === true || this.deviceData?.ffmpeg?.libopus === true) &&
             this.deviceData.has_speaker === true &&
             this.deviceData.has_microphone === true,
           codecs: [

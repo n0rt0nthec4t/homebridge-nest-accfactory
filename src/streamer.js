@@ -13,7 +13,7 @@
 // streamer.talkingAudio(talkingData)
 // streamer.update(deviceData) <- call super after
 //
-// Code version 13/9/2024
+// Code version 17/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -40,6 +40,11 @@ export default class Streamer {
   online = undefined; // Camera online or not
   uuid = undefined; // UUID of the device connecting
   connected = false; // Streamer connected to endpoint
+  codecs = {
+    video: undefined,
+    audio: undefined,
+    talk: undefined,
+  };
 
   // Internal data only for this class
   #outputTimer = undefined; // Timer for non-blocking loop to stream output data
@@ -191,9 +196,9 @@ export default class Streamer {
 
           talkbackTimeout = clearTimeout(talkbackTimeout);
           talkbackTimeout = setTimeout(() => {
-            // no audio received in 500ms, so mark end of stream
+            // no audio received in 1000ms, so mark end of stream
             this.talkingAudio(Buffer.alloc(0));
-          }, 500);
+          }, 1000);
         }
       });
     }
@@ -203,7 +208,7 @@ export default class Streamer {
       this.connect();
     }
 
-    // Add video/audio streams for our output loop to handle outputting to
+    // Add video/audio streams for our output loop to handle outputting
     this.#outputs[sessionID] = {
       type: 'live',
       video: videoStream,
@@ -241,7 +246,7 @@ export default class Streamer {
       this.connect();
     }
 
-    // Add video/audio streams for our output loop to handle outputting to
+    // Add video/audio streams for our output loop to handle outputting
     this.#outputs[sessionID] = {
       type: 'record',
       video: videoStream,
@@ -316,7 +321,7 @@ export default class Streamer {
   }
 
   addToOutput(type, time, data) {
-    if (typeof type !== 'string' || type === '' || typeof time !== 'number' || time === 0) {
+    if (typeof type !== 'string' || type === '' || typeof time !== 'number' || time === 0 || Buffer.isBuffer(data) === false) {
       return;
     }
 

@@ -5,7 +5,7 @@
 //
 // Credit to https://github.com/Brandawg93/homebridge-nest-cam for the work on the Nest Camera comms code on which this is based
 //
-// Code version 14/9/2024
+// Code version 18/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -61,8 +61,6 @@ export default class NexusTalk extends Streamer {
   tokenType = undefined;
   pingTimer = undefined; // Timer object for ping interval
   stalledTimer = undefined; // Timer object for no received data
-  video = {}; // Video stream details
-  audio = {}; // Audio stream details
   host = ''; // Host to connect to or connected too
 
   // Internal data only for this class
@@ -86,6 +84,13 @@ export default class NexusTalk extends Streamer {
     this.token = deviceData?.apiAccess?.token;
     this.tokenType = deviceData?.apiAccess?.oauth2 !== undefined ? 'google' : 'nest';
     this.host = deviceData?.streaming_host; // Host we'll connect to
+
+    // Set our streamer codec types
+    this.codecs = {
+      video: 'h264',
+      audio: 'aac',
+      talk: 'speex',
+    };
 
     // If specified option to start buffering, kick off
     if (typeof options?.buffer === 'boolean' && options.buffer === true) {
@@ -161,6 +166,8 @@ export default class NexusTalk extends Streamer {
     this.#id = undefined; // Not an active session anymore
     this.#packets = [];
     this.#messages = [];
+    this.video = {};
+    this.audio = {};
   }
 
   update(deviceData) {
@@ -195,7 +202,7 @@ export default class NexusTalk extends Streamer {
           TraitMap.fromObject({
             payload: talkingData,
             sessionId: this.#id,
-            codec: 'SPEEX',
+            codec: this.codecs.talk.toUpperCase(),
             sampleRate: 16000,
           }),
         ).finish();
@@ -345,20 +352,20 @@ export default class NexusTalk extends Streamer {
       let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.PlaybackBegin').decode(payload).toJSON();
       decodedMessage.channels.forEach((stream) => {
         // Find which channels match our video and audio streams
-        if (stream.codecType === 'H264') {
+        if (stream.codecType === this.codecs.video.toUpperCase()) {
           this.video = {
-            channel_id: stream.channelId,
-            start_time: Date.now() + stream.startTime,
-            sample_rate: stream.sampleRate,
-            timestamp_delta: 0,
+            id: stream.channelId,
+            startTime: Date.now() + stream.startTime,
+            sampleRate: stream.sampleRate,
+            timeStamp: 0,
           };
         }
-        if (stream.codecType === 'AAC' || stream.codecType === 'OPUS' || stream.codecType === 'SPEEX') {
+        if (stream.codecType === this.codecs.audio.toUpperCase()) {
           this.audio = {
-            channel_id: stream.channelId,
-            start_time: Date.now() + stream.startTime,
-            sample_rate: stream.sampleRate,
-            timestamp_delta: 0,
+            id: stream.channelId,
+            startTime: Date.now() + stream.startTime,
+            sampleRate: stream.sampleRate,
+            timeStamp: 0,
           };
         }
       });
@@ -393,15 +400,15 @@ export default class NexusTalk extends Streamer {
       }, 8000);
 
       // Handle video packet
-      if (decodedMessage.channelId === this.video.channel_id) {
-        this.video.timestamp_delta += decodedMessage.timestampDelta;
-        this.addToOutput('video', this.video.start_time + this.video.timestamp_delta, Buffer.from(decodedMessage.payload, 'base64'));
+      if (decodedMessage.channelId === this.video.id) {
+        this.video.timeStamp += decodedMessage.timestampDelta;
+        this.addToOutput('video', this.video.startTime + this.video.timeStamp, Buffer.from(decodedMessage.payload, 'base64'));
       }
 
       // Handle audio packet
-      if (decodedMessage.channelId === this.audio.channel_id) {
-        this.audio.timestamp_delta += decodedMessage.timestampDelta;
-        this.addToOutput('audio', this.audio.start_time + this.audio.timestamp_delta, Buffer.from(decodedMessage.payload, 'base64'));
+      if (decodedMessage.channelId === this.audio.id) {
+        this.audio.timeStamp += decodedMessage.timestampDelta;
+        this.addToOutput('audio', this.audio.startTime + this.audio.timeStamp, Buffer.from(decodedMessage.payload, 'base64'));
       }
     }
   }
