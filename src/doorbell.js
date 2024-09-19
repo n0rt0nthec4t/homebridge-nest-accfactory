@@ -1,7 +1,7 @@
 // Nest Doorbell(s)
 // Part of homebridge-nest-accfactory
 //
-// Code version 12/9/2024
+// Code version 19/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -66,7 +66,9 @@ export default class NestDoorbell extends NestCamera {
   removeServices() {
     super.removeServices();
 
-    this.doorbellTimer = clearTimeout(this.doorbellTimer);
+    clearTimeout(this.doorbellTimer);
+    this.doorbellTimer = undefined;
+
     if (this.switchService !== undefined) {
       this.accessory.removeService(this.switchService);
     }

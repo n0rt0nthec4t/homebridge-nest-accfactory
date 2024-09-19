@@ -13,7 +13,11 @@
 // streamer.talkingAudio(talkingData)
 // streamer.update(deviceData) <- call super after
 //
-// Code version 17/9/2024
+// The following defines should be overriden in your class which extends this
+//
+// blankAudio - Buffer containing a blank audio segment for the type of audio being used
+//
+// Code version 19/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -27,9 +31,8 @@ import { fileURLToPath } from 'node:url';
 // Define constants
 const CAMERAOFFLINEH264FILE = 'Nest_camera_offline.h264'; // Camera offline H264 frame file
 const CAMERAOFFH264FILE = 'Nest_camera_off.h264'; // Camera off H264 frame file
-
-const H264NALStartcode = Buffer.from([0x00, 0x00, 0x00, 0x01]);
-const AACAudioSilence = Buffer.from([0x21, 0x10, 0x01, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+const TALKBACKAUDIOTIMEOUT = 1000;
+const H264NALSTARTCODE = Buffer.from([0x00, 0x00, 0x00, 0x01]);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 
@@ -40,6 +43,7 @@ export default class Streamer {
   online = undefined; // Camera online or not
   uuid = undefined; // UUID of the device connecting
   connected = false; // Streamer connected to endpoint
+  blankAudio = undefined;
   codecs = {
     video: undefined,
     audio: undefined,
@@ -83,19 +87,11 @@ export default class Streamer {
     // load buffer for camera offline image in .h264 frame
     if (fs.existsSync(path.resolve(resourcePath + '/' + CAMERAOFFLINEH264FILE)) === true) {
       this.#cameraOfflineFrame = fs.readFileSync(path.resolve(resourcePath + '/' + CAMERAOFFLINEH264FILE));
-      // remove any H264 NALU from beginning of any video data. We do this as they are added later when output by our ffmpeg router
-      if (this.#cameraOfflineFrame.indexOf(H264NALStartcode) === 0) {
-        this.#cameraOfflineFrame = this.#cameraOfflineFrame.subarray(H264NALStartcode.length);
-      }
     }
 
     // load buffer for camera stream off image in .h264 frame
     if (fs.existsSync(path.resolve(resourcePath + '/' + CAMERAOFFH264FILE)) === true) {
       this.#cameraVideoOffFrame = fs.readFileSync(path.resolve(resourcePath + '/' + CAMERAOFFH264FILE));
-      // remove any H264 NALU from beginning of any video data. We do this as they are added later when output by our ffmpeg router
-      if (this.#cameraVideoOffFrame.indexOf(H264NALStartcode) === 0) {
-        this.#cameraVideoOffFrame = this.#cameraVideoOffFrame.subarray(H264NALStartcode.length);
-      }
     }
 
     // Start a non-blocking loop for output to the various streams which connect to our streamer object
@@ -112,13 +108,13 @@ export default class Streamer {
         if (this.online === false && this.#cameraOfflineFrame !== undefined && outputVideoFrame === true) {
           // Camera is offline so feed in our custom h264 frame and AAC silence
           output.buffer.push({ type: 'video', time: dateNow, data: this.#cameraOfflineFrame });
-          output.buffer.push({ type: 'audio', time: dateNow, data: AACAudioSilence });
+          output.buffer.push({ type: 'audio', time: dateNow, data: this.blankAudio });
           lastTimeVideo = dateNow;
         }
         if (this.online === true && this.videoEnabled === false && this.#cameraVideoOffFrame !== undefined && outputVideoFrame === true) {
           // Camera video is turned off so feed in our custom h264 frame and AAC silence
           output.buffer.push({ type: 'video', time: dateNow, data: this.#cameraVideoOffFrame });
-          output.buffer.push({ type: 'audio', time: dateNow, data: AACAudioSilence });
+          output.buffer.push({ type: 'audio', time: dateNow, data: this.blankAudio });
           lastTimeVideo = dateNow;
         }
 
@@ -135,8 +131,8 @@ export default class Streamer {
           if (packet?.type === 'video' && typeof output?.video?.write === 'function') {
             // H264 NAL Units '0001' are required to be added to beginning of any video data we output
             // If this is missing, add on beginning of data packet
-            if (packet.data.indexOf(H264NALStartcode) !== 0) {
-              packet.data = Buffer.concat([H264NALStartcode, packet.data]);
+            if (packet.data.indexOf(H264NALSTARTCODE) !== 0) {
+              packet.data = Buffer.concat([H264NALSTARTCODE, packet.data]);
             }
             output.video.write(packet.data);
           }
@@ -194,11 +190,11 @@ export default class Streamer {
         if (typeof this.talkingAudio === 'function') {
           this.talkingAudio(data);
 
-          talkbackTimeout = clearTimeout(talkbackTimeout);
+          clearTimeout(talkbackTimeout);
           talkbackTimeout = setTimeout(() => {
             // no audio received in 1000ms, so mark end of stream
             this.talkingAudio(Buffer.alloc(0));
-          }, 1000);
+          }, TALKBACKAUDIOTIMEOUT);
         }
       });
     }
@@ -321,7 +317,7 @@ export default class Streamer {
   }
 
   addToOutput(type, time, data) {
-    if (typeof type !== 'string' || type === '' || typeof time !== 'number' || time === 0 || Buffer.isBuffer(data) === false) {
+    if (typeof type !== 'string' || type === '' || typeof time !== 'number' || Buffer.isBuffer(data) === false) {
       return;
     }
 

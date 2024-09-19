@@ -10,6 +10,8 @@ Currently all releases are considered 'alpha' status, where things may or may no
 
 - General code cleanup and bug fixes
 - Updated streaming/recording support for newer Nest/Google camera/doorbell devices
+    - No talkback audio yet
+    - No incoming audio, just video stream
 
 ## v0.0.6 (2024-09-14)
 

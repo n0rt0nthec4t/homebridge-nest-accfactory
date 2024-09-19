@@ -1,7 +1,7 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 16/9/2024
+// Code version 19/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -260,9 +260,12 @@ export default class NestCamera extends HomeKitDevice {
 
   removeServices() {
     // Clean up our camera object since this device is being removed
-    this.motionTimer = clearTimeout(this.motionTimer);
-    this.personTimer = clearTimeout(this.personTimer);
-    this.snapshotTimer = clearTimeout(this.snapshotTimer);
+    clearTimeout(this.motionTimer);
+    clearTimeout(this.personTimer);
+    clearTimeout(this.snapshotTimer);
+    this.motionTimer = undefined;
+    this.personTimer = undefined;
+    this.snapshotTimer = undefined;
 
     this.streamer?.isBuffering() === true && this.streamer.stopBuffering();
 
@@ -402,7 +405,7 @@ export default class NestCamera extends HomeKitDevice {
       commandLine.join(' ').split(' '),
       {
         env: process.env,
-        stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe', includeAudio === true ? 'pipe' : ''],
       },
     ); // Extra pipe, #3 for audio data
 
@@ -580,7 +583,7 @@ export default class NestCamera extends HomeKitDevice {
         this.lastSnapshotImage = response.camera_snapshot;
 
         // Keep this snapshot image cached for a certain period
-        this.snapshotTimer = clearTimeout(this.snapshotTimer);
+        clearTimeout(this.snapshotTimer);
         this.snapshotTimer = setTimeout(() => {
           this.lastSnapshotImage = undefined;
         }, SNAPSHOTCACHETIMEOUT);
@@ -707,24 +710,18 @@ export default class NestCamera extends HomeKitDevice {
       let includeAudio = false;
       if (
         this.deviceData.audio_enabled === true &&
-        this.streamer?.codecs?.audio === 'aac' &&
-        this.deviceData?.ffmpeg?.libfdk_aac === true
+        ((this.streamer?.codecs?.audio === 'aac' && this.deviceData?.ffmpeg?.libfdk_aac === true) ||
+          (this.streamer?.codecs?.audio === 'opus' && this.deviceData?.ffmpeg?.libopus === true))
       ) {
-        // aac udio data only on extra pipe created in spawn command
-        commandLine.push('-f aac -i pipe:3');
-        includeAudio = true;
-      }
-
-      if (this.deviceData.audio_enabled === true && this.streamer?.codecs?.audio === 'opus' && this.deviceData?.ffmpeg?.libopus === true) {
-        // opus audio data only on extra pipe created in spawn command
-        commandLine.push('-f aac -i pipe:3');
+        // Audio data only on extra pipe created in spawn command
+        commandLine.push('-i pipe:3');
         includeAudio = true;
       }
 
       // Build our video command for ffmpeg
       commandLine.push(
         '-map 0:v',
-        '-codec:v copy',
+        '-codec:v:0 copy',
         '-fps_mode passthrough',
         '-reset_timestamps 1',
         '-video_track_timescale 90000',
@@ -784,10 +781,10 @@ export default class NestCamera extends HomeKitDevice {
 
       // Start our ffmpeg streaming process and stream from our streamer
       // video is pipe #1
-      // audio is pipe #3
+      // audio is pipe #3 if including audio
       let ffmpegStreaming = child_process.spawn(path.resolve(this.deviceData.ffmpeg.path + '/ffmpeg'), commandLine.join(' ').split(' '), {
         env: process.env,
-        stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe', includeAudio === true ? 'pipe' : ''],
       });
 
       // ffmpeg console output is via stderr
@@ -820,7 +817,8 @@ export default class NestCamera extends HomeKitDevice {
       // We only enable two/way audio on camera/doorbell if we have the required libraries in ffmpeg AND two-way/audio is enabled
       let ffmpegAudioTalkback = null; // No ffmpeg process for return audio yet
       if (
-        this.deviceData?.ffmpeg?.libspeex === true &&
+        ((this.streamer.codecs.talk === 'speex' && this.deviceData?.ffmpeg?.libspeex === true) ||
+          (this.streamer.codecs.talk === 'opus' && this.deviceData?.ffmpeg?.libopus === true)) &&
         this.deviceData?.ffmpeg?.libfdk_aac === true &&
         this.deviceData.audio_enabled === true &&
         this.deviceData.has_speaker === true &&

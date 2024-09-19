@@ -3,7 +3,7 @@
 //
 // Handles connection and data from Google WebRTC systems
 //
-// Code version 18/9/2024
+// Code version 19/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -30,7 +30,17 @@ const RTP_VIDEO_PAYLOAD_TYPE = 96;
 const RTP_AUDIO_PAYLOAD_TYPE = 97;
 //const RTP_TALKBACK_PAYLOAD_TYPE = 110;
 const USERAGENT = 'Nest/5.78.0 (iOScom.nestlabs.jasper.release) os=18.0'; // User Agent string
+const GOOGLEHOMEFOYERPREFIX = 'google.internal.home.foyer.v1.';
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
+
+// Blank audio in AAC format, mono channel @48000
+const AACMONO48000BLANK = Buffer.from([
+  0xff, 0xf1, 0x4c, 0x40, 0x03, 0x9f, 0xfc, 0xde, 0x02, 0x00, 0x4c, 0x61, 0x76, 0x63, 0x35, 0x39, 0x2e, 0x31, 0x38, 0x2e, 0x31, 0x30, 0x30,
+  0x00, 0x02, 0x30, 0x40, 0x0e,
+]);
+
+// Blank audio in opus format, stero channel @48000
+const OPUSSTEREO48000BLANK = Buffer.from([]);
 
 // WebRTC object
 export default class WebRTC extends Streamer {
@@ -38,6 +48,7 @@ export default class WebRTC extends Streamer {
   localAccess = false; // Do we try direct local access to the camera or via Google Home first
   extendTimer = undefined; // Stream extend timer
   talking = undefined;
+  blankAudio = AACMONO48000BLANK;
 
   // Internal data only for this class
   #protobufFoyer = undefined; // Protobuf for Google Home Foyer
@@ -77,7 +88,8 @@ export default class WebRTC extends Streamer {
 
   // Class functions
   async connect() {
-    this.extendTimer = clearInterval(this.extendTimer);
+    clearInterval(this.extendTimer);
+    this.extendTimer = undefined;
     this.#id = undefined;
     this.talking = undefined;
 
@@ -168,9 +180,13 @@ export default class WebRTC extends Streamer {
           deviceId: this.uuid,
           local: this.localAccess,
           streamContext: 'STREAM_CONTEXT_DEFAULT',
-          requestedVideoResolution: 'VIDEO_RESOLUTION_STANDARD',
+          requestedVideoResolution: 'VIDEO_RESOLUTION_FULL_HIGH',
           sdp: webRTCOffer.sdp,
         });
+
+        if (homeFoyerResponse.status !== 0) {
+          this?.log?.debug && this.log.debug('WebWTC offer was not agreed with remote for uuid "%s"', this.uuid);
+        }
 
         if (
           homeFoyerResponse.status === 0 &&
@@ -179,40 +195,48 @@ export default class WebRTC extends Streamer {
         ) {
           this?.log?.debug && this.log.debug('WebWTC offer agreed with remote for uuid "%s"', this.uuid);
 
-          this.#audioTransceiver.onTrack.subscribe((track) => {
-            this.#handlePlaybackBegin(track);
+          this.#audioTransceiver?.onTrack &&
+            this.#audioTransceiver.onTrack.subscribe((track) => {
+              this.#handlePlaybackBegin(track);
 
-            track.onReceiveRtp.subscribe((rtp) => {
-              this.#handlePlaybackPacket(rtp);
+              track.onReceiveRtp.subscribe((rtp) => {
+                this.#handlePlaybackPacket(rtp);
+              });
             });
-          });
 
-          this.#videoTransceiver.onTrack.subscribe((track) => {
-            this.#handlePlaybackBegin(track);
+          this.#videoTransceiver?.onTrack &&
+            this.#videoTransceiver.onTrack.subscribe((track) => {
+              this.#handlePlaybackBegin(track);
 
-            track.onReceiveRtp.subscribe((rtp) => {
-              this.#handlePlaybackPacket(rtp);
+              track.onReceiveRtp.subscribe((rtp) => {
+                this.#handlePlaybackPacket(rtp);
+              });
+              track.onReceiveRtcp.once(() => {
+                setInterval(() => {
+                  if (this.#videoTransceiver?.receiver !== undefined) {
+                    this.#videoTransceiver.receiver.sendRtcpPLI(track.ssrc);
+                  }
+                }, 2000);
+              });
             });
-            track.onReceiveRtcp.once(() => {
-              setInterval(() => {
-                if (this.#videoTransceiver?.receiver !== undefined) {
-                  this.#videoTransceiver.receiver.sendRtcpPLI(track.ssrc);
-                }
-              }, 2000);
-            });
-          });
 
           this.#id = homeFoyerResponse.data[0].streamId;
-          await this.#peerConnection.setRemoteDescription({
-            type: 'answer',
-            sdp: homeFoyerResponse.data[0].sdp,
-          });
+          this.#peerConnection &&
+            (await this.#peerConnection.setRemoteDescription({
+              type: 'answer',
+              sdp: homeFoyerResponse.data[0].sdp,
+            }));
 
           this.connected = true;
 
           // Create a timer to extend the active stream every period as defined
           this.extendTimer = setInterval(async () => {
-            if (this.connected === true && this.#id !== undefined && this.#googleHomeDeviceUUID !== undefined) {
+            if (
+              this.#googleHomeFoyer !== undefined &&
+              this.connected === true &&
+              this.#id !== undefined &&
+              this.#googleHomeDeviceUUID !== undefined
+            ) {
               let homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'JoinStream', {
                 command: 'extend',
                 deviceId: this.uuid,
@@ -252,16 +276,22 @@ export default class WebRTC extends Streamer {
       }
     }
 
-    if (typeof this.#peerConnection?.close === 'function') {
-      this.#peerConnection.close();
-      this.#peerConnection = undefined;
+    if (this.#googleHomeFoyer !== undefined) {
+      this.#googleHomeFoyer.close();
     }
 
+    if (typeof this.#peerConnection?.close === 'function') {
+      this.#peerConnection.close();
+    }
+
+    clearInterval(this.extendTimer);
+    this.extendTimer = undefined;
+    this.#id = undefined;
+    this.#googleHomeFoyer = undefined;
+    this.#peerConnection = undefined;
     this.#videoTransceiver = undefined;
     this.#audioTransceiver = undefined;
-    this.extendTimer = clearInterval(this.extendTimer);
     this.connected = false;
-    this.#id = undefined;
     this.video = {};
     this.audio = {};
     this.talking = undefined;
@@ -302,11 +332,20 @@ export default class WebRTC extends Streamer {
         }
         if (homeFoyerResponse?.status === 0) {
           this.talking = true;
+          this.sequenceNumber = 0;
         }
       }
 
       if (this.talking === true) {
-        // Output talkdata to stream
+        // Output talkdata to stream. We need to generate an RTP packet for data
+        /*  let rtpHeader = new wrtc.RtpHeader();
+        rtpHeader.payloadOffset = 12;
+        rtpHeader.payloadType = RTP_AUDIO_PAYLOAD_TYPE;
+        rtpHeader.sequenceNumber = this.sequenceNumber += 1;
+        rtpHeader.timestamp = this.sequenceNumber += 1;
+        rtpHeader.ssrc = this.#audioTransceiver.sender.ssrc;
+        let rtpPacket = new wrtc.RtpPacket(rtpHeader, talkingData);
+        this.#audioTransceiver.sender.sendRtp(rtpPacket.serialize()); */
       }
     }
 
@@ -336,7 +375,7 @@ export default class WebRTC extends Streamer {
       this.audio = {
         id: weriftTrack.codec.payloadType,
         startTime: Date.now(),
-        sampleRate: 4800,
+        sampleRate: 48000,
         timeStamp: 0,
         opus: undefined,
       };
@@ -354,17 +393,19 @@ export default class WebRTC extends Streamer {
     }
   }
 
-  #handlePlaybackPacket(weriftRtpPacket) {
+  async #handlePlaybackPacket(weriftRtpPacket) {
     if (weriftRtpPacket === undefined || typeof weriftRtpPacket !== 'object') {
       return;
     }
 
     if (weriftRtpPacket?.header?.payloadType === this.video?.id) {
-      // Process video RTP packets. Need to re-assemble the H264 NALUs into a singl H264 frame we can output
+      // Process video RTP packets. Need to re-assemble the H264 NALUs into a single H264 frame we can output
       this.video.timeStamp = weriftRtpPacket.header.timestamp;
-      this.video.h264 = wrtc.H264RtpPayload.deSerialize(weriftRtpPacket.payload, this.video.h264?.fragment);
-      if (this.video.h264?.payload !== undefined) {
-        this.addToOutput('video', this.video.timeStamp, this.video.h264.payload);
+      if (weriftRtpPacket.header.padding === false) {
+        this.video.h264 = wrtc.H264RtpPayload.deSerialize(weriftRtpPacket.payload, this.video.h264?.fragment);
+        if (this.video.h264?.payload !== undefined) {
+          this.addToOutput('video', this.video.timeStamp, this.video.h264.payload);
+        }
       }
     }
 
@@ -373,39 +414,9 @@ export default class WebRTC extends Streamer {
       this.audio.timeStamp = weriftRtpPacket.header.timestamp;
       this.audio.opus = wrtc.OpusRtpPayload.deSerialize(weriftRtpPacket.payload);
       if (this.audio.opus?.payload !== undefined) {
-        // this.addToOutput('audio', this.audio.timeStamp, this.audio.opus.payload);
-        this.addToOutput(
-          'audio',
-          this.audio.timeStamp,
-          Buffer.from([
-            0xff, 0xf1, 0x4c, 0x40, 0x03, 0x9f, 0xfc, 0xde, 0x02, 0x00, 0x4c, 0x61, 0x76, 0x63, 0x35, 0x39, 0x2e, 0x31, 0x38, 0x2e, 0x31,
-            0x30, 0x30, 0x00, 0x02, 0x30, 0x40, 0x0e, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c,
-            0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1,
-            0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff,
-            0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07,
-            0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20,
-            0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18,
-            0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01,
-            0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc,
-            0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f,
-            0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01,
-            0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40,
-            0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c,
-            0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1,
-            0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff,
-            0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07,
-            0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20,
-            0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18,
-            0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01,
-            0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc,
-            0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f,
-            0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01,
-            0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40,
-            0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c,
-            0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1,
-            0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07, 0xff, 0xf1, 0x4c, 0x40, 0x01, 0x7f, 0xfc, 0x01, 0x18, 0x20, 0x07,
-          ]),
-        );
+        // Until work out audio, send blank aac
+        this.addToOutput('audio', this.audio.timeStamp, AACMONO48000BLANK);
+        //this.addToOutput('audio', this.audio.timeStamp, this.audio.opus.payload);
       }
     }
   }
@@ -421,8 +432,8 @@ export default class WebRTC extends Streamer {
 
     return new Promise((resolve, reject) => {
       // Attempt to retrieve both 'Request' and 'Reponse' traits for the associated service and command
-      let TraitMapRequest = this.#protobufFoyer.lookup('google.internal.home.foyer.v1.' + command + 'Request');
-      let TraitMapResponse = this.#protobufFoyer.lookup('google.internal.home.foyer.v1.' + command + 'Response');
+      let TraitMapRequest = this.#protobufFoyer.lookup(GOOGLEHOMEFOYERPREFIX + command + 'Request');
+      let TraitMapResponse = this.#protobufFoyer.lookup(GOOGLEHOMEFOYERPREFIX + command + 'Response');
       let buffer = Buffer.alloc(0);
       let commandResponse = {
         status: undefined,
@@ -431,7 +442,8 @@ export default class WebRTC extends Streamer {
       };
 
       if (TraitMapRequest !== null && TraitMapResponse !== null && this.token !== undefined) {
-        if (this.#googleHomeFoyer === undefined) {
+        if (this.#googleHomeFoyer === undefined || this.#googleHomeFoyer?.closed === true) {
+          // No current HTTP/2 connection or current session is closed
           this.#googleHomeFoyer = http2.connect('https://googlehomefoyer-pa.googleapis.com');
         }
 
@@ -446,13 +458,13 @@ export default class WebRTC extends Streamer {
         });
 
         this.#googleHomeFoyer.on('close', () => {
-          this?.log?.debug && this.log.debug('Connection closed to Google Home Foyer');
           this.#googleHomeFoyer = undefined;
+          this?.log?.debug && this.log.debug('Connection closed to Google Home Foyer');
         });
 
         let request = this.#googleHomeFoyer.request({
           ':method': 'post',
-          ':path': '/google.internal.home.foyer.v1.' + service + '/' + command,
+          ':path': '/' + GOOGLEHOMEFOYERPREFIX + service + '/' + command,
           authorization: 'Bearer ' + this.token,
           'content-type': 'application/grpc',
           'user-agent': USERAGENT,

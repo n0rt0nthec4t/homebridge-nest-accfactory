@@ -5,7 +5,7 @@
 //
 // Credit to https://github.com/Brandawg93/homebridge-nest-cam for the work on the Nest Camera comms code on which this is based
 //
-// Code version 18/9/2024
+// Code version 19/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -55,6 +55,12 @@ const PacketType = {
   AUTHORIZE_REQUEST: 212,
 };
 
+// Blank audio in AAC format, mono channel @48000
+const AACMONO48000BLANK = Buffer.from([
+  0xff, 0xf1, 0x4c, 0x40, 0x03, 0x9f, 0xfc, 0xde, 0x02, 0x00, 0x4c, 0x61, 0x76, 0x63, 0x35, 0x39, 0x2e, 0x31, 0x38, 0x2e, 0x31, 0x30, 0x30,
+  0x00, 0x02, 0x30, 0x40, 0x0e,
+]);
+
 // nexusTalk object
 export default class NexusTalk extends Streamer {
   token = undefined;
@@ -62,6 +68,7 @@ export default class NexusTalk extends Streamer {
   pingTimer = undefined; // Timer object for ping interval
   stalledTimer = undefined; // Timer object for no received data
   host = ''; // Host to connect to or connected too
+  blankAudio = AACMONO48000BLANK;
 
   // Internal data only for this class
   #protobufNexusTalk = undefined; // Protobuf for NexusTalk
@@ -101,9 +108,10 @@ export default class NexusTalk extends Streamer {
   // Class functions
   connect(host) {
     // Clear any timers we have running
-    this.pingTimer = clearInterval(this.pingTimer);
-    this.stalledTimer = clearInterval(this.stalledTimer);
-
+    clearInterval(this.pingTimer);
+    clearTimeout(this.stalledTimer);
+    this.pingTimer = undefined;
+    this.stalledTimer = undefined;
     this.#id = undefined; // No session ID yet
 
     if (this.online === true && this.videoEnabled === true) {
@@ -135,8 +143,10 @@ export default class NexusTalk extends Streamer {
       this.#socket.on('close', (hadError) => {
         this?.log?.debug && this.log.debug('Connection closed to "%s"', host);
 
-        this.stalledTimer = clearTimeout(this.stalledTimer); // Clear stalled timer
-        this.pingTimer = clearInterval(this.pingTimer); // Clear ping timer
+        clearInterval(this.pingTimer);
+        clearTimeout(this.stalledTimer);
+        this.pingTimer = undefined;
+        this.stalledTimer = undefined;
         this.#authorised = false; // Since connection close, we can't be authorised anymore
         this.#socket = undefined; // Clear socket object
         this.connected = false;
@@ -387,7 +397,7 @@ export default class NexusTalk extends Streamer {
       // Setup up a timeout to monitor for no packets recieved in a certain period
       // If its trigger, we'll attempt to restart the stream and/or connection
       // <-- testing to see how often this occurs first
-      this.stalledTimer = clearTimeout(this.stalledTimer);
+      clearTimeout(this.stalledTimer);
       this.stalledTimer = setTimeout(() => {
         this?.log?.debug && this.log.debug('We have not received any data from nexus in the past "%s" seconds. Attempting restart', 8);
 
@@ -504,7 +514,7 @@ export default class NexusTalk extends Streamer {
           }
 
           // Periodically send PING message to keep stream alive
-          this.pingTimer = clearInterval(this.pingTimer);
+          clearInterval(this.pingTimer);
           this.pingTimer = setInterval(() => {
             this.#sendMessage(PacketType.PING, Buffer.alloc(0));
           }, PINGINTERVAL);

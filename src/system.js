@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 18/9/2024
+// Code version 19/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -11,7 +11,7 @@ import protobuf from 'protobufjs';
 // Define nodejs module requirements
 import EventEmitter from 'node:events';
 import { Buffer } from 'node:buffer';
-import { setInterval, clearInterval, setTimeout } from 'node:timers';
+import { setInterval, clearInterval, setTimeout, clearTimeout } from 'node:timers';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -340,7 +340,7 @@ export default class NestAccfactory {
                     };
 
                     // Set timeout for token expiry refresh
-                    this.#connections[connectionUUID].timer = clearInterval(this.#connections[connectionUUID].timer);
+                    clearTimeout(this.#connections[connectionUUID].timer);
                     this.#connections[connectionUUID].timer = setTimeout(
                       () => {
                         this?.log?.info && this.log.info('Performing periodic token refresh for Google account');
@@ -412,7 +412,7 @@ export default class NestAccfactory {
                 };
 
                 // Set timeout for token expiry refresh
-                this.#connections[connectionUUID].timer = clearInterval(this.#connections[connectionUUID].timer);
+                clearTimeout(this.#connections[connectionUUID].timer);
                 this.#connections[connectionUUID].timer = setTimeout(
                   () => {
                     this?.log?.info && this.log.info('Performing periodic token refresh for Nest account');
