@@ -3,7 +3,7 @@
 //
 // Handles connection and data from Google WebRTC systems
 //
-// Code version 19/9/2024
+// Code version 20/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -25,7 +25,7 @@ import Streamer from './streamer.js';
 
 // Define constants
 const EXTENDINTERVAL = 120000; // Send extend command to Google Home Foyer every this period for active streams
-//const RTP_PACKET_HEADER_SIZE = 12;
+const RTP_PACKET_HEADER_SIZE = 12;
 const RTP_VIDEO_PAYLOAD_TYPE = 96;
 const RTP_AUDIO_PAYLOAD_TYPE = 97;
 //const RTP_TALKBACK_PAYLOAD_TYPE = 110;
@@ -40,14 +40,13 @@ const AACMONO48000BLANK = Buffer.from([
 ]);
 
 // Blank audio in opus format, stero channel @48000
-const OPUSSTEREO48000BLANK = Buffer.from([]);
+//const OPUSSTEREO48000BLANK = Buffer.from([]);
 
 // WebRTC object
 export default class WebRTC extends Streamer {
   token = undefined; // oauth2 token
   localAccess = false; // Do we try direct local access to the camera or via Google Home first
   extendTimer = undefined; // Stream extend timer
-  talking = undefined;
   blankAudio = AACMONO48000BLANK;
 
   // Internal data only for this class
@@ -91,7 +90,7 @@ export default class WebRTC extends Streamer {
     clearInterval(this.extendTimer);
     this.extendTimer = undefined;
     this.#id = undefined;
-    this.talking = undefined;
+    this.audio.talking = undefined;
 
     if (this.#googleHomeDeviceUUID === undefined) {
       // We don't have the 'google id' yet for this device, so obtain
@@ -265,7 +264,7 @@ export default class WebRTC extends Streamer {
         endStreamReason: 'REASON_USER_EXITED_SESSION',
       });
 
-      if (this.talking !== undefined) {
+      if (this.audio.talking !== undefined) {
         this.#googleHomeFoyerCommand('CameraService', 'SendTalkback', {
           googleDeviceId: {
             value: this.#googleHomeDeviceUUID,
@@ -294,7 +293,7 @@ export default class WebRTC extends Streamer {
     this.connected = false;
     this.video = {};
     this.audio = {};
-    this.talking = undefined;
+    this.audio.talking = undefined;
   }
 
   update(deviceData) {
@@ -312,13 +311,18 @@ export default class WebRTC extends Streamer {
   }
 
   async talkingAudio(talkingData) {
-    if (Buffer.isBuffer(talkingData) === false || this.#googleHomeDeviceUUID === undefined || this.#id === undefined) {
+    if (
+      Buffer.isBuffer(talkingData) === false ||
+      this.#googleHomeDeviceUUID === undefined ||
+      this.#id === undefined ||
+      typeof this.#audioTransceiver?.sender?.sendRtp !== 'function'
+    ) {
       return;
     }
 
     if (talkingData.length !== 0) {
-      if (this.talking === undefined) {
-        this.talking = false;
+      if (this.audio.talking === undefined) {
+        this.audio.talking = false;
         let homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'SendTalkback', {
           googleDeviceId: {
             value: this.#googleHomeDeviceUUID,
@@ -327,29 +331,30 @@ export default class WebRTC extends Streamer {
           command: 'COMMAND_START',
         });
         if (homeFoyerResponse?.status !== 0) {
-          this.talking = undefined;
+          this.audio.talking = undefined;
           this?.log?.debug && this.log.debug('Error occured while requesting talkback to start for uuid "%s"', this.uuid);
         }
         if (homeFoyerResponse?.status === 0) {
-          this.talking = true;
-          this.sequenceNumber = 0;
+          this.audio.talking = true;
+          this?.log?.debug && this.log.debug('Talkback started on uuid "%s"', this.uuid);
         }
       }
 
-      if (this.talking === true) {
+      if (this.audio.talking === true) {
         // Output talkdata to stream. We need to generate an RTP packet for data
-        /*  let rtpHeader = new wrtc.RtpHeader();
-        rtpHeader.payloadOffset = 12;
-        rtpHeader.payloadType = RTP_AUDIO_PAYLOAD_TYPE;
-        rtpHeader.sequenceNumber = this.sequenceNumber += 1;
-        rtpHeader.timestamp = this.sequenceNumber += 1;
+        let rtpHeader = new wrtc.RtpHeader();
         rtpHeader.ssrc = this.#audioTransceiver.sender.ssrc;
+        rtpHeader.marker = true;
+        rtpHeader.payloadOffset = RTP_PACKET_HEADER_SIZE;
+        rtpHeader.payloadType = RTP_AUDIO_PAYLOAD_TYPE;
+        rtpHeader.timestamp = Date.now() & 0xffffffff;
+        rtpHeader.sequenceNumber = this.audio.talkSquenceNumber++ & 0xffff;
         let rtpPacket = new wrtc.RtpPacket(rtpHeader, talkingData);
-        this.#audioTransceiver.sender.sendRtp(rtpPacket.serialize()); */
+        this.#audioTransceiver.sender.sendRtp(rtpPacket.serialize());
       }
     }
 
-    if (talkingData.length === 0) {
+    if (talkingData.length === 0 && this.audio.talking === true) {
       // Buffer length of zero, ised to signal no more talking data for the moment
       let homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'SendTalkback', {
         googleDeviceId: {
@@ -361,7 +366,10 @@ export default class WebRTC extends Streamer {
       if (homeFoyerResponse?.status !== 0) {
         this?.log?.debug && this.log.debug('Error occured while requesting talkback to stop for uuid "%s"', this.uuid);
       }
-      this.talking = undefined;
+      if (homeFoyerResponse?.status === 0) {
+        this?.log?.debug && this.log.debug('Talkback ended on uuid "%s"', this.uuid);
+      }
+      this.audio.talking = undefined;
     }
   }
 
@@ -378,6 +386,8 @@ export default class WebRTC extends Streamer {
         sampleRate: 48000,
         timeStamp: 0,
         opus: undefined,
+        talking: undefined, // undefined = not connected, false = connecting, true = connected and talking
+        talkSquenceNumber: weriftTrack?.sender?.sequenceNumber === undefined ? 0 : weriftTrack.sender.sequenceNumber,
       };
     }
 
@@ -449,12 +459,11 @@ export default class WebRTC extends Streamer {
 
         this.#googleHomeFoyer.on('connect', () => {
           this?.log?.debug && this.log.debug('Connected to Google Home Foyer');
-
-          this.#googleHomeFoyer.setTimeout(0);
         });
 
+        // eslint-disable-next-line no-unused-vars
         this.#googleHomeFoyer.on('error', (error) => {
-          console.log('http2 error', error);
+          //.log('http2 error', error);
         });
 
         this.#googleHomeFoyer.on('close', () => {
