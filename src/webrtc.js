@@ -90,7 +90,6 @@ export default class WebRTC extends Streamer {
     clearInterval(this.extendTimer);
     this.extendTimer = undefined;
     this.#id = undefined;
-    this.audio.talking = undefined;
 
     if (this.#googleHomeDeviceUUID === undefined) {
       // We don't have the 'google id' yet for this device, so obtain
@@ -153,7 +152,15 @@ export default class WebRTC extends Streamer {
                   { type: 'nack', parameter: 'pli' },
                   { type: 'goog-remb' },
                 ],
-                parameters: 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
+                // profile-level-id=xxyyzz
+                // xx = H264 profile
+                // Baseline profile = 42
+                // Main profile = 4d
+                // yy = Constrained
+                // zz = H264 Level
+                // Level 3.1 = 1f
+                // Level 4.0 = 20
+                parameters: 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=4de020',
                 payloadType: RTP_VIDEO_PAYLOAD_TYPE,
               }),
             ],
@@ -242,7 +249,7 @@ export default class WebRTC extends Streamer {
                 streamId: this.#id,
               });
 
-              if (homeFoyerResponse?.status !== 0 || homeFoyerResponse?.[0]?.data?.streamExtensionStatus !== 'STATUS_STREAM_EXTENDED') {
+              if (homeFoyerResponse?.data?.[0]?.streamExtensionStatus !== 'STATUS_STREAM_EXTENDED') {
                 this?.log?.debug && this.log.debug('Error occured while requested stream extentions for uuid "%s"', this.uuid);
 
                 // Do we try to reconnect???
@@ -256,7 +263,7 @@ export default class WebRTC extends Streamer {
 
   close() {
     if (this.#id !== undefined) {
-      this?.log?.debug && this.log.debug('Notifying remote about us closing connection for uuid "%s"', this.uuid);
+      this?.log?.debug && this.log.debug('Notifying remote about closing connection for uuid "%s"', this.uuid);
       this.#googleHomeFoyerCommand('CameraService', 'JoinStream', {
         command: 'end',
         deviceId: this.uuid,
@@ -264,7 +271,8 @@ export default class WebRTC extends Streamer {
         endStreamReason: 'REASON_USER_EXITED_SESSION',
       });
 
-      if (this.audio.talking !== undefined) {
+      if (this.audio?.talking !== undefined) {
+        // If we're starting or started talk, stop it
         this.#googleHomeFoyerCommand('CameraService', 'SendTalkback', {
           googleDeviceId: {
             value: this.#googleHomeDeviceUUID,
@@ -293,7 +301,6 @@ export default class WebRTC extends Streamer {
     this.connected = false;
     this.video = {};
     this.audio = {};
-    this.audio.talking = undefined;
   }
 
   update(deviceData) {
@@ -321,7 +328,7 @@ export default class WebRTC extends Streamer {
     }
 
     if (talkingData.length !== 0) {
-      if (this.audio.talking === undefined) {
+      if (this.audio?.talking === undefined) {
         this.audio.talking = false;
         let homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'SendTalkback', {
           googleDeviceId: {
@@ -330,6 +337,7 @@ export default class WebRTC extends Streamer {
           streamId: this.#id,
           command: 'COMMAND_START',
         });
+
         if (homeFoyerResponse?.status !== 0) {
           this.audio.talking = undefined;
           this?.log?.debug && this.log.debug('Error occured while requesting talkback to start for uuid "%s"', this.uuid);
@@ -354,7 +362,7 @@ export default class WebRTC extends Streamer {
       }
     }
 
-    if (talkingData.length === 0 && this.audio.talking === true) {
+    if (talkingData.length === 0 && this.audio?.talking === true) {
       // Buffer length of zero, ised to signal no more talking data for the moment
       let homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'SendTalkback', {
         googleDeviceId: {
@@ -386,8 +394,8 @@ export default class WebRTC extends Streamer {
         sampleRate: 48000,
         timeStamp: 0,
         opus: undefined,
-        talking: undefined, // undefined = not connected, false = connecting, true = connected and talking
         talkSquenceNumber: weriftTrack?.sender?.sequenceNumber === undefined ? 0 : weriftTrack.sender.sequenceNumber,
+        talking: undefined, // undefined = not connected, false = connecting, true = connected and talking
       };
     }
 
@@ -425,6 +433,7 @@ export default class WebRTC extends Streamer {
       this.audio.opus = wrtc.OpusRtpPayload.deSerialize(weriftRtpPacket.payload);
       if (this.audio.opus?.payload !== undefined) {
         // Until work out audio, send blank aac
+        //console.log( this.audio.opus.payload.toString('hex'))
         this.addToOutput('audio', this.audio.timeStamp, AACMONO48000BLANK);
         //this.addToOutput('audio', this.audio.timeStamp, this.audio.opus.payload);
       }

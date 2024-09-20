@@ -1,7 +1,7 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 19/9/2024
+// Code version 21/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -992,27 +992,41 @@ export default class NestCamera extends HomeKitDevice {
       return;
     }
 
-    // For non-HKSV enabled devices, we will process any activity zone changes to add or remove any motion services
-    if (deviceData.hksv === false && JSON.stringify(deviceData.activity_zones) !== JSON.stringify(this.deviceData.activity_zones)) {
-      // Check to see if any activity zones were added
-      deviceData.activity_zones.forEach((zone) => {
-        if (typeof this.motionServices[zone.id]?.service === 'undefined') {
+    // Check to see if any activity zones were added for both non-HKSV and HKSV enabled devices
+    deviceData.activity_zones.forEach((zone) => {
+      if (
+        JSON.stringify(deviceData.activity_zones) !== JSON.stringify(this.deviceData.activity_zones) &&
+        (this.deviceData.hksv === false || (this.deviceData.hksv === true && zone.id === 1))
+      ) {
+        if (this.motionServices?.[zone.id]?.service === undefined) {
           // Zone doesn't have an associated motion sensor, so add one
           let tempService = this.accessory.addService(this.hap.Service.MotionSensor, zone.id === 1 ? '' : zone.name, zone.id);
+          if (tempService.testCharacteristic(this.hap.Characteristic.Active) === false) {
+            tempService.addCharacteristic(this.hap.Characteristic.Active);
+          }
           tempService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
-          this.motionServices[zone.id] = { service: tempService };
+          this.motionServices[zone.id] = { service: tempService, timer: undefined };
         }
-      });
+      }
+    });
 
-      // Check to see if any activity zones were removed
-      Object.entries(this.motionServices).forEach(([zoneID, service]) => {
+    // Check to see if any activity zones were removed for both non-HKSV and HKSV enabled devices
+    // We'll also update the online status of the camera in the motion service here
+    Object.entries(this.motionServices).forEach(([zoneID, service]) => {
+      // Set online status
+      service.service.updateCharacteristic(
+        this.hap.Characteristic.Active,
+        deviceData.online === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE,
+      );
+
+      if (JSON.stringify(deviceData.activity_zones) !== JSON.stringify(this.deviceData.activity_zones) && zoneID !== 1) {
         if (deviceData.activity_zones.findIndex(({ id }) => id === zoneID) === -1) {
           // Motion service we created doesn't appear in zone list anymore, so assume deleted
           this.accessory.removeService(service.service);
           delete this.motionServices[zoneID];
         }
-      });
-    }
+      }
+    });
 
     if (this.operatingModeService !== undefined) {
       // Update camera off/on status
@@ -1178,10 +1192,11 @@ export default class NestCamera extends HomeKitDevice {
       this.deviceData.activity_zones.forEach((zone) => {
         if (this.deviceData.hksv === false || (this.deviceData.hksv === true && zone.id === 1)) {
           let tempService = this.accessory.addService(this.hap.Service.MotionSensor, zone.id === 1 ? '' : zone.name, zone.id);
+          if (tempService.testCharacteristic(this.hap.Characteristic.Active) === false) {
+            tempService.addCharacteristic(this.hap.Characteristic.Active);
+          }
           tempService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
-          this.motionServices[zone.id] = {
-            service: tempService,
-          };
+          this.motionServices[zone.id] = { service: tempService, timer: undefined };
         }
       });
     }
