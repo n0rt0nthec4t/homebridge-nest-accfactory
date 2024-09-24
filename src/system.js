@@ -83,6 +83,7 @@ export default class NestAccfactory {
         this.#connections[crypto.randomUUID()] = {
           type: NestAccfactory.NestConnection,
           authorised: false,
+          protobufRoot: null,
           access_token: this.config[key].access_token,
           fieldTest: this.config[key]?.fieldTest === true,
           referer: this.config[key]?.fieldTest === true ? 'home.ft.nest.com' : 'home.nest.com',
@@ -101,6 +102,7 @@ export default class NestAccfactory {
         this.#connections[crypto.randomUUID()] = {
           type: NestAccfactory.GoogleConnection,
           authorised: false,
+          protobufRoot: null,
           issuetoken: this.config[key].issuetoken,
           cookie: this.config[key].cookie,
           fieldTest: typeof this.config[key]?.fieldTest === 'boolean' ? this.config[key].fieldTest : false,
@@ -242,7 +244,7 @@ export default class NestAccfactory {
 
         // We'll check connection status every 15 seconds. We'll also handle token expiry/refresh this way
         clearInterval(this.#connectionTimer);
-        this.#connectionTimer = setInterval(this.discoverDevices(), 15000);
+        this.#connectionTimer = setInterval(this.discoverDevices.bind(this), 15000);
       });
 
       this.api.on('shutdown', async () => {
@@ -288,7 +290,6 @@ export default class NestAccfactory {
 
   async #connect(connectionUUID) {
     if (typeof this.#connections?.[connectionUUID] === 'object') {
-      this.#connections[connectionUUID].authorised === false; // Mark connection as no-longer authorised
       if (this.#connections[connectionUUID].type === NestAccfactory.GoogleConnection) {
         // Google cookie method as refresh token method no longer supported by Google since October 2022
         // Instructions from homebridge_nest or homebridge_nest_cam to obtain this
@@ -345,7 +346,6 @@ export default class NestAccfactory {
                     this.#connections[connectionUUID].userID = data.userid;
                     this.#connections[connectionUUID].transport_url = data.urls.transport_url;
                     this.#connections[connectionUUID].weather_url = data.urls.weather_url;
-                    this.#connections[connectionUUID].protobufRoot = null;
                     this.#connections[connectionUUID].token = googleToken;
                     this.#connections[connectionUUID].cameraAPI = {
                       key: 'Authorization',
@@ -358,8 +358,8 @@ export default class NestAccfactory {
                     clearTimeout(this.#connections[connectionUUID].timer);
                     this.#connections[connectionUUID].timer = setTimeout(
                       () => {
-                        this.#connections[connectionUUID].authorised = false; // Flag not authorised anymore
                         this?.log?.info && this.log.info('Performing periodic token refresh for Google account');
+                        this.#connect(connectionUUID);
                       },
                       (tokenExpire - Math.floor(Date.now() / 1000) - 60) * 1000,
                     ); // Refresh just before token expiry
@@ -371,6 +371,7 @@ export default class NestAccfactory {
           // eslint-disable-next-line no-unused-vars
           .catch((error) => {
             // The token we used to obtained a Nest session failed, so overall authorisation failed
+            this.#connections[connectionUUID].authorised = false;
             this?.log?.error && this.log.error('Authorisation failed using Google account');
           });
       }
@@ -418,7 +419,6 @@ export default class NestAccfactory {
                 this.#connections[connectionUUID].userID = data.userid;
                 this.#connections[connectionUUID].transport_url = data.urls.transport_url;
                 this.#connections[connectionUUID].weather_url = data.urls.weather_url;
-                this.#connections[connectionUUID].protobufRoot = null;
                 this.#connections[connectionUUID].token = this.#connections[connectionUUID].access_token;
                 this.#connections[connectionUUID].cameraAPI = {
                   key: 'cookie',
@@ -430,8 +430,8 @@ export default class NestAccfactory {
                 clearTimeout(this.#connections[connectionUUID].timer);
                 this.#connections[connectionUUID].timer = setTimeout(
                   () => {
-                    this.#connections[connectionUUID].authorised = false; // Flag not authorised anymore
                     this?.log?.info && this.log.info('Performing periodic token refresh for Nest account');
+                    this.#connect(connectionUUID);
                   },
                   1000 * 3600 * 24,
                 ); // Refresh token every 24hrs
@@ -442,6 +442,7 @@ export default class NestAccfactory {
           // eslint-disable-next-line no-unused-vars
           .catch((error) => {
             // The token we used to obtained a Nest session failed, so overall authorisation failed
+            this.#connections[connectionUUID].authorised = false;
             this?.log?.error && this.log.error('Authorisation failed using Nest account');
           });
       }

@@ -1,43 +1,40 @@
 {
     "displayName": "Nest Accfactory",
-    "name": "homebridge-nest-accfactory",
-    "homepage": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory",
-    "version": "0.0.7-alpha.5",
-    "description": "Homebridge support for Nest/Google devices including HomeKit Secure Video (HKSV) support for doorbells and cameras",
+    "name": "nest-accfactory",
+    "homepage": "https://github.com/n0rt0nthec4t/Nest_accfactory",
+    "version": "0.1.9-alpha.2",
+    "description": "HomeKit integration for Nest devices using HAP-NodeJS library",
     "license": "Apache-2.0",
     "author": "n0rt0nthec4t",
     "type": "module",
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/n0rt0nthec4t/homebridge-nest-accfactory.git"
+        "url": "git+https://github.com/n0rt0nthec4t/Nest_accfactory.git"
     },
     "bugs": {
-        "url": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issues"
+        "url": "https://github.com/n0rt0nthec4t/Nest_accfactory/issues"
     },
     "engines": {
         "node": "^18.20.4 || ^20.16.0 || ^22.6.0",
-        "homebridge": "^1.8.0 || ^2.0.0-beta.0"
+        "hap-nodejs": "^1.1.0"
     },
     "main": "dist/index.js",
     "files": [
         "LICENSE",
         "dist/**/*",
-        "!dist/docker-standalone",
-        "config.schema.json",
         "README.md",
         "CHANGELOG.md"
     ],
     "scripts": {
         "clean": "rimraf ./dist",
         "format": "prettier --write src/**/*.js",
-        "lint": "eslint src/**/*.js --max-warnings=100",
+        "lint": "eslint src/**/*.js --max-warnings=0",
+        "watch": "npm run build && npm link && nodemon",
         "build": "npm run clean && copyfiles -u 1 src/*.js dist && copyfiles -u 1 src/res/*.h264 dist && copyfiles -u 1 src/res/*.jpg dist && copyfiles -u 1 'src/protobuf/**/*.proto' dist",
         "prepublishOnly": "npm run lint && npm run build"
     },
     "keywords": [
         "homekit",
-        "homebridge-plugin",
-        "homebridge",
         "hksv",
         "homekit secure video",
         "nest",
@@ -54,15 +51,17 @@
         "@eslint/js": "^9.11.1",
         "@stylistic/eslint-plugin": "^2.8.0",
         "@types/node": "^20.16.0",
-        "@typescript-eslint/parser": "^8.6.0",
-        "homebridge": "^2.0.0-beta.0",
+        "@typescript-eslint/parser": "^8.7.0",
         "copyfiles": "^2.4.1",
         "eslint": "^9.11.1",
+        "nodemon": "^3.1.7",
         "prettier": "^3.3.3",
         "prettier-eslint": "^16.3.0",
         "rimraf": "^6.0.1"
     },
     "dependencies": {
+        "hap-nodejs": "^1.1.0",
+        "chalk": "^5.3.0",
         "protobufjs": "^7.4.0",
         "ws": "^8.18.0",
         "werift": "^0.20.0"
