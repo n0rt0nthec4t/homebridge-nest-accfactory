@@ -3,7 +3,7 @@
 # Nest_accfactory
   
 [![release](https://img.shields.io/github/release/n0rt0nthec4t/homebridge-nest-accfactory.svg?include_prereleases)](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases)
-[![version](https://img.shields.io/github/release-date/n0rt0nthec4t/homebridge-nest-accfactor)](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases)
+[![version](https://img.shields.io/github/release-date/n0rt0nthec4t/homebridge-nest-accfactory)](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases)
 [![Donate](https://badgen.net/badge/donate/paypal/yellow)](https://paypal.me/n0rt0nthec4t)
 
 </span>
