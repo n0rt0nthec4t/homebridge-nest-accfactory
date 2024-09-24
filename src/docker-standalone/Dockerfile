@@ -77,7 +77,7 @@ RUN ./configure \
     --disable-debug \
     --disable-shared \
     --enable-pthreads \
-    --enable-static \
+    #--enable-static \
     --enable-version3 \
     --enable-pthreads \
     --enable-runtime-cpudetect \
@@ -95,6 +95,9 @@ ARG NEST_ACCFACTORY_VERSION
 RUN apk update \
     && apk upgrade \
     && apk add tzdata \
+    && apk add fdk-aac \
+    && apk add speex \
+    && apk add opus \
     && apk add nano
 
 # working directory inside the container

@@ -1,7 +1,7 @@
 {
     "displayName": "Nest Accfactory",
     "name": "nest-accfactory",
-    "homepage": "https://github.com/n0rt0nthec4t/Nest_accfactory",
+    "homepage": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory",
     "version": "0.1.9-alpha.2",
     "description": "HomeKit integration for Nest devices using HAP-NodeJS library",
     "license": "Apache-2.0",
@@ -9,10 +9,10 @@
     "type": "module",
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/n0rt0nthec4t/Nest_accfactory.git"
+        "url": "git+https://github.com/n0rt0nthec4t/homebridge-nest-accfactory.git"
     },
     "bugs": {
-        "url": "https://github.com/n0rt0nthec4t/Nest_accfactory/issues"
+        "url": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issue"
     },
     "engines": {
         "node": "^20.16.0 || ^22.6.0",
