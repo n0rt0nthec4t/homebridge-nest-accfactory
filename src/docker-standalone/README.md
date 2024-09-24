@@ -2,10 +2,10 @@
   
 # Nest_accfactory
   
-[![release](https://img.shields.io/github/release/n0rt0nthec4t/Nest_accfactory.svg?include_prereleases)](https://github.com/n0rt0nthec4t/Nest_accfactory/releases)
-[![version](https://img.shields.io/github/release-date/n0rt0nthec4t/Nest_accfactory)](https://github.com/n0rt0nthec4t/Nest_accfactory/releases)
+[![release](https://img.shields.io/github/release/n0rt0nthec4t/homebridge-nest-accfactory.svg?include_prereleases)](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases)
+[![version](https://img.shields.io/github/release-date/n0rt0nthec4t/homebridge-nest-accfactor)](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases)
 [![Donate](https://badgen.net/badge/donate/paypal/yellow)](https://paypal.me/n0rt0nthec4t)
-  
+
 </span>
 
 This is a HAP-NodeJS accessory I have developed to allow Nest devices to be used with HomeKit including having support for HomeKit Secure Video on doorbells and camera devices

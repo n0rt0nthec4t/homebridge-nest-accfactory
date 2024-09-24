@@ -2,11 +2,9 @@
 ARG FFMPEG_VERSION=7.0.2
 
 # version of node docker we will use. 
-# Pegged at node v18.x as bug in docker builds on armv7/armv6 when using later versions
-ARG NODE_VERSION=18-alpine3.20
-#ARG NODE_VERSION=20-alpine3.20
+ARG NODE_VERSION=20-alpine3.20
 
-# version of our project. pass in via build, formatted as vx.x.x
+# version of our project. pass in via build, formatted as x.x.x
 ARG NEST_ACCFACTORY_VERSION
 
 # first up, we want to build our ffmpeg binary to be included in the final image
@@ -97,8 +95,6 @@ ARG NEST_ACCFACTORY_VERSION
 RUN apk update \
     && apk upgrade \
     && apk add tzdata \
-    && apk add fdk-aac \
-    && apk add speex \
     && apk add nano
 
 # working directory inside the container
@@ -132,6 +128,6 @@ ENTRYPOINT ["node", "/opt/Nest_accfactory/dist/index.js", "/opt/Nest_accfactory/
 # labels for the container
 LABEL org.opencontainers.image.title="Nest_accfactory"
 LABEL org.opencontainers.image.description="HomeKit integration for Nest devices based on HAP-NodeJS library"
-LABEL org.opencontainers.image.url="https://github.com/n0rt0nthec4t/homebridge-nest-accfactory"
+LABEL org.opencontainers.image.url="https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/tree/main/src/docker-standalone"
 LABEL org.opencontainers.image.authors="mark@n0rt0nthec4t.dev"
 LABEL org.opencontainers.image.version=${NEST_ACCFACTORY_VERSION}
