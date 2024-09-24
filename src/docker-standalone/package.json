@@ -15,7 +15,7 @@
         "url": "https://github.com/n0rt0nthec4t/Nest_accfactory/issues"
     },
     "engines": {
-        "node": "^18.20.4 || ^20.16.0 || ^22.6.0",
+        "node": "^20.16.0 || ^22.6.0",
         "hap-nodejs": "^1.1.0"
     },
     "main": "dist/index.js",

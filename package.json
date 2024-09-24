@@ -2,7 +2,7 @@
     "displayName": "Nest Accfactory",
     "name": "homebridge-nest-accfactory",
     "homepage": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory",
-    "version": "0.0.7-alpha.5",
+    "version": "0.1.9-alpha.2",
     "description": "Homebridge support for Nest/Google devices including HomeKit Secure Video (HKSV) support for doorbells and cameras",
     "license": "Apache-2.0",
     "author": "n0rt0nthec4t",
@@ -15,7 +15,7 @@
         "url": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issues"
     },
     "engines": {
-        "node": "^18.20.4 || ^20.16.0 || ^22.6.0",
+        "node": "^20.16.0 || ^22.6.0",
         "homebridge": "^1.8.0 || ^2.0.0-beta.0"
     },
     "main": "dist/index.js",
