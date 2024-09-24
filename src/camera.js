@@ -1,7 +1,7 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 21/9/2024
+// Code version 23/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -32,7 +32,7 @@ export default class NestCamera extends HomeKitDevice {
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
   motionServices = undefined; // Object of Camera/Doorbell motion sensor(s)
-  batteryService = undefined; // If a camera has a battery
+  batteryService = undefined; // If a camera has a battery <-- todo
   operatingModeService = undefined; // Link to camera/doorbell operating mode service
   personTimer = undefined; // Cooldown timer for person/face events
   motionTimer = undefined; // Cooldown timer for motion events
@@ -356,7 +356,7 @@ export default class NestCamera extends HomeKitDevice {
 
     // Build our video command for ffmpeg
     commandLine.push(
-      '-map 0:v',
+      '-map 0:v:0',
       '-codec:v libx264',
       '-preset veryfast',
       '-profile:v ' +
@@ -388,7 +388,7 @@ export default class NestCamera extends HomeKitDevice {
       let audioSampleRates = ['8', '16', '24', '32', '44.1', '48'];
 
       commandLine.push(
-        '-map 1:a',
+        '-map 1:a:0',
         '-codec:a libfdk_aac',
         '-profile:a aac_low',
         '-ar ' + audioSampleRates[this.#recordingConfig.audioCodec.samplerate] + 'k',
@@ -710,9 +710,15 @@ export default class NestCamera extends HomeKitDevice {
       let includeAudio = false;
       if (
         this.deviceData.audio_enabled === true &&
-        ((this.streamer?.codecs?.audio === 'aac' && this.deviceData?.ffmpeg?.libfdk_aac === true) ||
-          (this.streamer?.codecs?.audio === 'opus' && this.deviceData?.ffmpeg?.libopus === true))
+        this.streamer?.codecs?.audio === 'aac' &&
+        this.deviceData?.ffmpeg?.libfdk_aac === true
       ) {
+        // Audio data only on extra pipe created in spawn command
+        commandLine.push('-f aac -i pipe:3');
+        includeAudio = true;
+      }
+
+      if (this.deviceData.audio_enabled === true && this.streamer?.codecs?.audio === 'opus' && this.deviceData?.ffmpeg?.libopus === true) {
         // Audio data only on extra pipe created in spawn command
         commandLine.push('-i pipe:3');
         includeAudio = true;
@@ -720,8 +726,8 @@ export default class NestCamera extends HomeKitDevice {
 
       // Build our video command for ffmpeg
       commandLine.push(
-        '-map 0:v',
-        '-codec:v:0 copy',
+        '-map 0:v:0',
+        '-codec:v copy',
         '-fps_mode passthrough',
         '-reset_timestamps 1',
         '-video_track_timescale 90000',
@@ -744,12 +750,12 @@ export default class NestCamera extends HomeKitDevice {
       // We have seperate video and audio streams that need to be muxed together if audio enabled
       if (includeAudio === true) {
         if (request.audio.codec === this.hap.AudioStreamingCodecType.AAC_ELD) {
-          commandLine.push('-map 1:a', '-codec:a libfdk_aac', '-profile:a aac_eld');
+          commandLine.push('-map 1:a:0', '-codec:a libfdk_aac', '-profile:a aac_eld');
         }
 
         if (request.audio.codec === this.hap.AudioStreamingCodecType.OPUS) {
           commandLine.push(
-            '-map 1:a',
+            '-map 1:a:0',
             '-codec:a libopus',
             '-application lowdelay',
             '-frame_duration ' + request.audio.packet_time.toString(),

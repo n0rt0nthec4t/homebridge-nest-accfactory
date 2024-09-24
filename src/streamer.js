@@ -17,7 +17,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 19/9/2024
+// Code version 23/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -42,12 +42,12 @@ export default class Streamer {
   audioEnabled = undefined; // Audio from camera enabled or not
   online = undefined; // Camera online or not
   uuid = undefined; // UUID of the device connecting
-  connected = false; // Streamer connected to endpoint
-  blankAudio = undefined;
+  connected = undefined; // Stream endpoint connection: undefined = not connected , false = connecting , true = connected and streaming
+  blankAudio = undefined; // Blank audio 'frame'
   codecs = {
-    video: undefined,
-    audio: undefined,
-    talk: undefined,
+    video: undefined, // Video codec being used
+    audio: undefined, // Audio codec being used
+    talk: undefined, // Talking codec being used
   };
 
   // Internal data only for this class
@@ -107,14 +107,14 @@ export default class Streamer {
         // We'll insert the appropriate video frame into the stream
         if (this.online === false && this.#cameraOfflineFrame !== undefined && outputVideoFrame === true) {
           // Camera is offline so feed in our custom h264 frame and AAC silence
-          output.buffer.push({ type: 'video', time: dateNow, data: this.#cameraOfflineFrame });
-          output.buffer.push({ type: 'audio', time: dateNow, data: this.blankAudio });
+          output.buffer.push({ time: dateNow, type: 'video', data: this.#cameraOfflineFrame });
+          output.buffer.push({ time: dateNow, type: 'audio', data: this.blankAudio });
           lastTimeVideo = dateNow;
         }
         if (this.online === true && this.videoEnabled === false && this.#cameraVideoOffFrame !== undefined && outputVideoFrame === true) {
           // Camera video is turned off so feed in our custom h264 frame and AAC silence
-          output.buffer.push({ type: 'video', time: dateNow, data: this.#cameraVideoOffFrame });
-          output.buffer.push({ type: 'audio', time: dateNow, data: this.blankAudio });
+          output.buffer.push({ time: dateNow, type: 'video', data: this.#cameraVideoOffFrame });
+          output.buffer.push({ time: dateNow, type: 'audio', data: this.blankAudio });
           lastTimeVideo = dateNow;
         }
 
@@ -125,7 +125,7 @@ export default class Streamer {
           output.buffer.shift();
         }
 
-        // Output the packet data to any streams 'live' or 'recording' streams
+        // Output the packet data to any 'live' or 'recording' streams
         if (output.type === 'live' || output.type === 'record') {
           let packet = output.buffer.shift();
           if (packet?.type === 'video' && typeof output?.video?.write === 'function') {
@@ -152,7 +152,7 @@ export default class Streamer {
   startBuffering() {
     if (this.#outputs?.buffer === undefined) {
       // No active buffer session, start connection to streamer
-      if (this.connected === false && typeof this.connect === 'function') {
+      if (this.connected === undefined && typeof this.connect === 'function') {
         this?.log?.debug && this.log.debug('Started buffering for uuid "%s"', this.uuid);
         this.connect();
       }
@@ -199,7 +199,7 @@ export default class Streamer {
       });
     }
 
-    if (this.connected === false && typeof this.connect === 'function') {
+    if (this.connected === undefined && typeof this.connect === 'function') {
       // We do not have an active connection, so startup connection
       this.connect();
     }
@@ -237,7 +237,7 @@ export default class Streamer {
       });
     }
 
-    if (this.connected === false && typeof this.connect === 'function') {
+    if (this.connected === undefined && typeof this.connect === 'function') {
       // We do not have an active connection, so startup connection
       this.connect();
     }
@@ -310,21 +310,21 @@ export default class Streamer {
       if ((this.online === false || this.videoEnabled === false || this.audioEnabled === false) && typeof this.close === 'function') {
         this.close(); // as offline or streaming not enabled, close streamer
       }
-      if (this.online === true && this.videoEnabled === true && typeof this.connect === 'function') {
+      if (this.online === true && this.videoEnabled === true && this.connected === undefined && typeof this.connect === 'function') {
         this.connect(); // Connect for stream
       }
     }
   }
 
-  addToOutput(type, time, data) {
-    if (typeof type !== 'string' || type === '' || typeof time !== 'number' || Buffer.isBuffer(data) === false) {
+  addToOutput(type, data) {
+    if (typeof type !== 'string' || type === '' || Buffer.isBuffer(data) === false) {
       return;
     }
 
     Object.values(this.#outputs).forEach((output) => {
       output.buffer.push({
+        time: Date.now(), // Timestamp of when tgis was added to buffer
         type: type,
-        time: time,
         data: data,
       });
     });

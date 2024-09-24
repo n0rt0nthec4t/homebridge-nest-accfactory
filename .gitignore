@@ -1,3 +1,4 @@
+persist
 node_modules
 dist
 .vscode
@@ -5,3 +6,6 @@ dist
 .git
 package-lock.json
 *.code-workspace
+*.opus
+*.aac
+*.mp4

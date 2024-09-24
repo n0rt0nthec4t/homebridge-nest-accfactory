@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 19/9/2024
+// Code version 24/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -67,6 +67,7 @@ export default class NestAccfactory {
   #connections = {}; // Object of confirmed connections
   #rawData = {}; // Cached copy of data from both Rest and Protobuf APIs
   #eventEmitter = new EventEmitter(); // Used for object messaging from this platform
+  #connectionTimer = undefined;
 
   constructor(log, config, api) {
     this.config = config;
@@ -238,12 +239,20 @@ export default class NestAccfactory {
       this.api.on('didFinishLaunching', async () => {
         // We got notified that Homebridge has finished loading, so we are ready to process
         this.discoverDevices();
+
+        // We'll check connection status every 15 seconds. We'll also handle token expiry/refresh this way
+        clearInterval(this.#connectionTimer);
+        this.#connectionTimer = setInterval(this.discoverDevices(), 15000);
       });
 
       this.api.on('shutdown', async () => {
-        // We got notified that Homebridge is shutting down. Perform cleanup??
+        // We got notified that Homebridge is shutting down
+        // Perform cleanup some internal cleaning up
         this.#eventEmitter.removeAllListeners(HomeKitDevice.SET);
         this.#eventEmitter.removeAllListeners(HomeKitDevice.GET);
+        clearInterval(this.#connectionTimer);
+        this.#connectionTimer = undefined;
+        this.#rawData = {};
       });
     }
   }
@@ -257,17 +266,23 @@ export default class NestAccfactory {
   }
 
   async discoverDevices() {
-    // Setup event listeners for set/get calls from devices
-    this.#eventEmitter.addListener(HomeKitDevice.SET, (deviceUUID, values) => this.#set(deviceUUID, values));
-    this.#eventEmitter.addListener(HomeKitDevice.GET, (deviceUUID, values) => this.#get(deviceUUID, values));
+    // Setup event listeners for set/get calls from devices if not already done so
+    if (this.#eventEmitter.listenerCount(HomeKitDevice.SET) === 0) {
+      this.#eventEmitter.addListener(HomeKitDevice.SET, (deviceUUID, values) => this.#set(deviceUUID, values));
+    }
+    if (this.#eventEmitter.listenerCount(HomeKitDevice.GET) === 0) {
+      this.#eventEmitter.addListener(HomeKitDevice.GET, (deviceUUID, values) => this.#get(deviceUUID, values));
+    }
 
     Object.keys(this.#connections).forEach((uuid) => {
-      this.#connect(uuid).then(() => {
-        if (this.#connections[uuid].authorised === true) {
-          this.#subscribeREST(uuid, true);
-          this.#subscribeProtobuf(uuid);
-        }
-      });
+      if (this.#connections[uuid].authorised === false) {
+        this.#connect(uuid).then(() => {
+          if (this.#connections[uuid].authorised === true) {
+            this.#subscribeREST(uuid, true);
+            this.#subscribeProtobuf(uuid);
+          }
+        });
+      }
     });
   }
 
@@ -343,8 +358,8 @@ export default class NestAccfactory {
                     clearTimeout(this.#connections[connectionUUID].timer);
                     this.#connections[connectionUUID].timer = setTimeout(
                       () => {
+                        this.#connections[connectionUUID].authorised = false; // Flag not authorised anymore
                         this?.log?.info && this.log.info('Performing periodic token refresh for Google account');
-                        this.#connect(connectionUUID);
                       },
                       (tokenExpire - Math.floor(Date.now() / 1000) - 60) * 1000,
                     ); // Refresh just before token expiry
@@ -415,8 +430,8 @@ export default class NestAccfactory {
                 clearTimeout(this.#connections[connectionUUID].timer);
                 this.#connections[connectionUUID].timer = setTimeout(
                   () => {
+                    this.#connections[connectionUUID].authorised = false; // Flag not authorised anymore
                     this?.log?.info && this.log.info('Performing periodic token refresh for Nest account');
-                    this.#connect(connectionUUID);
                   },
                   1000 * 3600 * 24,
                 ); // Refresh token every 24hrs
