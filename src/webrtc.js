@@ -3,7 +3,7 @@
 //
 // Handles connection and data from Google WebRTC systems
 //
-// Code version 23/9/2024
+// Code version 25/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -138,7 +138,7 @@ export default class WebRTC extends Streamer {
       }
 
       if (homeFoyerResponse.status === 0) {
-        // Setup our WwebWRTC peerconnection for this device
+        // Setup our WebWRTC peer connection for this device
         this.#peerConnection = new werift.RTCPeerConnection({
           iceUseIpv4: true,
           iceUseIpv6: false,
@@ -244,8 +244,7 @@ export default class WebRTC extends Streamer {
               sdp: homeFoyerResponse.data[0].sdp,
             }));
 
-          this?.log?.debug &&
-            this.log.debug('Playback started from WebRTC for uuid "%s" with session ID "%s"', this.uuid, this.#id);
+          this?.log?.debug && this.log.debug('Playback started from WebRTC for uuid "%s" with session ID "%s"', this.uuid, this.#id);
           this.connected = true;
 
           // Monitor connection status. If closed and there are still output streams, re-connect

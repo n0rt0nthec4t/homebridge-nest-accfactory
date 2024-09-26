@@ -1,5 +1,6 @@
-// Homebridge platform allowing Nest devices to be used with HomeKit
-// This is a port from my standalone project, Nest_accfactory to Homebridge
+// HAP-NodeJS acessory allowing Nest devices to be used with HomeKit
+// This is a wrapper around homebridge-nest-accessory to replicate Nest_accfactory
+// using common code based with homebridge-nest-accfactory
 //
 // This includes having support for HomeKit Secure Video (HKSV) on doorbells and cameras
 //
@@ -12,11 +13,11 @@
 // Nest Doorbells (wired 1st gen)
 //
 // The accessory supports authentication to Nest/Google using either a Nest account OR Google (migrated Nest account) account.
-// 'preliminary' support for using FieldTest account types also.
+// "preliminary" support for using FieldTest account types also.
 //
-// Supports both Nest REST and protobuf APIs for communication to Nest systems
+// Supports both Nest REST and Protobuf APIs for communication
 //
-// Code version 24/9/2024
+// Code version 25/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -78,7 +79,8 @@ function loadConfiguration(filename) {
               fieldTest: value?.FieldTest === true,
             };
           }
-          if (typeof value === 'object' &&
+          if (
+            typeof value === 'object' &&
             typeof value?.issuetoken === 'string' &&
             value.issuetoken !== '' &&
             typeof value?.cookie === 'string' &&
@@ -130,6 +132,10 @@ function loadConfiguration(filename) {
           // Use avahi as the mDNS advertiser
           config.options.mDNS = HAP.MDNSAdvertiser.AVAHI;
         }
+      }
+      if (key === 'Debug' && (value === true || (typeof value === 'string' && value !== ''))) {
+        // Debugging enabled
+        Logger.setDebugEnabled(true);
       }
       if (key === 'EveApp' && typeof value === 'boolean') {
         // Global Evehome app integration

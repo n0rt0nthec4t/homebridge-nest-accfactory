@@ -2,7 +2,7 @@
     "displayName": "Nest Accfactory",
     "name": "nest-accfactory",
     "homepage": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory",
-    "version": "0.1.9-alpha.2",
+    "version": "0.1.9-alpha.3",
     "description": "HomeKit integration for Nest devices using HAP-NodeJS library",
     "license": "Apache-2.0",
     "author": "n0rt0nthec4t",
@@ -27,8 +27,8 @@
     ],
     "scripts": {
         "clean": "rimraf ./dist",
-        "format": "prettier --write src/**/*.js",
-        "lint": "eslint src/**/*.js --max-warnings=0",
+        "format": "prettier --write src/*.js src/**/*.js",
+        "lint": "eslint src/*.js src/**/*.js --max-warnings=20",
         "watch": "npm run build && npm link && nodemon",
         "build": "npm run clean && copyfiles -u 1 src/*.js dist && copyfiles -u 1 src/res/*.h264 dist && copyfiles -u 1 src/res/*.jpg dist && copyfiles -u 1 'src/protobuf/**/*.proto' dist",
         "prepublishOnly": "npm run lint && npm run build"

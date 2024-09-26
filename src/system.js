@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 24/9/2024
+// Code version 26/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -55,7 +55,7 @@ export default class NestAccfactory {
 
   static DataSource = {
     REST: 'REST', // From the REST API
-    PROTOBUF: 'PROTOBUF', // From the protobuf API
+    PROTOBUF: 'Protobuf', // From the Protobuf API
   };
 
   static GoogleConnection = 'google'; // Google account connection
@@ -68,6 +68,7 @@ export default class NestAccfactory {
   #rawData = {}; // Cached copy of data from both Rest and Protobuf APIs
   #eventEmitter = new EventEmitter(); // Used for object messaging from this platform
   #connectionTimer = undefined;
+  #protobufRoot = null; // Protobuf loaded protos
 
   constructor(log, config, api) {
     this.config = config;
@@ -83,7 +84,6 @@ export default class NestAccfactory {
         this.#connections[crypto.randomUUID()] = {
           type: NestAccfactory.NestConnection,
           authorised: false,
-          protobufRoot: null,
           access_token: this.config[key].access_token,
           fieldTest: this.config[key]?.fieldTest === true,
           referer: this.config[key]?.fieldTest === true ? 'home.ft.nest.com' : 'home.nest.com',
@@ -102,7 +102,6 @@ export default class NestAccfactory {
         this.#connections[crypto.randomUUID()] = {
           type: NestAccfactory.GoogleConnection,
           authorised: false,
-          protobufRoot: null,
           issuetoken: this.config[key].issuetoken,
           cookie: this.config[key].cookie,
           fieldTest: typeof this.config[key]?.fieldTest === 'boolean' ? this.config[key].fieldTest : false,
@@ -203,8 +202,7 @@ export default class NestAccfactory {
             this.config.options.ffmpeg.libx264 === true &&
             this.config.options.ffmpeg.libfdk_aac === true
           ) {
-            this?.log?.warn &&
-              this.log.warn('Missing libspeex in ffmpeg binary, two-way audio on certain camera/doorbells will be unavailable');
+            this?.log?.warn && this.log.warn('Missing libspeex in ffmpeg binary, talkback on certain camera/doorbells will be unavailable');
           }
           if (
             this.config.options.ffmpeg.libx264 === true &&
@@ -281,7 +279,7 @@ export default class NestAccfactory {
         this.#connect(uuid).then(() => {
           if (this.#connections[uuid].authorised === true) {
             this.#subscribeREST(uuid, true);
-            this.#subscribeProtobuf(uuid);
+            this.#subscribeProtobuf(uuid, true);
           }
         });
       }
@@ -372,6 +370,11 @@ export default class NestAccfactory {
           .catch((error) => {
             // The token we used to obtained a Nest session failed, so overall authorisation failed
             this.#connections[connectionUUID].authorised = false;
+            this?.log?.debug &&
+              this.log.debug(
+                'Failed to connect using credential details for connection uuid "%s". A periodic retry event will be triggered',
+                connectionUUID,
+              );
             this?.log?.error && this.log.error('Authorisation failed using Google account');
           });
       }
@@ -443,6 +446,7 @@ export default class NestAccfactory {
           .catch((error) => {
             // The token we used to obtained a Nest session failed, so overall authorisation failed
             this.#connections[connectionUUID].authorised = false;
+            this?.log?.debug && this.log.debug('Failed to connect using credential details for connection uuid "%s"', connectionUUID);
             this?.log?.error && this.log.error('Authorisation failed using Nest account');
           });
       }
@@ -489,7 +493,7 @@ export default class NestAccfactory {
     let subscribeJSONData = { known_bucket_types: REQUIREDBUCKETS, known_bucket_versions: [] };
 
     if (fullRefresh === false) {
-      // We have data stored from ths REST API, so setup read using known objects
+      // We have data stored from this REST API, so setup read using known object
       subscribeURL = this.#connections[connectionUUID].transport_url + '/v6/subscribe';
       subscribeJSONData = { objects: [] };
 
@@ -505,6 +509,10 @@ export default class NestAccfactory {
         });
     }
 
+    if (fullRefresh === true) {
+      this?.log?.debug && this.log.debug('Starting REST API subscribe for connection uuid "%s"', connectionUUID);
+    }
+
     fetchWrapper(
       'post',
       subscribeURL,
@@ -515,7 +523,7 @@ export default class NestAccfactory {
           Authorization: 'Basic ' + this.#connections[connectionUUID].token,
         },
         keepalive: true,
-        timeout: 300 * 60,
+        //timeout: (5 * 60000),
       },
       JSON.stringify(subscribeJSONData),
     )
@@ -700,16 +708,18 @@ export default class NestAccfactory {
         await this.#processPostSubscribe(deviceChanges);
       })
       .catch((error) => {
-        if (error?.name !== 'TimeoutError' && this?.log?.debug) {
-          this.log.debug('REST API had an error performing subscription. Will restart subscription');
+        if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false && this?.log?.debug) {
+          this.log.debug('REST API had an error performing subscription with connection uuid "%s"', connectionUUID);
+          this.log.debug('Error was "%s"', error);
         }
       })
       .finally(() => {
+        this?.log?.debug && this.log.debug('Restarting REST API subscribe for connection uuid "%s"', connectionUUID);
         setTimeout(this.#subscribeREST.bind(this, connectionUUID, fullRefresh), 1000);
       });
   }
 
-  async #subscribeProtobuf(connectionUUID) {
+  async #subscribeProtobuf(connectionUUID, firstRun) {
     if (typeof this.#connections?.[connectionUUID] !== 'object' || this.#connections?.[connectionUUID]?.authorised !== true) {
       // Not a valid connection object and/or we're not authorised
       return;
@@ -750,24 +760,28 @@ export default class NestAccfactory {
       }
     };
 
-    // Attempt to load in protobuf files if not already done so for this connection
-    if (
-      this.#connections[connectionUUID].protobufRoot === null &&
-      fs.existsSync(path.resolve(__dirname + '/protobuf/root.proto')) === true
-    ) {
+    // Attempt to load in protobuf files if not already done so
+    if (this.#protobufRoot === null && fs.existsSync(path.resolve(__dirname + '/protobuf/root.proto')) === true) {
       protobuf.util.Long = null;
       protobuf.configure();
-      this.#connections[connectionUUID].protobufRoot = protobuf.loadSync(path.resolve(__dirname + '/protobuf/root.proto'));
+      this.#protobufRoot = protobuf.loadSync(path.resolve(__dirname + '/protobuf/root.proto'));
+      if (this.#protobufRoot !== null) {
+        this?.log?.debug && this.log.debug('Loaded protobuf support files for Protobuf API');
+      }
     }
 
-    if (this.#connections[connectionUUID].protobufRoot !== null) {
-      // Loaded in the Protobuf files, so now dynamically build the 'observe' post body data based on what we have loaded
+    if (this.#protobufRoot === null) {
+      this?.log?.debug && this.log.debug('Failed to loaded protobuf support files. Protobuf API will be unavailable');
+    }
+
+    if (this.#protobufRoot !== null) {
+      // We have loaded Protobuf proto files, so now dynamically build the 'observe' post body data
       let observeTraitsList = [];
       let observeBody = Buffer.alloc(0);
-      let traitTypeObserveParam = this.#connections[connectionUUID].protobufRoot.lookup('nestlabs.gateway.v2.TraitTypeObserveParams');
-      let observeRequest = this.#connections[connectionUUID].protobufRoot.lookup('nestlabs.gateway.v2.ObserveRequest');
+      let traitTypeObserveParam = this.#protobufRoot.lookup('nestlabs.gateway.v2.TraitTypeObserveParams');
+      let observeRequest = this.#protobufRoot.lookup('nestlabs.gateway.v2.ObserveRequest');
       if (traitTypeObserveParam !== null && observeRequest !== null) {
-        traverseTypes(this.#connections[connectionUUID].protobufRoot, (type) => {
+        traverseTypes(this.#protobufRoot, (type) => {
           // We only want to have certain trait'families' in our observe reponse we are building
           // This also depends on the account type we connected with
           // Nest accounts cannot observe camera/doorbell product traits
@@ -787,6 +801,10 @@ export default class NestAccfactory {
         observeBody = observeRequest.encode(observeRequest.create({ stateTypes: [1, 2], traitTypeParams: observeTraitsList })).finish();
       }
 
+      if (firstRun === true) {
+        this?.log?.debug && this.log.debug('Starting Protobuf API trait observe for connection uuid "%s"', connectionUUID);
+      }
+
       fetchWrapper(
         'post',
         'https://' + this.#connections[connectionUUID].protobufAPIHost + '/nestlabs.gateway.v2.GatewayService/Observe',
@@ -800,7 +818,7 @@ export default class NestAccfactory {
             'X-Accept-Response-Streaming': 'true',
           },
           keepalive: true,
-          timeout: 300 * 60,
+          //timeout: (5 * 60000),
         },
         observeBody,
       )
@@ -815,7 +833,7 @@ export default class NestAccfactory {
               let decodedMessage = {};
               try {
                 // Attempt to decode the Protobuf message(s) we extracted from the stream and get a JSON object representation
-                decodedMessage = this.#connections[connectionUUID].protobufRoot
+                decodedMessage = this.#protobufRoot
                   .lookup('nestlabs.gateway.v2.ObserveResponse')
                   .decode(buffer.subarray(0, messageSize))
                   .toJSON();
@@ -868,7 +886,7 @@ export default class NestAccfactory {
                       }
                     }
                     if (trait.traitId.traitLabel === 'camera_migration_status') {
-                      // Handle case of camera/doorbell(s) which have been migrated from Nest to Google Home
+                      // Handle case of camera/doorbell(s) which have been migrated from Nest app to Google Home
                       if (
                         this.#rawData[trait.traitId.resourceId]?.value?.camera_migration_status?.state?.where !==
                           'MIGRATED_TO_GOOGLE_HOME' &&
@@ -918,12 +936,14 @@ export default class NestAccfactory {
           }
         })
         .catch((error) => {
-          if (error?.name !== 'TimeoutError' && this?.log?.debug) {
-            this.log.debug('Protobuf API had an error performing trait observe. Will restart observe');
+          if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false && this?.log?.debug) {
+            this.log.debug('Protobuf API had an error performing trait observe with connection uuid "%s"', connectionUUID);
+            this.log.debug('Error was "%s"', error);
           }
         })
         .finally(() => {
-          setTimeout(this.#subscribeProtobuf.bind(this, connectionUUID), 1000);
+          this?.log?.debug && this.log.debug('Restarting Protobuf API trait observe for connection uuid "%s"', connectionUUID);
+          setTimeout(this.#subscribeProtobuf.bind(this, connectionUUID, false), 1000);
         });
     }
   }
@@ -954,12 +974,17 @@ export default class NestAccfactory {
         .filter((object) => object.change === 'add')
         .forEach((object) => {
           if (object.object_key === deviceData.uuid && deviceData.excluded === true) {
-            this?.log?.warn && this.log.warn('Device "%s" ignored due to it being marked as excluded', deviceData.description);
+            this?.log?.warn && this.log.warn('Device "%s" is ignored due to it being marked as excluded', deviceData.description);
           }
           if (object.object_key === deviceData.uuid && deviceData.excluded === false) {
             // Device isn't marked as excluded, so create the required HomeKit accessories based upon the device data
             this?.log?.debug &&
-              this.log.debug('Using %s API as data source for "%s"', this.#rawData[object.object_key]?.source, deviceData.description);
+              this.log.debug(
+                'Using %s API as data source for "%s" from connection uuid "%s"',
+                this.#rawData[object.object_key]?.source,
+                deviceData.description,
+                this.#rawData[object.object_key].connection,
+              );
             if (deviceData.device_type === NestAccfactory.DeviceType.THERMOSTAT && typeof NestThermostat === 'function') {
               // Nest Thermostat(s) - Categories.THERMOSTAT = 9
               let tempDevice = new NestThermostat(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
@@ -1166,6 +1191,7 @@ export default class NestAccfactory {
                             this.#connections[this.#rawData[object.object_key].connection].cameraAPI.token,
                         },
                         timeout: CAMERAALERTPOLLING,
+                        retry: 3,
                       },
                     )
                       .then((response) => response.json())
@@ -2163,9 +2189,16 @@ export default class NestAccfactory {
       .forEach(([object_key, value]) => {
         let tempDevice = {};
         try {
-          if (value?.source === NestAccfactory.DataSource.PROTOBUF && value.value?.streaming_protocol !== undefined) {
+          if (
+            value?.source === NestAccfactory.DataSource.PROTOBUF &&
+            value.value?.streaming_protocol !== undefined &&
+            (value.value?.camera_migration_status?.state === undefined ||
+              (value.value?.camera_migration_status?.state?.where === 'MIGRATED_TO_GOOGLE_HOME' &&
+                value.value?.camera_migration_status?.state?.progress === 'PROGRESS_COMPLETE'))
+          ) {
             let RESTTypeData = {};
-            // If we haven't found a macaddress, ase a Nest Labs prefix for first 6 digits followed by a CRC24 based off serial number for last 6 digits.
+            // We'll 'crosscheck' into any REST API data (matching on serial number) for a macaddress
+            // If we don't find one, use a Nest Labs prefix for first 6 digits followed by a CRC24 based off serial number for last 6 digits
             RESTTypeData.mac_address =
               value.value?.wifi_interface?.macAddress !== undefined
                 ? Buffer.from(value.value.wifi_interface.macAddress, 'base64')
@@ -2403,7 +2436,9 @@ export default class NestAccfactory {
     Object.entries(this.#rawData)
       .filter(
         ([key]) =>
-          (key.startsWith('structure.') === true || key.startsWith('STRUCTURE_') === true) && (deviceUUID === '' || deviceUUID === key),
+          (key.startsWith('structure.') === true || key.startsWith('STRUCTURE_') === true) &&
+          (deviceUUID === '' || deviceUUID === key) &&
+          this.config?.options?.weather === true, // Only if weather enabled
       )
       .forEach(([object_key, value]) => {
         let tempDevice = {};
@@ -2465,10 +2500,7 @@ export default class NestAccfactory {
       return;
     }
 
-    if (
-      this.#connections[this.#rawData[deviceUUID].connection].protobufRoot !== null &&
-      this.#rawData?.[deviceUUID]?.source === NestAccfactory.DataSource.PROTOBUF
-    ) {
+    if (this.#protobufRoot !== null && this.#rawData?.[deviceUUID]?.source === NestAccfactory.DataSource.PROTOBUF) {
       let updatedTraits = [];
       let protobufElement = {
         traitRequest: {
@@ -2876,7 +2908,7 @@ export default class NestAccfactory {
 
         if (
           this.#rawData?.[deviceUUID]?.source === NestAccfactory.DataSource.PROTOBUF &&
-          this.#connections[this.#rawData[deviceUUID].connection].protobufRoot !== null &&
+          this.#protobufRoot !== null &&
           this.#rawData[deviceUUID]?.value?.device_identity?.vendorProductId !== undefined &&
           key === 'camera_snapshot'
         ) {
@@ -2981,7 +3013,7 @@ export default class NestAccfactory {
 
   async #protobufCommand(connectionUUID, service, command, values) {
     if (
-      this.#connections?.[connectionUUID]?.protobufRoot === null ||
+      this.#protobufRoot === null ||
       typeof service !== 'string' ||
       service === '' ||
       typeof command !== 'string' ||
@@ -2995,7 +3027,7 @@ export default class NestAccfactory {
       if (typeof object === 'object' && object !== null) {
         if ('type_url' in object && 'value' in object) {
           // We have a type_url and value object at this same level, we'll treat this a trait requiring encoding
-          let TraitMap = this.#connections[connectionUUID].protobufRoot.lookup(object.type_url.split('/')[1]);
+          let TraitMap = this.#protobufRoot.lookup(object.type_url.split('/')[1]);
           if (TraitMap !== null) {
             object.value = TraitMap.encode(TraitMap.fromObject(object.value)).finish();
           }
@@ -3010,8 +3042,8 @@ export default class NestAccfactory {
     };
 
     // Attempt to retrieve both 'Request' and 'Reponse' traits for the associated service and command
-    let TraitMapRequest = this.#connections[connectionUUID].protobufRoot.lookup('nestlabs.gateway.v1.' + command + 'Request');
-    let TraitMapResponse = this.#connections[connectionUUID].protobufRoot.lookup('nestlabs.gateway.v1.' + command + 'Response');
+    let TraitMapRequest = this.#protobufRoot.lookup('nestlabs.gateway.v1.' + command + 'Request');
+    let TraitMapResponse = this.#protobufRoot.lookup('nestlabs.gateway.v1.' + command + 'Response');
     let commandResponse = undefined;
 
     if (TraitMapRequest !== null && TraitMapResponse !== null) {
@@ -3129,7 +3161,7 @@ function scaleValue(value, sourceRangeMin, sourceRangeMax, targetRangeMin, targe
   return ((value - sourceRangeMin) * (targetRangeMax - targetRangeMin)) / (sourceRangeMax - sourceRangeMin) + targetRangeMin;
 }
 
-async function fetchWrapper(method, url, options, data) {
+async function fetchWrapper(method, url, options, data, response) {
   if ((method !== 'get' && method !== 'post') || typeof url !== 'string' || url === '' || typeof options !== 'object') {
     return;
   }
@@ -3140,6 +3172,11 @@ async function fetchWrapper(method, url, options, data) {
     options.signal = AbortSignal.timeout(options.timeout);
   }
 
+  if (options?.retry === undefined) {
+    // If not retry option specifed , we'll do just once
+    options.retry = 1;
+  }
+
   options.method = method; // Set the HTTP method to use
 
   if (method === 'post' && typeof data !== undefined) {
@@ -3147,12 +3184,28 @@ async function fetchWrapper(method, url, options, data) {
     options.body = data;
   }
 
-  // eslint-disable-next-line no-undef
-  let response = await fetch(url, options);
-  if (response.ok === false) {
-    let error = new Error(response.statusText);
-    error.code = response.status;
-    throw error;
+  if (options.retry > 0) {
+    // eslint-disable-next-line no-undef
+    response = await fetch(url, options);
+    if (response.ok === false && options.retry > 1) {
+      options.retry--; // One less retry to go
+
+      // Try again after short delay (500ms)
+      // We pass back in this response also for when we reach zero retries and still not successful
+      console.log('before response', response.statusText);
+      console.log('before retry', options.retry);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      // eslint-disable-next-line no-undef
+      response = fetchWrapper(method, url, options, data, structuredClone(response));
+      console.log('after response', response);
+      console.log('after retry', options.retry);
+    }
+    if (response.ok === false && options.retry === 0) {
+      let error = new Error(response.statusText);
+      error.code = response.status;
+      throw error;
+    }
   }
+
   return response;
 }

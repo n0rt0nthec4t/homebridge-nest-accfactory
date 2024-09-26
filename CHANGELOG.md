@@ -6,11 +6,17 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 Currently all releases are considered 'alpha' status, where things may or may not be working. Use at your own risk :-)
 
+## v0.1.9 (alpha)
+
+- General code cleanup and bug fixes
+- Aligned version numbering to old Nest_accfactory repo
+- Audio talkback support for newer Nest/Google camera/doorbell devices
+- Fixed issue with camera/doorbell devices between migrated to/fro between Nest and Google Home on docker/standalone
+
 ## v0.0.7 (alpha)
 
 - General code cleanup and bug fixes
 - Updated streaming/recording support for newer Nest/Google camera/doorbell devices
-    ~~- No talkback audio yet~~
     - No incoming audio, just video stream
 
 ## v0.0.6 (2024-09-14)

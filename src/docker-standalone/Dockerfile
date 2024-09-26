@@ -105,12 +105,12 @@ WORKDIR /opt/Nest_accfactory
 RUN mkdir ${WORKDIR}/dist
 
 # copy require files into container image folder
-COPY *.js ./dist/
-COPY res/ ./dist/res/
-COPY protobuf/ ./dist/protobuf/
+COPY src/*.js ./dist/
+COPY src/res/ ./dist/res/
+COPY src/protobuf/ ./dist/protobuf/
 COPY --from=builder /build/ffmpeg-${FFMPEG_VERSION}/ffmpeg ./dist
-COPY docker-standalone/*.js ./dist/
-COPY docker-standalone/package.json ./
+COPY src/docker-standalone/*.js ./dist/
+COPY src/docker-standalone/package.json ./
 
 # perform installation based on details in package.json
 RUN npm update -g \
