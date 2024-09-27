@@ -1,7 +1,7 @@
 // Nest Protect
 // Part of homebridge-nest-accfactory
 //
-// Code version 12/9/2024
+// Code version 27/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -233,7 +233,7 @@ export default class NestProtect extends HomeKitDevice {
       //this.log.info('Eve Smoke Alarm test', (EveHomeSetData.alarmtest === true ? 'start' : 'stop'));
     }
     if (typeof EveHomeSetData?.statusled === 'boolean') {
-      this.set({ ntp_green_led_enable: EveHomeSetData.statusled });
+      this.set({ uuid: this.deviceData.nest_google_uuid, ntp_green_led_enable: EveHomeSetData.statusled });
     }
   }
 }

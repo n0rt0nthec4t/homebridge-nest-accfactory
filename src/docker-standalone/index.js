@@ -17,7 +17,7 @@
 //
 // Supports both Nest REST and Protobuf APIs for communication
 //
-// Code version 25/9/2024
+// Code version 28/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -153,26 +153,32 @@ function loadConfiguration(filename) {
         // Global HomeKit paring code
         config.options.hkPairingCode = value;
       }
-      if (key === 'DoorbellCooldown' && typeof value === 'number') {
+      if (key === 'DoorbellCooldown' && isNaN(value) === false) {
+        value = Number(value);
         if (value >= 1000) {
           // If greather than 1000, assume milliseconds value passed in, so convert to seconds
           value = Math.floor(value / 1000);
         }
         config.options.doorbellCooldown = value;
       }
-      if (key === 'MotionCooldown' && typeof value === 'number') {
+      if (key === 'MotionCooldown' && isNaN(value) === false) {
+        value = Number(value);
         if (value >= 1000) {
           // If greather than 1000, assume milliseconds value passed in, so convert to seconds
           value = Math.floor(value / 1000);
         }
         config.options.motionCooldown = value;
       }
-      if (key === 'PersonCooldown' && typeof value === 'number') {
+      if (key === 'PersonCooldown' && isNaN(value) === false) {
+        value = Number(value);
         if (value >= 1000) {
           // If greather than 1000, assume milliseconds value passed in, so convert to seconds
           value = Math.floor(value / 1000);
         }
         config.options.personCooldown = value;
+      }
+      if (key === 'Elevation' && isNaN(value) === false) {
+        config.options.elevation = Number(value);
       }
       if (key !== 'Connections' && key !== 'GoogleToken' && typeof value === 'object') {
         // Since key value is an object, and not an object for a value we expect
@@ -200,29 +206,32 @@ function loadConfiguration(filename) {
             // Per device silence indoor chime
             config.devices[key]['chimeSwitch'] = value;
           }
-          if (subKey === 'Option.elevation' && typeof value === 'number') {
+          if (subKey === 'Option.elevation' && isNaN(value) === false) {
             // Per device elevation setting (for weather)
-            config.devices[key]['elevation'] = value;
+            config.devices[key]['elevation'] = Number(value);
           }
           if (subKey === 'HomeKitCode' && typeof value === 'string' && value !== '') {
             // Per device HomeKit paring code
             config.devices[key]['hkPairingCode'] = value;
           }
-          if (subKey === 'DoorbellCooldown' && typeof value === 'number') {
+          if (subKey === 'DoorbellCooldown' && isNaN(value) === false) {
+            value = Number(value);
             if (value >= 1000) {
               // If greather than 1000, assume milliseconds value passed in, so convert to seconds
               value = Math.floor(value / 1000);
             }
             config.devices[key]['doorbellCooldown'] = value;
           }
-          if (subKey === 'MotionCooldown' && typeof value === 'number') {
+          if (subKey === 'MotionCooldown' && isNaN(value) === false) {
+            value = Number(value);
             if (value >= 1000) {
               // If greather than 1000, assume milliseconds value passed in, so convert to seconds
               value = Math.floor(value / 1000);
             }
             config.devices[key]['motionCooldown'] = value;
           }
-          if (subKey === 'PersonCooldown' && typeof value === 'number') {
+          if (subKey === 'PersonCooldown' && isNaN(value) === false) {
+            value = Number(value);
             if (value >= 1000) {
               // If greather than 1000, assume milliseconds value passed in, so convert to seconds
               value = Math.floor(value / 1000);

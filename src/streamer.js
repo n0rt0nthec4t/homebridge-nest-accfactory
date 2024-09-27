@@ -17,7 +17,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 23/9/2024
+// Code version 27/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -31,6 +31,7 @@ import { fileURLToPath } from 'node:url';
 // Define constants
 const CAMERAOFFLINEH264FILE = 'Nest_camera_offline.h264'; // Camera offline H264 frame file
 const CAMERAOFFH264FILE = 'Nest_camera_off.h264'; // Camera off H264 frame file
+const CAMERATRANSFERJPGFILE = 'Nest_camera_transfer.jpg'; // Camera transferring H264 frame file
 const TALKBACKAUDIOTIMEOUT = 1000;
 const H264NALSTARTCODE = Buffer.from([0x00, 0x00, 0x00, 0x01]);
 
@@ -55,6 +56,7 @@ export default class Streamer {
   #outputs = {}; // Output streams ie: buffer, live, record
   #cameraOfflineFrame = undefined; // Camera offline video frame
   #cameraVideoOffFrame = undefined; // Video turned off on camera video frame
+  #cameraTransferringFrame = undefined; // Camera transferring between Nest/Google Home video frame
 
   constructor(deviceData, options) {
     // Setup logger object if passed as option
@@ -69,10 +71,11 @@ export default class Streamer {
     }
 
     // Store data we need from the device data passed it
+    this.migrating = deviceData?.migrating === true;
     this.online = deviceData?.online === true;
     this.videoEnabled = deviceData?.streaming_enabled === true;
     this.audioEnabled = deviceData?.audio_enabled === true;
-    this.uuid = deviceData?.uuid;
+    this.uuid = deviceData?.nest_google_uuid;
 
     // Setup location for *.h264 frame files. This can be overriden by a passed in option
     let resourcePath = path.resolve(__dirname + '/res'); // Default location for *.h264 files
@@ -84,14 +87,19 @@ export default class Streamer {
       resourcePath = path.resolve(options.resourcePath);
     }
 
-    // load buffer for camera offline image in .h264 frame
+    // load buffer for camera offline in .h264 frame
     if (fs.existsSync(path.resolve(resourcePath + '/' + CAMERAOFFLINEH264FILE)) === true) {
       this.#cameraOfflineFrame = fs.readFileSync(path.resolve(resourcePath + '/' + CAMERAOFFLINEH264FILE));
     }
 
-    // load buffer for camera stream off image in .h264 frame
+    // load buffer for camera stream off in .h264 frame
     if (fs.existsSync(path.resolve(resourcePath + '/' + CAMERAOFFH264FILE)) === true) {
       this.#cameraVideoOffFrame = fs.readFileSync(path.resolve(resourcePath + '/' + CAMERAOFFH264FILE));
+    }
+
+    // load buffer for camera transferring in .h264 frame
+    if (fs.existsSync(path.resolve(resourcePath + '/' + CAMERATRANSFERJPGFILE)) === true) {
+      this.#cameraTransferringFrame = fs.readFileSync(path.resolve(resourcePath + '/' + CAMERATRANSFERJPGFILE));
     }
 
     // Start a non-blocking loop for output to the various streams which connect to our streamer object
@@ -101,9 +109,9 @@ export default class Streamer {
     let lastTimeVideo = Date.now();
     this.#outputTimer = setInterval(() => {
       let dateNow = Date.now();
-      let outputVideoFrame = dateNow > lastTimeVideo + 90000 / 30; // 30 or 15 fps?
+      let outputVideoFrame = dateNow > lastTimeVideo + 90000 / 30; // 30fps
       Object.values(this.#outputs).forEach((output) => {
-        // Monitor for camera going offline and/or video enabled/disabled
+        // Monitor for camera going offline, video enabled/disabled or being transferred between Nest/Google Home
         // We'll insert the appropriate video frame into the stream
         if (this.online === false && this.#cameraOfflineFrame !== undefined && outputVideoFrame === true) {
           // Camera is offline so feed in our custom h264 frame and AAC silence
@@ -114,6 +122,12 @@ export default class Streamer {
         if (this.online === true && this.videoEnabled === false && this.#cameraVideoOffFrame !== undefined && outputVideoFrame === true) {
           // Camera video is turned off so feed in our custom h264 frame and AAC silence
           output.buffer.push({ time: dateNow, type: 'video', data: this.#cameraVideoOffFrame });
+          output.buffer.push({ time: dateNow, type: 'audio', data: this.blankAudio });
+          lastTimeVideo = dateNow;
+        }
+        if (this.migrating === true && this.#cameraTransferringFrame !== undefined && outputVideoFrame === true) {
+          // Camera video is turned off so feed in our custom h264 frame and AAC silence
+          output.buffer.push({ time: dateNow, type: 'video', data: this.#cameraTransferringFrame });
           output.buffer.push({ time: dateNow, type: 'audio', data: this.blankAudio });
           lastTimeVideo = dateNow;
         }
@@ -296,6 +310,22 @@ export default class Streamer {
   update(deviceData) {
     if (typeof deviceData !== 'object') {
       return;
+    }
+
+    this.migrating = deviceData.migrating;
+
+    if (this.uuid !== deviceData?.nest_google_uuid) {
+      this.uuid = deviceData?.nest_google_uuid;
+
+      if (Object.keys(this.#outputs).length > 0) {
+        // Since the uuid has change and a streamer may use this, if there any any active outpuyts, close and connect again
+        if (typeof this.close === 'function') {
+          this.close();
+        }
+        if (typeof this.connect === 'function') {
+          this.connect();
+        }
+      }
     }
 
     if (

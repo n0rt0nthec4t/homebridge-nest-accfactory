@@ -1,7 +1,7 @@
 // Nest Doorbell(s)
 // Part of homebridge-nest-accfactory
 //
-// Code version 19/9/2024
+// Code version 27/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -41,7 +41,7 @@ export default class NestDoorbell extends NestCamera {
       this.switchService.getCharacteristic(this.hap.Characteristic.On).onSet((value) => {
         if (value !== this.deviceData.indoor_chime_enabled) {
           // only change indoor chime status value if different than on-device
-          this.set({ indoor_chime_enabled: value });
+          this.set({ uuid: this.deviceData.nest_google_uuid, indoor_chime_enabled: value });
 
           this?.log?.info && this.log.info('Indoor chime on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
         }

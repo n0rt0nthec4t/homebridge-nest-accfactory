@@ -1,7 +1,7 @@
 // Nest Cam with Floodlight
 // Part of homebridge-nest-accfactory
 //
-// Code version 13/9/2024
+// Code version 27/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -38,7 +38,7 @@ export default class NestFloodlight extends NestCamera {
       // Setup set callback for this light service
       this.lightService.getCharacteristic(this.hap.Characteristic.On).onSet((value) => {
         if (value !== this.deviceData.light_enabled) {
-          this.set({ light_enabled: value });
+          this.set({ uuid: this.deviceData.nest_google_uuid, light_enabled: value });
 
           this?.log?.info && this.log.info('Floodlight on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
         }
@@ -46,7 +46,7 @@ export default class NestFloodlight extends NestCamera {
 
       this.lightService.getCharacteristic(this.hap.Characteristic.Brightness).onSet((value) => {
         if (value !== this.deviceData.light_brightness) {
-          this.set({ light_brightness: value });
+          this.set({ uuid: this.deviceData.nest_google_uuid, light_brightness: value });
 
           this?.log?.info && this.log.info('Floodlight brightness on "%s" was set to "%s %"', this.deviceData.description, value);
         }

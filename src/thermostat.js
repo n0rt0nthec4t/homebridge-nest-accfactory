@@ -1,7 +1,7 @@
 // Nest Thermostat
 // Part of homebridge-nest-accfactory
 //
-// Code version 12/9/2024
+// Code version 27/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -314,7 +314,7 @@ export default class NestThermostat extends HomeKitDevice {
   }
 
   setFan(fanState) {
-    this.set({ fan_state: fanState === this.hap.Characteristic.Active.ACTIVE ? true : false });
+    this.set({ uuid: this.deviceData.nest_google_uuid, fan_state: fanState === this.hap.Characteristic.Active.ACTIVE ? true : false });
     this.fanService.updateCharacteristic(this.hap.Characteristic.Active, fanState);
 
     this?.log?.info &&
@@ -326,7 +326,10 @@ export default class NestThermostat extends HomeKitDevice {
   }
 
   setDehumidifier(dehumidiferState) {
-    this.set({ dehumidifer_State: dehumidiferState === this.hap.Characteristic.Active.ACTIVE ? true : false });
+    this.set({
+      uuid: this.deviceData.nest_google_uuid,
+      dehumidifer_State: dehumidiferState === this.hap.Characteristic.Active.ACTIVE ? true : false,
+    });
     this.dehumidifierService.updateCharacteristic(this.hap.Characteristic.Active, dehumidiferState);
 
     this?.log?.info &&
@@ -340,7 +343,10 @@ export default class NestThermostat extends HomeKitDevice {
   }
 
   setDisplayUnit(temperatureUnit) {
-    this.set({ temperature_scale: temperatureUnit === this.hap.Characteristic.TemperatureDisplayUnits.CELSIUS ? 'C' : 'F' });
+    this.set({
+      uuid: this.deviceData.nest_google_uuid,
+      temperature_scale: temperatureUnit === this.hap.Characteristic.TemperatureDisplayUnits.CELSIUS ? 'C' : 'F',
+    });
     this.thermostatService.updateCharacteristic(this.hap.Characteristic.TemperatureDisplayUnits, temperatureUnit);
 
     this?.log?.info &&
@@ -412,7 +418,7 @@ export default class NestThermostat extends HomeKitDevice {
         mode = 'range';
       }
 
-      this.set({ hvac_mode: mode });
+      this.set({ uuid: this.deviceData.nest_google_uuid, hvac_mode: mode });
 
       this?.log?.info && this.log.info('Set mode on "%s" to "%s"', this.deviceData.description, mode);
     }
@@ -448,7 +454,7 @@ export default class NestThermostat extends HomeKitDevice {
         this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).value !==
           this.hap.Characteristic.TargetHeatingCoolingState.AUTO
       ) {
-        this.set({ target_temperature: temperature });
+        this.set({ uuid: this.deviceData.nest_google_uuid, target_temperature: temperature });
 
         this?.log?.info &&
           this.log.info(
@@ -467,7 +473,7 @@ export default class NestThermostat extends HomeKitDevice {
         this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).value ===
           this.hap.Characteristic.TargetHeatingCoolingState.AUTO
       ) {
-        this.set({ target_temperature_low: temperature });
+        this.set({ uuid: this.deviceData.nest_google_uuid, target_temperature_low: temperature });
 
         this?.log?.info &&
           this.log.info(
@@ -482,7 +488,7 @@ export default class NestThermostat extends HomeKitDevice {
         this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).value ===
           this.hap.Characteristic.TargetHeatingCoolingState.AUTO
       ) {
-        this.set({ target_temperature_high: temperature });
+        this.set({ uuid: this.deviceData.nest_google_uuid, target_temperature_high: temperature });
 
         this?.log?.info &&
           this.log.info(
@@ -533,7 +539,10 @@ export default class NestThermostat extends HomeKitDevice {
     if (value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_DISABLED) {
       // Clear pin hash????
     }
-    this.set({ temperature_lock: value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED ? true : false });
+    this.set({
+      uuid: this.deviceData.nest_google_uuid,
+      temperature_lock: value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED ? true : false,
+    });
 
     this?.log?.info &&
       this.log.info(
@@ -1013,12 +1022,12 @@ export default class NestThermostat extends HomeKitDevice {
     }
 
     if (typeof EveHomeSetData?.vacation === 'boolean') {
-      this.set({ vacation_mode: EveHomeSetData.vacation.status });
+      this.set({ uuid: this.deviceData.nest_google_uuid, vacation_mode: EveHomeSetData.vacation.status });
     }
     if (typeof EveHomeSetData?.programs === 'object') {
       /* EveHomeSetData.programs.forEach((day) => {
                 // Convert into Nest thermostat schedule format and set. Need to work this out
-                //this.set({'days' : {6 : { 'temp' : 17 , 'time' : 13400, touched_at: Date.now()}} });
+                //this.set({ uuid: this.deviceData.nest_google_uuid, 'days' : {6 : { 'temp' : 17 , 'time' : 13400, touched_at: Date.now()}} });
             }); */
     }
   }

@@ -1,7 +1,7 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 23/9/2024
+// Code version 26/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -24,6 +24,7 @@ import WebRTC from './webrtc.js';
 
 const CAMERAOFFLINEJPGFILE = 'Nest_camera_offline.jpg'; // Camera offline jpg image file
 const CAMERAOFFJPGFILE = 'Nest_camera_off.jpg'; // Camera video off jpg image file
+const CAMERATRANSFERJPGFILE = 'Nest_camera_transfer.jpg'; // Camera transferring jpg image file
 const MP4BOX = 'mp4box'; // MP4 box fragement event for HKSV recording
 const SNAPSHOTCACHETIMEOUT = 30000; // Timeout for retaining snapshot image (in milliseconds)
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
@@ -45,6 +46,7 @@ export default class NestCamera extends HomeKitDevice {
   #recordingConfig = {}; // HomeKit Secure Video recording configuration
   #cameraOfflineImage = undefined; // JPG image buffer for camera offline
   #cameraVideoOffImage = undefined; // JPG image buffer for camera video off
+  #cameraTransferringImage = undefined; // JPG image buffer for camera transferring between Nest/Google Home
 
   constructor(accessory, api, log, eventEmitter, deviceData) {
     super(accessory, api, log, eventEmitter, deviceData);
@@ -59,6 +61,12 @@ export default class NestCamera extends HomeKitDevice {
     imageFile = path.resolve(__dirname + '/res/' + CAMERAOFFJPGFILE);
     if (fs.existsSync(imageFile) === true) {
       this.#cameraVideoOffImage = fs.readFileSync(imageFile);
+    }
+
+    // buffer for camera transferring jpg image
+    imageFile = path.resolve(__dirname + '/res/' + CAMERATRANSFERJPGFILE);
+    if (fs.existsSync(imageFile) === true) {
+      this.#cameraTransferringImage = fs.readFileSync(imageFile);
     }
   }
 
@@ -99,7 +107,7 @@ export default class NestCamera extends HomeKitDevice {
             (value === true && this.deviceData.statusled_brightness !== 0) ||
             (value === false && this.deviceData.statusled_brightness !== 1)
           ) {
-            this.set({ statusled_brightness: value === true ? 0 : 1 });
+            this.set({ uuid: this.deviceData.nest_google_uuid, statusled_brightness: value === true ? 0 : 1 });
             if (this?.log?.info) {
               this.log.info('Recording status LED on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
             }
@@ -119,7 +127,7 @@ export default class NestCamera extends HomeKitDevice {
         this.operatingModeService.getCharacteristic(this.hap.Characteristic.NightVision).onSet((value) => {
           // only change IRLed status value if different than on-device
           if ((value === false && this.deviceData.irled_enabled === true) || (value === true && this.deviceData.irled_enabled === false)) {
-            this.set({ irled_enabled: value === true ? 'auto_on' : 'always_off' });
+            this.set({ uuid: this.deviceData.nest_google_uuid, irled_enabled: value === true ? 'auto_on' : 'always_off' });
 
             if (this?.log?.info) {
               this.log.info('Night vision on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
@@ -144,7 +152,7 @@ export default class NestCamera extends HomeKitDevice {
             (this.deviceData.streaming_enabled === true && value === true)
           ) {
             // Camera state does not reflect requested state, so fix
-            this.set({ streaming_enabled: value === false ? true : false });
+            this.set({ uuid: this.deviceData.nest_google_uuid, streaming_enabled: value === false ? true : false });
             if (this?.log?.info) {
               this.log.info('Camera on "%s" was turned', this.deviceData.description, value === false ? 'on' : 'off');
             }
@@ -178,7 +186,10 @@ export default class NestCamera extends HomeKitDevice {
               (this.deviceData.audio_enabled === true && value === this.hap.Characteristic.RecordingAudioActive.DISABLE) ||
               (this.deviceData.audio_enabled === false && value === this.hap.Characteristic.RecordingAudioActive.ENABLE)
             ) {
-              this.set({ audio_enabled: value === this.hap.Characteristic.RecordingAudioActive.ENABLE ? true : false });
+              this.set({
+                uuid: this.deviceData.nest_google_uuid,
+                audio_enabled: value === this.hap.Characteristic.RecordingAudioActive.ENABLE ? true : false,
+              });
               if (this?.log?.info) {
                 this.log.info(
                   'Audio recording on "%s" was turned',
@@ -576,8 +587,8 @@ export default class NestCamera extends HomeKitDevice {
     // Get current image from camera/doorbell
     let imageBuffer = undefined;
 
-    if (this.deviceData.streaming_enabled === true && this.deviceData.online === true) {
-      let response = await this.get({ camera_snapshot: '' });
+    if (this.deviceData.migrating === false && this.deviceData.streaming_enabled === true && this.deviceData.online === true) {
+      let response = await this.get({ uuid: this.deviceData.nest_google_uuid, camera_snapshot: '' });
       if (Buffer.isBuffer(response?.camera_snapshot) === true) {
         imageBuffer = response.camera_snapshot;
         this.lastSnapshotImage = response.camera_snapshot;
@@ -590,14 +601,24 @@ export default class NestCamera extends HomeKitDevice {
       }
     }
 
-    if (this.deviceData.streaming_enabled === false && this.deviceData.online === true && this.#cameraVideoOffImage !== undefined) {
+    if (
+      this.deviceData.migrating === false &&
+      this.deviceData.streaming_enabled === false &&
+      this.deviceData.online === true &&
+      this.#cameraVideoOffImage !== undefined
+    ) {
       // Return 'camera switched off' jpg to image buffer
       imageBuffer = this.#cameraVideoOffImage;
     }
 
-    if (this.deviceData.online === false && this.#cameraOfflineImage !== undefined) {
+    if (this.deviceData.migrating === false && this.deviceData.online === false && this.#cameraOfflineImage !== undefined) {
       // Return 'camera offline' jpg to image buffer
       imageBuffer = this.#cameraOfflineImage;
+    }
+
+    if (this.deviceData.migrating === true && this.#cameraTransferringImage !== undefined) {
+      // Return 'camera transferring' jpg to image buffer
+      imageBuffer = this.#cameraTransferringImage;
     }
 
     if (imageBuffer === undefined) {
@@ -998,6 +1019,30 @@ export default class NestCamera extends HomeKitDevice {
       return;
     }
 
+    // Handle case of changes in streaming protocols ie: migrated between Nest/Google Home
+    if (JSON.stringify(deviceData.streaming_protocols) !== JSON.stringify(this.deviceData.streaming_protocols)) {
+      this?.log?.warn && this.log.warn('Available streaming protocols have changed for "%s"', deviceData.description);
+      this?.log?.warn && this.log.warn('Any current active streams will be terminated and restarted');
+
+      if (
+        deviceData.streaming_protocols.includes('PROTOCOL_WEBRTC') === true &&
+        this.deviceData.streaming_protocols.includes('PROTOCOL_WEBRTC') === false &&
+        WebRTC !== undefined &&
+        this.streamer instanceof WebRTC === false
+      ) {
+        // WebRTC now available for device
+      }
+
+      if (
+        deviceData.streaming_protocols.includes('PROTOCOL_NEXUSTALK') === true &&
+        this.deviceData.streaming_protocols.includes('PROTOCOL_NEXUSTALK') === false &&
+        NexusTalk !== undefined &&
+        this.streamer instanceof NexusTalk === false
+      ) {
+        // Nexustalk now available for device
+      }
+    }
+
     // Check to see if any activity zones were added for both non-HKSV and HKSV enabled devices
     deviceData.activity_zones.forEach((zone) => {
       if (
@@ -1043,7 +1088,7 @@ export default class NestCamera extends HomeKitDevice {
           : this.hap.Characteristic.ManuallyDisabled.ENABLED,
       );
 
-      if (deviceData.has_statusled === true && typeof deviceData.statusled_brightness === 'number') {
+      if (deviceData.has_statusled === true) {
         // Set camera recording indicator. This cannot be turned off on Nest Cameras/Doorbells
         // 0 = auto
         // 1 = low

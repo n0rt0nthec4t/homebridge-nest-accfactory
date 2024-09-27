@@ -6,12 +6,29 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 Currently all releases are considered 'alpha' status, where things may or may not be working. Use at your own risk :-)
 
+## v0.2.0 (alpha)
+
+** Breaking changes **
+
+Unfornunately, I've made some breaking changes in the code to help move forward with the project. 
+So, what does this mean for you, the end user.
+1) You'll need to remove all previously discovered devices from HomeKit before adding them back in after upgrading to this version
+2) If using Homebridge version, remove any cached acccesory data associated with this plug-in
+3) If using docker/standalone version, remove the 'persist' folder
+4) Re-add devices to HomeKit once version upgraded
+5) Any HomeKit Secure Video recordings will be lost
+6) Any automations will need to be re-created in HomeKit
+
+Appologies for this change, as I can understand what an inconvience and frustration it will be :-(
+
+- General code cleanup and bug fixes
+- Seemlessly allow Nest/Google devices to be migrated between Nest/Google Home
+
 ## v0.1.9 (alpha)
 
 - General code cleanup and bug fixes
 - Aligned version numbering to old Nest_accfactory repo
 - Audio talkback support for newer Nest/Google camera/doorbell devices
-- Fixed issue with camera/doorbell devices between migrated to/fro between Nest and Google Home on docker/standalone
 
 ## v0.0.7 (alpha)
 
