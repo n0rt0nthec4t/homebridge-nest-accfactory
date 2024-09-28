@@ -1,7 +1,7 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 26/9/2024
+// Code version 29/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -313,7 +313,7 @@ export default class NestCamera extends HomeKitDevice {
   // Taken and adapted from:
   // https://github.com/hjdhjd/homebridge-unifi-protect/blob/eee6a4e379272b659baa6c19986d51f5bf2cbbbc/src/protect-ffmpeg-record.ts
   async *handleRecordingStreamRequest(sessionID) {
-    if (this.deviceData?.ffmpeg?.path === undefined) {
+    if (this.deviceData?.ffmpeg?.binary === undefined) {
       this?.log?.warn &&
         this.log.warn(
           'Received request to start recording for "%s" however we do not have an ffmpeg binary present',
@@ -411,14 +411,10 @@ export default class NestCamera extends HomeKitDevice {
     commandLine.push('-f mp4 pipe:1'); // output to stdout in mp4
 
     this.#hkSessions[sessionID] = {};
-    this.#hkSessions[sessionID].ffmpeg = child_process.spawn(
-      path.resolve(this.deviceData.ffmpeg.path + '/ffmpeg'),
-      commandLine.join(' ').split(' '),
-      {
-        env: process.env,
-        stdio: ['pipe', 'pipe', 'pipe', includeAudio === true ? 'pipe' : ''],
-      },
-    ); // Extra pipe, #3 for audio data
+    this.#hkSessions[sessionID].ffmpeg = child_process.spawn(this.deviceData.ffmpeg.binary, commandLine.join(' ').split(' '), {
+      env: process.env,
+      stdio: ['pipe', 'pipe', 'pipe', includeAudio === true ? 'pipe' : ''],
+    }); // Extra pipe, #3 for audio data
 
     this.#hkSessions[sessionID].video = this.#hkSessions[sessionID].ffmpeg.stdin; // Video data on stdio pipe for ffmpeg
     this.#hkSessions[sessionID].audio = this.#hkSessions[sessionID]?.ffmpeg?.stdio?.[3]
@@ -706,7 +702,7 @@ export default class NestCamera extends HomeKitDevice {
         );
     }
 
-    if (request.type === this.hap.StreamRequestTypes.START && this.deviceData?.ffmpeg?.path === undefined) {
+    if (request.type === this.hap.StreamRequestTypes.START && this.deviceData?.ffmpeg?.binary === undefined) {
       // No ffmpeg binary present, so cannot do live streams!!
       this?.log?.warn &&
         this.log.warn(
@@ -715,7 +711,11 @@ export default class NestCamera extends HomeKitDevice {
         );
     }
 
-    if (request.type === this.hap.StreamRequestTypes.START && this.streamer !== undefined && this.deviceData?.ffmpeg?.path !== undefined) {
+    if (
+      request.type === this.hap.StreamRequestTypes.START &&
+      this.streamer !== undefined &&
+      this.deviceData?.ffmpeg?.binary !== undefined
+    ) {
       // Build our ffmpeg command string for the liveview video/audio stream
       let commandLine = [
         '-hide_banner',
@@ -809,7 +809,7 @@ export default class NestCamera extends HomeKitDevice {
       // Start our ffmpeg streaming process and stream from our streamer
       // video is pipe #1
       // audio is pipe #3 if including audio
-      let ffmpegStreaming = child_process.spawn(path.resolve(this.deviceData.ffmpeg.path + '/ffmpeg'), commandLine.join(' ').split(' '), {
+      let ffmpegStreaming = child_process.spawn(this.deviceData.ffmpeg.binary, commandLine.join(' ').split(' '), {
         env: process.env,
         stdio: ['pipe', 'pipe', 'pipe', includeAudio === true ? 'pipe' : ''],
       });
@@ -895,7 +895,7 @@ export default class NestCamera extends HomeKitDevice {
 
         commandLine.push('-f data pipe:1');
 
-        ffmpegAudioTalkback = child_process.spawn(path.resolve(this.deviceData.ffmpeg.path + '/ffmpeg'), commandLine.join(' ').split(' '), {
+        ffmpegAudioTalkback = child_process.spawn(this.deviceData.ffmpeg.binary, commandLine.join(' ').split(' '), {
           env: process.env,
         });
 

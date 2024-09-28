@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 28/9/2024
+// Code version 29/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -140,31 +140,37 @@ export default class NestAccfactory {
     // Check if a ffmpeg binary exists in current path OR the specific path via configuration
     // If using HomeBridge, the default path will be where the Homebridge user folder is, otherwise the current directory
     this.config.options.ffmpeg = {};
-    this.config.options.ffmpeg['path'] =
+    this.config.options.ffmpeg.binary = path.resolve(
       typeof this.config.options?.ffmpegPath === 'string' && this.config.options.ffmpegPath !== ''
         ? this.config.options.ffmpegPath
         : typeof api?.user?.storagePath === 'function'
           ? api.user.storagePath()
-          : __dirname;
+          : __dirname,
+    );
 
-    this.config.options.ffmpeg['version'] = undefined;
+    // If the path doesn't include 'ffmpeg' on the end, we'll add it here
+    if (this.config.options.ffmpeg.binary.endsWith('/ffmpeg') === false) {
+      this.config.options.ffmpeg.binary = this.config.options.ffmpeg.binary + '/ffmpeg';
+    }
+
+    this.config.options.ffmpeg.version = undefined;
     this.config.options.ffmpeg.libspeex = false;
     this.config.options.ffmpeg.libopus = false;
     this.config.options.ffmpeg.libx264 = false;
     this.config.options.ffmpeg.libfdk_aac = false;
 
-    if (fs.existsSync(path.resolve(this.config.options.ffmpeg.path + '/ffmpeg')) === false) {
+    if (fs.existsSync(this.config.options.ffmpeg.binary) === false) {
       if (this?.log?.warn) {
-        this.log.warn('No ffmpeg binary found in "%s"', this.config.options.ffmpeg.path);
+        this.log.warn('Specified ffmpeg binary "%s" was not found', this.config.options.ffmpeg.binary);
         this.log.warn('Stream video/recording from camera/doorbells will be unavailable');
       }
 
       // If we flag ffmpegPath as undefined, no video streaming/record support enabled for camers/doorbells
-      this.config.options.ffmpeg.path = undefined;
+      this.config.options.ffmpeg.binary = undefined;
     }
 
-    if (fs.existsSync(path.resolve(this.config.options.ffmpeg.path + '/ffmpeg')) === true) {
-      let ffmpegProcess = child_process.spawnSync(path.resolve(this.config.options.ffmpeg.path + '/ffmpeg'), ['-version'], {
+    if (fs.existsSync(this.config.options.ffmpeg.binary) === true) {
+      let ffmpegProcess = child_process.spawnSync(this.config.options.ffmpeg.binary, ['-version'], {
         env: process.env,
       });
       if (ffmpegProcess.stdout !== null) {
@@ -186,7 +192,7 @@ export default class NestAccfactory {
           this.config.options.ffmpeg.libfdk_aac === false
         ) {
           this?.log?.warn &&
-            this.log.warn('ffmpeg binary in "%s" does not meet the minimum support requirements', this.config.options.ffmpeg.path);
+            this.log.warn('ffmpeg binary "%s" does not meet the minimum support requirements', this.config.options.ffmpeg.binary);
           if (this.config.options.ffmpeg.version.replace(/\./gi, '') < parseFloat(FFMPEGVERSION.toString().replace(/\./gi, ''))) {
             this?.log?.warn &&
               this.log.warn(
@@ -196,7 +202,7 @@ export default class NestAccfactory {
               );
             this?.log?.warn && this.log.warn('Stream video/recording from camera/doorbells will be unavailable');
 
-            this.config.options.ffmpeg.path = undefined; // No ffmpeg since below min version
+            this.config.options.ffmpeg.binary = undefined; // No ffmpeg since below min version
           }
           if (
             this.config.options.ffmpeg.libspeex === false &&
@@ -230,7 +236,7 @@ export default class NestAccfactory {
             this?.log?.warn &&
               this.log.warn('Missing libx264 in ffmpeg binary, stream video/recording from camera/doorbells will be unavailable');
 
-            this.config.options.ffmpeg.path = undefined; // No ffmpeg since we do not have all the required libraries
+            this.config.options.ffmpeg.binary = undefined; // No ffmpeg since we do not have all the required libraries
           }
         }
       }
@@ -251,9 +257,19 @@ export default class NestAccfactory {
         // Perform cleanup some internal cleaning up
         this.#eventEmitter.removeAllListeners(HomeKitDevice.SET);
         this.#eventEmitter.removeAllListeners(HomeKitDevice.GET);
+        Object.values(this.#trackedDevices).forEach((value) => {
+          if (value?.timers !== undefined) {
+            Object.values(value?.timers).forEach((timers) => {
+              clearInterval(timers);
+            });
+          }
+        });
+        this.#trackedDevices = {};
         clearInterval(this.#connectionTimer);
         this.#connectionTimer = undefined;
         this.#rawData = {};
+        this.#protobufRoot = null;
+        this.#eventEmitter = undefined;
       });
     }
 
@@ -478,13 +494,6 @@ export default class NestAccfactory {
       'widget_track',
       'quartz',
     ];
-    const DEVICEBUCKETS = {
-      structure: ['latitude', 'longitude'],
-      device: ['where_id'],
-      kryptonite: ['where_id', 'structure_id'],
-      topaz: ['where_id', 'structure_id'],
-      quartz: ['where_id', 'structure_id', 'nexus_api_http_server_url'],
-    };
 
     // By default, setup for a full data read from the REST API
     let subscribeURL =
@@ -532,7 +541,6 @@ export default class NestAccfactory {
     )
       .then((response) => response.json())
       .then(async (data) => {
-        let deviceChanges = []; // No REST API devices changes to start with
         if (typeof data?.updated_buckets === 'object') {
           // This response is full data read
           data = data.updated_buckets;
@@ -668,8 +676,30 @@ export default class NestAccfactory {
                     // Object is present in the old buckets list, but not in the new buckets list
                     // so we assume it has been removed
                     // It also could mean device(s) have been removed from Nest
-                    if (Object.keys(DEVICEBUCKETS).includes(object_key.split('.')[0]) === true) {
-                      deviceChanges.push({ object_key: object_key, change: 'remove' });
+                    if (
+                      object_key.startsWith('structure.') === true ||
+                      object_key.startsWith('device.') === true ||
+                      object_key.startsWith('kryptonite.') === true ||
+                      object_key.startsWith('topaz.') === true ||
+                      object_key.startsWith('quartz.') === true
+                    ) {
+                      // Tidy up over tracked devices since this once is removed
+                      if (this.#trackedDevices[this.#rawData?.[object_key]?.value?.serial_number] !== undefined) {
+                        // Remove any active running timers we have for this device
+                        Object.values(this.#trackedDevices[this.#rawData[object_key].value.serial_number].timers).forEach((timers) => {
+                          clearInterval(timers);
+                        });
+
+                        // Send removed notice onto HomeKit device for it to process
+                        this.#eventEmitter.emit(
+                          this.#trackedDevices[this.#rawData[object_key].value.serial_number].uuid,
+                          HomeKitDevice.REMOVE,
+                          {},
+                        );
+
+                        // Finally, remove from tracked devices
+                        delete this.#trackedDevices[this.#rawData[object_key].value.serial_number];
+                      }
                     }
                     delete this.#rawData[object_key];
                   }
@@ -684,19 +714,7 @@ export default class NestAccfactory {
               this.#rawData[value.object_key].object_timestamp = value.object_timestamp;
               this.#rawData[value.object_key].connection = connectionUUID;
               this.#rawData[value.object_key].source = NestAccfactory.DataSource.REST;
-              this.#rawData[value.object_key].timers = {}; // No timers running for this object
               this.#rawData[value.object_key].value = {};
-            }
-
-            // Need to check for a possible device addition to the raw REST API data.
-            // We expect the devices we want to add, have certain minimum properties present in the data
-            // We'll perform that check here
-            if (
-              Object.keys(DEVICEBUCKETS).includes(value.object_key.split('.')[0]) === true &&
-              DEVICEBUCKETS[value.object_key.split('.')[0]].every((key) => key in value.value) === true &&
-              DEVICEBUCKETS[value.object_key.split('.')[0]].every((key) => key in this.#rawData[value.object_key].value) === false
-            ) {
-              deviceChanges.push({ object_key: value.object_key, change: 'add' });
             }
 
             // Finally, update our internal raw REST API data with the new values
@@ -708,7 +726,7 @@ export default class NestAccfactory {
           }),
         );
 
-        await this.#processPostSubscribe(deviceChanges);
+        await this.#processPostSubscribe();
       })
       .catch((error) => {
         if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false && this?.log?.debug) {
@@ -774,520 +792,494 @@ export default class NestAccfactory {
     }
 
     if (this.#protobufRoot === null) {
-      this?.log?.debug && this.log.debug('Failed to loaded protobuf support files. Protobuf API will be unavailable');
+      this?.log?.warn &&
+        this.log.warn('Failed to loaded Protobuf API support files. This will cause certain Nest/Google devices to be un-supported');
+      return;
     }
 
-    if (this.#protobufRoot !== null) {
-      // We have loaded Protobuf proto files, so now dynamically build the 'observe' post body data
-      let observeTraitsList = [];
-      let observeBody = Buffer.alloc(0);
-      let traitTypeObserveParam = this.#protobufRoot.lookup('nestlabs.gateway.v2.TraitTypeObserveParams');
-      let observeRequest = this.#protobufRoot.lookup('nestlabs.gateway.v2.ObserveRequest');
-      if (traitTypeObserveParam !== null && observeRequest !== null) {
-        traverseTypes(this.#protobufRoot, (type) => {
-          // We only want to have certain trait'families' in our observe reponse we are building
-          // This also depends on the account type we connected with
-          // Nest accounts cannot observe camera/doorbell product traits
-          if (
-            (this.#connections[connectionUUID].type === NestAccfactory.NestConnection &&
-              type.fullName.startsWith('.nest.trait.product.camera') === false &&
-              type.fullName.startsWith('.nest.trait.product.doorbell') === false &&
-              (type.fullName.startsWith('.nest.trait') === true || type.fullName.startsWith('.weave.') === true)) ||
-            (this.#connections[connectionUUID].type === NestAccfactory.GoogleConnection &&
-              (type.fullName.startsWith('.nest.trait') === true ||
-                type.fullName.startsWith('.weave.') === true ||
-                type.fullName.startsWith('.google.trait.product.camera') === true))
-          ) {
-            observeTraitsList.push(traitTypeObserveParam.create({ traitType: type.fullName.replace(/^\.*|\.*$/g, '') }));
-          }
-        });
-        observeBody = observeRequest.encode(observeRequest.create({ stateTypes: [1, 2], traitTypeParams: observeTraitsList })).finish();
-      }
+    // We have loaded Protobuf proto files, so now dynamically build the 'observe' post body data
+    let observeTraitsList = [];
+    let observeBody = Buffer.alloc(0);
+    let traitTypeObserveParam = this.#protobufRoot.lookup('nestlabs.gateway.v2.TraitTypeObserveParams');
+    let observeRequest = this.#protobufRoot.lookup('nestlabs.gateway.v2.ObserveRequest');
+    if (traitTypeObserveParam !== null && observeRequest !== null) {
+      traverseTypes(this.#protobufRoot, (type) => {
+        // We only want to have certain trait'families' in our observe reponse we are building
+        // This also depends on the account type we connected with
+        // Nest accounts cannot observe camera/doorbell product traits
+        if (
+          (this.#connections[connectionUUID].type === NestAccfactory.NestConnection &&
+            type.fullName.startsWith('.nest.trait.product.camera') === false &&
+            type.fullName.startsWith('.nest.trait.product.doorbell') === false &&
+            (type.fullName.startsWith('.nest.trait') === true || type.fullName.startsWith('.weave.') === true)) ||
+          (this.#connections[connectionUUID].type === NestAccfactory.GoogleConnection &&
+            (type.fullName.startsWith('.nest.trait') === true ||
+              type.fullName.startsWith('.weave.') === true ||
+              type.fullName.startsWith('.google.trait.product.camera') === true))
+        ) {
+          observeTraitsList.push(traitTypeObserveParam.create({ traitType: type.fullName.replace(/^\.*|\.*$/g, '') }));
+        }
+      });
+      observeBody = observeRequest.encode(observeRequest.create({ stateTypes: [1, 2], traitTypeParams: observeTraitsList })).finish();
+    }
 
-      if (firstRun === true) {
-        this?.log?.debug && this.log.debug('Starting Protobuf API trait observe for connection uuid "%s"', connectionUUID);
-      }
+    if (firstRun === true) {
+      this?.log?.debug && this.log.debug('Starting Protobuf API trait observe for connection uuid "%s"', connectionUUID);
+    }
 
-      fetchWrapper(
-        'post',
-        'https://' + this.#connections[connectionUUID].protobufAPIHost + '/nestlabs.gateway.v2.GatewayService/Observe',
-        {
-          headers: {
-            referer: 'https://' + this.#connections[connectionUUID].referer,
-            'User-Agent': USERAGENT,
-            Authorization: 'Basic ' + this.#connections[connectionUUID].token,
-            'Content-Type': 'application/x-protobuf',
-            'X-Accept-Content-Transfer-Encoding': 'binary',
-            'X-Accept-Response-Streaming': 'true',
-          },
-          keepalive: true,
-          //timeout: (5 * 60000),
+    fetchWrapper(
+      'post',
+      'https://' + this.#connections[connectionUUID].protobufAPIHost + '/nestlabs.gateway.v2.GatewayService/Observe',
+      {
+        headers: {
+          referer: 'https://' + this.#connections[connectionUUID].referer,
+          'User-Agent': USERAGENT,
+          Authorization: 'Basic ' + this.#connections[connectionUUID].token,
+          'Content-Type': 'application/x-protobuf',
+          'X-Accept-Content-Transfer-Encoding': 'binary',
+          'X-Accept-Response-Streaming': 'true',
         },
-        observeBody,
-      )
-        .then((response) => response.body)
-        .then(async (data) => {
-          let deviceChanges = []; // No Protobuf API devices changes to start with
-          let buffer = Buffer.alloc(0);
-          for await (const chunk of data) {
-            buffer = Buffer.concat([buffer, Buffer.from(chunk)]);
-            let messageSize = calculate_message_size(buffer);
-            if (buffer.length >= messageSize) {
-              let decodedMessage = {};
-              try {
-                // Attempt to decode the Protobuf message(s) we extracted from the stream and get a JSON object representation
-                decodedMessage = this.#protobufRoot
-                  .lookup('nestlabs.gateway.v2.ObserveResponse')
-                  .decode(buffer.subarray(0, messageSize))
-                  .toJSON();
+        keepalive: true,
+        //timeout: (5 * 60000),
+      },
+      observeBody,
+    )
+      .then((response) => response.body)
+      .then(async (data) => {
+        let buffer = Buffer.alloc(0);
+        for await (const chunk of data) {
+          buffer = Buffer.concat([buffer, Buffer.from(chunk)]);
+          let messageSize = calculate_message_size(buffer);
+          if (buffer.length >= messageSize) {
+            let decodedMessage = {};
+            try {
+              // Attempt to decode the Protobuf message(s) we extracted from the stream and get a JSON object representation
+              decodedMessage = this.#protobufRoot
+                .lookup('nestlabs.gateway.v2.ObserveResponse')
+                .decode(buffer.subarray(0, messageSize))
+                .toJSON();
 
-                // Tidy up our received messages. This ensures we only have one status for the trait in the data we process
-                // We'll favour a trait with accepted status over the same with confirmed status
-                if (decodedMessage?.observeResponse?.[0]?.traitStates !== undefined) {
-                  let notAcceptedStatus = decodedMessage.observeResponse[0].traitStates.filter(
-                    (trait) => trait.stateTypes.includes('ACCEPTED') === false,
-                  );
-                  let acceptedStatus = decodedMessage.observeResponse[0].traitStates.filter(
-                    (trait) => trait.stateTypes.includes('ACCEPTED') === true,
-                  );
-                  let difference = acceptedStatus.map((trait) => trait.traitId.resourceId + '/' + trait.traitId.traitLabel);
-                  decodedMessage.observeResponse[0].traitStates =
-                    ((notAcceptedStatus = notAcceptedStatus.filter(
-                      (trait) => difference.includes(trait.traitId.resourceId + '/' + trait.traitId.traitLabel) === false,
-                    )),
-                    [...notAcceptedStatus, ...acceptedStatus]);
-                }
-                // We'll use the resource status message to look for structure and/or device removals
-                // We could also check for structure and/or device additions here, but we'll want to be flagged
-                // that a device is 'ready' for use before we add in. This data is populated in the trait data
-                if (decodedMessage?.observeResponse?.[0]?.resourceMetas !== undefined) {
-                  decodedMessage.observeResponse[0].resourceMetas.map(async (resource) => {
-                    if (
-                      resource.status === 'REMOVED' &&
-                      (resource.resourceId.startsWith('STRUCTURE_') || resource.resourceId.startsWith('DEVICE_'))
-                    ) {
-                      // We have the removal of a 'home' and/ device
-                      deviceChanges.push({ object_key: resource.resourceId, change: 'removed' });
-                    }
-                  });
-                }
-                // eslint-disable-next-line no-unused-vars
-              } catch (error) {
-                // Empty
-              }
-              buffer = buffer.subarray(messageSize); // Remove the message from the beginning of the buffer
-
-              if (typeof decodedMessage?.observeResponse?.[0]?.traitStates === 'object') {
-                await Promise.all(
-                  decodedMessage.observeResponse[0].traitStates.map(async (trait) => {
-                    if (trait.traitId.traitLabel === 'configuration_done') {
-                      if (
-                        this.#rawData[trait.traitId.resourceId]?.value?.configuration_done?.deviceReady !== true &&
-                        trait.patch.values?.deviceReady === true
-                      ) {
-                        deviceChanges.push({ object_key: trait.traitId.resourceId, change: 'add' });
-                      }
-                    }
-                    if (trait.traitId.traitLabel === 'camera_migration_status') {
-                      // Handle case of camera/doorbell(s) which have been migrated from Nest app to Google Home
-                      if (
-                        this.#rawData[trait.traitId.resourceId]?.value?.camera_migration_status?.state?.where !==
-                          'MIGRATED_TO_GOOGLE_HOME' &&
-                        trait.patch.values?.state?.where === 'MIGRATED_TO_GOOGLE_HOME'
-                      ) {
-                        deviceChanges.push({ object_key: trait.traitId.resourceId, change: 'add' });
-                      }
-                    }
-
-                    if (typeof this.#rawData[trait.traitId.resourceId] === 'undefined') {
-                      this.#rawData[trait.traitId.resourceId] = {};
-                      this.#rawData[trait.traitId.resourceId].connection = connectionUUID;
-                      this.#rawData[trait.traitId.resourceId].source = NestAccfactory.DataSource.PROTOBUF;
-                      this.#rawData[trait.traitId.resourceId].timers = {}; // No timers running for this object
-                      this.#rawData[trait.traitId.resourceId].value = {};
-                    }
-                    this.#rawData[trait.traitId.resourceId]['value'][trait.traitId.traitLabel] =
-                      typeof trait.patch.values !== 'undefined' ? trait.patch.values : {};
-
-                    // We don't need to store the trait type, so remove it
-                    delete this.#rawData[trait.traitId.resourceId]['value'][trait.traitId.traitLabel]['@type'];
-
-                    // If we have structure location details and associated geo-location details, get the weather data for the location
-                    // We'll store this in the object key/value as per REST API
-                    if (
-                      trait.traitId.resourceId.startsWith('STRUCTURE_') === true &&
-                      trait.traitId.traitLabel === 'structure_location' &&
-                      isNaN(trait.patch.values?.geoCoordinate?.latitude) === false &&
-                      isNaN(trait.patch.values?.geoCoordinate?.longitude) === false
-                    ) {
-                      this.#rawData[trait.traitId.resourceId].value.weather = await this.#getWeatherData(
-                        connectionUUID,
-                        trait.traitId.resourceId,
-                        Number(trait.patch.values.geoCoordinate.latitude),
-                        Number(trait.patch.values.geoCoordinate.longitude),
-                      );
-                    }
-                  }),
+              // Tidy up our received messages. This ensures we only have one status for the trait in the data we process
+              // We'll favour a trait with accepted status over the same with confirmed status
+              if (decodedMessage?.observeResponse?.[0]?.traitStates !== undefined) {
+                let notAcceptedStatus = decodedMessage.observeResponse[0].traitStates.filter(
+                  (trait) => trait.stateTypes.includes('ACCEPTED') === false,
                 );
-
-                await this.#processPostSubscribe(deviceChanges);
-                deviceChanges = []; // No more device changes now
+                let acceptedStatus = decodedMessage.observeResponse[0].traitStates.filter(
+                  (trait) => trait.stateTypes.includes('ACCEPTED') === true,
+                );
+                let difference = acceptedStatus.map((trait) => trait.traitId.resourceId + '/' + trait.traitId.traitLabel);
+                decodedMessage.observeResponse[0].traitStates =
+                  ((notAcceptedStatus = notAcceptedStatus.filter(
+                    (trait) => difference.includes(trait.traitId.resourceId + '/' + trait.traitId.traitLabel) === false,
+                  )),
+                  [...notAcceptedStatus, ...acceptedStatus]);
               }
+              // We'll use the resource status message to look for structure and/or device removals
+              // We could also check for structure and/or device additions here, but we'll want to be flagged
+              // that a device is 'ready' for use before we add in. This data is populated in the trait data
+              if (decodedMessage?.observeResponse?.[0]?.resourceMetas !== undefined) {
+                decodedMessage.observeResponse[0].resourceMetas.map(async (resource) => {
+                  if (
+                    resource.status === 'REMOVED' &&
+                    (resource.resourceId.startsWith('STRUCTURE_') || resource.resourceId.startsWith('DEVICE_'))
+                  ) {
+                    // We have the removal of a 'home' and/or device
+                    // Tidy up over tracked devices since this once is removed
+                    if (this.#trackedDevices[this.#rawData?.[resource.resourceId]?.value?.device_identity?.serialNumber] !== undefined) {
+                      // Remove any active running timers we have for this device
+                      Object.values(
+                        this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber]?.timers,
+                      ).forEach((timers) => {
+                        clearInterval(timers);
+                      });
+
+                      // Send removed notice onto HomeKit device for it to process
+                      this.#eventEmitter.emit(
+                        this.#trackedDevices[this.#rawData?.[resource.resourceId].value.device_identity.serialNumber].uuid,
+                        HomeKitDevice.REMOVE,
+                        {},
+                      );
+
+                      // Finally, remove from tracked devices
+                      delete this.#trackedDevices[this.#rawData?.[resource.resourceId].value.device_identity.serialNumber];
+                    }
+                    delete this.#rawData[resource.resourceId];
+                  }
+                });
+              }
+              // eslint-disable-next-line no-unused-vars
+            } catch (error) {
+              // Empty
+            }
+            buffer = buffer.subarray(messageSize); // Remove the message from the beginning of the buffer
+
+            if (typeof decodedMessage?.observeResponse?.[0]?.traitStates === 'object') {
+              await Promise.all(
+                decodedMessage.observeResponse[0].traitStates.map(async (trait) => {
+                  if (typeof this.#rawData[trait.traitId.resourceId] === 'undefined') {
+                    this.#rawData[trait.traitId.resourceId] = {};
+                    this.#rawData[trait.traitId.resourceId].connection = connectionUUID;
+                    this.#rawData[trait.traitId.resourceId].source = NestAccfactory.DataSource.PROTOBUF;
+                    this.#rawData[trait.traitId.resourceId].value = {};
+                  }
+                  this.#rawData[trait.traitId.resourceId]['value'][trait.traitId.traitLabel] =
+                    typeof trait.patch.values !== 'undefined' ? trait.patch.values : {};
+
+                  // We don't need to store the trait type, so remove it
+                  delete this.#rawData[trait.traitId.resourceId]['value'][trait.traitId.traitLabel]['@type'];
+
+                  // If we have structure location details and associated geo-location details, get the weather data for the location
+                  // We'll store this in the object key/value as per REST API
+                  if (
+                    trait.traitId.resourceId.startsWith('STRUCTURE_') === true &&
+                    trait.traitId.traitLabel === 'structure_location' &&
+                    isNaN(trait.patch.values?.geoCoordinate?.latitude) === false &&
+                    isNaN(trait.patch.values?.geoCoordinate?.longitude) === false
+                  ) {
+                    this.#rawData[trait.traitId.resourceId].value.weather = await this.#getWeatherData(
+                      connectionUUID,
+                      trait.traitId.resourceId,
+                      Number(trait.patch.values.geoCoordinate.latitude),
+                      Number(trait.patch.values.geoCoordinate.longitude),
+                    );
+                  }
+                }),
+              );
+
+              await this.#processPostSubscribe();
             }
           }
-        })
-        .catch((error) => {
-          if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false && this?.log?.debug) {
-            this.log.debug('Protobuf API had an error performing trait observe with connection uuid "%s"', connectionUUID);
-            this.log.debug('Error was "%s"', error);
-          }
-        })
-        .finally(() => {
-          this?.log?.debug && this.log.debug('Restarting Protobuf API trait observe for connection uuid "%s"', connectionUUID);
-          setTimeout(this.#subscribeProtobuf.bind(this, connectionUUID, false), 1000);
-        });
-    }
+        }
+      })
+      .catch((error) => {
+        if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false && this?.log?.debug) {
+          this.log.debug('Protobuf API had an error performing trait observe with connection uuid "%s"', connectionUUID);
+          this.log.debug('Error was "%s"', error);
+        }
+      })
+      .finally(() => {
+        this?.log?.debug && this.log.debug('Restarting Protobuf API trait observe for connection uuid "%s"', connectionUUID);
+        setTimeout(this.#subscribeProtobuf.bind(this, connectionUUID, false), 1000);
+      });
   }
 
-  async #processPostSubscribe(deviceChanges) {
-    // Process any device removals we have
-    Object.values(deviceChanges)
-      .filter((object) => object.change === 'remove')
-      .forEach((object) => {
-        if (typeof this.#rawData[object.object_key] === 'object') {
-          // Remove any timers that might have been associated with this device
-          Object.values(this.#rawData[object.object_key].timers).forEach((timerObject) => {
-            clearInterval(timerObject);
-          });
-
-          // Clean up structure
-          delete this.#rawData[object.object_key];
+  async #processPostSubscribe() {
+    Object.values(this.#processData('')).forEach((deviceData) => {
+      if (this.#trackedDevices?.[deviceData?.serialNumber] === undefined && deviceData?.excluded === true) {
+        // We haven't tracked this device before (ie: should be a new one) and but its excluded
+        this?.log?.warn && this.log.warn('Device "%s" is ignored due to it being marked as excluded', deviceData.description);
+      }
+      if (this.#trackedDevices?.[deviceData?.serialNumber] === undefined && deviceData?.excluded === false) {
+        // We haven't tracked this device before (ie: should be a new one) and its not excluded
+        // so create the required HomeKit accessories based upon the device data
+        if (deviceData.device_type === NestAccfactory.DeviceType.THERMOSTAT && typeof NestThermostat === 'function') {
+          // Nest Thermostat(s) - Categories.THERMOSTAT = 9
+          let tempDevice = new NestThermostat(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
+          tempDevice.add('Nest Thermostat', 9, true);
+          // Track this device once created
+          this.#trackedDevices[deviceData.serialNumber] = {
+            uuid: tempDevice.uuid,
+            source: undefined,
+          };
         }
 
-        // Send removed notice onto HomeKit device for it to process
-        //this.#trackedDevices?.[deviceData?.serialNumber] !== undefined
-        this.#eventEmitter.emit(object.object_key, HomeKitDevice.REMOVE, {});
-      });
+        if (deviceData.device_type === NestAccfactory.DeviceType.TEMPSENSOR && typeof NestTemperatureSensor === 'function') {
+          // Nest Temperature Sensor - Categories.SENSOR = 10;
+          let tempDevice = new NestTemperatureSensor(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
+          tempDevice.add('Nest Temperature Sensor', 10, true);
+          // Track this device once created
+          this.#trackedDevices[deviceData.serialNumber] = {
+            uuid: tempDevice.uuid,
+            source: undefined,
+          };
+        }
 
-    Object.values(this.#processData('')).forEach((deviceData) => {
-      // Process any device additions we have
-      Object.values(deviceChanges)
-        .filter((object) => object.change === 'add')
-        .forEach((object) => {
-          if (object.object_key === deviceData.nest_google_uuid && deviceData.excluded === true) {
-            this?.log?.warn && this.log.warn('Device "%s" is ignored due to it being marked as excluded', deviceData.description);
+        if (deviceData.device_type === NestAccfactory.DeviceType.SMOKESENSOR && typeof NestProtect === 'function') {
+          // Nest Protect(s) - Categories.SENSOR = 10
+          let tempDevice = new NestProtect(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
+          tempDevice.add('Nest Protect', 10, true);
+          // Track this device once created
+          this.#trackedDevices[deviceData.serialNumber] = {
+            uuid: tempDevice.uuid,
+            source: undefined,
+          };
+        }
+
+        if (
+          (deviceData.device_type === NestAccfactory.DeviceType.CAMERA ||
+            deviceData.device_type === NestAccfactory.DeviceType.DOORBELL ||
+            deviceData.device_type === NestAccfactory.DeviceType.FLOODLIGHT) &&
+          (typeof NestCamera === 'function' || typeof NestDoorbell === 'function' || typeof NestFloodlight === 'function')
+        ) {
+          let accessoryName = 'Nest ' + deviceData.model.replace(/\s*(?:\([^()]*\))/gi, '');
+          let tempDevice = undefined;
+          if (deviceData.device_type === NestAccfactory.DeviceType.CAMERA) {
+            // Nest Camera(s) - Categories.IP_CAMERA = 17
+            tempDevice = new NestCamera(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
+            tempDevice.add(accessoryName, 17, true);
           }
-          if (object.object_key === deviceData.nest_google_uuid && deviceData.excluded === false) {
-            // Device isn't marked as excluded, so create the required HomeKit accessories based upon the device data
-            if (deviceData.device_type === NestAccfactory.DeviceType.THERMOSTAT && typeof NestThermostat === 'function') {
-              // Nest Thermostat(s) - Categories.THERMOSTAT = 9
-              let tempDevice = new NestThermostat(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
-              tempDevice.add('Nest Thermostat', 9, true);
-              // Track this device once created
-              this.#trackedDevices[deviceData.serialNumber] = {
-                uuid: tempDevice.uuid,
-                source: undefined,
-              };
-            }
+          if (deviceData.device_type === NestAccfactory.DeviceType.DOORBELL) {
+            // Nest Doorbell(s) - Categories.VIDEO_DOORBELL = 18
+            tempDevice = new NestDoorbell(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
+            tempDevice.add(accessoryName, 18, true);
+          }
+          if (deviceData.device_type === NestAccfactory.DeviceType.FLOODLIGHT) {
+            // Nest Camera(s) with Floodlight - Categories.IP_CAMERA = 17
+            tempDevice = new NestFloodlight(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
+            tempDevice.add(accessoryName, 17, true);
+          }
 
-            if (deviceData.device_type === NestAccfactory.DeviceType.TEMPSENSOR && typeof NestTemperatureSensor === 'function') {
-              // Nest Temperature Sensor - Categories.SENSOR = 10;
-              let tempDevice = new NestTemperatureSensor(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
-              tempDevice.add('Nest Temperature Sensor', 10, true);
-              // Track this device once created
-              this.#trackedDevices[deviceData.serialNumber] = {
-                uuid: tempDevice.uuid,
-                source: undefined,
-              };
-            }
+          // Track this device once created
+          this.#trackedDevices[deviceData.serialNumber] = {
+            uuid: tempDevice.uuid,
+            source: undefined,
+            timers: {},
+          };
 
-            if (deviceData.device_type === NestAccfactory.DeviceType.SMOKESENSOR && typeof NestProtect === 'function') {
-              // Nest Protect(s) - Categories.SENSOR = 10
-              let tempDevice = new NestProtect(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
-              tempDevice.add('Nest Protect', 10, true);
-              // Track this device once created
-              this.#trackedDevices[deviceData.serialNumber] = {
-                uuid: tempDevice.uuid,
-                source: undefined,
-              };
+          // Setup polling loop for camera/doorbell zone data
+          // This is only required for REST API data sources as these details are present in Protobuf API
+          this.#trackedDevices[deviceData.serialNumber].timers.zones = setInterval(async () => {
+            if (
+              this.#rawData?.[deviceData?.nest_google_uuid]?.value !== undefined &&
+              this.#trackedDevices?.[deviceData?.serialNumber]?.source === NestAccfactory.DataSource.REST
+            ) {
+              await fetchWrapper(
+                'get',
+                this.#rawData[deviceData.nest_google_uuid].value.nexus_api_http_server_url +
+                  '/cuepoint_category/' +
+                  deviceData.nest_google_uuid.split('.')[1],
+                {
+                  headers: {
+                    referer: 'https://' + this.#connections[this.#rawData[deviceData.nest_google_uuid].connection].referer,
+                    'User-Agent': USERAGENT,
+                    [this.#connections[this.#rawData[deviceData.nest_google_uuid].connection].cameraAPI.key]:
+                      this.#connections[this.#rawData[deviceData.nest_google_uuid].connection].cameraAPI.value +
+                      this.#connections[this.#rawData[deviceData.nest_google_uuid].connection].cameraAPI.token,
+                  },
+                  timeout: CAMERAZONEPOLLING,
+                },
+              )
+                .then((response) => response.json())
+                .then((data) => {
+                  let zones = [];
+                  data.forEach((zone) => {
+                    if (zone.type.toUpperCase() === 'ACTIVITY' || zone.type.toUpperCase() === 'REGION') {
+                      zones.push({
+                        id: zone.id === 0 ? 1 : zone.id,
+                        name: makeHomeKitName(zone.label),
+                        hidden: zone.hidden === true,
+                        uri: zone.nexusapi_image_uri,
+                      });
+                    }
+                  });
+
+                  // Update internal structure with new zone details.
+                  // We do a test to see if its still present not interval loop not finished or device removed
+                  if (this.#rawData?.[deviceData?.nest_google_uuid]?.value !== undefined) {
+                    this.#rawData[deviceData.nest_google_uuid].value.activity_zones = zones;
+
+                    // Send updated data onto HomeKit device for it to process
+                    if (this.#trackedDevices?.[deviceData?.serialNumber] !== undefined) {
+                      this.#eventEmitter.emit(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, {
+                        activity_zones: this.#rawData[deviceData.nest_google_uuid].value.activity_zones,
+                      });
+                    }
+                  }
+                })
+                .catch((error) => {
+                  // Log debug message if wasn't a timeout
+                  if (error?.name !== 'TimeoutError' && this?.log?.debug) {
+                    this.log.debug(
+                      'REST API had error retrieving camera/doorbell activity zones for "%s". Error was "%s"',
+                      deviceData.description,
+                      error?.code,
+                    );
+                  }
+                });
+            }
+          }, CAMERAZONEPOLLING);
+
+          // Setup polling loop for camera/doorbell alert data
+          this.#trackedDevices[deviceData.serialNumber].timers.alerts = setInterval(async () => {
+            let alerts = []; // No alerts to processed yet
+            if (
+              this.#rawData?.[deviceData?.nest_google_uuid]?.value !== undefined &&
+              this.#trackedDevices?.[deviceData?.serialNumber]?.source === NestAccfactory.DataSource.PROTOBUF
+            ) {
+              let commandResponse = await this.#protobufCommand(
+                this.#rawData[deviceData.nest_google_uuid].connection,
+                'ResourceApi',
+                'SendCommand',
+                {
+                  resourceRequest: {
+                    resourceId: deviceData.nest_google_uuid,
+                    requestId: crypto.randomUUID(),
+                  },
+                  resourceCommands: [
+                    {
+                      traitLabel: 'camera_observation_history',
+                      command: {
+                        type_url: 'type.nestlabs.com/nest.trait.history.CameraObservationHistoryTrait.CameraObservationHistoryRequest',
+                        value: {
+                          // We want camera history from now for upto 30secs from now
+                          queryStartTime: { seconds: Math.floor(Date.now() / 1000), nanos: (Math.round(Date.now()) % 1000) * 1e6 },
+                          queryEndTime: {
+                            seconds: Math.floor((Date.now() + 30000) / 1000),
+                            nanos: (Math.round(Date.now() + 30000) % 1000) * 1e6,
+                          },
+                        },
+                      },
+                    },
+                  ],
+                },
+              );
+
+              if (
+                typeof commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.event?.event?.cameraEventWindow?.cameraEvent ===
+                'object'
+              ) {
+                commandResponse.sendCommandResponse[0].traitOperations[0].event.event.cameraEventWindow.cameraEvent.forEach((event) => {
+                  alerts.push({
+                    playback_time: parseInt(event.startTime.seconds) * 1000 + parseInt(event.startTime.nanos) / 1000000,
+                    start_time: parseInt(event.startTime.seconds) * 1000 + parseInt(event.startTime.nanos) / 1000000,
+                    end_time: parseInt(event.endTime.seconds) * 1000 + parseInt(event.endTime.nanos) / 1000000,
+                    id: event.eventId,
+                    zone_ids:
+                      typeof event.activityZone === 'object'
+                        ? event.activityZone.map((zone) => (zone?.zoneIndex !== undefined ? zone.zoneIndex : zone.internalIndex))
+                        : [],
+                    types: event.eventType
+                      .map((event) => (event.startsWith('EVENT_') === true ? event.split('EVENT_')[1].toLowerCase() : ''))
+                      .filter((event) => event),
+                  });
+
+                  // Fix up event types to match REST API
+                  // 'EVENT_UNFAMILIAR_FACE' = 'unfamiliar-face'
+                  // 'EVENT_PERSON_TALKING' = 'personHeard'
+                  // 'EVENT_DOG_BARKING' = 'dogBarking'
+                  // <---- TODO (as the ones we use match from Protobuf)
+                });
+
+                // Sort alerts to be most recent first
+                alerts = alerts.sort((a, b) => {
+                  if (a.start_time > b.start_time) {
+                    return -1;
+                  }
+                });
+              }
             }
 
             if (
-              (deviceData.device_type === NestAccfactory.DeviceType.CAMERA ||
-                deviceData.device_type === NestAccfactory.DeviceType.DOORBELL ||
-                deviceData.device_type === NestAccfactory.DeviceType.FLOODLIGHT) &&
-              (typeof NestCamera === 'function' || typeof NestDoorbell === 'function' || typeof NestFloodlight === 'function')
+              this.#rawData?.[deviceData?.nest_google_uuid]?.value !== undefined &&
+              this.#trackedDevices?.[deviceData?.serialNumber]?.source === NestAccfactory.DataSource.REST
             ) {
-              let accessoryName = 'Nest ' + deviceData.model.replace(/\s*(?:\([^()]*\))/gi, '');
-              let tempDevice = undefined;
-              if (deviceData.device_type === NestAccfactory.DeviceType.CAMERA) {
-                // Nest Camera(s) - Categories.IP_CAMERA = 17
-                tempDevice = new NestCamera(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
-                tempDevice.add(accessoryName, 17, true);
-              }
-              if (deviceData.device_type === NestAccfactory.DeviceType.DOORBELL) {
-                // Nest Doorbell(s) - Categories.VIDEO_DOORBELL = 18
-                tempDevice = new NestDoorbell(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
-                tempDevice.add(accessoryName, 18, true);
-              }
-              if (deviceData.device_type === NestAccfactory.DeviceType.FLOODLIGHT) {
-                // Nest Camera(s) with Floodlight - Categories.IP_CAMERA = 17
-                tempDevice = new NestFloodlight(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
-                tempDevice.add(accessoryName, 17, true);
-              }
-
-              // Track this device once created
-              this.#trackedDevices[deviceData.serialNumber] = {
-                uuid: tempDevice.uuid,
-                source: undefined,
-              };
-
-              // Setup polling loop for camera/doorbell zone data if not already created.
-              // This is only required for REST API data sources as these details are present in Protobuf API
-              if (
-                this.#rawData?.[object.object_key] !== undefined &&
-                this.#rawData[object.object_key]?.timers?.zones === undefined &&
-                this.#rawData[object.object_key].source === NestAccfactory.DataSource.REST
-              ) {
-                this.#rawData[object.object_key].timers.zones = setInterval(async () => {
-                  if (this.#rawData?.[object.object_key]?.value?.nexus_api_http_server_url !== undefined) {
-                    await fetchWrapper(
-                      'get',
-                      this.#rawData[object.object_key].value.nexus_api_http_server_url +
-                        '/cuepoint_category/' +
-                        object.object_key.split('.')[1],
-                      {
-                        headers: {
-                          referer: 'https://' + this.#connections[this.#rawData[object.object_key].connection].referer,
-                          'User-Agent': USERAGENT,
-                          [this.#connections[this.#rawData[object.object_key].connection].cameraAPI.key]:
-                            this.#connections[this.#rawData[object.object_key].connection].cameraAPI.value +
-                            this.#connections[this.#rawData[object.object_key].connection].cameraAPI.token,
-                        },
-                        timeout: CAMERAZONEPOLLING,
-                      },
-                    )
-                      .then((response) => response.json())
-                      .then((data) => {
-                        let zones = [];
-                        data.forEach((zone) => {
-                          if (zone.type.toUpperCase() === 'ACTIVITY' || zone.type.toUpperCase() === 'REGION') {
-                            zones.push({
-                              id: zone.id === 0 ? 1 : zone.id,
-                              name: makeHomeKitName(zone.label),
-                              hidden: zone.hidden === true,
-                              uri: zone.nexusapi_image_uri,
-                            });
-                          }
-                        });
-
-                        this.#rawData[object.object_key].value.activity_zones = zones;
-
-                        // Send updated data onto HomeKit device for it to process
-                        if (this.#trackedDevices?.[deviceData?.serialNumber] !== undefined) {
-                          this.#eventEmitter.emit(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, {
-                            activity_zones: this.#rawData[object.object_key].value.activity_zones,
-                          });
-                        }
-                      })
-                      .catch((error) => {
-                        // Log debug message if wasn't a timeout
-                        if (error?.name !== 'TimeoutError' && this?.log?.debug) {
-                          this.log.debug(
-                            'REST API had error retrieving camera/doorbell activity zones for uuid "%s". Error was "%s"',
-                            object.object_key,
-                            error?.code,
-                          );
-                        }
-                      });
-                  }
-                }, CAMERAZONEPOLLING);
-              }
-
-              // Setup polling loop for camera/doorbell alert data if not already created
-              if (this.#rawData?.[object.object_key] !== undefined && this.#rawData?.[object.object_key]?.timers?.alerts === undefined) {
-                this.#rawData[object.object_key].timers.alerts = setInterval(async () => {
-                  let alerts = []; // No alerts to processed yet
-                  if (
-                    typeof this.#rawData[object.object_key]?.value === 'object' &&
-                    this.#rawData[object.object_key]?.source === NestAccfactory.DataSource.PROTOBUF
-                  ) {
-                    let commandResponse = await this.#protobufCommand(
-                      this.#rawData[object.object_key].connection,
-                      'ResourceApi',
-                      'SendCommand',
-                      {
-                        resourceRequest: {
-                          resourceId: object.object_key,
-                          requestId: crypto.randomUUID(),
-                        },
-                        resourceCommands: [
-                          {
-                            traitLabel: 'camera_observation_history',
-                            command: {
-                              type_url:
-                                'type.nestlabs.com/nest.trait.history.CameraObservationHistoryTrait.CameraObservationHistoryRequest',
-                              value: {
-                                // We want camera history from now for upto 30secs from now
-                                queryStartTime: { seconds: Math.floor(Date.now() / 1000), nanos: (Math.round(Date.now()) % 1000) * 1e6 },
-                                queryEndTime: {
-                                  seconds: Math.floor((Date.now() + 30000) / 1000),
-                                  nanos: (Math.round(Date.now() + 30000) % 1000) * 1e6,
-                                },
-                              },
-                            },
-                          },
-                        ],
-                      },
-                    );
-
-                    if (
-                      typeof commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.event?.event?.cameraEventWindow
-                        ?.cameraEvent === 'object'
-                    ) {
-                      commandResponse.sendCommandResponse[0].traitOperations[0].event.event.cameraEventWindow.cameraEvent.forEach(
-                        (event) => {
-                          alerts.push({
-                            playback_time: parseInt(event.startTime.seconds) * 1000 + parseInt(event.startTime.nanos) / 1000000,
-                            start_time: parseInt(event.startTime.seconds) * 1000 + parseInt(event.startTime.nanos) / 1000000,
-                            end_time: parseInt(event.endTime.seconds) * 1000 + parseInt(event.endTime.nanos) / 1000000,
-                            id: event.eventId,
-                            zone_ids:
-                              typeof event.activityZone === 'object'
-                                ? event.activityZone.map((zone) => (zone?.zoneIndex !== undefined ? zone.zoneIndex : zone.internalIndex))
-                                : [],
-                            types: event.eventType
-                              .map((event) => (event.startsWith('EVENT_') === true ? event.split('EVENT_')[1].toLowerCase() : ''))
-                              .filter((event) => event),
-                          });
-
-                          // Fix up event types to match REST API
-                          // 'EVENT_UNFAMILIAR_FACE' = 'unfamiliar-face'
-                          // 'EVENT_PERSON_TALKING' = 'personHeard'
-                          // 'EVENT_DOG_BARKING' = 'dogBarking'
-                          // <---- TODO (as the ones we use match from Protobuf)
-                        },
-                      );
-
-                      // Sort alerts to be most recent first
-                      alerts = alerts.sort((a, b) => {
-                        if (a.start_time > b.start_time) {
-                          return -1;
-                        }
-                      });
+              await fetchWrapper(
+                'get',
+                this.#rawData[deviceData.nest_google_uuid].value.nexus_api_http_server_url +
+                  '/cuepoint/' +
+                  deviceData.nest_google_uuid.split('.')[1] +
+                  '/2?start_time=' +
+                  Math.floor(Date.now() / 1000 - 30),
+                {
+                  headers: {
+                    referer: 'https://' + this.#connections[this.#rawData[deviceData.nest_google_uuid].connection].referer,
+                    'User-Agent': USERAGENT,
+                    [this.#connections[this.#rawData[deviceData.nest_google_uuid].connection].cameraAPI.key]:
+                      this.#connections[this.#rawData[deviceData.nest_google_uuid].connection].cameraAPI.value +
+                      this.#connections[this.#rawData[deviceData.nest_google_uuid].connection].cameraAPI.token,
+                  },
+                  timeout: CAMERAALERTPOLLING,
+                  retry: 3,
+                },
+              )
+                .then((response) => response.json())
+                .then((data) => {
+                  data.forEach((alert) => {
+                    // Fix up alert zone IDs. If there is an ID of 0, we'll transform to 1. ie: main zone
+                    // If there are NO zone IDs, we'll put a 1 in there ie: main zone
+                    alert.zone_ids = alert.zone_ids.map((id) => (id !== 0 ? id : 1));
+                    if (alert.zone_ids.length === 0) {
+                      alert.zone_ids.push(1);
                     }
-                  }
+                    alerts.push({
+                      playback_time: alert.playback_time,
+                      start_time: alert.start_time,
+                      end_time: alert.end_time,
+                      id: alert.id,
+                      zone_ids: alert.zone_ids,
+                      types: alert.types,
+                    });
+                  });
 
-                  if (
-                    typeof this.#rawData[object.object_key]?.value === 'object' &&
-                    this.#rawData[object.object_key]?.source === NestAccfactory.DataSource.REST
-                  ) {
-                    await fetchWrapper(
-                      'get',
-                      this.#rawData[object.object_key].value.nexus_api_http_server_url +
-                        '/cuepoint/' +
-                        object.object_key.split('.')[1] +
-                        '/2?start_time=' +
-                        Math.floor(Date.now() / 1000 - 30),
-                      {
-                        headers: {
-                          referer: 'https://' + this.#connections[this.#rawData[object.object_key].connection].referer,
-                          'User-Agent': USERAGENT,
-                          [this.#connections[this.#rawData[object.object_key].connection].cameraAPI.key]:
-                            this.#connections[this.#rawData[object.object_key].connection].cameraAPI.value +
-                            this.#connections[this.#rawData[object.object_key].connection].cameraAPI.token,
-                        },
-                        timeout: CAMERAALERTPOLLING,
-                        retry: 3,
-                      },
-                    )
-                      .then((response) => response.json())
-                      .then((data) => {
-                        data.forEach((alert) => {
-                          // Fix up alert zone IDs. If there is an ID of 0, we'll transform to 1. ie: main zone
-                          // If there are NO zone IDs, we'll put a 1 in there ie: main zone
-                          alert.zone_ids = alert.zone_ids.map((id) => (id !== 0 ? id : 1));
-                          if (alert.zone_ids.length === 0) {
-                            alert.zone_ids.push(1);
-                          }
-                          alerts.push({
-                            playback_time: alert.playback_time,
-                            start_time: alert.start_time,
-                            end_time: alert.end_time,
-                            id: alert.id,
-                            zone_ids: alert.zone_ids,
-                            types: alert.types,
-                          });
-                        });
-
-                        // Sort alerts to be most recent first
-                        alerts = alerts.sort((a, b) => {
-                          if (a.start_time > b.start_time) {
-                            return -1;
-                          }
-                        });
-                      })
-                      .catch((error) => {
-                        // Log debug message if wasn't a timeout
-                        if (error?.name !== 'TimeoutError' && this?.log?.debug) {
-                          this.log.debug(
-                            'REST API had error retrieving camera/doorbell activity notifications for uuid "%s". Error was "%s"',
-                            object.object_key,
-                            error?.code,
-                          );
-                        }
-                      });
-                  }
-
-                  // Update internal structure with new alerts.
-                  // We do a test to see if its still present not interval loop not finished or device removed
-                  if (this.#rawData?.[object.object_key]?.value !== undefined) {
-                    this.#rawData[object.object_key].value.alerts = alerts;
-
-                    // Send updated alerts onto HomeKit device for it to process
-                    if (this.#trackedDevices?.[deviceData?.serialNumber] !== undefined) {
-                      this.#eventEmitter.emit(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, {
-                        alerts: alerts,
-                      });
+                  // Sort alerts to be most recent first
+                  alerts = alerts.sort((a, b) => {
+                    if (a.start_time > b.start_time) {
+                      return -1;
                     }
-                  }
-                }, CAMERAALERTPOLLING);
-              }
-            }
-            if (deviceData.device_type === NestAccfactory.DeviceType.WEATHER && typeof NestWeather === 'function') {
-              // Nest 'Virtual' weather station - Categories.SENSOR = 10
-              let tempDevice = new NestWeather(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
-              tempDevice.add('Nest Weather', 10, true);
-
-              // Track this device once created
-              this.#trackedDevices[deviceData.serialNumber] = {
-                uuid: tempDevice.uuid,
-                source: undefined,
-              };
-
-              // Setup polling loop for weather data if not already created
-              if (typeof this.#rawData[object.object_key]?.timers?.weather === 'undefined') {
-                this.#rawData[object.object_key].timers.weather = setInterval(async () => {
-                  this.#rawData[object.object_key].value.weather = await this.#getWeatherData(
-                    this.#rawData[object.object_key].connection,
-                    object.object_key,
-                    this.#rawData[object.object_key].value.weather.latitude,
-                    this.#rawData[object.object_key].value.weather.longitude,
-                  );
-
-                  // Send updated weather data onto HomeKit device for it to process
-                  if (this.#trackedDevices?.[deviceData?.serialNumber] !== undefined) {
-                    this.#eventEmitter.emit(
-                      this.#trackedDevices[deviceData.serialNumber].uuid,
-                      HomeKitDevice.UPDATE,
-                      this.#processData(object.object_key)[deviceData.serialNumber],
+                  });
+                })
+                .catch((error) => {
+                  // Log debug message if wasn't a timeout
+                  if (error?.name !== 'TimeoutError' && this?.log?.debug) {
+                    this.log.debug(
+                      'REST API had error retrieving camera/doorbell activity notifications for "%s". Error was "%s"',
+                      deviceData.description,
+                      error?.code,
                     );
                   }
-                }, WEATHERPOLLING);
+                });
+            }
+
+            // Update internal structure with new alerts.
+            // We do a test to see if its still present not interval loop not finished or device removed
+            if (this.#rawData?.[deviceData?.nest_google_uuid]?.value !== undefined) {
+              this.#rawData[deviceData.nest_google_uuid].value.alerts = alerts;
+
+              // Send updated alerts onto HomeKit device for it to process
+              if (this.#trackedDevices?.[deviceData?.serialNumber] !== undefined) {
+                this.#eventEmitter.emit(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, {
+                  alerts: alerts,
+                });
               }
             }
-          }
-        });
+          }, CAMERAALERTPOLLING);
+        }
+
+        if (deviceData.device_type === NestAccfactory.DeviceType.WEATHER && typeof NestWeather === 'function') {
+          // Nest 'Virtual' weather station - Categories.SENSOR = 10
+          let tempDevice = new NestWeather(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
+          tempDevice.add('Nest Weather', 10, true);
+
+          // Track this device once created
+          this.#trackedDevices[deviceData.serialNumber] = {
+            uuid: tempDevice.uuid,
+            source: undefined,
+            timers: {},
+          };
+
+          // Setup polling loop for weather data
+          this.#trackedDevices[deviceData.serialNumber].timers.weather = setInterval(async () => {
+            if (this.#rawData?.[deviceData?.nest_google_uuid] !== undefined) {
+              this.#rawData[deviceData.nest_google_uuid].value.weather = await this.#getWeatherData(
+                this.#rawData[deviceData.nest_google_uuid].connection,
+                deviceData.nest_google_uuid,
+                this.#rawData[deviceData.nest_google_uuid].value.weather.latitude,
+                this.#rawData[deviceData.nest_google_uuid].value.weather.longitude,
+              );
+
+              // Send updated weather data onto HomeKit device for it to process
+              if (this.#trackedDevices?.[deviceData?.serialNumber] !== undefined) {
+                this.#eventEmitter.emit(
+                  this.#trackedDevices[deviceData.serialNumber].uuid,
+                  HomeKitDevice.UPDATE,
+                  this.#processData(deviceData.nest_google_uuid)[deviceData.serialNumber],
+                );
+              }
+            }
+          }, WEATHERPOLLING);
+        }
+      }
 
       // Finally, after processing device additions, if device is not excluded, send updated data to device for it to process
       if (deviceData.excluded === false && this.#trackedDevices?.[deviceData?.serialNumber] !== undefined) {
@@ -1427,7 +1419,7 @@ export default class NestAccfactory {
       .forEach(([object_key, value]) => {
         let tempDevice = {};
         try {
-          if (value?.source === NestAccfactory.DataSource.PROTOBUF) {
+          if (value?.source === NestAccfactory.DataSource.PROTOBUF && value.value?.configuration_done?.deviceReady === true) {
             let RESTTypeData = {};
             RESTTypeData.serialNumber = value.value.device_identity.serialNumber;
             RESTTypeData.softwareVersion = value.value.device_identity.softwareVersion;
@@ -1652,7 +1644,7 @@ export default class NestAccfactory {
             tempDevice = process_thermostat_data(object_key, RESTTypeData);
           }
 
-          if (value?.source === NestAccfactory.DataSource.REST) {
+          if (value?.source === NestAccfactory.DataSource.REST && value.value?.where_id !== undefined) {
             let RESTTypeData = {};
             RESTTypeData.serialNumber = value.value.serial_number;
             RESTTypeData.softwareVersion = value.value.current_version;
@@ -1891,6 +1883,7 @@ export default class NestAccfactory {
         try {
           if (
             value?.source === NestAccfactory.DataSource.PROTOBUF &&
+            value.value?.configuration_done?.deviceReady === true &&
             typeof value?.value?.associated_thermostat === 'string' &&
             value?.value?.associated_thermostat !== ''
           ) {
@@ -1914,6 +1907,8 @@ export default class NestAccfactory {
           }
           if (
             value?.source === NestAccfactory.DataSource.REST &&
+            value.value?.where_id !== undefined &&
+            value.value?.structure_id !== undefined &&
             typeof value?.value?.associated_thermostat === 'string' &&
             value?.value?.associated_thermostat !== ''
           ) {
@@ -1981,7 +1976,11 @@ export default class NestAccfactory {
       .forEach(([object_key, value]) => {
         let tempDevice = {};
         try {
-          if (value?.source === NestAccfactory.DataSource.REST) {
+          if (
+            value?.source === NestAccfactory.DataSource.REST &&
+            value.value?.where_id !== undefined &&
+            value.value?.structure_id !== undefined
+          ) {
             let RESTTypeData = {};
             RESTTypeData.serialNumber = value.value.serial_number;
             RESTTypeData.softwareVersion = value.value.software_version;
@@ -2070,7 +2069,12 @@ export default class NestAccfactory {
       .forEach(([object_key, value]) => {
         let tempDevice = {};
         try {
-          if (value?.source === NestAccfactory.DataSource.PROTOBUF) {
+          if (
+            value?.source === NestAccfactory.DataSource.PROTOBUF &&
+            value.value?.streaming_protocol !== undefined &&
+            (value?.configuration_done?.deviceReady === true ||
+              value.value?.camera_migration_status?.state?.where === 'MIGRATED_TO_GOOGLE_HOME')
+          ) {
             let RESTTypeData = {};
             RESTTypeData.serialNumber = value.value.device_identity.serialNumber;
             RESTTypeData.softwareVersion =
@@ -2174,7 +2178,14 @@ export default class NestAccfactory {
             tempDevice = process_camera_doorbell_data(object_key, RESTTypeData);
           }
 
-          if (value?.source === NestAccfactory.DataSource.REST) {
+          if (
+            value?.source === NestAccfactory.DataSource.REST &&
+            value.value?.where_id !== undefined &&
+            value.value?.structure_id !== undefined &&
+            value.value?.nexus_api_http_server_url !== undefined &&
+            (value.value?.properties?.['cc2migration.overview_state'] === 'NORMAL' ||
+              value.value?.properties?.['cc2migration.overview_state'] === 'REVERSE_MIGRATION_IN_PROGRESS')
+          ) {
             // We'll only use the REST API data for Camera's which have NOT been migrated to Google Home
             let RESTTypeData = {};
             RESTTypeData.serialNumber = value.value.serial_number;
@@ -2249,25 +2260,7 @@ export default class NestAccfactory {
                 ? 1
                 : 2;
 
-          // Determine if we use the REST or Protobuf source data for camera/doorbell
-          // This is to handle transfer devices seamlessly between Nest/Google Home
-          if (
-            value?.source === NestAccfactory.DataSource.PROTOBUF &&
-            value.value?.streaming_protocol !== undefined &&
-            (value?.configuration_done?.deviceReady === true ||
-              value.value?.camera_migration_status?.state === undefined ||
-              value.value?.camera_migration_status?.state?.where === 'MIGRATED_TO_GOOGLE_HOME')
-          ) {
-            devices[tempDevice.serialNumber] = tempDevice; // Store processed device
-          }
-
-          if (
-            value?.source === NestAccfactory.DataSource.REST &&
-            (value.value?.properties?.['cc2migration.overview_state'] === 'NORMAL' ||
-              value.value?.properties?.['cc2migration.overview_state'] === 'REVERSE_MIGRATION_IN_PROGRESS')
-          ) {
-            devices[tempDevice.serialNumber] = tempDevice; // Store processed device
-          }
+          devices[tempDevice.serialNumber] = tempDevice; // Store processed device
         }
       });
 
@@ -2277,7 +2270,6 @@ export default class NestAccfactory {
       let processed = {};
       try {
         // Fix up data we need to
-        data.serialNumber = '18B430' + crc24(object_key.toUpperCase()).toUpperCase(); // Generate one
         data = process_common_data(object_key, data);
         data.device_type = NestAccfactory.DeviceType.WEATHER;
         data.model = 'Weather';
@@ -2314,8 +2306,13 @@ export default class NestAccfactory {
       .forEach(([object_key, value]) => {
         let tempDevice = {};
         try {
-          if (value?.source === NestAccfactory.DataSource.PROTOBUF) {
+          if (
+            value?.source === NestAccfactory.DataSource.PROTOBUF &&
+            value.value?.structure_location?.geoCoordinate?.latitude !== undefined &&
+            value.value?.structure_location?.geoCoordinate?.longitude !== undefined
+          ) {
             let RESTTypeData = {};
+            RESTTypeData.serialNumber = '18B430' + crc24(value.value.structure_info.rtsStructureId.toUpperCase()).toUpperCase();
             RESTTypeData.postal_code = value.value.structure_location.postalCode.value;
             RESTTypeData.country_code = value.value.structure_location.countryCode.value;
             RESTTypeData.city = value.value?.structure_location?.city !== undefined ? value.value.structure_location.city.value : '';
@@ -2328,12 +2325,18 @@ export default class NestAccfactory {
                 : value.value.structure_info.name;
             RESTTypeData.weather = value.value.weather;
 
-            // Use the REST API structure ID from the Protobuf structure. This should prevent two 'weather' objects being created
-            let tempDevice = process_structure_data(value.value.structure_info.rtsStructureId, RESTTypeData);
-            tempDevice.nest_google_uuid = object_key; // Use the Protobuf structure ID post processing
+            // Use the REST API structure ID from the Protobuf structure. This will ensure we generate the same serial number
+            // This should prevent two 'weather' objects being created
+            tempDevice = process_structure_data(object_key, RESTTypeData);
           }
-          if (value?.source === NestAccfactory.DataSource.REST) {
+
+          if (
+            value?.source === NestAccfactory.DataSource.REST &&
+            value.value?.latitude !== undefined &&
+            value.value?.longitude !== undefined
+          ) {
             let RESTTypeData = {};
+            RESTTypeData.serialNumber = '18B430' + crc24(object_key.toUpperCase()).toUpperCase();
             RESTTypeData.postal_code = value.value.postal_code;
             RESTTypeData.country_code = value.value.country_code;
             RESTTypeData.city = value.value?.city !== undefined ? value.value.city : '';

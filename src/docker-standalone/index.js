@@ -206,6 +206,10 @@ function loadConfiguration(filename) {
             // Per device silence indoor chime
             config.devices[key]['chimeSwitch'] = value;
           }
+          if (subKey === 'localAccess' && typeof value === 'boolean') {
+            // Per device use direct local network access to for camera streams
+            config.devices[key]['localAccess'] = value;
+          }
           if (subKey === 'Option.elevation' && isNaN(value) === false) {
             // Per device elevation setting (for weather)
             config.devices[key]['elevation'] = Number(value);

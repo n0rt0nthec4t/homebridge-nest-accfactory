@@ -34,7 +34,7 @@
 // HomeKitDevice.updateServices(deviceData)
 // HomeKitDevice.messageServices(type, message)
 //
-// Code version 27/9/2024
+// Code version 28/9/2024
 // Mark Hulskamp
 'use strict';
 
