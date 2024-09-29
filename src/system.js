@@ -612,7 +612,11 @@ export default class NestAccfactory {
                   value.value.properties = data.items[0].properties;
                 })
                 .catch((error) => {
-                  if (error?.name !== 'TimeoutError' && this?.log?.debug) {
+                  if (
+                    error?.cause !== undefined &&
+                    JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false &&
+                    this?.log?.debug
+                  ) {
                     this.log.debug('REST API had error retrieving camera/doorbell details during subscribe. Error was "%s"', error?.code);
                   }
                 });
@@ -648,7 +652,11 @@ export default class NestAccfactory {
                   value.value.activity_zones = zones;
                 })
                 .catch((error) => {
-                  if (error?.name !== 'TimeoutError' && this?.log?.debug) {
+                  if (
+                    error?.cause !== undefined &&
+                    JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false &&
+                    this?.log?.debug
+                  ) {
                     this.log.debug(
                       'REST API had error retrieving camera/doorbell activity zones during subscribe. Error was "%s"',
                       error?.code,
@@ -683,7 +691,7 @@ export default class NestAccfactory {
                       object_key.startsWith('topaz.') === true ||
                       object_key.startsWith('quartz.') === true
                     ) {
-                      // Tidy up over tracked devices since this once is removed
+                      // Tidy up tracked devices since this one is removed
                       if (this.#trackedDevices[this.#rawData?.[object_key]?.value?.serial_number] !== undefined) {
                         // Remove any active running timers we have for this device
                         Object.values(this.#trackedDevices[this.#rawData[object_key].value.serial_number].timers).forEach((timers) => {
@@ -885,7 +893,7 @@ export default class NestAccfactory {
                     (resource.resourceId.startsWith('STRUCTURE_') || resource.resourceId.startsWith('DEVICE_'))
                   ) {
                     // We have the removal of a 'home' and/or device
-                    // Tidy up over tracked devices since this once is removed
+                    // Tidy up tracked devices since this one is removed
                     if (this.#trackedDevices[this.#rawData?.[resource.resourceId]?.value?.device_identity?.serialNumber] !== undefined) {
                       // Remove any active running timers we have for this device
                       Object.values(
@@ -896,7 +904,7 @@ export default class NestAccfactory {
 
                       // Send removed notice onto HomeKit device for it to process
                       this.#eventEmitter.emit(
-                        this.#trackedDevices[this.#rawData?.[resource.resourceId].value.device_identity.serialNumber].uuid,
+                        this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber].uuid,
                         HomeKitDevice.REMOVE,
                         {},
                       );
@@ -1089,7 +1097,11 @@ export default class NestAccfactory {
                 })
                 .catch((error) => {
                   // Log debug message if wasn't a timeout
-                  if (error?.name !== 'TimeoutError' && this?.log?.debug) {
+                  if (
+                    error?.cause !== undefined &&
+                    JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false &&
+                    this?.log?.debug
+                  ) {
                     this.log.debug(
                       'REST API had error retrieving camera/doorbell activity zones for "%s". Error was "%s"',
                       deviceData.description,
@@ -1221,7 +1233,11 @@ export default class NestAccfactory {
                 })
                 .catch((error) => {
                   // Log debug message if wasn't a timeout
-                  if (error?.name !== 'TimeoutError' && this?.log?.debug) {
+                  if (
+                    error?.cause !== undefined &&
+                    JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false &&
+                    this?.log?.debug
+                  ) {
                     this.log.debug(
                       'REST API had error retrieving camera/doorbell activity notifications for "%s". Error was "%s"',
                       deviceData.description,
@@ -2674,7 +2690,11 @@ export default class NestAccfactory {
                 }
               })
               .catch((error) => {
-                if (error?.name !== 'TimeoutError' && this?.log?.debug) {
+                if (
+                  error?.cause !== undefined &&
+                  JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false &&
+                  this?.log?.debug
+                ) {
                   this.log.debug(
                     'REST API camera update for failed with error for uuid "%s". Error was "%s"',
                     nest_google_uuid,
@@ -2794,7 +2814,11 @@ export default class NestAccfactory {
                 values[key] = Buffer.from(data);
               })
               .catch((error) => {
-                if (error?.name !== 'TimeoutError' && this?.log?.debug) {
+                if (
+                  error?.cause !== undefined &&
+                  JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false &&
+                  this?.log?.debug
+                ) {
                   this.log.debug('REST API camera snapshot failed with error for uuid "%s". Error was "%s"', nest_google_uuid, error?.code);
                 }
               });
@@ -2843,7 +2867,11 @@ export default class NestAccfactory {
                   values[key] = Buffer.from(data);
                 })
                 .catch((error) => {
-                  if (error?.name !== 'TimeoutError' && this?.log?.debug) {
+                  if (
+                    error?.cause !== undefined &&
+                    JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false &&
+                    this?.log?.debug
+                  ) {
                     this.log.debug(
                       'Protobuf API camera snapshot failed with error for uuid "%s". Error was "%s"',
                       nest_google_uuid,
@@ -2899,7 +2927,7 @@ export default class NestAccfactory {
               : '';
         })
         .catch((error) => {
-          if (error?.name !== 'TimeoutError' && this?.log?.debug) {
+          if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false && this?.log?.debug) {
             this.log.debug('REST API failed to retrieve weather details for uuid "%s". Error was "%s"', deviceUUID, error?.code);
           }
         });

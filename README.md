@@ -116,6 +116,20 @@ The following options are available on a per-device level in the config.json dev
 | motionCooldown    | Time in seconds between detected motion events                                                | 60        |
 | personCooldown    | Time in seconds between detected person events                                                | 120       |
 
+## ffmpeg
+
+To support streaming and recording from cameras, an ffmpeg binary needs to be present. We have specific requirements, which are:
+    1) version 6.0 or later
+    2) compiled with:
+        a) libx264
+        b) libfdk-aac
+        c) libspeex
+        b) libopus
+
+By default, we look in the current directory where the plug-in excutes for an ffmpeg binary, however, this you can specify a a specific ffmpeg binary to use va the configuration option 'ffmpegPath'
+
+The standlone [docker version](https://hub.docker.com/r/n0rt0nthec4t/nest_accfactory), which is not reliant on Homebridge, includes an ffmpeg binary to support these requirements.
+
 ## Caveats
 
 homebridge-nest-accfactory and Nest_accfactory are both hobby projects of mine, provided as-is, with no warranty whatsoever. I've been running it successfully at my home, but your mileage might vary. If you do find an issue, please reachout and see what we can do

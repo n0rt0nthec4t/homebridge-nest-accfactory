@@ -17,12 +17,14 @@ So, what does this mean for you, the end user.
 3) If using docker/standalone version, remove the 'persist' folder
 4) Re-add devices to HomeKit once version upgraded
 5) Any HomeKit Secure Video recordings will be lost
+6) Will need to re-configure camera streaming and notification options
 6) Any automations will need to be re-created in HomeKit
+7) History in EveHome app will be lost
 
 Appologies for this change, as I can understand what an inconvience and frustration it will be :-(
 
 - General code cleanup and bug fixes
-- Seemlessly allow Nest/Google devices to be migrated between Nest/Google Home
+- Seemlessly allow Nest/Google devices to be migrated between Nest/Google Home apps
 
 ## v0.1.9 (alpha)
 

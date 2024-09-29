@@ -17,7 +17,7 @@
 //
 // Supports both Nest REST and Protobuf APIs for communication
 //
-// Code version 28/9/2024
+// Code version 29/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -152,6 +152,10 @@ function loadConfiguration(filename) {
       if (key === 'HomeKitCode' && typeof value === 'string' && value !== '') {
         // Global HomeKit paring code
         config.options.hkPairingCode = value;
+      }
+      if (key === 'ffmpegPath' && typeof value === 'string' && value !== '') {
+        // Path for ffmpeg binary to use
+        config.options.ffmpegPath = value;
       }
       if (key === 'DoorbellCooldown' && isNaN(value) === false) {
         value = Number(value);
