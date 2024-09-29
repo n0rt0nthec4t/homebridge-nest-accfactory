@@ -1,6 +1,6 @@
 persist
 node_modules
-dist
+dist*
 .vscode
 .DS_Store
 .git

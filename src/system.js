@@ -988,6 +988,7 @@ export default class NestAccfactory {
           // Track this device once created
           this.#trackedDevices[deviceData.serialNumber] = {
             uuid: tempDevice.uuid,
+            rawDataUuid: deviceData.nest_google_uuid,
             source: undefined,
           };
         }
@@ -999,6 +1000,7 @@ export default class NestAccfactory {
           // Track this device once created
           this.#trackedDevices[deviceData.serialNumber] = {
             uuid: tempDevice.uuid,
+            rawDataUuid: deviceData.nest_google_uuid,
             source: undefined,
           };
         }
@@ -1010,6 +1012,7 @@ export default class NestAccfactory {
           // Track this device once created
           this.#trackedDevices[deviceData.serialNumber] = {
             uuid: tempDevice.uuid,
+            rawDataUuid: deviceData.nest_google_uuid,
             source: undefined,
           };
         }
@@ -1041,6 +1044,7 @@ export default class NestAccfactory {
           // Track this device once created
           this.#trackedDevices[deviceData.serialNumber] = {
             uuid: tempDevice.uuid,
+            rawDataUuid: deviceData.nest_google_uuid,
             source: undefined,
             timers: {},
           };
@@ -1048,22 +1052,21 @@ export default class NestAccfactory {
           // Setup polling loop for camera/doorbell zone data
           // This is only required for REST API data sources as these details are present in Protobuf API
           this.#trackedDevices[deviceData.serialNumber].timers.zones = setInterval(async () => {
+            let nest_google_uuid = this.#trackedDevices?.[deviceData?.serialNumber]?.rawDataUuid;
             if (
-              this.#rawData?.[deviceData?.nest_google_uuid]?.value !== undefined &&
+              this.#rawData?.[nest_google_uuid]?.value !== undefined &&
               this.#trackedDevices?.[deviceData?.serialNumber]?.source === NestAccfactory.DataSource.REST
             ) {
               await fetchWrapper(
                 'get',
-                this.#rawData[deviceData.nest_google_uuid].value.nexus_api_http_server_url +
-                  '/cuepoint_category/' +
-                  deviceData.nest_google_uuid.split('.')[1],
+                this.#rawData[nest_google_uuid].value.nexus_api_http_server_url + '/cuepoint_category/' + nest_google_uuid.split('.')[1],
                 {
                   headers: {
-                    referer: 'https://' + this.#connections[this.#rawData[deviceData.nest_google_uuid].connection].referer,
+                    referer: 'https://' + this.#connections[this.#rawData[nest_google_uuid].connection].referer,
                     'User-Agent': USERAGENT,
-                    [this.#connections[this.#rawData[deviceData.nest_google_uuid].connection].cameraAPI.key]:
-                      this.#connections[this.#rawData[deviceData.nest_google_uuid].connection].cameraAPI.value +
-                      this.#connections[this.#rawData[deviceData.nest_google_uuid].connection].cameraAPI.token,
+                    [this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.key]:
+                      this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.value +
+                      this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.token,
                   },
                   timeout: CAMERAZONEPOLLING,
                 },
@@ -1084,13 +1087,13 @@ export default class NestAccfactory {
 
                   // Update internal structure with new zone details.
                   // We do a test to see if its still present not interval loop not finished or device removed
-                  if (this.#rawData?.[deviceData?.nest_google_uuid]?.value !== undefined) {
-                    this.#rawData[deviceData.nest_google_uuid].value.activity_zones = zones;
+                  if (this.#rawData?.[nest_google_uuid]?.value !== undefined) {
+                    this.#rawData[nest_google_uuid].value.activity_zones = zones;
 
                     // Send updated data onto HomeKit device for it to process
-                    if (this.#trackedDevices?.[deviceData?.serialNumber] !== undefined) {
+                    if (this.#trackedDevices?.[deviceData?.serialNumber]?.uuid !== undefined) {
                       this.#eventEmitter.emit(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, {
-                        activity_zones: this.#rawData[deviceData.nest_google_uuid].value.activity_zones,
+                        activity_zones: zones,
                       });
                     }
                   }
@@ -1115,37 +1118,33 @@ export default class NestAccfactory {
           // Setup polling loop for camera/doorbell alert data
           this.#trackedDevices[deviceData.serialNumber].timers.alerts = setInterval(async () => {
             let alerts = []; // No alerts to processed yet
+            let nest_google_uuid = this.#trackedDevices?.[deviceData?.serialNumber]?.rawDataUuid;
             if (
-              this.#rawData?.[deviceData?.nest_google_uuid]?.value !== undefined &&
+              this.#rawData?.[nest_google_uuid]?.value !== undefined &&
               this.#trackedDevices?.[deviceData?.serialNumber]?.source === NestAccfactory.DataSource.PROTOBUF
             ) {
-              let commandResponse = await this.#protobufCommand(
-                this.#rawData[deviceData.nest_google_uuid].connection,
-                'ResourceApi',
-                'SendCommand',
-                {
-                  resourceRequest: {
-                    resourceId: deviceData.nest_google_uuid,
-                    requestId: crypto.randomUUID(),
-                  },
-                  resourceCommands: [
-                    {
-                      traitLabel: 'camera_observation_history',
-                      command: {
-                        type_url: 'type.nestlabs.com/nest.trait.history.CameraObservationHistoryTrait.CameraObservationHistoryRequest',
-                        value: {
-                          // We want camera history from now for upto 30secs from now
-                          queryStartTime: { seconds: Math.floor(Date.now() / 1000), nanos: (Math.round(Date.now()) % 1000) * 1e6 },
-                          queryEndTime: {
-                            seconds: Math.floor((Date.now() + 30000) / 1000),
-                            nanos: (Math.round(Date.now() + 30000) % 1000) * 1e6,
-                          },
+              let commandResponse = await this.#protobufCommand(this.#rawData[nest_google_uuid].connection, 'ResourceApi', 'SendCommand', {
+                resourceRequest: {
+                  resourceId: nest_google_uuid,
+                  requestId: crypto.randomUUID(),
+                },
+                resourceCommands: [
+                  {
+                    traitLabel: 'camera_observation_history',
+                    command: {
+                      type_url: 'type.nestlabs.com/nest.trait.history.CameraObservationHistoryTrait.CameraObservationHistoryRequest',
+                      value: {
+                        // We want camera history from now for upto 30secs from now
+                        queryStartTime: { seconds: Math.floor(Date.now() / 1000), nanos: (Math.round(Date.now()) % 1000) * 1e6 },
+                        queryEndTime: {
+                          seconds: Math.floor((Date.now() + 30000) / 1000),
+                          nanos: (Math.round(Date.now() + 30000) % 1000) * 1e6,
                         },
                       },
                     },
-                  ],
-                },
-              );
+                  },
+                ],
+              });
 
               if (
                 typeof commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.event?.event?.cameraEventWindow?.cameraEvent ===
@@ -1183,23 +1182,23 @@ export default class NestAccfactory {
             }
 
             if (
-              this.#rawData?.[deviceData?.nest_google_uuid]?.value !== undefined &&
+              this.#rawData?.[nest_google_uuid]?.value !== undefined &&
               this.#trackedDevices?.[deviceData?.serialNumber]?.source === NestAccfactory.DataSource.REST
             ) {
               await fetchWrapper(
                 'get',
-                this.#rawData[deviceData.nest_google_uuid].value.nexus_api_http_server_url +
+                this.#rawData[nest_google_uuid].value.nexus_api_http_server_url +
                   '/cuepoint/' +
-                  deviceData.nest_google_uuid.split('.')[1] +
+                  nest_google_uuid.split('.')[1] +
                   '/2?start_time=' +
                   Math.floor(Date.now() / 1000 - 30),
                 {
                   headers: {
-                    referer: 'https://' + this.#connections[this.#rawData[deviceData.nest_google_uuid].connection].referer,
+                    referer: 'https://' + this.#connections[this.#rawData[nest_google_uuid].connection].referer,
                     'User-Agent': USERAGENT,
-                    [this.#connections[this.#rawData[deviceData.nest_google_uuid].connection].cameraAPI.key]:
-                      this.#connections[this.#rawData[deviceData.nest_google_uuid].connection].cameraAPI.value +
-                      this.#connections[this.#rawData[deviceData.nest_google_uuid].connection].cameraAPI.token,
+                    [this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.key]:
+                      this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.value +
+                      this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.token,
                   },
                   timeout: CAMERAALERTPOLLING,
                   retry: 3,
@@ -1249,11 +1248,11 @@ export default class NestAccfactory {
 
             // Update internal structure with new alerts.
             // We do a test to see if its still present not interval loop not finished or device removed
-            if (this.#rawData?.[deviceData?.nest_google_uuid]?.value !== undefined) {
-              this.#rawData[deviceData.nest_google_uuid].value.alerts = alerts;
+            if (this.#rawData?.[nest_google_uuid]?.value !== undefined) {
+              this.#rawData[nest_google_uuid].value.alerts = alerts;
 
               // Send updated alerts onto HomeKit device for it to process
-              if (this.#trackedDevices?.[deviceData?.serialNumber] !== undefined) {
+              if (this.#trackedDevices?.[deviceData?.serialNumber]?.uuid !== undefined) {
                 this.#eventEmitter.emit(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, {
                   alerts: alerts,
                 });
@@ -1270,26 +1269,28 @@ export default class NestAccfactory {
           // Track this device once created
           this.#trackedDevices[deviceData.serialNumber] = {
             uuid: tempDevice.uuid,
+            rawDataUuid: deviceData.nest_google_uuid,
             source: undefined,
             timers: {},
           };
 
           // Setup polling loop for weather data
           this.#trackedDevices[deviceData.serialNumber].timers.weather = setInterval(async () => {
-            if (this.#rawData?.[deviceData?.nest_google_uuid] !== undefined) {
-              this.#rawData[deviceData.nest_google_uuid].value.weather = await this.#getWeatherData(
-                this.#rawData[deviceData.nest_google_uuid].connection,
-                deviceData.nest_google_uuid,
-                this.#rawData[deviceData.nest_google_uuid].value.weather.latitude,
-                this.#rawData[deviceData.nest_google_uuid].value.weather.longitude,
+            let nest_google_uuid = this.#trackedDevices?.[deviceData?.serialNumber]?.rawDataUuid;
+            if (this.#rawData?.[nest_google_uuid] !== undefined) {
+              this.#rawData[nest_google_uuid].value.weather = await this.#getWeatherData(
+                this.#rawData[nest_google_uuid].connection,
+                nest_google_uuid,
+                this.#rawData[nest_google_uuid].value.weather.latitude,
+                this.#rawData[nest_google_uuid].value.weather.longitude,
               );
 
               // Send updated weather data onto HomeKit device for it to process
-              if (this.#trackedDevices?.[deviceData?.serialNumber] !== undefined) {
+              if (this.#trackedDevices?.[deviceData?.serialNumber]?.uuid !== undefined) {
                 this.#eventEmitter.emit(
                   this.#trackedDevices[deviceData.serialNumber].uuid,
                   HomeKitDevice.UPDATE,
-                  this.#processData(deviceData.nest_google_uuid)[deviceData.serialNumber],
+                  this.#processData(nest_google_uuid)[deviceData.serialNumber],
                 );
               }
             }
@@ -1297,7 +1298,7 @@ export default class NestAccfactory {
         }
       }
 
-      // Finally, after processing device additions, if device is not excluded, send updated data to device for it to process
+      // Finally, after device data for anything we havent tracked yet, if device is not excluded, send updated data to device for it to process
       if (deviceData.excluded === false && this.#trackedDevices?.[deviceData?.serialNumber] !== undefined) {
         if (
           this.#rawData[deviceData?.nest_google_uuid]?.source !== undefined &&
@@ -1313,6 +1314,7 @@ export default class NestAccfactory {
             );
 
           this.#trackedDevices[deviceData.serialNumber].source = this.#rawData[deviceData.nest_google_uuid].source;
+          this.#trackedDevices[deviceData.serialNumber].rawDataUuid = deviceData.nest_google_uuid;
         }
 
         this.#eventEmitter.emit(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, deviceData);

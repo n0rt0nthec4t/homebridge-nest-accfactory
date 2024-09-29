@@ -1,7 +1,7 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 29/9/2024
+// Code version 30/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -210,37 +210,17 @@ export default class NestCamera extends HomeKitDevice {
       }
     }
 
-    // Depending on the streaming profiles that the camera supports, this will be either nexustalk or webrtc
-    // We'll also start pre-buffering if required for HKSV
-    if (this.deviceData.streaming_protocols.includes('PROTOCOL_WEBRTC') === true && this.streamer === undefined && WebRTC !== undefined) {
-      this?.log?.debug && this.log.debug('Using WebRTC streamer for "%s"', this.deviceData.description);
-      this.streamer = new WebRTC(this.deviceData, {
-        log: this.log,
-        buffer:
-          this.deviceData.hksv === true &&
-          this?.controller?.recordingManagement?.recordingManagementService !== undefined &&
-          this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.Active).value ===
-            this.hap.Characteristic.Active.ACTIVE,
-      });
+    if (this.deviceData.migrating === true) {
+      // Migration happening between Nest <-> Google Home apps
+      this?.log?.warn && this.log.warn('Migration between Nest <-> Google Home apps is underway for "%s"', this.deviceData.description);
     }
 
     if (
-      this.deviceData.streaming_protocols.includes('PROTOCOL_NEXUSTALK') === true &&
-      this.streamer === undefined &&
-      NexusTalk !== undefined
+      (this.deviceData.streaming_protocols.includes('PROTOCOL_WEBRTC') === false &&
+        this.deviceData.streaming_protocols.includes('PROTOCOL_NEXUSTALK') === false) ||
+      (this.deviceData.streaming_protocols.includes('PROTOCOL_WEBRTC') === true && WebRTC === undefined) ||
+      (this.deviceData.streaming_protocols.includes('PROTOCOL_NEXUSTALK') === true && NexusTalk === undefined)
     ) {
-      this?.log?.debug && this.log.debug('Using NexusTalk streamer for "%s"', this.deviceData.description);
-      this.streamer = new NexusTalk(this.deviceData, {
-        log: this.log,
-        buffer:
-          this.deviceData.hksv === true &&
-          this?.controller?.recordingManagement?.recordingManagementService !== undefined &&
-          this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.Active).value ===
-            this.hap.Characteristic.Active.ACTIVE,
-      });
-    }
-
-    if (this.streamer === undefined) {
       this?.log?.error &&
         this.log.error(
           'No suitable streaming protocol is present for "%s". Streaming and recording will be unavailable',
@@ -278,7 +258,7 @@ export default class NestCamera extends HomeKitDevice {
     this.personTimer = undefined;
     this.snapshotTimer = undefined;
 
-    this.streamer?.isBuffering() === true && this.streamer.stopBuffering();
+    this.streamer !== undefined && this.streamer.stopEverything();
 
     // Stop any on-going HomeKit sessions, either live or recording
     // We'll terminate any ffmpeg, rtpSpliter etc processes
@@ -1019,27 +999,47 @@ export default class NestCamera extends HomeKitDevice {
       return;
     }
 
-    // Handle case of changes in streaming protocols ie: migrated between Nest/Google Home
-    if (JSON.stringify(deviceData.streaming_protocols) !== JSON.stringify(this.deviceData.streaming_protocols)) {
-      this?.log?.warn && this.log.warn('Available streaming protocols have changed for "%s"', deviceData.description);
-      this?.log?.warn && this.log.warn('Any current active streams will be terminated and restarted');
+    if (this.deviceData.migrating === false && deviceData.migrating === true) {
+      // Migration happening between Nest <-> Google Home apps. We'll stop any active streams, close the current streaming object
+      this?.log?.warn && this.log.warn('Migration between Nest <-> Google Home apps has started for "%s"', deviceData.description);
+      this.streamer !== undefined && this.streamer.stopEverything();
+      this.streamer = undefined;
+    }
 
-      if (
-        deviceData.streaming_protocols.includes('PROTOCOL_WEBRTC') === true &&
-        this.deviceData.streaming_protocols.includes('PROTOCOL_WEBRTC') === false &&
-        WebRTC !== undefined &&
-        this.streamer instanceof WebRTC === false
-      ) {
-        // WebRTC now available for device
+    if (this.deviceData.migrating === true && deviceData.migrating === false) {
+      // Migration has completed between Nest <-> Google Home apps
+      this?.log?.success && this.log.success('Migration between Nest <-> Google Home apps has completed for "%s"', deviceData.description);
+    }
+
+    // Handle case of changes in streaming protocols OR just finished migration between Nest <-> Google Home apps
+    if (this.streamer === undefined && deviceData.migrating === false) {
+      if (JSON.stringify(deviceData.streaming_protocols) !== JSON.stringify(this.deviceData.streaming_protocols)) {
+        this?.log?.warn && this.log.warn('Available streaming protocols have changed for "%s"', deviceData.description);
+        this.streamer !== undefined && this.streamer.stopEverything();
+        this.streamer = undefined;
+      }
+      if (deviceData.streaming_protocols.includes('PROTOCOL_WEBRTC') === true && WebRTC !== undefined) {
+        this?.log?.debug && this.log.debug('Using WebRTC streamer for "%s"', deviceData.description);
+        this.streamer = new WebRTC(deviceData, {
+          log: this.log,
+          buffer:
+            deviceData.hksv === true &&
+            this?.controller?.recordingManagement?.recordingManagementService !== undefined &&
+            this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.Active).value ===
+              this.hap.Characteristic.Active.ACTIVE,
+        });
       }
 
-      if (
-        deviceData.streaming_protocols.includes('PROTOCOL_NEXUSTALK') === true &&
-        this.deviceData.streaming_protocols.includes('PROTOCOL_NEXUSTALK') === false &&
-        NexusTalk !== undefined &&
-        this.streamer instanceof NexusTalk === false
-      ) {
-        // Nexustalk now available for device
+      if (deviceData.streaming_protocols.includes('PROTOCOL_NEXUSTALK') === true && NexusTalk !== undefined) {
+        this?.log?.debug && this.log.debug('Using NexusTalk streamer for "%s"', deviceData.description);
+        this.streamer = new NexusTalk(deviceData, {
+          log: this.log,
+          buffer:
+            deviceData.hksv === true &&
+            this?.controller?.recordingManagement?.recordingManagementService !== undefined &&
+            this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.Active).value ===
+              this.hap.Characteristic.Active.ACTIVE,
+        });
       }
     }
 

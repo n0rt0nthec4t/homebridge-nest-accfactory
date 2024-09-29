@@ -17,7 +17,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 27/9/2024
+// Code version 29/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -304,6 +304,16 @@ export default class Streamer {
     // If we have no more output streams active, we'll close the connection
     if (Object.keys(this.#outputs).length === 0 && typeof this.close === 'function') {
       this.close();
+    }
+  }
+
+  stopEverything() {
+    if (Object.keys(this.#outputs).length > 0) {
+      this?.log?.debug && this.log.debug('Stopped buffering, live and recording from uuid "%s"', this.uuid);
+      this.#outputs = {}; // No more outputs
+      if (typeof this.close === 'function') {
+        this.close();
+      }
     }
   }
 
