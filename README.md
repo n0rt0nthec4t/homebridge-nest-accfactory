@@ -119,12 +119,12 @@ The following options are available on a per-device level in the config.json dev
 ## ffmpeg
 
 To support streaming and recording from cameras, an ffmpeg binary needs to be present. We have specific requirements, which are:
-    1) version 6.0 or later
-    2) compiled with:
-        a) libx264
-        b) libfdk-aac
-        c) libspeex
-        b) libopus
+- version 6.0 or later
+- compiled with:
+  - libx264
+  - libfdk-aac
+  - libspeex
+  - libopus
 
 By default, we look in the current directory where the plug-in excutes for an ffmpeg binary, however, this you can specify a a specific ffmpeg binary to use va the configuration option 'ffmpegPath'
 
