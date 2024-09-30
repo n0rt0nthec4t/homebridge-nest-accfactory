@@ -1370,7 +1370,8 @@ export default class NestAccfactory {
         data.serialNumber = data.serialNumber.toUpperCase(); // ensure serial numbers are in upper case
         data.excluded = this.config?.devices?.[data?.serialNumber]?.exclude === true; // Mark device as excluded or not
         data.manufacturer = typeof data?.manufacturer === 'string' ? data.manufacturer : 'Nest';
-        data.softwareVersion = typeof data?.softwareVersion === 'string' ? data.softwareVersion.replace(/-/g, '.') : '0.0.0';
+        data.softwareVersion =
+          typeof data?.softwareVersion === 'string' ? data.softwareVersion.replace(/([a-zA-Z]+)/g, '.').replace(/-/g, '.') : '0.0.0';
         let description = typeof data?.description === 'string' ? data.description : '';
         let location = typeof data?.location === 'string' ? data.location : '';
         if (description === '') {
@@ -1380,13 +1381,17 @@ export default class NestAccfactory {
         data.description = makeHomeKitName(location === '' ? description : description + ' - ' + location);
         delete data.location;
 
-        // Insert details for when using HAP-NodeJS library rather than Homebridge
-        if (typeof this.config?.options?.hkPairingCode === 'string' && this.config.options.hkPairingCode !== '') {
+        // Insert HomeKit pairing code for when using HAP-NodeJS library rather than Homebridge
+        // Validate the pairing code is in the format of "xxx-xx-xxx" or "xxxx-xxxx"
+        if (
+          new RegExp(/^([0-9]{3}-[0-9]{2}-[0-9]{3})$/).test(this.config?.options?.hkPairingCode) === true ||
+          new RegExp(/^([0-9]{4}-[0-9]{4})$/).test(this.config?.options?.hkPairingCode) === true
+        ) {
           data.hkPairingCode = this.config.options.hkPairingCode;
         }
         if (
-          typeof this.config?.devices?.[data.serialNumber]?.hkPairingCode === 'string' &&
-          this.config.devices[data.serialNumber].hkPairingCode !== ''
+          new RegExp(/^([0-9]{3}-[0-9]{2}-[0-9]{3})$/).test(this.config?.devices?.[data.serialNumber]?.hkPairingCode) === true ||
+          new RegExp(/^([0-9]{4}-[0-9]{4})$/).test(this.config?.devices?.[data.serialNumber]?.hkPairingCode) === true
         ) {
           data.hkPairingCode = this.config.devices[data.serialNumber].hkPairingCode;
         }
@@ -1439,8 +1444,10 @@ export default class NestAccfactory {
         try {
           if (value?.source === NestAccfactory.DataSource.PROTOBUF && value.value?.configuration_done?.deviceReady === true) {
             let RESTTypeData = {};
-            RESTTypeData.serialNumber = value.value.device_identity.serialNumber;
-            RESTTypeData.softwareVersion = value.value.device_identity.softwareVersion;
+            RESTTypeData.softwareVersion =
+              value.value.device_identity.softwareVersion.split(/\s+/)?.[3] !== undefined
+                ? value.value.device_identity.softwareVersion.split(/\s+/)?.[3]
+                : value.value.device_identity.softwareVersion;
             RESTTypeData.model = 'Thermostat';
             if (value.value.device_info.typeName === 'nest.resource.NestLearningThermostat3Resource') {
               RESTTypeData.model = 'Learning Thermostat (3rd gen)';
@@ -2095,10 +2102,14 @@ export default class NestAccfactory {
           ) {
             let RESTTypeData = {};
             RESTTypeData.serialNumber = value.value.device_identity.serialNumber;
+
+            // Protobuf camera firmware versions appear in alonger string. Seems the '4th' word in the string is the actual number version
+            // ie: rquartz-user 1 OPENMASTER 507800056 test-keys stable-channel stable-channel
+            // ie: nq-user 1.73 OPENMASTER 422270 release-keys stable-channel stable-channel
             RESTTypeData.softwareVersion =
-              value.value?.floodlight_settings?.associatedFloodlightFirmwareVersion !== undefined
-                ? value.value.floodlight_settings.associatedFloodlightFirmwareVersion
-                : value.value.device_identity.softwareVersion.replace(/[^0-9.]/g, '');
+              value.value.device_identity.softwareVersion.split(/\s+/)?.[3] !== undefined
+                ? value.value.device_identity.softwareVersion.split(/\s+/)?.[3]
+                : value.value.device_identity.softwareVersion;
             RESTTypeData.model = 'Camera';
             if (
               value.value.device_info.typeName === 'google.resource.NeonQuartzResource' &&
