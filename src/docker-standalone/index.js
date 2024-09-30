@@ -17,7 +17,7 @@
 //
 // Supports both Nest REST and Protobuf APIs for communication
 //
-// Code version 29/9/2024
+// Code version 30/9/2024
 // Mark Hulskamp
 'use strict';
 
@@ -67,38 +67,31 @@ function loadConfiguration(filename) {
       devices: {},
     };
 
+    // Load in 'current' configuration structure if present
+    // Most of the code below is to handle the 'legacy' structure
+    if (typeof loadedConfig?.nest === 'object') {
+      config.nest = loadedConfig.nest;
+    }
+    if (typeof loadedConfig?.Connections?.Nest === 'object') {
+      config.nest = loadedConfig.Connections.Nest;
+    }
+    if (typeof loadedConfig?.google === 'object') {
+      config.google = loadedConfig.goole;
+    }
+    if (typeof loadedConfig?.Connections?.Google === 'object') {
+      config.google = loadedConfig.Connections.Google;
+    }
+    if (typeof loadedConfig?.options === 'object') {
+      config.options = loadedConfig.options;
+    }
+    if (typeof loadedConfig?.devices === 'object') {
+      config.devices = loadedConfig.options;
+    }
+
     Object.entries(loadedConfig).forEach(([key, value]) => {
-      // Global options if not an object
-      if (key === 'Connections' && typeof value === 'object') {
-        // Array of 'connections' to different logins. Can be a combination of Nest, google and SDM
-        Object.entries(value).forEach(([subKey, value]) => {
-          if (typeof value === 'object' && typeof value?.access_token === 'string' && value.access_token !== '') {
-            // Nest accounts access_token to use for Nest API calls
-            config[subKey] = {
-              access_token: value.access_token.trim(),
-              fieldTest: value?.FieldTest === true,
-            };
-          }
-          if (
-            typeof value === 'object' &&
-            typeof value?.issuetoken === 'string' &&
-            value.issuetoken !== '' &&
-            typeof value?.cookie === 'string' &&
-            value.cookie !== ''
-          ) {
-            // Google account issue token and cookie for Nest API calls
-            config[subKey] = {
-              issuetoken: value.issuetoken.trim(),
-              cookie: value.cookie.trim(),
-              fieldTest: value?.FieldTest === true,
-            };
-          }
-        });
-      }
       if (key === 'SessionToken' && typeof value === 'string' && value !== '') {
-        // Nest accounts Session token to use for Nest API calls
-        // NOTE: Legacy option. Use Connections option(s)
-        config['legacynest'] = {
+        // Nest account access token to use for Nest API calls
+        config['nest'] = {
           access_token: value.trim(),
           fieldTest: value?.FieldTest === true,
         };
@@ -112,79 +105,47 @@ function loadConfiguration(filename) {
         value.cookie !== ''
       ) {
         // Google account issue token and cookie for Nest API calls
-        // NOTE: Legacy option. Use Connections option(s)
-        config['legacygoogle'] = {
+        config['google'] = {
           issuetoken: value.issuetoken.trim(),
           cookie: value.cookie.trim(),
           fieldTest: value?.FieldTest === true,
         };
       }
-      if (key === 'mDNS' && (typeof value === 'string') & (value !== '')) {
-        if (value.trim().toUpperCase() === 'CIAO') {
-          // Use ciao as the mDNS advertiser
-          config.options.mDNS = HAP.MDNSAdvertiser.CIAO;
-        }
-        if (value.trim().toUpperCase() === 'BONJOUR') {
-          // Use bonjour as the mDNS advertiser
-          config.options.mDNS = HAP.MDNSAdvertiser.BONJOUR;
-        }
-        if (value.trim().toUpperCase() === 'AVAHI') {
-          // Use avahi as the mDNS advertiser
-          config.options.mDNS = HAP.MDNSAdvertiser.AVAHI;
-        }
-      }
+
       if (key === 'Debug' && (value === true || (typeof value === 'string' && value !== ''))) {
         // Debugging enabled
         Logger.setDebugEnabled(true);
       }
       if (key === 'EveApp' && typeof value === 'boolean') {
-        // Global Evehome app integration
+        // Evehome app integration
         config.options.eveHistory = value;
       }
       if (key === 'Weather' && typeof value === 'boolean') {
-        // Global weather device(s)
+        // weather device(s)
         config.options.weather = value;
       }
       if (key === 'HKSV' && typeof value === 'boolean') {
-        // Global HomeKit Secure Video
+        // HomeKit Secure Video
         config.options.hksv = value;
       }
       if (key === 'HomeKitCode' && typeof value === 'string' && value !== '') {
-        // Global HomeKit paring code
+        // HomeKit paring code
         config.options.hkPairingCode = value;
-      }
-      if (key === 'ffmpegPath' && typeof value === 'string' && value !== '') {
-        // Path for ffmpeg binary to use
-        config.options.ffmpegPath = value;
-      }
-      if (key === 'DoorbellCooldown' && isNaN(value) === false) {
-        value = Number(value);
-        if (value >= 1000) {
-          // If greather than 1000, assume milliseconds value passed in, so convert to seconds
-          value = Math.floor(value / 1000);
-        }
-        config.options.doorbellCooldown = value;
-      }
-      if (key === 'MotionCooldown' && isNaN(value) === false) {
-        value = Number(value);
-        if (value >= 1000) {
-          // If greather than 1000, assume milliseconds value passed in, so convert to seconds
-          value = Math.floor(value / 1000);
-        }
-        config.options.motionCooldown = value;
-      }
-      if (key === 'PersonCooldown' && isNaN(value) === false) {
-        value = Number(value);
-        if (value >= 1000) {
-          // If greather than 1000, assume milliseconds value passed in, so convert to seconds
-          value = Math.floor(value / 1000);
-        }
-        config.options.personCooldown = value;
       }
       if (key === 'Elevation' && isNaN(value) === false) {
         config.options.elevation = Number(value);
       }
-      if (key !== 'Connections' && key !== 'GoogleToken' && typeof value === 'object') {
+
+      if (
+        key !== 'Connections' &&
+        key !== 'SessionToken' &&
+        key !== 'GoogleToken' &&
+        key !== 'google' &&
+        key !== 'nest' &&
+        key !== 'options' &&
+        key !== 'devices' &&
+        typeof value === 'object'
+      ) {
         // Since key value is an object, and not an object for a value we expect
         // Ssumme its a device configuration for matching serial number
         key = key.toUpperCase();
@@ -210,15 +171,11 @@ function loadConfiguration(filename) {
             // Per device silence indoor chime
             config.devices[key]['chimeSwitch'] = value;
           }
-          if (subKey === 'localAccess' && typeof value === 'boolean') {
-            // Per device use direct local network access to for camera streams
-            config.devices[key]['localAccess'] = value;
-          }
           if (subKey === 'Option.elevation' && isNaN(value) === false) {
             // Per device elevation setting (for weather)
             config.devices[key]['elevation'] = Number(value);
           }
-          if (subKey === 'HomeKitCode' && typeof value === 'string' && value !== '') {
+          if ((subKey === 'HomeKitCode' || subKey === 'hkPairingCode') && typeof value === 'string' && value !== '') {
             // Per device HomeKit paring code
             config.devices[key]['hkPairingCode'] = value;
           }

@@ -24,6 +24,7 @@ So, what does this mean for you, the end user.
 Appologies for this change, as I can understand what an inconvience and frustration it will be :-(
 
 - General code cleanup and bug fixes
+- Common configuration between homeridge plug-in and docker/standalone versions
 - Seemlessly allow Nest/Google devices to be migrated between Nest <-> Google Home apps
 
 ## v0.1.9 (alpha)

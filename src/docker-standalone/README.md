@@ -14,7 +14,7 @@ This is a HAP-NodeJS accessory I have developed to allow Nest devices to be used
 
 ## Supported Devices
 
-The following Nest devices are supported
+The following Nest devices are known to be supported
 
 * Nest Thermostats (1st gen, 2nd gen, 3rd gen, E, 2020 mirror edition, 4th gen)
 * Nest Protects (1st and 2nd gen)
@@ -26,28 +26,21 @@ The accessory supports connection to Nest using a Nest account OR a Google (migr
 
 ## Configuration
 
-### Obtaining a Access Token for a Nest Account
+### Nest Account
 
 If you have a Nest account, you will need to obtain an access token from the Nest web app. Simply go to https://home.nest.com in your browser and log in. Once that's done, go to https://home.nest.com/session in your browser, and you will see a long string that looks like this:
 
 {"2fa_state":"enrolled","access_token":"XXX", ...}
 
-Simply set "access token" in your Nest_config.json file to the value of "access_token" near the start of the string (the XXX), which will be a long sequence of letters, numbers and punctuation beginning with b. There may be other keys labelled access_token further along in the string - please ignore these.
+The value of "access_token" near the start of the string (the XXX) (a long sequence of letters, numbers and punctuation beginning with b) can be entered into Nest_config.json file.
+
+There may be other keys labelled access_token further along in the string - please ignore these.
 
 **Do not log out of home.nest.com, as this will invalidate your credentials. Just close the browser tab**
 
 ### Obtaining a Google cookie token for a Google Account
 
-Google Accounts are configured using the "GoogleToken" object in Nest_config.json, which contains two fields, "issuetoken" and "cookie", which looks like this:
-
-```
-      "GoogleToken": {
-        "issuetoken": "https://accounts.google.com/o/oauth2/iframerpc?action=issueToken...",
-        "cookie": "..."
-      },
-```
-      
-The values of "issueToken" and "cookies" are specific to your Google Account. To get them, follow these steps (only needs to be done once, as long as you stay logged into your Google Account).
+Google Accounts require an "issueToken" and "cookie". The values of "issueToken" and "cookies" are specific to your Google Account. To get them, follow these steps (only needs to be done once, as long as you stay logged into your Google Account).
 
 1. Open a Chrome browser tab in Incognito Mode (or clear your cache).
 2. Open Developer Tools (View/Developer/Developer Tools).
@@ -55,25 +48,28 @@ The values of "issueToken" and "cookies" are specific to your Google Account. To
 4. In the 'Filter' box, enter issueToken
 5. Go to home.nest.com, and click 'Sign in with Google'. Log into your account.
 6. One network call (beginning with iframerpc) will appear in the Dev Tools window. Click on it.
-7. In the Headers tab, under General, copy the entire Request URL (beginning with https://accounts.google.com). This is your "issuetoken" in config.json.
+7. In the Headers tab, under General, copy the entire Request URL (beginning with https://accounts.google.com). This is your "Issue Token" which can be entered into Nest_config.json file.
 9. In the 'Filter' box, enter oauth2/iframe
 10. Several network calls will appear in the Dev Tools window. Click on the last iframe call.
-11. In the Headers tab, under Request Headers, copy the entire cookie (include the whole string which is several lines long and has many field/value pairs - do not include the cookie: name). This is your "cookie" in Nest_config.json.
+11. In the Headers tab, under Request Headers, copy the entire cookie (include the whole string which is several lines long and has many field/value pairs - do not include the cookie: name). This is your "Cookie" which can be entered into Nest_config.json file.
 
 **Do not log out of home.nest.com, as this will invalidate your credentials. Just close the browser tab**
 
-#### Sample Nest_config.json
+## Nest_config.json configuration
 
-Nest_config.json is the configuration file where various options can be. An example of a basic configuration is below
+Nest_config.json is the configuration file where various options can be configured. A full list of options is detailed below.
+
+Sample config.json entries below
 
 ```
 {
-    "Connections" : {
-        "Nest" : {
-            "access_token" : "<nest access token>"
-        },
+    "nest" : {
+        "access_token": "<nest access token>",
+        "fieldTest": false
     },
-    "HKSV" : true
+    "options" : {
+        "hksv" : true
+    }
 }
 ```
 
@@ -81,13 +77,14 @@ or
 
 ```
 {
-    "Connections" : {
-        "Google" : {
-            "issuetoken" : "<google issue token url>",
-            "cookie" : "<google cookie>"
-        },
+    "google" : {
+        "issuetoken": "<google issue token>",
+        "cookie": "<google cookie>",
+        "fieldTest": false
     },
-    "HKSV" : true
+    "options" : {
+        "hksv" : true
+    }
 }
 ```
 
@@ -95,46 +92,77 @@ An advanced configuration example is below
 
 ```
 {
-    "Connections" : {
-        "Nest" : {
-            "access_token" : "<nest session token>"
+    "nest" : {
+        "access_token" : "<nest session token>"
+    },
+    "options" : {
+        "hksv" : false,
+    }
+    "devices" : {
+        "SERIAL1" : {
+            "exclude" : true
         },
-    },
-    "HKSV" : false,
-    "SERIAL1" : {
-        "Exclude" : true
-    },
-    "SERIAL2" : {
-        "HKSV" : true,
-        "MotionCoolDown" : 2
-    },
+        "SERIAL2" : {
+            "hksv" : true,
+            "motionCoolDown" : 2
+        },
+    }
 }
 ```
 
 ### Configuration Options
 
-The options available are within the configuration file are listed below. Some of these options can also be on specific devices only
+The following options are available in Nest_config.json options object. These apply to all discovered devices.
 
-| Option                     | Values                  | Description                                                                               | Global/Local |
-|----------------------------|-------------------------|-------------------------------------------------------------------------------------------|--------------|
-| Connections                | Nest, Google            | Object list of connections to use as per examples above                                   | global       |             
-| EveApp                     | true, false             | Integration with Evehome App. Default is true                                             | global/local |
-| HomeKitCode                |                         | HomeKit pairing code in format of "xxx-xx-xxx". Default is 031-45-154                     | global/local |
-| Weather                    | true, false             | Creates a "virtual" weather station using Nest weather data. Default is off               | global       |
-| mDNS                       | avahi, bonjour, ciao    | mDNS advertiser library to use. Default is bonjour                                        | global       |
-| HKSV                       | true, false             | Turns HomeKit Secure Video on or off for doorbells and/cameras. Default is off.           | global/local |
-| MotionCooldown             | seconds or milliseconds | Ignore motion detection for this time once triggered. Default is 1 minute                 | global/local |
-| PersonCooldown             | seconds or milliseconds | Ignore person detection for this time once triggered (Non HKSV only) Default is 2 minutes | global/local |
-| DoorbellCooldown           | seconds or milliseconds | Ignore doorbell button pressed for this time once triggered Default is 1 minute           | global/local |
-| Exclude                    | true, false             | Exclude a device or all devices by default if used as a globl option                      | global/local |
-| Option.indoor_chime_switch | true, false             | Exposes a switch in HomeKIt to disable/enable indoor chime on Nest Hello. Default is false| local        |
+| Name              | Description                                                                                   | Default    |
+|-------------------|-----------------------------------------------------------------------------------------------|------------|
+| debug             | Detailed debugging                                                                            | false      |
+| elevation         | Height above sea level for the weather station                                                | 0          |
+| eveHistory        | Provide history in EveHome application where applicable                                       | true       |
+| ffmegPath         | Path to an ffmpeg binary for us to use. Will look in current directory by default             |            |
+| hkPairingCode     | HomeKit pairing code in format of "xxx-xx-xxx" or "xxxx-xxxx"                                 | 031-45-154 |
+| hksv              | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                           | false      |
+| maxStreams        | Maximum number of concurrent video streams in HomeKit for supported camera(s) and doorbell(s) | 2          |
+| weather           | Virtual weather station for each Nest/Google home we discover                                 | false      |
+
+#### devices
+
+The following options are available on a per-device level in Nest_config.json file devices object. The device is specified by using its serial number (in uppercase)
+
+| Name              | Description                                                                                   | Default    |
+|-------------------|-----------------------------------------------------------------------------------------------|------------|
+| chimeSwitch       | Create a switch for supported doorbell(s) which allows the indoor chime to be turned on/off   | false      |
+| doorbellCooldown  | Time in seconds between doorbell press events                                                 | 60         | 
+| elevation         | Height above sea level for the specific weather station                                       | 0          |
+| eveHistory        | Provide history in EveHome application where applicable for the specific device               | true       |
+| exclude           | Exclude the device                                                                            | false      |
+| hkPairingCode     | HomeKit pairing code in format of "xxx-xx-xxx" or "xxxx-xxxx"                                 | 031-45-154 |
+| hksv              | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                           | false      |
+| humiditySensor    | Create a seperate humidity sensor for supported thermostat(s)                                 | false      |
+| localAccess       | Use direct access to supported camera(s) and doorbell(s) for video streaming and recording    | false      |    
+| motionCooldown    | Time in seconds between detected motion events                                                | 60         |
+| personCooldown    | Time in seconds between detected person events                                                | 120        |
 
 ## HomeKit Pairing
 Once configured and running, any non-excluded devices can be paired in HomeKit using the default pairing code of **031-45-154**  This can be overidden via the configuration file as above
 
+## ffmpeg
+
+To support streaming and recording from cameras, an ffmpeg binary needs to be present. We have specific requirements, which are:
+- version 6.0 or later
+- compiled with:
+  - libx264
+  - libfdk-aac
+  - libspeex
+  - libopus
+
+By default, we look in the current directory where excuted from for an ffmpeg binary, however, you can specify a specific ffmpeg binary to use va the configuration option 'ffmpegPath'
+
+The standlone [docker version](https://hub.docker.com/r/n0rt0nthec4t/nest_accfactory), which is not reliant on Homebridge, includes an ffmpeg binary to support these requirements.
+
 ## Docker Image
 
-If you would like to try this in a containerised version, please check out the [docker hub repository](https://hub.docker.com/r/n0rt0nthec4t/nest_accfactory) for this project
+If you would like to try this in a containerised version, please check out the [docker version](https://hub.docker.com/r/n0rt0nthec4t/nest_accfactory) for this project
 
 ## Caveats
 

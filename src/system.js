@@ -2089,8 +2089,8 @@ export default class NestAccfactory {
         try {
           if (
             value?.source === NestAccfactory.DataSource.PROTOBUF &&
-            value.value?.streaming_protocol !== undefined &&
-            (value?.configuration_done?.deviceReady === true ||
+            value.value?.streaming_protocol?.supportedProtocols !== undefined &&
+            (value.value?.configuration_done?.deviceReady === true ||
               value.value?.camera_migration_status?.state?.where === 'MIGRATED_TO_GOOGLE_HOME')
           ) {
             let RESTTypeData = {};
