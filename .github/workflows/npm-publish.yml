@@ -42,7 +42,7 @@ jobs:
   
       - run: npm ci
       - run: |
-          TAG=$(echo $env.VERSION | grep -oP '^v\d+\.\d+\.\d+-?\K(\w+)?')
+          TAG=$(echo ${{env.VERSION}} | grep -oP '^v\d+\.\d+\.\d+-?\K(\w+)?')
           npm publish --dry-run --tag ${TAG:-latest} --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{secrets.NPM_TOKEN}}
