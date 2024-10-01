@@ -6,28 +6,15 @@ on:
 jobs:
   build:
     runs-on: ${{ matrix.os }}
- 
     strategy:
-  
       matrix:
+        platform:
+          - linux/amd64
+          #- linux/arm/v6
+          #- linux/arm/v7
+          - linux/arm64
 
-        name: [
-          alpine-aarch64,
-          alpine-x86_64,
-        ]
-
-        include:
-          # Build for arm v8 64-bit Linux environments.
-          - name: alpine-aarch64
-            os: ubuntu-latest
-            PLATFORM: linux/arm64
-
-          # Build for amd64 64-bit Linux environments.
-          - name: alpine-x86_64
-            os: ubuntu-latest
-            PLATFORM: linux/amd64
-
-    steps:
+steps:
       - uses: actions/checkout@v4
         
       # Extract version number from package.json
@@ -36,37 +23,35 @@ jobs:
         run: |
           VERSION=$(grep -oP '"version": "\K(.*)(?=")' src/docker-standalone/package.json)
           echo "VERSION=$VERSION" >> $GITHUB_ENV
-
-      # docker meta
+          
+      - name: Prepare
+        run: |
+          platform=${{ matrix.platform }}
+          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV          
+      
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY_IMAGE }}
-
-      # Set up Docker Buildx
+      
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      # Create a multi-platform builder
-      - name: Set up multi-platform builder
-        run: |
-          docker buildx create --name mybuilder --use
-          docker buildx inspect --bootstrap
-
-      # Log into docker
-      - name: Docker Login
-        uses: docker/login-action@v3  
+      
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      # Build and push Docker image for multiple platforms
+          password: ${{ secrets.DOCKERHUB_TOKEN }}    
+          
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
         with:
-          platforms: ${{ matrix.PLATFORM }}
+          platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: NEST_ACCFACTORY_VERSION=${{ env.VERSION }}
           outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
@@ -84,4 +69,3 @@ jobs:
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
-    
