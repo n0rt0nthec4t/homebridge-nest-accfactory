@@ -1,4 +1,4 @@
-name: 'Build docker standlone image'
+name: 'Build docker Nest_accfactory'
 
 on:
   workflow_dispatch:
@@ -13,7 +13,6 @@ jobs:
 
         name: [
           alpine-aarch64,
-          alpine-arm32v7,
           alpine-x86_64,
         ]
 
@@ -28,11 +27,6 @@ jobs:
             os: ubuntu-latest
             PLATFORM: linux/amd64
 
-          # Build for arm v7 32bit Linux environments.
-          - name: alpine-arm32v7
-            os: ubuntu-latest
-            PLATFORM: linux/arm/v7
-
     steps:
       - uses: actions/checkout@v4
         
@@ -43,13 +37,31 @@ jobs:
           VERSION=$(grep -oP '"version": "\K(.*)(?=")' src/docker-standalone/package.json)
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
-        # Extract branch name
-      - name: Extract branch name
-        id: extract_branch
+      # Set up Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Create a multi-platform builder
+      - name: Set up multi-platform builder
         run: |
-          BRANCH_NAME=$(echo "${GITHUB_REF##*/}")
-          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
-          
-      # Build Docker image with version tag
-      - name: 'Build Docker image'
-        run: docker buildx build --platform ${{ matrix.PLATFORM }}  --build-arg NEST_ACCFACTORY_VERSION=${{ env.VERSION }} --rm --tag n0rt0nthec4t/nest_accfactory:${{ env.BRANCH_NAME }} --file src/docker-standalone/Dockerfile .
+          docker buildx create --name mybuilder --use
+          docker buildx inspect --bootstrap
+
+      # Log into docker
+      - name: Docker Login
+        uses: docker/login-action@v3  
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Build and push Docker image for multiple platforms
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/docker-standalone/Dockerfile
+          platforms: ${{ matrix.PLATFORM }}
+          tags: n0rt0nthec4t/nest_accfactory:${{ env.VERSION }}
+          build-args: NEST_ACCFACTORY_VERSION=${{ env.VERSION }}
+          push: true
+    
