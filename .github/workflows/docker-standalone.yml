@@ -43,12 +43,22 @@ jobs:
           VERSION=$(grep -oP '"version": "\K(.*)(?=")' src/docker-standalone/package.json)
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
-        # Extract branch name
+      # Extract branch name
       - name: Extract branch name
         id: extract_branch
         run: |
           BRANCH_NAME=$(echo "${GITHUB_REF##*/}")
           echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+
+      # Set up Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      # Create a multi-platform builder
+      - name: Set up multi-platform builder
+        run: |
+          docker buildx create --name mybuilder --use
+          docker buildx inspect --bootstrap
           
       # Build Docker image with version tag
       - name: 'Build Docker image'
