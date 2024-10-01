@@ -5,53 +5,51 @@ on:
 
 jobs:
   build:
-   runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
  
-   strategy:
+    strategy:
   
-        matrix:
-  
-          name: [
-            alpine-aarch64,
-            alpine-arm32v7,
-            alpine-x86_64,
-          ]
-  
-          include:
-            # Build for arm v8 64-bit Linux environments.
-            - name: alpine-aarch64
-              os: ubuntu-latest
-              PLATFORM: linux/arm64
+      matrix:
 
-          include:
-            # Build for amd64 64-bit Linux environments.
-            - name: alpine-x86_64
-              os: ubuntu-latest
-              PLATFORM: linux/amd64
+        name: [
+          alpine-aarch64,
+          alpine-arm32v7,
+          alpine-x86_64,
+        ]
 
-          include:
-            # Build for arm v7 32bit Linux environments.
-            - name: alpine-arm32v7
-              os: ubuntu-latest
-              PLATFORM: linux/arm/v7
+        include:
+          # Build for arm v8 64-bit Linux environments.
+          - name: alpine-aarch64
+            os: ubuntu-latest
+            PLATFORM: linux/arm64
+
+          # Build for amd64 64-bit Linux environments.
+          - name: alpine-x86_64
+            os: ubuntu-latest
+            PLATFORM: linux/amd64
+
+          # Build for arm v7 32bit Linux environments.
+          - name: alpine-arm32v7
+            os: ubuntu-latest
+            PLATFORM: linux/arm/v7
 
     steps:
-    - uses: actions/checkout@v4
-    
-    # Extract version number from package.json
-    - name: Extract version
-      id: extract_version
-      run: |
-        VERSION=$(grep -oP '"version": "\K(.*)(?=")' src/docker-standalone/package.json)
-        echo "VERSION=$VERSION" >> $GITHUB_ENV
-
-     # Extract branch name
-    - name: Extract branch name
-      id: extract_branch
-      run: |
-        BRANCH_NAME=$(echo "${GITHUB_REF##*/}")
-        echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+      - uses: actions/checkout@v4
         
-    # Build Docker image with version tag
-      - name: Build Docker image
+      # Extract version number from package.json
+      - name: Extract version
+        id: extract_version
+        run: |
+          VERSION=$(grep -oP '"version": "\K(.*)(?=")' src/docker-standalone/package.json)
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+        # Extract branch name
+      - name: Extract branch name
+        id: extract_branch
+        run: |
+          BRANCH_NAME=$(echo "${GITHUB_REF##*/}")
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+          
+      # Build Docker image with version tag
+      - name: 'Build Docker image'
         run: docker buildx build -sbom=true --provenance=true --platform ${{ matrix.PLATFORM }}  --build-arg NEST_ACCFACTORY_VERSION=${{ env.VERSION }} --rm --tag n0rt0nthec4t/nest_accfactory:${{ env.BRANCH_NAME }} --file src/docker-standalone/Dockerfile .

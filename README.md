@@ -82,6 +82,9 @@ Sample config.json entries below
         "XXXXXXXX": {
             "exclude": false
         },
+        "YYYYYYYY" : {
+            "hksv" : true
+        }
     },
     "platform": "NestAccfactory"
 }

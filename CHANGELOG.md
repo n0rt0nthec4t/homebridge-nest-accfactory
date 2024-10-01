@@ -8,7 +8,7 @@ Currently all releases are considered 'alpha' status, where things may or may no
 
 ## v0.2.0 (alpha)
 
-** Breaking changes **
+### Breaking changes
 
 Unfornunately, I've made some breaking changes in the code to help move forward with the project. 
 So, what does this mean for you, the end user.
@@ -23,9 +23,15 @@ So, what does this mean for you, the end user.
 
 Appologies for this change, as I can understand what an inconvience and frustration it will be :-(
 
+### Other Changes
+
 - General code cleanup and bug fixes
-- Common configuration between homeridge plug-in and docker/standalone versions
+- Common configuration between Homebridge plug-in and docker/standalone versions
 - Seemlessly allow Nest/Google devices to be migrated between Nest <-> Google Home apps
+
+### Known Issues
+
+- Audio from newer Nest/Google camera/doorbell devices is still blank
 
 ## v0.1.9 (alpha)
 

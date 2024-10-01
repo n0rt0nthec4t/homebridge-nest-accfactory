@@ -75,43 +75,29 @@ function loadConfiguration(filename) {
     if (typeof loadedConfig?.Connections?.Nest === 'object') {
       config.nest = loadedConfig.Connections.Nest;
     }
+    if (typeof loadedConfig?.SessionToken === 'string' && loadedConfig.SessionToken !== '') {
+      config.nest = {
+        access_token: loadedConfig.SessionToken,
+        fieldTest: false,
+      };
+    }
     if (typeof loadedConfig?.google === 'object') {
-      config.google = loadedConfig.goole;
+      config.google = loadedConfig.google;
     }
     if (typeof loadedConfig?.Connections?.Google === 'object') {
       config.google = loadedConfig.Connections.Google;
+    }
+    if (typeof loadedConfig?.Connections?.GoogleToken === 'object') {
+      config.google = loadedConfig.Connections.GoogleToken;
     }
     if (typeof loadedConfig?.options === 'object') {
       config.options = loadedConfig.options;
     }
     if (typeof loadedConfig?.devices === 'object') {
-      config.devices = loadedConfig.options;
+      config.devices = loadedConfig.devices;
     }
 
     Object.entries(loadedConfig).forEach(([key, value]) => {
-      if (key === 'SessionToken' && typeof value === 'string' && value !== '') {
-        // Nest account access token to use for Nest API calls
-        config['nest'] = {
-          access_token: value.trim(),
-          fieldTest: value?.FieldTest === true,
-        };
-      }
-      if (
-        key === 'GoogleToken' &&
-        typeof value === 'object' &&
-        typeof value?.issuetoken === 'string' &&
-        value.issuetoken !== '' &&
-        typeof value?.cookie === 'string' &&
-        value.cookie !== ''
-      ) {
-        // Google account issue token and cookie for Nest API calls
-        config['google'] = {
-          issuetoken: value.issuetoken.trim(),
-          cookie: value.cookie.trim(),
-          fieldTest: value?.FieldTest === true,
-        };
-      }
-
       if (key === 'Debug' && (value === true || (typeof value === 'string' && value !== ''))) {
         // Debugging enabled
         Logger.setDebugEnabled(true);

@@ -1,5 +1,5 @@
 # version of required ffmpeg binary is specified in FFMPEG_VERSION
-ARG FFMPEG_VERSION=7.0.2
+ARG FFMPEG_VERSION=7.1
 
 # version of node docker we will use. 
 ARG NODE_VERSION=20-alpine3.20

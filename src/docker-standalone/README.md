@@ -95,16 +95,18 @@ An advanced configuration example is below
     "nest" : {
         "access_token" : "<nest session token>"
     },
-    "options" : {
-        "hksv" : false,
-    }
-    "devices" : {
-        "SERIAL1" : {
-            "exclude" : true
+    "options": {
+        "eveHistory": true,
+        "weather": true,
+        "elevation": 600,
+        "hksv": false
+    },
+    "devices": {
+        "XXXXXXXX": {
+            "exclude": false
         },
-        "SERIAL2" : {
-            "hksv" : true,
-            "motionCoolDown" : 2
+        "YYYYYYYY" : {
+            "hksv" : true
         },
     }
 }
