@@ -1,0 +1,48 @@
+name: Publish homebridge-nest-accfactory
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: 20
+  
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm ci
+      #- run: npm test
+
+  publish-npm:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      # Extract version number from package.json
+      - name: Extract version
+        id: extract_version
+        run: |
+          VERSION=$(grep -oP '"version": "\K(.*)(?=")' src/package.json)
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org/
+  
+      - run: npm ci
+      - run: |
+          TAG=$(echo $env.VERSION | grep -oP '^v\d+\.\d+\.\d+-?\K(\w+)?')
+          npm publish --dry-run --tag ${TAG:-latest} --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{secrets.NPM_TOKEN}}
