@@ -13,7 +13,6 @@ jobs:
 
         name: [
           alpine-aarch64,
-          #alpine-arm32v7,
           alpine-x86_64,
         ]
 
@@ -27,11 +26,6 @@ jobs:
           - name: alpine-x86_64
             os: ubuntu-latest
             PLATFORM: linux/amd64
-
-          # Build for arm v7 32bit Linux environments.
-          - name: alpine-arm32v7
-            os: ubuntu-latest
-            PLATFORM: linux/arm/v7
 
     steps:
       - uses: actions/checkout@v4
