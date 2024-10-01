@@ -61,6 +61,6 @@ jobs:
           file: src/docker-standalone/Dockerfile
           platforms: ${{ matrix.PLATFORM }}
           tags: n0rt0nthec4t/nest_accfactory:${{ env.VERSION }}
-           build-args: NEST_ACCFACTORY_VERSION=${{ env.VERSION }}
+          build-args: NEST_ACCFACTORY_VERSION=${{ env.VERSION }}
           push: false
     
