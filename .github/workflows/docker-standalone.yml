@@ -52,4 +52,4 @@ jobs:
           
       # Build Docker image with version tag
       - name: 'Build Docker image'
-        run: docker buildx build --sbom=true --provenance=true --platform ${{ matrix.PLATFORM }}  --build-arg NEST_ACCFACTORY_VERSION=${{ env.VERSION }} --rm --tag n0rt0nthec4t/nest_accfactory:${{ env.BRANCH_NAME }} --file src/docker-standalone/Dockerfile .
+        run: docker buildx build --platform ${{ matrix.PLATFORM }}  --build-arg NEST_ACCFACTORY_VERSION=${{ env.VERSION }} --rm --tag n0rt0nthec4t/nest_accfactory:${{ env.BRANCH_NAME }} --file src/docker-standalone/Dockerfile .
