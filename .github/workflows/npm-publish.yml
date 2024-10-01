@@ -32,7 +32,7 @@ jobs:
       - name: Extract version
         id: extract_version
         run: |
-          VERSION=$(grep -oP '"version": "\K(.*)(?=")' src/package.json)
+          VERSION=$(grep -oP '"version": "\K(.*)(?=")' package.json)
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
       - uses: actions/setup-node@v4
