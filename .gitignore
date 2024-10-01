@@ -4,7 +4,6 @@ dist*
 .vscode
 .DS_Store
 .git
-package-lock.json
 *.code-workspace
 *.opus
 *.aac
