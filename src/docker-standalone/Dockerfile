@@ -1,10 +1,10 @@
-# version of required ffmpeg binary is specified in FFMPEG_VERSION
-ARG FFMPEG_VERSION=7.1
+# version of required ffmpeg binary we'll build. pass in via build eg: 7.1
+ARG FFMPEG_VERSION
 
-# version of node docker we will use. 
-ARG NODE_VERSION=20-alpine3.20
+# version of node docker we will use. pass in via build eg: 20-alpine
+ARG NODE_VERSION
 
-# version of our project. pass in via build, formatted as x.x.x
+# version of our project. pass in via build eg: 0.0.1-alpha.1
 ARG NEST_ACCFACTORY_VERSION
 
 # first up, we want to build our ffmpeg binary to be included in the final image
