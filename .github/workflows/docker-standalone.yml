@@ -30,6 +30,7 @@ jobs:
           echo "PACKAGEVERSION=$PACKAGEVERSION" >> $GITHUB_ENV
           
       - name: Docker meta
+        id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY_IMAGE }}
@@ -94,6 +95,7 @@ jobs:
           echo "PACKAGEVERSION=$PACKAGEVERSION" >> $GITHUB_ENV
           
       - name: Docker meta
+        id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY_IMAGE }}
