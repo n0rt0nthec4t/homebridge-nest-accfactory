@@ -8,7 +8,7 @@ ARG NODE_VERSION
 ARG NEST_ACCFACTORY_VERSION
 
 # first up, we want to build our ffmpeg binary to be included in the final image
-FROM node:${NODE_VERSION} AS builder
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION} AS builder
 ARG TARGETARCH
 ARG FFMPEG_VERSION
 ARG FFMPEG_EXTRA_OPTIONS
@@ -86,7 +86,7 @@ RUN ./configure \
     && make install
 
 # build our nodejs app container now
-FROM node:${NODE_VERSION} AS app
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION} AS app
 ARG FFMPEG_VERSION
 ARG NEST_ACCFACTORY_VERSION
 
