@@ -105,7 +105,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY_IMAGE }}
-          tags: type=semver,pattern={{version}},value= ${{ needs.set-version.outputs.packageversion }
+          tags: type=semver,pattern={{version}},value= ${{ needs.set-version.outputs.packageversion }}
       
       - name: Login to Docker Hub
         uses: docker/login-action@v3
