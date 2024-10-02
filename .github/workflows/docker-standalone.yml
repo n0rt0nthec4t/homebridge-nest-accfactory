@@ -87,6 +87,8 @@ jobs:
     needs:
       - build
     steps:
+      - uses: actions/checkout@v4
+    
       # Extract version number from package.json
       - name: Extract version
         id: extract_version
