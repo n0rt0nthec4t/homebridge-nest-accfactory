@@ -30,7 +30,7 @@ jobs:
       - name: Extract version
         id: extract_version
         run: |
-          PACKAGEVERSION=$(grep -oP '"version": "\K(.*)(?=")' src/docker-standalone/package.json)
+          PACKAGEVERSION=$(jq -r .version src/docker-standalone/package.json)
           echo "PACKAGEVERSION=$PACKAGEVERSION" >> $GITHUB_ENV
           echo "packageversion=$PACKAGEVERSION" >> $GITHUB_OUTPUT
           
