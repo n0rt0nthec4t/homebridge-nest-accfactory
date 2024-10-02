@@ -32,7 +32,7 @@ jobs:
         run: |
           PACKAGEVERSION=$(grep -oP '"version": "\K(.*)(?=")' src/docker-standalone/package.json)
           echo "PACKAGEVERSION=$PACKAGEVERSION" >> $GITHUB_ENV
-          echo "::set-output name=packageversion::$PACKAGEVERSION"
+          echo "packageversion=$PACKAGEVERSION" >> $GITHUB_OUTPUT
           
       - name: Prepare
         run: |
