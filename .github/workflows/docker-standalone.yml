@@ -41,7 +41,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY_IMAGE }}
-          tags: ${{ env.VERSION }}
+          tags: type=semver,pattern={{version}}
       
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
