@@ -87,6 +87,13 @@ jobs:
     needs:
       - build
     steps:
+      # Extract version number from package.json
+      - name: Extract version
+        id: extract_version
+        run: |
+          VERSION=$(grep -oP '"version": "\K(.*)(?=")' src/docker-standalone/package.json)
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          
       - name: Download digests
         uses: actions/download-artifact@v4
         with:
