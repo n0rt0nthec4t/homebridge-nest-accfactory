@@ -13,8 +13,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    outputs:
-       packageversion: ${{ steps.set-package-version-output.outputs.packageversion }}
     strategy:
       matrix:
         platform:
