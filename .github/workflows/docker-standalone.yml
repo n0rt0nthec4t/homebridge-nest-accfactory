@@ -2,8 +2,8 @@ name: 'Build docker Nest_accfactory'
 
 env:
   REGISTRY_IMAGE: n0rt0nthec4t/nest_accfactory
-  NODE_VERSION: 20-alpine3.20
-  FFMPEG_VERSION: 6.1.2
+  NODE_VERSION: 22-alpine
+  FFMPEG_VERSION: 7.1
   
 on:
   release:
@@ -63,9 +63,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           context: .
           file: src/docker-standalone/Dockerfile
-          build-args: NEST_ACCFACTORY_VERSION=${{ env.VERSION }}
-                      FFMPEG_VERSION=${{ env.FFMPEG_VERSION }}
-                      NODE_VERSION=${{ env.NODE_VERSION }}
+          build-args: NEST_ACCFACTORY_VERSION=${{ env.VERSION }},FFMPEG_VERSION=${{ env.FFMPEG_VERSION }},NODE_VERSION=${{ env.NODE_VERSION }}
           outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
       
       - name: Export digest
