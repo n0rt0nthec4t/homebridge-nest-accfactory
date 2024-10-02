@@ -1,67 +1,125 @@
 name: 'Build docker Nest_accfactory'
 
+env:
+  REGISTRY_IMAGE: n0rt0nthec4t/nest_accfactory
+  NODE_VERSION: 22-alpine
+  FFMPEG_VERSION: 7.1
+  
 on:
+  release:
+    types: [published]
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ${{ matrix.os }}
- 
+    runs-on: ubuntu-latest
     strategy:
-  
       matrix:
-
-        name: [
-          alpine-aarch64,
-          alpine-x86_64,
-        ]
-
-        include:
-          # Build for arm v8 64-bit Linux environments.
-          - name: alpine-aarch64
-            os: ubuntu-latest
-            PLATFORM: linux/arm64
-
-          # Build for amd64 64-bit Linux environments.
-          - name: alpine-x86_64
-            os: ubuntu-latest
-            PLATFORM: linux/amd64
+        platform:
+          - linux/amd64
+          #- linux/arm/v6
+          #- linux/arm/v7
+          - linux/arm64
 
     steps:
       - uses: actions/checkout@v4
         
-      # Extract version number from package.json
-      - name: Extract version
-        id: extract_version
+      - name: Get package.json version
         run: |
-          VERSION=$(grep -oP '"version": "\K(.*)(?=")' src/docker-standalone/package.json)
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-
-      # Set up Docker Buildx
+          PACKAGEVERSION=$(jq -r .version src/docker-standalone/package.json)
+          echo "PACKAGEVERSION=$PACKAGEVERSION" >> $GITHUB_ENV
+          
+      - name: Prepare
+        run: |
+          platform=${{ matrix.platform }}
+          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV          
+      
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+          tags: type=semver,pattern={{version}},value=${{ env.PACKAGEVERSION }}
+      
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      # Create a multi-platform builder
-      - name: Set up multi-platform builder
-        run: |
-          docker buildx create --name mybuilder --use
-          docker buildx inspect --bootstrap
-
-      # Log into docker
+      
       - name: Docker Login
         uses: docker/login-action@v3  
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      # Build and push Docker image for multiple platforms
-      - name: Build and Push Docker Image
+          
+      - name: Build and push by digest
+        id: build
         uses: docker/build-push-action@v6
         with:
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
           context: .
           file: src/docker-standalone/Dockerfile
-          platforms: ${{ matrix.PLATFORM }}
-          tags: n0rt0nthec4t/nest_accfactory:${{ env.VERSION }}
-          build-args: NEST_ACCFACTORY_VERSION=${{ env.VERSION }}
-          push: true
-    
+          build-args: |
+            NEST_ACCFACTORY_VERSION=${{ env.PACKAGEVERSION }}
+            FFMPEG_VERSION=${{ env.FFMPEG_VERSION }}
+            NODE_VERSION=${{ env.NODE_VERSION }}
+          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"          
+      
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+  merge:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Get package.json version
+        run: |
+          PACKAGEVERSION=$(jq -r .version src/docker-standalone/package.json)
+          echo "PACKAGEVERSION=$PACKAGEVERSION" >> $GITHUB_ENV
+      
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+          tags: type=semver,pattern={{version}},value=${{ env.PACKAGEVERSION }}
+      
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)          
+      
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ steps.meta.outputs.version }} 
