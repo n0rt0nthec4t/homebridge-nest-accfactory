@@ -13,8 +13,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    outputs:
-       packageversion: ${{ steps.set-package-version-output.outputs.packageversion }}
     strategy:
       matrix:
         platform:
@@ -26,21 +24,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         
-      # Extract version number from package.json
-      - name: Extract version
-        id: extract_version
+      - name: Get package.json version
         run: |
           PACKAGEVERSION=$(jq -r .version src/docker-standalone/package.json)
           echo "PACKAGEVERSION=$PACKAGEVERSION" >> $GITHUB_ENV
-          echo "packageversion=$PACKAGEVERSION" >> $GITHUB_OUTPUT
           
-      - name: Prepare
-        run: |
-          platform=${{ matrix.platform }}
-          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV          
-      
       - name: Docker meta
-        id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY_IMAGE }}
@@ -99,12 +88,16 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       
+      - name: Get package.json version
+        run: |
+          PACKAGEVERSION=$(jq -r .version src/docker-standalone/package.json)
+          echo "PACKAGEVERSION=$PACKAGEVERSION" >> $GITHUB_ENV
+          
       - name: Docker meta
-        id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY_IMAGE }}
-          tags: type=semver,pattern={{version}},value=${{ needs.set-package-version.outputs.packageversion }}
+          tags: type=semver,pattern={{version}},value=${{ env.PACKAGEVERSION }}
       
       - name: Login to Docker Hub
         uses: docker/login-action@v3
