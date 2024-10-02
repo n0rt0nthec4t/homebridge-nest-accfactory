@@ -89,7 +89,7 @@ jobs:
       - name: Get package.json version
         run: |
           PACKAGEVERSION=$(jq -r .version src/docker-standalone/package.json)
-          echo "PACKAGEVERSION=$PACKAGEVERSION" >> $GITHUB_ENVT
+          echo "PACKAGEVERSION=$PACKAGEVERSION" >> $GITHUB_ENV
       
       - name: Download digests
         uses: actions/download-artifact@v4
