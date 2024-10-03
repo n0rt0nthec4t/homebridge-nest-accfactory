@@ -122,6 +122,8 @@ The following options are available on a per-device level in the config.json dev
 
 ## ffmpeg
 
+**As of 3/10/2024, the [Homebridge Docker Image](https://hub.docker.com/r/homebridge/homebridge) includes an ffmpeg binary meeting our requirements. Its located in /usr/local/bin/ffmpeg**
+
 To support streaming and recording from cameras, an ffmpeg binary needs to be present. We have specific requirements, which are:
 - version 6.0 or later
 - compiled with:
@@ -131,8 +133,6 @@ To support streaming and recording from cameras, an ffmpeg binary needs to be pr
   - libopus
 
 By default, we look in the current directory where the plug-in excutes for an ffmpeg binary, however, you can specify a specific ffmpeg binary to use va the configuration option 'ffmpegPath'
-
-The standlone [docker version](https://hub.docker.com/r/n0rt0nthec4t/nest_accfactory), which is not reliant on Homebridge, includes an ffmpeg binary to support these requirements.
 
 ## Caveats
 

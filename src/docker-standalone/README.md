@@ -4,6 +4,7 @@
   
 [![release](https://img.shields.io/github/release/n0rt0nthec4t/homebridge-nest-accfactory.svg?include_prereleases)](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases)
 [![version](https://img.shields.io/github/release-date/n0rt0nthec4t/homebridge-nest-accfactory)](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases)
+[![docker pulls](https://img.shields.io/docker/pulls/n0rt0nthec4t/nest_accfactory.svg)](https://img.shields.io/docker/pulls/n0rt0nthec4t/nest_accfactory.svg)
 [![Build docker Nest_accfactory](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/actions/workflows/docker-standalone.yml/badge.svg)](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/actions/workflows/docker-standalone.yml)
 [![Donate](https://badgen.net/badge/donate/paypal/yellow)](https://paypal.me/n0rt0nthec4t)
 
@@ -60,7 +61,7 @@ Google Accounts require an "issueToken" and "cookie". The values of "issueToken"
 
 Nest_config.json is the configuration file where various options can be configured. A full list of options is detailed below.
 
-Sample config.json entries below
+Sample Nest_config.json entries below
 
 ```
 {
@@ -161,11 +162,9 @@ To support streaming and recording from cameras, an ffmpeg binary needs to be pr
 
 By default, we look in the current directory where excuted from for an ffmpeg binary, however, you can specify a specific ffmpeg binary to use va the configuration option 'ffmpegPath'
 
-The standlone [docker version](https://hub.docker.com/r/n0rt0nthec4t/nest_accfactory), which is not reliant on Homebridge, includes an ffmpeg binary to support these requirements.
-
 ## Docker Image
 
-If you would like to try this in a containerised version, please check out the [docker version](https://hub.docker.com/r/n0rt0nthec4t/nest_accfactory) for this project
+If you would like to try this in a containerised version, please check out the [Nest_accfcatory](https://hub.docker.com/r/n0rt0nthec4t/nest_accfactory)
 
 ## Caveats
 

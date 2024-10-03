@@ -1,7 +1,7 @@
 // Nest Thermostat
 // Part of homebridge-nest-accfactory
 //
-// Code version 27/9/2024
+// Code version 3/10/2024
 // Mark Hulskamp
 'use strict';
 
@@ -204,19 +204,35 @@ export default class NestThermostat extends HomeKitDevice {
       if (this.fanService === undefined) {
         this.fanService = this.accessory.addService(this.hap.Service.Fanv2, '', 1);
       }
+      if (this.fanService.testCharacteristic(this.hap.Characteristic.RotationSpeed) === false) {
+        this.fanService.addCharacteristic(this.hap.Characteristic.RotationSpeed);
+      }
+      this.fanService.getCharacteristic(this.hap.Characteristic.RotationSpeed).setProps({
+        minStep: 100 / this.deviceData.fan_max_speed,
+      });
+
       this.thermostatService.addLinkedService(this.fanService);
 
       this.fanService.getCharacteristic(this.hap.Characteristic.Active).onSet((value) => {
-        this.setFan(value);
+        this.setFan(
+          value,
+          value === this.hap.Characteristic.Active.ACTIVE ? (this.deviceData.fan_timer_speed / this.deviceData.fan_max_speed) * 100 : 0,
+        );
+      });
+      this.fanService.getCharacteristic(this.hap.Characteristic.RotationSpeed).onSet((value) => {
+        this.setFan(value !== 0 ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE, value);
       });
       this.fanService.getCharacteristic(this.hap.Characteristic.Active).onGet(() => {
         return this.deviceData.fan_state === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE;
+      });
+      this.fanService.getCharacteristic(this.hap.Characteristic.RotationSpeed).onGet(() => {
+        return (this.deviceData.fan_timer_speed / this.deviceData.fan_max_speed) * 100;
       });
     }
     if (this.deviceData?.has_fan === false && this.fanService !== undefined) {
       // No longer have a Fan configured and service present, so removed it
       this.accessory.removeService(this.fanService);
-      this.fanService === undefined;
+      this.fanService = undefined;
     }
 
     // Setup dehumifider service if supported by the thermostat and not already present on the accessory
@@ -313,16 +329,26 @@ export default class NestThermostat extends HomeKitDevice {
     return postSetupDetails;
   }
 
-  setFan(fanState) {
-    this.set({ uuid: this.deviceData.nest_google_uuid, fan_state: fanState === this.hap.Characteristic.Active.ACTIVE ? true : false });
-    this.fanService.updateCharacteristic(this.hap.Characteristic.Active, fanState);
+  setFan(fanState, speed) {
+    if (
+      fanState !== this.fanService.getCharacteristic(this.hap.Characteristic.Active).value ||
+      speed !== this.fanService.getCharacteristic(this.hap.Characteristic.RotationSpeed).value
+    ) {
+      this.set({
+        uuid: this.deviceData.nest_google_uuid,
+        fan_state: fanState === this.hap.Characteristic.Active.ACTIVE ? true : false,
+        fan_timer_speed: Math.round((speed / 100) * this.deviceData.fan_max_speed),
+      });
+      this.fanService.updateCharacteristic(this.hap.Characteristic.Active, fanState);
+      this.fanService.updateCharacteristic(this.hap.Characteristic.RotationSpeed, speed);
 
-    this?.log?.info &&
-      this.log.info(
-        'Set fan on thermostat "%s" to "%s"',
-        this.deviceData.description,
-        fanState === this.hap.Characteristic.Active.ACTIVE ? 'On with initial fan speed of ' + this.deviceData.fan_current_speed : 'Off',
-      );
+      this?.log?.info &&
+        this.log.info(
+          'Set fan on thermostat "%s" to "%s"',
+          this.deviceData.description,
+          fanState === this.hap.Characteristic.Active.ACTIVE ? 'On with fan speed of ' + speed + '%' : 'Off',
+        );
+    }
   }
 
   setDehumidifier(dehumidiferState) {
@@ -648,6 +674,13 @@ export default class NestThermostat extends HomeKitDevice {
       if (deviceData.has_fan === true && this.deviceData.has_fan === false && this.fanService === undefined) {
         // Fan has been added
         this.fanService = this.accessory.addService(this.hap.Service.Fanv2, '', 1);
+
+        if (this.fanService.testCharacteristic(this.hap.Characteristic.RotationSpeed) === false) {
+          this.fanService.addCharacteristic(this.hap.Characteristic.RotationSpeed);
+        }
+        this.fanService.getCharacteristic(this.hap.Characteristic.RotationSpeed).setProps({
+          minStep: 100 / this.deviceData.fan_max_speed,
+        });
         this.thermostatService.addLinkedService(this.fanService);
 
         this.fanService.getCharacteristic(this.hap.Characteristic.Active).onSet((value) => {
@@ -877,8 +910,12 @@ export default class NestThermostat extends HomeKitDevice {
           this.externalFan.off();
         }
       }
-      //this.fanService.updateCharacteristic(this.hap.Characteristic.RotationSpeed,
-      //  (deviceData.fan_state === true ? (deviceData.fan_current_speed / deviceData.fan_max_speed) * 100 : 0));
+
+      this.fanService.updateCharacteristic(
+        this.hap.Characteristic.RotationSpeed,
+        deviceData.fan_state === true ? (deviceData.fan_timer_speed / deviceData.fan_max_speed) * 100 : 0,
+      );
+
       this.fanService.updateCharacteristic(
         this.hap.Characteristic.Active,
         deviceData.fan_state === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE,

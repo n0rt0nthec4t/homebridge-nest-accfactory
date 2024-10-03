@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 29/9/2024
+// Code version 3/10/2024
 // Mark Hulskamp
 'use strict';
 
@@ -58,8 +58,8 @@ export default class NestAccfactory {
     PROTOBUF: 'Protobuf', // From the Protobuf API
   };
 
-  static GoogleConnection = 'google'; // Google account connection
-  static NestConnection = 'nest'; // Nest account connection
+  static GoogleAccount = 'google'; // Google account connection
+  static NestAccount = 'nest'; // Nest account connection
 
   cachedAccessories = []; // Track restored cached accessories
 
@@ -83,7 +83,7 @@ export default class NestAccfactory {
       if (this.config[key]?.access_token !== undefined && this.config[key].access_token !== '') {
         // Nest account connection, assign a random UUID for each connection
         this.#connections[crypto.randomUUID()] = {
-          type: NestAccfactory.NestConnection,
+          type: NestAccfactory.NestAccount,
           authorised: false,
           access_token: this.config[key].access_token,
           fieldTest: this.config[key]?.fieldTest === true,
@@ -101,7 +101,7 @@ export default class NestAccfactory {
       ) {
         // Google account connection, assign a random UUID for each connection
         this.#connections[crypto.randomUUID()] = {
-          type: NestAccfactory.GoogleConnection,
+          type: NestAccfactory.GoogleAccount,
           authorised: false,
           issuetoken: this.config[key].issuetoken,
           cookie: this.config[key].cookie,
@@ -255,8 +255,7 @@ export default class NestAccfactory {
       this.api.on('shutdown', async () => {
         // We got notified that Homebridge is shutting down
         // Perform cleanup some internal cleaning up
-        this.#eventEmitter.removeAllListeners(HomeKitDevice.SET);
-        this.#eventEmitter.removeAllListeners(HomeKitDevice.GET);
+        this.#eventEmitter.removeAllListeners();
         Object.values(this.#trackedDevices).forEach((value) => {
           if (value?.timers !== undefined) {
             Object.values(value?.timers).forEach((timers) => {
@@ -279,8 +278,10 @@ export default class NestAccfactory {
     });
     this.#eventEmitter.addListener(HomeKitDevice.GET, async (uuid, values) => {
       let results = await this.#get(uuid, values);
-      // Send the results back to the device via a special event
-      this.#eventEmitter.emit(HomeKitDevice.GET + '->' + uuid, results);
+      // Send the results back to the device via a special event (only if still active)
+      if (this.#eventEmitter !== undefined) {
+        this.#eventEmitter.emit(HomeKitDevice.GET + '->' + uuid, results);
+      }
     });
   }
 
@@ -307,7 +308,7 @@ export default class NestAccfactory {
 
   async #connect(connectionUUID) {
     if (typeof this.#connections?.[connectionUUID] === 'object') {
-      if (this.#connections[connectionUUID].type === NestAccfactory.GoogleConnection) {
+      if (this.#connections[connectionUUID].type === NestAccfactory.GoogleAccount) {
         // Google cookie method as refresh token method no longer supported by Google since October 2022
         // Instructions from homebridge_nest or homebridge_nest_cam to obtain this
         this?.log?.info &&
@@ -398,7 +399,7 @@ export default class NestAccfactory {
           });
       }
 
-      if (this.#connections[connectionUUID].type === NestAccfactory.NestConnection) {
+      if (this.#connections[connectionUUID].type === NestAccfactory.NestAccount) {
         // Nest access token method. Get WEBSITE2 cookie for use with camera API calls if needed later
         this?.log?.info &&
           this.log.info(
@@ -816,11 +817,11 @@ export default class NestAccfactory {
         // This also depends on the account type we connected with
         // Nest accounts cannot observe camera/doorbell product traits
         if (
-          (this.#connections[connectionUUID].type === NestAccfactory.NestConnection &&
+          (this.#connections[connectionUUID].type === NestAccfactory.NestAccount &&
             type.fullName.startsWith('.nest.trait.product.camera') === false &&
             type.fullName.startsWith('.nest.trait.product.doorbell') === false &&
             (type.fullName.startsWith('.nest.trait') === true || type.fullName.startsWith('.weave.') === true)) ||
-          (this.#connections[connectionUUID].type === NestAccfactory.GoogleConnection &&
+          (this.#connections[connectionUUID].type === NestAccfactory.GoogleAccount &&
             (type.fullName.startsWith('.nest.trait') === true ||
               type.fullName.startsWith('.weave.') === true ||
               type.fullName.startsWith('.google.trait.product.camera') === true))
@@ -1444,6 +1445,7 @@ export default class NestAccfactory {
         try {
           if (value?.source === NestAccfactory.DataSource.PROTOBUF && value.value?.configuration_done?.deviceReady === true) {
             let RESTTypeData = {};
+            RESTTypeData.serialNumber = value.value.device_identity.serialNumber;
             RESTTypeData.softwareVersion =
               value.value.device_identity.softwareVersion.split(/\s+/)?.[3] !== undefined
                 ? value.value.device_identity.softwareVersion.split(/\s+/)?.[3]
@@ -1587,13 +1589,15 @@ export default class NestAccfactory {
 
             // Update fan status, on or off and max number of speeds supported
             RESTTypeData.fan_state = parseInt(value.value.fan_control_settings.timerEnd?.seconds) > 0 ? true : false;
-            RESTTypeData.fan_current_speed =
-              value.value.fan_control_settings.timerSpeed.includes('FAN_SPEED_SETTING_STAGE') === true
-                ? parseInt(value.value.fan_control_settings.timerSpeed.split('FAN_SPEED_SETTING_STAGE')[1])
+            RESTTypeData.fan_timer_speed =
+              value.value.fan_control_settings.timerSpeed.includes('FAN_SPEED_SETTING_STAGE') === true &&
+              isNaN(value.value.fan_control_settings.timerSpeed.split('FAN_SPEED_SETTING_STAGE')[1]) === false
+                ? Number(value.value.fan_control_settings.timerSpeed.split('FAN_SPEED_SETTING_STAGE')[1])
                 : 0;
             RESTTypeData.fan_max_speed =
-              value.value.fan_control_capabilities.maxAvailableSpeed.includes('FAN_SPEED_SETTING_STAGE') === true
-                ? parseInt(value.value.fan_control_capabilities.maxAvailableSpeed.split('FAN_SPEED_SETTING_STAGE')[1])
+              value.value.fan_control_capabilities.maxAvailableSpeed.includes('FAN_SPEED_SETTING_STAGE') === true &&
+              isNaN(value.value.fan_control_capabilities.maxAvailableSpeed.split('FAN_SPEED_SETTING_STAGE')[1]) === false
+                ? Number(value.value.fan_control_capabilities.maxAvailableSpeed.split('FAN_SPEED_SETTING_STAGE')[1])
                 : 0;
 
             // Humidifier/dehumidifier details
@@ -1790,10 +1794,14 @@ export default class NestAccfactory {
 
             // Update fan status, on or off
             RESTTypeData.fan_state = value.value.fan_timer_timeout > 0 ? true : false;
-            RESTTypeData.fan_current_speed =
-              value.value.fan_timer_speed.includes('stage') === true ? parseInt(value.value.fan_timer_speed.split('stage')[1]) : 0;
+            RESTTypeData.fan_timer_speed =
+              value.value.fan_timer_speed.includes('stage') === true && isNaN(value.value.fan_timer_speed.split('stage')[1]) === false
+                ? Number(value.value.fan_timer_speed.split('stage')[1])
+                : 0;
             RESTTypeData.fan_max_speed =
-              value.value.fan_capabilities.includes('stage') === true ? parseInt(value.value.fan_capabilities.split('stage')[1]) : 0;
+              value.value.fan_capabilities.includes('stage') === true && isNaN(value.value.fan_capabilities.split('stage')[1]) === false
+                ? Number(value.value.fan_capabilities.split('stage')[1])
+                : 0;
 
             // Humidifier/dehumidifier details
             RESTTypeData.target_humidity = isNaN(value.value.target_humidity) === false ? Number(value.value.target_humidity) : 0.0;
@@ -2557,6 +2565,14 @@ export default class NestAccfactory {
               protobufElement.state.value.timerEnd = { seconds: endTime, nanos: (endTime % 1000) * 1e6 };
             }
 
+            if (key === 'fan_timer_speed' && isNaN(value) === false) {
+              // Set fan speed on the target thermostat
+              protobufElement.traitRequest.traitLabel = 'fan_control_settings';
+              protobufElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.FanControlSettingsTrait';
+              protobufElement.state.value = this.#rawData[nest_google_uuid].value.fan_control_settings;
+              protobufElement.state.value.timerSpeed = value !== 0 ? 'FAN_SPEED_SETTING_STAGE' + value : 'FAN_SPEED_SETTING_OFF';
+            }
+
             if (key === 'statusled_brightness' && isNaN(value) === false) {
               // 0
               // 1
@@ -2749,6 +2765,16 @@ export default class NestAccfactory {
               ) {
                 RESTStructureUUID = 'shared.' + nest_google_uuid.split('.')[1];
               }
+
+              if (key === 'fan_state' && typeof value === 'boolean') {
+                key = 'fan_timer_timeout';
+                value = value === true ? this.#rawData[nest_google_uuid].value.fan_duration + Math.floor(Date.now() / 1000) : 0;
+              }
+
+              if (key === 'fan_timer_speed' && isNaN(value) === false) {
+                value = value !== 0 ? 'stage' + value : 'stage1';
+              }
+
               subscribeJSONData.objects.push({ object_key: RESTStructureUUID, op: 'MERGE', value: { [key]: value } });
             }
 

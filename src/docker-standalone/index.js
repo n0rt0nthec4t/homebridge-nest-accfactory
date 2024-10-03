@@ -17,7 +17,7 @@
 //
 // Supports both Nest REST and Protobuf APIs for communication
 //
-// Code version 30/9/2024
+// Code version 3/10/2024
 // Mark Hulskamp
 'use strict';
 
@@ -100,7 +100,6 @@ function loadConfiguration(filename) {
     Object.entries(loadedConfig).forEach(([key, value]) => {
       if (key === 'Debug' && (value === true || (typeof value === 'string' && value !== ''))) {
         // Debugging enabled
-        Logger.setDebugEnabled(true);
       }
       if (key === 'EveApp' && typeof value === 'boolean') {
         // Evehome app integration

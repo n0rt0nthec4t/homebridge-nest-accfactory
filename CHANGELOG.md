@@ -2,15 +2,9 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-### alpha
+## Breaking changes v0.2.0+
 
-Currently all releases are considered 'alpha' status, where things may or may not be working. Use at your own risk :-)
-
-## v0.2.0 (alpha)
-
-### Breaking changes
-
-Unfornunately, I've made some breaking changes in the code to help move forward with the project. 
+Unfornunately, from version 0.2.0, I've made some breaking changes in the code to help move forward with the project. 
 So, what does this mean for you, the end user.
 1) You'll need to remove all previously discovered devices from HomeKit before adding them back in after upgrading to this version
 2) If using Homebridge version, remove any cached acccesory data associated with this plug-in
@@ -23,15 +17,16 @@ So, what does this mean for you, the end user.
 
 Appologies for this change, as I can understand what an inconvience and frustration it will be :-(
 
-### Other Changes
+## Known Issues
+
+- Audio from newer Nest/Google camera/doorbell devices is still blank
+- [npm ip](https://github.com/advisories/GHSA-2p57-rm9w-gvfp) issue being used in external library
+
+## v0.2.0 (alpha)
 
 - General code cleanup and bug fixes
 - Common configuration between Homebridge plug-in and docker/standalone versions
 - Seemlessly allow Nest/Google devices to be migrated between Nest <-> Google Home apps
-
-### Known Issues
-
-- Audio from newer Nest/Google camera/doorbell devices is still blank
 
 ## v0.1.9 (alpha)
 
