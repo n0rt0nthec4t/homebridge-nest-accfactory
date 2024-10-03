@@ -1,89 +1,14 @@
-# version of required ffmpeg binary we'll build. pass in via build eg: 7.1
-ARG FFMPEG_VERSION
-
 # version of node docker we will use. pass in via build eg: 20-alpine
 ARG NODE_VERSION
 
 # version of our project. pass in via build eg: 0.0.1-alpha.1
 ARG NEST_ACCFACTORY_VERSION
 
-# first up, we want to build our ffmpeg binary to be included in the final image
+# first up, we'll install ffmpeg-for-homebrige so we can just extract the ffmpeg binary to be included in the final image
 FROM node:${NODE_VERSION} AS builder
-ARG TARGETARCH
-ARG FFMPEG_VERSION
-ARG FFMPEG_EXTRA_OPTIONS
 
-RUN apk update \
-    && apk upgrade \
-    && apk add build-base \
-    && apk add bash \
-    && apk add nasm \
-    && apk add zlib-dev \
-    && apk add speex-dev \
-    && apk add fdk-aac-dev \
-    && apk add opus-dev
-
-# get x264 source and build for ffmpeg build below
-# we do this as the alpine linux repo has an older x264-lib package 
 WORKDIR /build
-ADD https://code.videolan.org/videolan/x264/-/archive/master/x264-master.tar.bz2 x264-master.tar.bz2
-RUN tar -vxf x264-master.tar.bz2
-WORKDIR /build/x264-master
-RUN ./configure --enable-static --enable-pic \
-    && make -j 4 \
-    && make install-lib-static
-
-# get ffmpeg source and build
-# this is a based on what current ffmpeg-for-homebridge does, but includes libspeex as required for Nest
-WORKDIR /build
-ADD https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.bz2 ffmpeg-${FFMPEG_VERSION}.tar.bz2
-RUN tar -vxf ffmpeg-${FFMPEG_VERSION}.tar.bz2
-WORKDIR /build/ffmpeg-${FFMPEG_VERSION}
-RUN ./configure \
-    --pkgconfigdir="/usr/lib/pkgconfig" \
-    --pkg-config-flags="--static" \
-    --extra-cflags="-I/include" \
-    --extra-ldflags="-L/lib" \
-    --extra-libs="-lpthread -lm" \
-    --enable-hardcoded-tables \
-    --enable-nonfree \
-    --enable-gpl \
-    #--enable-openssl \
-    #--enable-libdav1d \
-    #--enable-libsvtav1 \
-    --enable-libx264 \
-    #--enable-libx265 \
-    #--enable-libvpx \
-    #--enable-libxvid \
-    #--enable-libvidstab \
-    #--enable-libaom \
-    #--enable-libzimg \
-    #--enable-lv2 \
-    #--enable-libopencore_amrnb \
-    #--enable-libopencore_amrwb \
-    #--enable-libmp3lame \
-    --enable-libopus \
-    #--enable-libvorbis \
-    #--enable-libtheora \
-    --enable-libfdk-aac \
-    #--enable-libwebp \
-    #--enable-libsrt \
-    #--enable-libvpl \
-    --enable-libspeex \
-    #--enable-vaapi \
-    --disable-ffnvcodec \
-    #--enable-amf \
-    --disable-doc \
-    --disable-debug \
-    --disable-shared \
-    --enable-pthreads \
-    #--enable-static \
-    --enable-version3 \
-    --enable-pthreads \
-    --enable-runtime-cpudetect \
-    ${FFMPEG_EXTRA_OPTIONS} \
-    && make -j 4 \
-    && make install
+RUN npm install ffmpeg-for-homebridge
 
 # build our nodejs app container now
 FROM node:${NODE_VERSION} AS app
@@ -94,11 +19,7 @@ ARG NEST_ACCFACTORY_VERSION
 # Pass TZ env from docker run to set timezone
 RUN apk update \
     && apk upgrade \
-    && apk add tzdata \
-    && apk add fdk-aac \
-    && apk add speex \
-    && apk add opus \
-    && apk add nano
+    && apk add tzdata
 
 # working directory inside the container
 WORKDIR /opt/Nest_accfactory
@@ -108,7 +29,7 @@ RUN mkdir ${WORKDIR}/dist
 COPY src/*.js ./dist/
 COPY src/res/ ./dist/res/
 COPY src/protobuf/ ./dist/protobuf/
-COPY --from=builder /build/ffmpeg-${FFMPEG_VERSION}/ffmpeg ./dist
+COPY --from=builder /build/node_modules/ffmpeg-for-homebridge/ffmpeg ./dist
 COPY src/docker-standalone/*.js ./dist/
 COPY src/docker-standalone/package.json ./
 

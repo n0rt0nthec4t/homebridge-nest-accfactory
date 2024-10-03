@@ -164,7 +164,7 @@ By default, we look in the current directory where excuted from for an ffmpeg bi
 
 ## Docker Image
 
-If you would like to try this in a containerised version, please check out the [Nest_accfcatory](https://hub.docker.com/r/n0rt0nthec4t/nest_accfactory)
+If you would like to try containerised version, please check out the [Nest_accfactory](https://hub.docker.com/r/n0rt0nthec4t/nest_accfactory) at docker hub. Configuration instructions for setting the docker version up can be found on the docker hub repository page. A pre-built ffmpeg binary is also included.
 
 ## Caveats
 
