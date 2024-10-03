@@ -2554,23 +2554,32 @@ export default class NestAccfactory {
 
             if (key === 'fan_state' && typeof value === 'boolean') {
               // Set fan mode on the target thermostat
-              let endTime =
-                value === true
-                  ? Math.floor(Date.now() / 1000) + this.#rawData[nest_google_uuid].value.fan_control_settings.timerDuration.seconds
-                  : 0;
-
               protobufElement.traitRequest.traitLabel = 'fan_control_settings';
               protobufElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.FanControlSettingsTrait';
               protobufElement.state.value = this.#rawData[nest_google_uuid].value.fan_control_settings;
-              protobufElement.state.value.timerEnd = { seconds: endTime, nanos: (endTime % 1000) * 1e6 };
+              protobufElement.state.value.timerEnd =
+                value === true
+                  ? {
+                      seconds: Number(Math.floor(Date.now() / 1000 + Number(protobufElement.state.value.timerDuration.seconds))),
+                      nanos: (Math.floor(Date.now() / 1000 + Number(protobufElement.state.value.timerDuration.seconds)) % 1000) * 1e6,
+                    }
+                  : { seconds: 0, nanos: 0 };
+              if (values?.fan_timer_speed !== undefined) {
+                // We have a value to set fan speed also, so handle here as combined setting
+                protobufElement.state.value.timerSpeed =
+                  values?.fan_timer_speed !== 0
+                    ? 'FAN_SPEED_SETTING_STAGE' + values?.fan_timer_speed
+                    : this.#rawData[nest_google_uuid].value.fan_control_settings.timerSpeed;
+              }
             }
 
-            if (key === 'fan_timer_speed' && isNaN(value) === false) {
-              // Set fan speed on the target thermostat
+            if (key === 'fan_timer_speed' && isNaN(value) === false && values?.fan_state === undefined) {
+              // Set fan speed on the target thermostat only if we're not changing fan on/off state also
               protobufElement.traitRequest.traitLabel = 'fan_control_settings';
               protobufElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.FanControlSettingsTrait';
               protobufElement.state.value = this.#rawData[nest_google_uuid].value.fan_control_settings;
-              protobufElement.state.value.timerSpeed = value !== 0 ? 'FAN_SPEED_SETTING_STAGE' + value : 'FAN_SPEED_SETTING_OFF';
+              protobufElement.state.value.timerSpeed =
+                value !== 0 ? 'FAN_SPEED_SETTING_STAGE' + value : this.#rawData[nest_google_uuid].value.fan_control_settings.timerSpeed;
             }
 
             if (key === 'statusled_brightness' && isNaN(value) === false) {
