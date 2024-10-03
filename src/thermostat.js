@@ -1062,10 +1062,10 @@ export default class NestThermostat extends HomeKitDevice {
       this.set({ uuid: this.deviceData.nest_google_uuid, vacation_mode: EveHomeSetData.vacation.status });
     }
     if (typeof EveHomeSetData?.programs === 'object') {
-      /* EveHomeSetData.programs.forEach((day) => {
-                // Convert into Nest thermostat schedule format and set. Need to work this out
-                //this.set({ uuid: this.deviceData.nest_google_uuid, 'days' : {6 : { 'temp' : 17 , 'time' : 13400, touched_at: Date.now()}} });
-            }); */
+      //EveHomeSetData.programs.forEach((day) => {
+      // Convert into Nest thermostat schedule format and set. Need to work this out
+      //  this.set({ uuid: this.deviceData.nest_google_uuid, days: { 6: { temp: 17, time: 13400, touched_at: Date.now() } } });
+      //});
     }
   }
 }

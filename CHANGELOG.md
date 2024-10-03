@@ -4,7 +4,7 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 ## Breaking changes v0.2.0+
 
-Unfornunately, from version 0.2.0, I've made some breaking changes in the code to help move forward with the project. 
+Unfornunately, from version **0.2.0**, I've made some breaking changes in the code to help move forward with the project. 
 So, what does this mean for you, the end user.
 1) You'll need to remove all previously discovered devices from HomeKit before adding them back in after upgrading to this version
 2) If using Homebridge version, remove any cached acccesory data associated with this plug-in
