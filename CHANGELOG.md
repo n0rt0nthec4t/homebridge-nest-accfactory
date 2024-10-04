@@ -20,7 +20,7 @@ Appologies for this change, as I can understand what an inconvience and frustrat
 ## Known Issues
 
 - Audio from newer Nest/Google camera/doorbell devices is still blank
-- [npm ip](https://github.com/advisories/GHSA-2p57-rm9w-gvfp) issue being used in external library
+- npm package [ip](https://github.com/advisories/GHSA-2p57-rm9w-gvfp) has severity issue. This is being used in external library (werift)
 
 ## v0.2.0 (alpha)
 

@@ -315,7 +315,7 @@ export default class NestCamera extends HomeKitDevice {
     if (this.streamer === undefined) {
       this?.log?.error &&
         this.log.error(
-          'Received request to start recording for "%s" however we do not any associated streaming protocol supported',
+          'Received request to start recording for "%s" however we do not any associated streaming protocol support',
           this.deviceData.description,
         );
       return;
@@ -603,7 +603,7 @@ export default class NestCamera extends HomeKitDevice {
       imageBuffer = this.lastSnapshotImage;
     }
 
-    callback(imageBuffer?.length === 0 ? 'Unabled to obtain Camera/Doorbell snapshot' : null, imageBuffer);
+    callback(imageBuffer?.length === 0 ? 'Unable to obtain Camera/Doorbell snapshot' : null, imageBuffer);
   }
 
   async prepareStream(request, callback) {
@@ -677,7 +677,7 @@ export default class NestCamera extends HomeKitDevice {
       // We have no streamer object configured, so cannot do live streams!!
       this?.log?.error &&
         this.log.error(
-          'Received request to start live video for "%s" however we do not any associated streaming protocol supported',
+          'Received request to start live video for "%s" however we do not any associated streaming protocol support',
           this.deviceData.description,
         );
     }

@@ -929,7 +929,7 @@ export default class NestThermostat extends HomeKitDevice {
         this.externalDehumidifier !== undefined
       ) {
         // Dehumidifier mode was switched on and external dehumidifier external code is being used
-        // Start dehumidifier via dehumidifiern external code
+        // Start dehumidifier via dehumidifier external code
         if (typeof this.externalDehumidifier.dehumififier === 'function') {
           this.externalDehumidifier.dehumififier(0);
         }
