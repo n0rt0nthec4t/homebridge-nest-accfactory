@@ -22,7 +22,7 @@ Appologies for this change, as I can understand what an inconvience and frustrat
 - Audio from newer Nest/Google camera/doorbell devices is still blank
 - npm package [ip](https://github.com/advisories/GHSA-2p57-rm9w-gvfp) has severity issue. This is being used in external library (werift)
 
-## v0.2.0 (alpha)
+## v0.2.0 (2024/10/04)
 
 - General code cleanup and bug fixes
 - Common configuration between Homebridge plug-in and docker/standalone versions
