@@ -2,6 +2,18 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.2.1 (2024/10/05)
+
+## Changes
+
+- HomeKit support for multiple speeds on thermostat(s)
+- Audio library in docker release went walkabout. Added back in
+
+## Known Issues
+
+- Audio from newer Nest/Google camera/doorbell devices is still blank
+- npm package [ip](https://github.com/advisories/GHSA-2p57-rm9w-gvfp) has severity issue. This is being used in external library (werift)
+
 ## v0.2.0 (2024/10/04)
 
 ## Breaking Change

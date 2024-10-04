@@ -39,6 +39,7 @@ RUN ./configure \
     --enable-libx264 \
     --enable-libopus \
     --enable-libspeex \
+    --enable-libfdk-aac \
     --disable-doc \
     --disable-debug \
     --disable-ffplay \
