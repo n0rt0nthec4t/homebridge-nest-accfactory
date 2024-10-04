@@ -2,7 +2,9 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## Breaking changes v0.2.0+
+## v0.2.0 (2024/10/04)
+
+## Breaking Change
 
 Unfortunately, from version **0.2.0**, I've made some breaking changes in the code to help move forward with the project. 
 So, what does this mean for you, the end user.
@@ -17,16 +19,17 @@ So, what does this mean for you, the end user.
 
 Apologies for this change, as I can understand what an inconvience and frustration it will be :-(
 
+## Changes
+
+- General code cleanup and bug fixes
+- Common configuration between Homebridge plug-in and docker/standalone versions
+- Seemlessly allow Nest/Google devices to be migrated between Nest <-> Google Home apps
+
 ## Known Issues
 
 - Audio from newer Nest/Google camera/doorbell devices is still blank
 - npm package [ip](https://github.com/advisories/GHSA-2p57-rm9w-gvfp) has severity issue. This is being used in external library (werift)
 
-## v0.2.0 (2024/10/04)
-
-- General code cleanup and bug fixes
-- Common configuration between Homebridge plug-in and docker/standalone versions
-- Seemlessly allow Nest/Google devices to be migrated between Nest <-> Google Home apps
 
 ## v0.1.9 (alpha)
 
