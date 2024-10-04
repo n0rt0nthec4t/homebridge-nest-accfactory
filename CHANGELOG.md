@@ -4,7 +4,7 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 ## Breaking changes v0.2.0+
 
-Unfornunately, from version **0.2.0**, I've made some breaking changes in the code to help move forward with the project. 
+Unfortunately, from version **0.2.0**, I've made some breaking changes in the code to help move forward with the project. 
 So, what does this mean for you, the end user.
 1) You'll need to remove all previously discovered devices from HomeKit before adding them back in after upgrading to this version
 2) If using Homebridge version, remove any cached acccesory data associated with this plug-in
@@ -15,7 +15,7 @@ So, what does this mean for you, the end user.
 6) Any automations will need to be re-created in HomeKit
 7) History in EveHome app will be lost
 
-Appologies for this change, as I can understand what an inconvience and frustration it will be :-(
+Apologies for this change, as I can understand what an inconvience and frustration it will be :-(
 
 ## Known Issues
 
