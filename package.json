@@ -1,37 +1,18 @@
 {
-    "displayName": "Homebridge Nest Accfactory",
     "name": "homebridge-nest-accfactory",
-    "homepage": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/blob/main/README.mdy",
+    "displayName": "Homebridge Nest Accfactory",
+    "type": "module",
     "version": "0.2.0-alpha.7",
     "description": "Homebridge support for Nest/Google devices including HomeKit Secure Video (HKSV) support for doorbells and cameras",
-    "license": "Apache-2.0",
     "author": "n0rt0nthec4t",
-    "type": "module",
+    "license": "Apache-2.0",
+    "homepage": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/#readme",
     "repository": {
         "type": "git",
         "url": "git+https://github.com/n0rt0nthec4t/homebridge-nest-accfactory.git"
     },
     "bugs": {
         "url": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issues"
-    },
-    "engines": {
-        "node": "^20.17.0 || ^22.9.0",
-        "homebridge": "^1.8.0 || ^2.0.0-beta.0"
-    },
-    "main": "dist/index.js",
-    "files": [
-        "LICENSE",
-        "dist/**/*",
-        "config.schema.json",
-        "README.md",
-        "CHANGELOG.md"
-    ],
-    "scripts": {
-        "clean": "rimraf ./dist*",
-        "format": "prettier --write src/*.js src/**/*.js",
-        "lint": "eslint src/*.js src/**/*.js --max-warnings=20",
-        "build": "npm run clean && copyfiles -u 1 src/*.js dist && copyfiles -u 1 src/res/*.h264 dist && copyfiles -u 1 src/res/*.jpg dist && copyfiles -u 1 'src/protobuf/**/*.proto' dist",
-        "prepublishOnly": "npm run lint && npm run build"
     },
     "keywords": [
         "homekit",
@@ -49,6 +30,25 @@
         "sensor",
         "floodlight"
     ],
+    "main": "dist/index.js",
+    "engines": {
+        "node": "^20.17.0 || ^22.9.0",
+        "homebridge": "^1.8.0 || ^2.0.0-beta.0"
+    },
+    "files": [
+        "LICENSE",
+        "dist/**/*",
+        "config.schema.json",
+        "README.md",
+        "CHANGELOG.md"
+    ],
+    "scripts": {
+        "clean": "rimraf ./dist*",
+        "format": "prettier --write src/*.js src/**/*.js",
+        "lint": "eslint src/*.js src/**/*.js --max-warnings=20",
+        "build": "npm run clean && copyfiles -u 1 src/*.js dist && copyfiles -u 1 src/res/*.h264 dist && copyfiles -u 1 src/res/*.jpg dist && copyfiles -u 1 'src/protobuf/**/*.proto' dist",
+        "prepublishOnly": "npm run lint && npm run build"
+    },
     "devDependencies": {
         "@eslint/js": "^9.11.1",
         "@stylistic/eslint-plugin": "^2.8.0",
