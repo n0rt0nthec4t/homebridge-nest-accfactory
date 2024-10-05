@@ -2,7 +2,7 @@
     "displayName": "Nest Accfactory",
     "name": "nest-accfactory",
     "homepage": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/blob/main/src/docker-standalone/README.md",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "description": "HomeKit integration for Nest devices using HAP-NodeJS library",
     "license": "Apache-2.0",
     "author": "n0rt0nthec4t",

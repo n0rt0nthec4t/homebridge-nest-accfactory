@@ -17,11 +17,11 @@
 //
 // Supports both Nest REST and Protobuf APIs for communication
 //
-// Code version 3/10/2024
+// Code version 5/10/2024
 // Mark Hulskamp
 'use strict';
 
-// Define Homebridge module requirements
+// Define HAP-NodeJS module requirements
 import HAP from 'hap-nodejs';
 
 // Define nodejs module requirements
@@ -30,6 +30,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setInterval } from 'node:timers';
+import { createRequire } from 'node:module';
 
 // Import our modules
 import NestAccfactory from './system.js';
@@ -44,7 +45,9 @@ HomeKitDevice.HISTORY = HomeKitHistory;
 import Logger from './logger.js';
 const log = Logger.withPrefix(HomeKitDevice.PLATFORM_NAME);
 
-const __filename = fileURLToPath(import.meta.url); // Make a defined for JS __dirname
+// Import the package.json file to get the version number
+const { version } = createRequire(import.meta.url)('../package.json');
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 const ACCESSORYPINCODE = '031-45-154'; // Default HomeKit pairing code
 const CONFIGURATIONFILE = 'Nest_config.json'; // Default configuration file name
@@ -56,38 +59,35 @@ function loadConfiguration(filename) {
   }
 
   let config = undefined;
+  let legacyFormat = false;
 
   try {
     let loadedConfig = JSON.parse(fs.readFileSync(filename));
 
     config = {
-      nest: {},
-      google: {},
       options: {},
       devices: {},
     };
 
     // Load in 'current' configuration structure if present
     // Most of the code below is to handle the 'legacy' structure
-    if (typeof loadedConfig?.nest === 'object') {
-      config.nest = loadedConfig.nest;
-    }
     if (typeof loadedConfig?.Connections?.Nest === 'object') {
+      legacyFormat = true;
       config.nest = loadedConfig.Connections.Nest;
     }
     if (typeof loadedConfig?.SessionToken === 'string' && loadedConfig.SessionToken !== '') {
+      legacyFormat = true;
       config.nest = {
         access_token: loadedConfig.SessionToken,
         fieldTest: false,
       };
     }
-    if (typeof loadedConfig?.google === 'object') {
-      config.google = loadedConfig.google;
-    }
     if (typeof loadedConfig?.Connections?.Google === 'object') {
+      legacyFormat = true;
       config.google = loadedConfig.Connections.Google;
     }
     if (typeof loadedConfig?.Connections?.GoogleToken === 'object') {
+      legacyFormat = true;
       config.google = loadedConfig.Connections.GoogleToken;
     }
     if (typeof loadedConfig?.options === 'object') {
@@ -103,22 +103,49 @@ function loadConfiguration(filename) {
       }
       if (key === 'EveApp' && typeof value === 'boolean') {
         // Evehome app integration
+        legacyFormat = true;
         config.options.eveHistory = value;
       }
       if (key === 'Weather' && typeof value === 'boolean') {
         // weather device(s)
+        legacyFormat = true;
         config.options.weather = value;
       }
       if (key === 'HKSV' && typeof value === 'boolean') {
         // HomeKit Secure Video
+        legacyFormat = true;
         config.options.hksv = value;
       }
       if (key === 'HomeKitCode' && typeof value === 'string' && value !== '') {
         // HomeKit paring code
+        legacyFormat = true;
         config.options.hkPairingCode = value;
       }
       if (key === 'Elevation' && isNaN(value) === false) {
+        // Weather location elevation
+        legacyFormat = true;
         config.options.elevation = Number(value);
+      }
+      if (typeof value === 'object' && value?.access_token !== undefined && value?.access_token !== '') {
+        // Nest access_token
+        config[key.toLocaleLowerCase()] = {
+          access_token: value?.access_token,
+          fieldTest: value?.fieldTest === true,
+        };
+      }
+      if (
+        typeof value === 'object' &&
+        value?.issuetoken !== undefined &&
+        value?.issuetoken !== '' &&
+        value?.cookie !== undefined &&
+        value?.cookie !== ''
+      ) {
+        // Google issue token/cookie
+        config[key.toLocaleLowerCase()] = {
+          issuetoken: value?.issuetoken,
+          cookie: value?.cookie,
+          fieldTest: value?.fieldTest === true,
+        };
       }
 
       if (
@@ -134,34 +161,61 @@ function loadConfiguration(filename) {
         // Since key value is an object, and not an object for a value we expect
         // Ssumme its a device configuration for matching serial number
         key = key.toUpperCase();
-        config.devices[key] = {};
         Object.entries(value).forEach(([subKey, value]) => {
           if (subKey === 'Exclude' && typeof value === 'boolean') {
             // Per device excluding
+            legacyFormat = true;
+            if (config.devices?.[key] === undefined) {
+              config.devices[key] = {};
+            }
             config.devices[key]['exclude'] = value;
           }
           if (subKey === 'HumiditySensor' && typeof value === 'boolean') {
             // Seperate humidity sensor for this device (Only valid for thermostats)
+            legacyFormat = true;
+            if (config.devices?.[key] === undefined) {
+              config.devices[key] = {};
+            }
             config.devices[key]['humiditySensor'] = value;
           }
           if (subKey === 'EveApp' && typeof value === 'boolean') {
             // Per device Evehome app integration
+            legacyFormat = true;
+            if (config.devices?.[key] === undefined) {
+              config.devices[key] = {};
+            }
             config.devices[key]['eveHistory'] = value;
           }
           if (subKey === 'HKSV' && typeof value === 'boolean') {
             // Per device HomeKit Secure Video
+            legacyFormat = true;
+            if (config.devices?.[key] === undefined) {
+              config.devices[key] = {};
+            }
             config.devices[key]['hksv'] = value;
           }
           if (subKey === 'Option.indoor_chime_switch' && typeof value === 'boolean') {
             // Per device silence indoor chime
+            legacyFormat = true;
+            if (config.devices?.[key] === undefined) {
+              config.devices[key] = {};
+            }
             config.devices[key]['chimeSwitch'] = value;
           }
           if (subKey === 'Option.elevation' && isNaN(value) === false) {
             // Per device elevation setting (for weather)
+            legacyFormat = true;
+            if (config.devices?.[key] === undefined) {
+              config.devices[key] = {};
+            }
             config.devices[key]['elevation'] = Number(value);
           }
           if ((subKey === 'HomeKitCode' || subKey === 'hkPairingCode') && typeof value === 'string' && value !== '') {
             // Per device HomeKit paring code
+            legacyFormat = true;
+            if (config.devices?.[key] === undefined) {
+              config.devices[key] = {};
+            }
             config.devices[key]['hkPairingCode'] = value;
           }
           if (subKey === 'DoorbellCooldown' && isNaN(value) === false) {
@@ -169,6 +223,10 @@ function loadConfiguration(filename) {
             if (value >= 1000) {
               // If greather than 1000, assume milliseconds value passed in, so convert to seconds
               value = Math.floor(value / 1000);
+            }
+            legacyFormat = true;
+            if (config.devices?.[key] === undefined) {
+              config.devices[key] = {};
             }
             config.devices[key]['doorbellCooldown'] = value;
           }
@@ -178,6 +236,10 @@ function loadConfiguration(filename) {
               // If greather than 1000, assume milliseconds value passed in, so convert to seconds
               value = Math.floor(value / 1000);
             }
+            legacyFormat = true;
+            if (config.devices?.[key] === undefined) {
+              config.devices[key] = {};
+            }
             config.devices[key]['motionCooldown'] = value;
           }
           if (subKey === 'PersonCooldown' && isNaN(value) === false) {
@@ -186,9 +248,17 @@ function loadConfiguration(filename) {
               // If greather than 1000, assume milliseconds value passed in, so convert to seconds
               value = Math.floor(value / 1000);
             }
+            legacyFormat = true;
+            if (config.devices?.[key] === undefined) {
+              config.devices[key] = {};
+            }
             config.devices[key]['personCooldown'] = value;
           }
+          legacyFormat = true;
           if (subKey.startsWith('External') === true && typeof value === 'string' && value !== '') {
+            if (config.devices?.[key] === undefined) {
+              config.devices[key] = {};
+            }
             config.devices[key]['external' + subKey.substring(8)] = value;
           }
         });
@@ -200,6 +270,18 @@ function loadConfiguration(filename) {
       config.options.hkPairingCode = ACCESSORYPINCODE;
     }
 
+    // See if we flagged any legacy format options, if so, put warning to user to check and upgrade format/options
+    if (legacyFormat === true) {
+      log.prefix = '';
+      log.warn('');
+      log.warn('NOTICE');
+      log.warn('> The loaded configuration file contains legacy options. Please review the readme at the link below');
+      log.warn('> Consider updating these in your configuration file as the mapping from legacy to current options maybe removed');
+      log.warn('> https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/blob/main/src/docker-standalone/README.md');
+      log.warn('');
+      log.prefix = HomeKitDevice.PLATFORM_NAME;
+    }
+
     // eslint-disable-next-line no-unused-vars
   } catch (error) {
     // Empty
@@ -209,7 +291,7 @@ function loadConfiguration(filename) {
 }
 
 // Startup code
-log.info('Starting ' + __filename + ' using HAP-NodeJS library v' + HAP.HAPLibraryVersion());
+log.success(HomeKitDevice.PLUGIN_NAME + ' v' + version + ' (HAP v' + HAP.HAPLibraryVersion() + ') (Node v' + process.versions.node + ')');
 
 // Check to see if a configuration file was passed into use and validate if present
 let configurationFile = path.resolve(__dirname + '/' + CONFIGURATIONFILE);
@@ -228,18 +310,14 @@ if (fs.existsSync(configurationFile) === false) {
 }
 
 // Have a configuration file, now load the configuration options
-log.info('Configuration will be read from "%s"', configurationFile);
 let config = loadConfiguration(configurationFile);
 if (config === undefined) {
   log.info('Configuration file contains invalid JSON options');
   log.info('Exiting.');
   process.exit(1);
 }
-if (config?.nest === undefined || config?.google === undefined) {
-  log.info('Either a Nest and/or Google connection details were not specified in the configuration file');
-  log.info('Exiting.');
-  process.exit(1);
-}
+
+log.info('Loaded configuration from "%s"', configurationFile);
 
 log.info(
   'Devices will be advertised to HomeKit using "%s" mDNS provider',
