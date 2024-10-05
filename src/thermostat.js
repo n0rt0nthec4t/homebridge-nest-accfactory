@@ -1,7 +1,7 @@
 // Nest Thermostat
 // Part of homebridge-nest-accfactory
 //
-// Code version 3/10/2024
+// Code version 5/10/2024
 // Mark Hulskamp
 'use strict';
 
@@ -184,9 +184,6 @@ export default class NestThermostat extends HomeKitDevice {
     this.occupancyService = this.accessory.getService(this.hap.Service.OccupancySensor);
     if (this.occupancyService === undefined) {
       this.occupancyService = this.accessory.addService(this.hap.Service.OccupancySensor, '', 1);
-    }
-    if (this.occupancyService.testCharacteristic(this.hap.Characteristic.StatusFault) === false) {
-      this.occupancyService.addCharacteristic(this.hap.Characteristic.StatusFault);
     }
     this.thermostatService.addLinkedService(this.occupancyService);
 
@@ -599,12 +596,13 @@ export default class NestThermostat extends HomeKitDevice {
 
     this.thermostatService.updateCharacteristic(this.hap.Characteristic.CurrentTemperature, deviceData.current_temperature);
 
+    // If thermostat isn't online or removed from base, report in HomeKit
     this.thermostatService.updateCharacteristic(
       this.hap.Characteristic.StatusFault,
       deviceData.online === true && deviceData.removed_from_base === false
         ? this.hap.Characteristic.StatusFault.NO_FAULT
         : this.hap.Characteristic.StatusFault.GENERAL_FAULT,
-    ); // If Nest isn't online or removed from base, report in HomeKit
+    );
 
     this.thermostatService.updateCharacteristic(
       this.hap.Characteristic.LockPhysicalControls,
@@ -624,6 +622,8 @@ export default class NestThermostat extends HomeKitDevice {
     }
 
     // Using a temperature sensor as active temperature?
+    // Probably not the best way for HomeKit, but works ;-)
+    // Maybe a custom characteristic would be better?
     this.thermostatService.updateCharacteristic(this.hap.Characteristic.StatusActive, deviceData.active_rcs_sensor === '');
 
     // Update battery status
@@ -648,22 +648,10 @@ export default class NestThermostat extends HomeKitDevice {
         ? this.hap.Characteristic.OccupancyDetected.OCCUPANCY_DETECTED
         : this.hap.Characteristic.OccupancyDetected.OCCUPANCY_NOT_DETECTED,
     );
-    this.occupancyService.updateCharacteristic(
-      this.hap.Characteristic.StatusFault,
-      deviceData.online === true && deviceData.removed_from_base === false
-        ? this.hap.Characteristic.StatusFault.NO_FAULT
-        : this.hap.Characteristic.StatusFault.GENERAL_FAULT,
-    ); // If Nest isn't online or removed from base, report in HomeKit
 
     // Update seperate humidity sensor if configured todo so
     if (this.humidityService !== undefined) {
       this.humidityService.updateCharacteristic(this.hap.Characteristic.CurrentRelativeHumidity, deviceData.current_humidity);
-      this.humidityService.updateCharacteristic(
-        this.hap.Characteristic.StatusFault,
-        deviceData.online === true && deviceData.removed_from_base === false
-          ? this.hap.Characteristic.StatusFault.NO_FAULT
-          : this.hap.Characteristic.StatusFault.GENERAL_FAULT,
-      ); // If Nest isn't online or removed from base, report in HomeKit
     }
 
     // Update humity on thermostat

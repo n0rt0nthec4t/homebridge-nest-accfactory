@@ -1,7 +1,7 @@
 // Nest Protect
 // Part of homebridge-nest-accfactory
 //
-// Code version 27/9/2024
+// Code version 5/10/2024
 // Mark Hulskamp
 'use strict';
 
@@ -42,12 +42,6 @@ export default class NestProtect extends HomeKitDevice {
     this.carbonMonoxideService = this.accessory.getService(this.hap.Service.CarbonMonoxideSensor);
     if (this.carbonMonoxideService === undefined) {
       this.carbonMonoxideService = this.accessory.addService(this.hap.Service.CarbonMonoxideSensor, '', 1);
-    }
-    if (this.carbonMonoxideService.testCharacteristic(this.hap.Characteristic.StatusActive) === false) {
-      this.carbonMonoxideService.addCharacteristic(this.hap.Characteristic.StatusActive);
-    }
-    if (this.carbonMonoxideService.testCharacteristic(this.hap.Characteristic.StatusFault) === false) {
-      this.carbonMonoxideService.addCharacteristic(this.hap.Characteristic.StatusFault);
     }
 
     // Setup battery service if not already present on the accessory
@@ -109,13 +103,12 @@ export default class NestProtect extends HomeKitDevice {
     );
 
     // Update smoke details
-    // If Nest isn't online or removed from base, report in HomeKit
+    // If protect isn't online, removed from base, replacement date past, report in HomeKit
     this.smokeService.updateCharacteristic(
       this.hap.Characteristic.StatusActive,
-      deviceData.online === true && deviceData.removed_from_base === false,
+      deviceData.online === true && deviceData.removed_from_base === false && Math.floor(Date.now() / 1000) <= deviceData.replacement_date,
     );
 
-    // General fault if replacement date past or Nest isn't online or removed from base
     this.smokeService.updateCharacteristic(
       this.hap.Characteristic.StatusFault,
       deviceData.online === true && deviceData.removed_from_base === false && Math.floor(Date.now() / 1000) <= deviceData.replacement_date
@@ -139,23 +132,9 @@ export default class NestProtect extends HomeKitDevice {
     }
 
     // Update carbon monoxide details
-    // If Nest isn't online or removed from base, report in HomeKit
-    this.carbonMonoxideService.updateCharacteristic(
-      this.hap.Characteristic.StatusActive,
-      deviceData.online === true && deviceData.removed_from_base === false,
-    );
-
-    // General fault if replacement date past or Nest isn't online or removed from base
-    this.carbonMonoxideService.updateCharacteristic(
-      this.hap.Characteristic.StatusFault,
-      deviceData.online === true && deviceData.removed_from_base === false && Math.floor(Date.now() / 1000) <= deviceData.replacement_date
-        ? this.hap.Characteristic.StatusFault.NO_FAULT
-        : this.hap.Characteristic.StatusFault.GENERAL_FAULT,
-    );
-
     this.carbonMonoxideService.updateCharacteristic(
       this.hap.Characteristic.CarbonMonoxideDetected,
-      deviceData.co_status === 2
+      deviceData.co_status !== 0
         ? this.hap.Characteristic.CarbonMonoxideDetected.CO_LEVELS_ABNORMAL
         : this.hap.Characteristic.CarbonMonoxideDetected.CO_LEVELS_NORMAL,
     );
@@ -170,22 +149,11 @@ export default class NestProtect extends HomeKitDevice {
 
     // Update motion service if present
     if (this.motionService !== undefined) {
-      // Motion detect if auto_away = false. Not supported on battery powered Nest Protects
-      // If Nest isn't online or removed from base, report in HomeKit
-      this.motionService.updateCharacteristic(
-        this.hap.Characteristic.StatusActive,
-        deviceData.online === true && deviceData.removed_from_base === false,
-      );
+      this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, deviceData.detected_motion === true);
 
-      // General fault if replacement date past or Nest isn't online or removed from base
-      this.motionService.updateCharacteristic(
-        this.hap.Characteristic.StatusFault,
-        deviceData.online === true && deviceData.removed_from_base === false && Math.floor(Date.now() / 1000) <= deviceData.replacement_date
-          ? this.hap.Characteristic.StatusFault.NO_FAULT
-          : this.hap.Characteristic.StatusFault.GENERAL_FAULT,
-      );
-
-      this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, deviceData.detected_motion === false);
+      if (deviceData.detected_motion === true && this.deviceData.detected_motion === false) {
+        this?.log?.info && this.log.info('Motion detected in "%s"', deviceData.description);
+      }
 
       // Log motion to history only if changed to previous recording
       if (deviceData.detected_motion !== this.deviceData.detected_motion && typeof this.historyService?.addHistory === 'function') {
@@ -197,7 +165,11 @@ export default class NestProtect extends HomeKitDevice {
     }
 
     // Notify Eve App of device status changes if linked
-    if (this.deviceData.eveHistory === true && typeof this.historyService?.updateEveHome === 'function') {
+    if (
+      this.deviceData.eveHistory === true &&
+      this.smokeService !== undefined &&
+      typeof this.historyService?.updateEveHome === 'function'
+    ) {
       // Update our internal data with properties Eve will need to process
       this.deviceData.latest_alarm_test = deviceData.latest_alarm_test;
       this.deviceData.self_test_in_progress = deviceData.self_test_in_progress;
@@ -210,7 +182,7 @@ export default class NestProtect extends HomeKitDevice {
   }
 
   #EveHomeGetcommand(EveHomeGetData) {
-    // Pass back extra data for Eve Smoke this.hap.CharacteristicEventTypes.GET process command
+    // Pass back extra data for Eve Smoke onGet() to process command
     // Data will already be an object, our only job is to add/modify to it
     if (typeof EveHomeGetData === 'object') {
       EveHomeGetData.lastalarmtest = this.deviceData.latest_alarm_test;

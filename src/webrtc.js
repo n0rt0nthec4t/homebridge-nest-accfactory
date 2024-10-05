@@ -380,7 +380,7 @@ export default class WebRTC extends Streamer {
         rtpHeader.marker = true;
         rtpHeader.payloadOffset = RTP_PACKET_HEADER_SIZE;
         rtpHeader.payloadType = this.audio.id; // As the camera is send/recv, we use the same payload type id as the incoming audio
-        rtpHeader.timestamp = Date.now() & 0xffffffff; // Think the time stanp difference should be 960 per audio packet?
+        rtpHeader.timestamp = Date.now() & 0xffffffff; // Think the time stamp difference should be 960ms per audio packet?
         rtpHeader.sequenceNumber = this.audio.talkSquenceNumber++ & 0xffff;
         let rtpPacket = new werift.RtpPacket(rtpHeader, talkingData);
         this.#audioTransceiver.sender.sendRtp(rtpPacket.serialize());
