@@ -78,7 +78,7 @@ export default class NestAccfactory {
 
     // Perform validation on the configuration passed into us and set defaults if not present
 
-    // Build our accounts connection object. Allows us to have multiple diffent accont connections under the one accessory
+    // Build our accounts connection object. Allows us to have multiple diffent account connections under the one accessory
     Object.keys(this.config).forEach((key) => {
       if (this.config[key]?.access_token !== undefined && this.config[key].access_token !== '') {
         // Nest account connection, assign a random UUID for each connection
@@ -392,7 +392,7 @@ export default class NestAccfactory {
             this.#connections[connectionUUID].authorised = false;
             this?.log?.debug &&
               this.log.debug(
-                'Failed to connect using credential details for connection uuid "%s". A periodic retry event will be triggered',
+                'Failed to connect to gateway using credential details for connection uuid "%s". A periodic retry event will be triggered',
                 connectionUUID,
               );
             this?.log?.error && this.log.error('Authorisation failed using Google account');
@@ -1395,6 +1395,16 @@ export default class NestAccfactory {
           new RegExp(/^([0-9]{4}-[0-9]{4})$/).test(this.config?.devices?.[data.serialNumber]?.hkPairingCode) === true
         ) {
           data.hkPairingCode = this.config.devices[data.serialNumber].hkPairingCode;
+        }
+
+        // If we have a hkPairingCode defined, we need to generate a hkUsername also
+        if (data.hkPairingCode !== undefined) {
+          // Use a Nest Labs prefix for first 6 digits, followed by a CRC24 based off serial number for last 6 digits.
+          data.hkUsername = ('18B430' + crc24(data.serialNumber.toUpperCase()))
+            .toString('hex')
+            .split(/(..)/)
+            .filter((s) => s)
+            .join(':');
         }
 
         processed = data;
