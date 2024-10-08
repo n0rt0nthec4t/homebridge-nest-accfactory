@@ -100,6 +100,8 @@ function loadConfiguration(filename) {
     Object.entries(loadedConfig).forEach(([key, value]) => {
       if (key === 'Debug' && (value === true || (typeof value === 'string' && value !== ''))) {
         // Debugging enabled
+        legacyFormat = true;
+        config.options.debug = value === true || (typeof value === 'string' && value !== '');
       }
       if (key === 'EveApp' && typeof value === 'boolean') {
         // Evehome app integration
@@ -319,10 +321,12 @@ if (config === undefined) {
 
 log.info('Loaded configuration from "%s"', configurationFile);
 
-log.info(
-  'Devices will be advertised to HomeKit using "%s" mDNS provider',
-  typeof config?.options?.mDNS !== 'undefined' ? config.options?.mDNS : HAP.MDNSAdvertiser.CIAO,
-);
+// Enable debugging if configured
+if (config?.options?.debug === true) {
+  Logger.setDebugEnabled();
+  log.warn('Debugging has been enabled');
+}
+
 let nest = new NestAccfactory(log, config, HAP);
 nest.discoverDevices(); // Kick things off :-)
 setInterval(nest.discoverDevices.bind(nest), 15000);
