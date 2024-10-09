@@ -3,7 +3,7 @@
 </p>
 <span align="center">
 
-# Homebridge Nest Accfactory
+# Nest Accfactory
 
 [![npm](https://badgen.net/npm/v/homebridge-nest-accfactory/latest)](https://www.npmjs.com/package/homebridge-nest-accfactory)
 [![npm](https://badgen.net/npm/dt/homebridge-nest-accfactory?label=downloads)](https://www.npmjs.com/package/homebridge-nest-accfactory)
