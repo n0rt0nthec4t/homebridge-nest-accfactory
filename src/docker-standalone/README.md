@@ -5,8 +5,8 @@
 [![release](https://img.shields.io/github/release/n0rt0nthec4t/homebridge-nest-accfactory.svg?include_prereleases)](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases)
 [![version](https://img.shields.io/github/release-date/n0rt0nthec4t/homebridge-nest-accfactory)](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases)
 [![docker pulls](https://img.shields.io/docker/pulls/n0rt0nthec4t/nest_accfactory.svg)](https://img.shields.io/docker/pulls/n0rt0nthec4t/nest_accfactory.svg)
-[![Build docker Nest_accfactory](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/actions/workflows/docker-standalone.yml/badge.svg)](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/actions/workflows/docker-standalone.yml)
-[![Donate](https://badgen.net/badge/donate/paypal/yellow)](https://paypal.me/n0rt0nthec4t)
+[![build docker Nest_accfactory](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/actions/workflows/docker-standalone.yml/badge.svg)](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/actions/workflows/docker-standalone.yml)
+[![donate](https://badgen.net/badge/donate/paypal/yellow)](https://paypal.me/n0rt0nthec4t)
 
 </span>
 
