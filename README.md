@@ -7,7 +7,7 @@
 
 [![npm](https://badgen.net/npm/v/homebridge-nest-accfactory/latest)](https://www.npmjs.com/package/homebridge-nest-accfactory)
 [![npm](https://badgen.net/npm/dt/homebridge-nest-accfactory?label=downloads)](https://www.npmjs.com/package/homebridge-nest-accfactory)
-[![donate](https://badgen.net/badge/donate/paypal/yellow)](https://paypal.me/n0rt0nthec4t/AUS)
+[![buymeacoffee](https://badgen.net/badge/icon/buymeacoffee?icon=buymeacoffee&label)](https://www.buymeacoffee.com/n0rt0nthec4t)
 
 </span>
 
