@@ -134,6 +134,8 @@ To support streaming and recording from cameras, an ffmpeg binary needs to be pr
 
 By default, we look in the current directory where the plug-in excutes for an ffmpeg binary, however, you can specify a specific ffmpeg binary to use va the configuration option 'ffmpegPath'
 
-## Caveats
+## Disclaimer
 
-homebridge-nest-accfactory and Nest_accfactory are both hobby projects of mine, provided as-is, with no warranty whatsoever. I've been running it successfully at my home, but your mileage might vary. If you do find an issue, please reachout and see what we can do
+This is a personal hobby project, provided "as-is," with no warranty whatsoever, express or implied, including but not limited to warranties of merchantability or fitness for a particular purpose. Building and running this project is done entirely at your own risk.
+
+Please note that I am not affiliated with any companies, including but not limited to Google, Apple, or any other entities. The author of this project shall not be held liable for any damages or issues arising from its use. If you do encounter any problems with the source code, feel free to reach out, and we can discuss possible solutions

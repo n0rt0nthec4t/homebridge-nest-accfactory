@@ -166,7 +166,8 @@ By default, we look in the current directory where excuted from for an ffmpeg bi
 
 If you would like to try containerised version, please check out the [Nest_accfactory](https://hub.docker.com/r/n0rt0nthec4t/nest_accfactory) at docker hub. Configuration instructions for setting the docker version up can be found on the docker hub repository page. A pre-built ffmpeg binary is also included.
 
-## Caveats
+## Disclaimer
 
-Nest_accfactory is a hobby project of mine, provided as-is, with no warranty whatsoever. I've been running it successfully at my home, but your mileage might vary.
+This is a personal hobby project, provided "as-is," with no warranty whatsoever, express or implied, including but not limited to warranties of merchantability or fitness for a particular purpose. Building and running this project is done entirely at your own risk.
 
+Please note that I am not affiliated with any companies, including but not limited to Google, Apple, or any other entities. The author of this project shall not be held liable for any damages or issues arising from its use. If you do encounter any problems with the source code, feel free to reach out, and we can discuss possible solutions

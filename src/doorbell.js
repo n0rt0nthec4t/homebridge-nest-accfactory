@@ -1,7 +1,7 @@
 // Nest Doorbell(s)
 // Part of homebridge-nest-accfactory
 //
-// Code version 27/9/2024
+// Code version 11/10/2024
 // Mark Hulskamp
 'use strict';
 
@@ -55,7 +55,7 @@ export default class NestDoorbell extends NestCamera {
       // No longer required to have the switch service
       // This is to handle Homebridge cached restored accessories and if configuration options have changed
       this.accessory.removeService(this.switchService);
-      this.switchService === undefined;
+      this.switchService = undefined;
     }
 
     // Create extra details for output
