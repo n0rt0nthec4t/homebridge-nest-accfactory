@@ -2,7 +2,7 @@
     "name": "nest-accfactory",
     "displayName": "Nest Accfactory",
     "type": "module",
-    "version": "0.2.2",
+    "version": "0.2.3-alpha.1",
     "description": "HomeKit integration for Nest devices using HAP-NodeJS library",
     "author": "n0rt0nthec4t",
     "license": "Apache-2.0",
@@ -14,6 +14,7 @@
     "bugs": {
         "url": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issues"
     },
+    "funding": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory?sponsor=1",
     "keywords": [
         "homekit",
         "hksv",

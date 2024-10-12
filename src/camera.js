@@ -1,7 +1,7 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 30/9/2024
+// Code version 12/10/2024
 // Mark Hulskamp
 'use strict';
 
@@ -321,10 +321,11 @@ export default class NestCamera extends HomeKitDevice {
       return;
     }
 
-    // Build our ffmpeg command string for recording the video/audio stream
+    // Build our ffmpeg command string for the liveview video/audio stream
     let commandLine = [
       '-hide_banner',
       '-nostats',
+      '-use_wallclock_as_timestamps 1',
       '-fflags +discardcorrupt',
       '-max_delay 500000',
       '-flags low_delay',
@@ -337,10 +338,22 @@ export default class NestCamera extends HomeKitDevice {
       this.deviceData.audio_enabled === true &&
       this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.RecordingAudioActive)
         .value === this.hap.Characteristic.RecordingAudioActive.ENABLE &&
-      ((this.streamer?.codecs?.audio === 'aac' && this.deviceData?.ffmpeg?.libfdk_aac === true) ||
-        (this.streamer?.codecs?.audio === 'opus' && this.deviceData?.ffmpeg?.libopus === true))
+      this.streamer?.codecs?.audio === 'aac' &&
+      this.deviceData?.ffmpeg?.libfdk_aac === true
     ) {
-      // audio data only on extra pipe created in spawn command
+      // Audio data only on extra pipe created in spawn command
+      commandLine.push('-f aac -i pipe:3');
+      includeAudio = true;
+    }
+
+    if (
+      this.deviceData.audio_enabled === true &&
+      this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.RecordingAudioActive)
+        .value === this.hap.Characteristic.RecordingAudioActive.ENABLE &&
+      this.streamer?.codecs?.audio === 'opus' &&
+      this.deviceData?.ffmpeg?.libopus === true
+    ) {
+      // Audio data only on extra pipe created in spawn command
       commandLine.push('-i pipe:3');
       includeAudio = true;
     }
@@ -390,23 +403,26 @@ export default class NestCamera extends HomeKitDevice {
 
     commandLine.push('-f mp4 pipe:1'); // output to stdout in mp4
 
-    this.#hkSessions[sessionID] = {};
-    this.#hkSessions[sessionID].ffmpeg = child_process.spawn(this.deviceData.ffmpeg.binary, commandLine.join(' ').split(' '), {
+    // Start our ffmpeg recording process and stream from our streamer
+    // video is pipe #1
+    // audio is pipe #3 if including audio
+    this?.log?.debug &&
+    this.log.debug(
+      'ffmpeg process using for recording stream from "%s" will be called using the following commandline',
+      this.deviceData.description,
+      commandLine.join(' ').toString(),
+    );
+    let ffmpegRecording = child_process.spawn(this.deviceData.ffmpeg.binary, commandLine.join(' ').split(' '), {
       env: process.env,
       stdio: ['pipe', 'pipe', 'pipe', includeAudio === true ? 'pipe' : ''],
-    }); // Extra pipe, #3 for audio data
-
-    this.#hkSessions[sessionID].video = this.#hkSessions[sessionID].ffmpeg.stdin; // Video data on stdio pipe for ffmpeg
-    this.#hkSessions[sessionID].audio = this.#hkSessions[sessionID]?.ffmpeg?.stdio?.[3]
-      ? this.#hkSessions[sessionID].ffmpeg.stdio[3]
-      : null; // Audio data on extra pipe for ffmpeg or null if audio recording disabled
+    });
 
     // Process FFmpeg output and parse out the fMP4 stream it's generating for HomeKit Secure Video.
     let mp4FragmentData = [];
-    this.#hkSessions[sessionID].mp4boxes = [];
-    this.#hkSessions[sessionID].eventEmitter = new EventEmitter();
+    let mp4boxes = [];
+    let eventEmitter = new EventEmitter();
 
-    this.#hkSessions[sessionID].ffmpeg.stdout.on('data', (data) => {
+    ffmpegRecording.stdout.on('data', (data) => {
       // Process the mp4 data from our socket connection and convert into mp4 fragment boxes we need
       mp4FragmentData = mp4FragmentData.length === 0 ? data : Buffer.concat([mp4FragmentData, data]);
       while (mp4FragmentData.length >= 8) {
@@ -419,13 +435,13 @@ export default class NestCamera extends HomeKitDevice {
         }
 
         // Add it to our queue to be pushed out through the generator function.
-        if (typeof this.#hkSessions?.[sessionID]?.mp4boxes === 'object' && this.#hkSessions?.[sessionID]?.eventEmitter !== undefined) {
-          this.#hkSessions[sessionID].mp4boxes.push({
+        if (Array.isArray(mp4boxes) === true && eventEmitter !== undefined) {
+          mp4boxes.push({
             header: mp4FragmentData.slice(0, 8),
             type: mp4FragmentData.slice(4, 8).toString(),
             data: mp4FragmentData.slice(8, boxSize),
           });
-          this.#hkSessions[sessionID].eventEmitter.emit(MP4BOX);
+          eventEmitter.emit(MP4BOX);
         }
 
         // Remove the section of data we've just processed from our buffer
@@ -433,38 +449,36 @@ export default class NestCamera extends HomeKitDevice {
       }
     });
 
-    this.#hkSessions[sessionID].ffmpeg.on('exit', (code, signal) => {
+    // ffmpeg console output is via stderr
+    // eslint-disable-next-line no-unused-vars
+    ffmpegRecording.stderr.on('data', (data) => {
+      // empty
+    });
+
+    ffmpegRecording.on('exit', (code, signal) => {
       if (signal !== 'SIGKILL' || signal === null) {
         this?.log?.error &&
           this.log.error('ffmpeg recording process for "%s" stopped unexpectedly. Exit code was "%s"', this.deviceData.description, code);
       }
-      if (typeof this.#hkSessions[sessionID]?.audio?.end === 'function') {
-        // Tidy up our created extra pipe
-        this.#hkSessions[sessionID].audio.end();
+
+      if (this.#hkSessions?.[sessionID] !== undefined) {
+        delete this.#hkSessions[sessionID];
       }
     });
 
     // eslint-disable-next-line no-unused-vars
-    this.#hkSessions[sessionID].ffmpeg.on('error', (error) => {
+    ffmpegRecording.on('error', (error) => {
       // Empty
     });
 
-    // ffmpeg outputs to stderr
-    /*
-    this.#hkSessions[sessionID].ffmpeg.stderr.on('data', (data) => {
-      if (data.toString().includes('frame=') === false) {
-        // Monitor ffmpeg output while testing. Use 'ffmpeg as a debug option'
-        this?.log?.debug && this.log.debug(data.toString());
-      }
-    });
-    */
-
+    // Start the appropriate streamer
     this.streamer !== undefined &&
-      this.streamer.startRecordStream(
-        sessionID,
-        this.#hkSessions[sessionID].ffmpeg.stdin,
-        this.#hkSessions[sessionID]?.ffmpeg?.stdio?.[3] && includeAudio === true ? this.#hkSessions[sessionID].ffmpeg.stdio[3] : null,
-      );
+      this.streamer.startRecordStream(sessionID, ffmpegRecording.stdin, ffmpegRecording?.stdio?.[3] ? ffmpegRecording.stdio[3] : null);
+
+    // Store our ffmpeg sessions
+    this.#hkSessions[sessionID] = {};
+    this.#hkSessions[sessionID].eventEmitter = eventEmitter;
+    this.#hkSessions[sessionID].ffmpeg = ffmpegRecording; // Store ffmpeg process ID
 
     this?.log?.info &&
       this.log.info('Started recording from "%s" %s', this.deviceData.description, includeAudio === false ? 'without audio' : '');
@@ -473,26 +487,19 @@ export default class NestCamera extends HomeKitDevice {
     // HAP-NodeJS cancels this async generator function when recording completes also
     let segment = [];
     for (;;) {
-      if (
-        this.#hkSessions?.[sessionID] === undefined ||
-        this.#hkSessions?.[sessionID]?.ffmpeg === undefined ||
-        this.#hkSessions?.[sessionID]?.mp4boxes === undefined ||
-        this.#hkSessions?.[sessionID]?.eventEmitter === undefined
-      ) {
+      if (this.#hkSessions?.[sessionID] === undefined || this.#hkSessions?.[sessionID]?.ffmpeg === undefined) {
         // Our session object is not present
         // ffmpeg recorder process is not present
-        // the mp4box array is not present
-        // eventEmitter is not present
         // so finish up the loop
         break;
       }
 
-      if (this.#hkSessions?.[sessionID]?.mp4boxes?.length === 0 && this.#hkSessions?.[sessionID]?.eventEmitter !== undefined) {
+      if (mp4boxes?.length === 0 && eventEmitter !== undefined) {
         // since the ffmpeg recorder process hasn't notified us of any mp4 fragment boxes, wait until there are some
-        await EventEmitter.once(this.#hkSessions[sessionID].eventEmitter, MP4BOX);
+        await EventEmitter.once(eventEmitter, MP4BOX);
       }
 
-      let mp4box = this.#hkSessions?.[sessionID]?.mp4boxes.shift();
+      let mp4box = mp4boxes.shift();
       if (typeof mp4box !== 'object') {
         // Not an mp4 fragment box, so try again
         continue;
@@ -789,17 +796,21 @@ export default class NestCamera extends HomeKitDevice {
       // Start our ffmpeg streaming process and stream from our streamer
       // video is pipe #1
       // audio is pipe #3 if including audio
+      this?.log?.debug &&
+        this.log.debug(
+          'ffmpeg process using for live streaming from "%s" will be called using the following commandline',
+          this.deviceData.description,
+          commandLine.join(' ').toString(),
+        );
       let ffmpegStreaming = child_process.spawn(this.deviceData.ffmpeg.binary, commandLine.join(' ').split(' '), {
         env: process.env,
         stdio: ['pipe', 'pipe', 'pipe', includeAudio === true ? 'pipe' : ''],
       });
 
       // ffmpeg console output is via stderr
+      // eslint-disable-next-line no-unused-vars
       ffmpegStreaming.stderr.on('data', (data) => {
-        if (data.toString().includes('frame=') === false) {
-          // Monitor ffmpeg output while testing. Use 'ffmpeg as a debug option'
-          this?.log?.debug && this.log.debug(data.toString());
-        }
+        // empty
       });
 
       ffmpegStreaming.on('exit', (code, signal) => {
