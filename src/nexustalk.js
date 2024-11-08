@@ -5,7 +5,7 @@
 //
 // Credit to https://github.com/Brandawg93/homebridge-nest-cam for the work on the Nest Camera comms code on which this is based
 //
-// Code version 29/9/2024
+// Code version 10/12/2024
 // Mark Hulskamp
 'use strict';
 
@@ -416,7 +416,7 @@ export default class NexusTalk extends Streamer {
             this.connect(); // try reconnection
           });
         this.close(false); // Close existing socket
-      }, 8000);
+      }, 10000);
 
       // Handle video packet
       if (decodedMessage?.channelId !== undefined && decodedMessage.channelId === this.video?.id) {
@@ -474,7 +474,7 @@ export default class NexusTalk extends Streamer {
     if (typeof payload === 'object' && this.#protobufNexusTalk !== undefined) {
       //let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.TalkbackBegin').decode(payload).toJSON();
       this.audio.talking = true;
-      this?.log?.debug && this.log.debug(Streamer.TALKINGSTART, this.uuid);
+      this?.log?.debug && this.log.debug('Talking started on uuid "%s"', this.uuid);
     }
   }
 

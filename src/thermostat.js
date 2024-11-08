@@ -1,7 +1,7 @@
 // Nest Thermostat
 // Part of homebridge-nest-accfactory
 //
-// Code version 5/10/2024
+// Code version 15/10/2024
 // Mark Hulskamp
 'use strict';
 
@@ -945,7 +945,7 @@ export default class NestThermostat extends HomeKitDevice {
     if (this.thermostatService !== undefined && typeof this.historyService?.addHistory === 'function') {
       let tempEntry = this.historyService.lastHistory(this.thermostatService);
       if (
-        tempEntry === null ||
+        tempEntry === undefined ||
         (typeof tempEntry === 'object' && tempEntry.status !== historyEntry.status) ||
         tempEntry.temperature !== deviceData.current_temperature ||
         JSON.stringify(tempEntry.target) !== JSON.stringify(historyEntry.target) ||

@@ -3,7 +3,7 @@
 //
 // Handles connection and data from Google WebRTC systems
 //
-// Code version 27/9/2024
+// Code version 12/10/2024
 // Mark Hulskamp
 'use strict';
 
@@ -15,7 +15,7 @@ import werift from 'werift';
 import EventEmitter from 'node:events';
 import http2 from 'node:http2';
 import { Buffer } from 'node:buffer';
-import { setInterval, clearInterval } from 'node:timers';
+import { setInterval, clearInterval, setTimeout, clearTimeout } from 'node:timers';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -48,6 +48,7 @@ export default class WebRTC extends Streamer {
   token = undefined; // oauth2 token
   localAccess = false; // Do we try direct local access to the camera or via Google Home first
   extendTimer = undefined; // Stream extend timer
+  stalledTimer = undefined; // Timer object for no received data
   pingTimer = undefined; // Google Hopme Foyer periodic ping
   blankAudio = AACMONO48000BLANK;
   video = {}; // Video stream details once connected
@@ -92,7 +93,9 @@ export default class WebRTC extends Streamer {
   // Class functions
   async connect() {
     clearInterval(this.extendTimer);
+    clearTimeout(this.stalledTimer);
     this.extendTimer = undefined;
+    this.stalledTimer = undefined;
     this.#id = undefined;
 
     if (this.#googleHomeDeviceUUID === undefined) {
@@ -275,9 +278,11 @@ export default class WebRTC extends Streamer {
               });
 
               if (homeFoyerResponse?.data?.[0]?.streamExtensionStatus !== 'STATUS_STREAM_EXTENDED') {
-                this?.log?.debug && this.log.debug('Error occured while requested stream extentions for uuid "%s"', this.uuid);
+                this?.log?.debug && this.log.debug('Error occured while requested stream extention for uuid "%s"', this.uuid);
 
-                // Do we try to reconnect???
+                if (typeof this.#peerConnection?.close === 'function') {
+                  await this.#peerConnection.close();
+                }
               }
             }
           }, EXTENDINTERVAL);
@@ -317,7 +322,9 @@ export default class WebRTC extends Streamer {
     }
 
     clearInterval(this.extendTimer);
+    clearInterval(this.stalledTimer);
     this.extendTimer = undefined;
+    this.stalledTimer = undefined;
     this.#id = undefined;
     this.#googleHomeFoyer = undefined;
     this.#peerConnection = undefined;
@@ -438,6 +445,18 @@ export default class WebRTC extends Streamer {
     if (weriftRtpPacket === undefined || typeof weriftRtpPacket !== 'object') {
       return;
     }
+
+    // Setup up a timeout to monitor for no packets recieved in a certain period
+    // If its trigger, we'll attempt to restart the stream and/or connection
+    clearTimeout(this.stalledTimer);
+    this.stalledTimer = setTimeout(() => {
+      this?.log?.debug &&
+        this.log.debug(
+          'We have not received any data from webrtc in the past "%s" seconds for uuid "%s". Attempting restart',
+          10,
+          this.uuid,
+        );
+    }, 10000);
 
     if (weriftRtpPacket.header.payloadType !== undefined && weriftRtpPacket.header.payloadType === this.video?.id) {
       // Process video RTP packets. Need to re-assemble the H264 NALUs into a single H264 frame we can output

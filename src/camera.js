@@ -380,11 +380,11 @@ export default class NestCamera extends HomeKitDevice {
       '-filter:v fps=fps=' + this.#recordingConfig.videoCodec.resolution[2],
       '-g:v ' + (this.#recordingConfig.videoCodec.resolution[2] * this.#recordingConfig.videoCodec.parameters.iFrameInterval) / 1000,
       '-b:v ' + this.#recordingConfig.videoCodec.parameters.bitRate + 'k',
+      '-bufsize ' + 2 * this.#recordingConfig.videoCodec.parameters.bitRate + 'k',
       '-fps_mode passthrough',
-      '-movflags frag_keyframe+empty_moov+default_base_moof',
       '-reset_timestamps 1',
       '-video_track_timescale 90000',
-      '-bufsize ' + 2 * this.#recordingConfig.videoCodec.parameters.bitRate + 'k',
+      '-movflags frag_keyframe+empty_moov+default_base_moof',
     );
 
     // We have seperate video and audio streams that need to be muxed together if audio enabled
@@ -407,11 +407,11 @@ export default class NestCamera extends HomeKitDevice {
     // video is pipe #1
     // audio is pipe #3 if including audio
     this?.log?.debug &&
-    this.log.debug(
-      'ffmpeg process using for recording stream from "%s" will be called using the following commandline',
-      this.deviceData.description,
-      commandLine.join(' ').toString(),
-    );
+      this.log.debug(
+        'ffmpeg process using for recording stream from "%s" will be called using the following commandline',
+        this.deviceData.description,
+        commandLine.join(' ').toString(),
+      );
     let ffmpegRecording = child_process.spawn(this.deviceData.ffmpeg.binary, commandLine.join(' ').split(' '), {
       env: process.env,
       stdio: ['pipe', 'pipe', 'pipe', includeAudio === true ? 'pipe' : ''],
@@ -449,12 +449,6 @@ export default class NestCamera extends HomeKitDevice {
       }
     });
 
-    // ffmpeg console output is via stderr
-    // eslint-disable-next-line no-unused-vars
-    ffmpegRecording.stderr.on('data', (data) => {
-      // empty
-    });
-
     ffmpegRecording.on('exit', (code, signal) => {
       if (signal !== 'SIGKILL' || signal === null) {
         this?.log?.error &&
@@ -469,6 +463,15 @@ export default class NestCamera extends HomeKitDevice {
     // eslint-disable-next-line no-unused-vars
     ffmpegRecording.on('error', (error) => {
       // Empty
+    });
+
+    // ffmpeg console output is via stderr
+    // eslint-disable-next-line no-unused-vars
+    ffmpegRecording.stderr.on('data', (data) => {
+      if (data.toString().includes('frame=') === false) {
+        // Monitor ffmpeg output while
+        this?.log?.debug && this.log.debug(data.toString());
+      }
     });
 
     // Start the appropriate streamer
@@ -832,6 +835,15 @@ export default class NestCamera extends HomeKitDevice {
         // Empty
       });
 
+      // ffmpeg console output is via stderr
+      // eslint-disable-next-line no-unused-vars
+      ffmpegStreaming.stderr.on('data', (data) => {
+        if (data.toString().includes('frame=') === false) {
+          // Monitor ffmpeg output while
+          this?.log?.debug && this.log.debug(data.toString());
+        }
+      });
+
       // We only enable two/way audio on camera/doorbell if we have the required libraries in ffmpeg AND two-way/audio is enabled
       let ffmpegAudioTalkback = null; // No ffmpeg process for return audio yet
       if (
@@ -886,6 +898,12 @@ export default class NestCamera extends HomeKitDevice {
 
         commandLine.push('-f data pipe:1');
 
+        this?.log?.debug &&
+          this.log.debug(
+            'ffmpeg process using for talkback on "%s" will be called using the following commandline',
+            this.deviceData.description,
+            commandLine.join(' ').toString(),
+          );
         ffmpegAudioTalkback = child_process.spawn(this.deviceData.ffmpeg.binary, commandLine.join(' ').split(' '), {
           env: process.env,
         });
@@ -910,8 +928,9 @@ export default class NestCamera extends HomeKitDevice {
         });
 
         // ffmpeg console output is via stderr
+        // eslint-disable-next-line no-unused-vars
         ffmpegAudioTalkback.stderr.on('data', (data) => {
-          this?.log?.debug && this.log.debug(data.toString());
+          // Empty
         });
 
         // Write out SDP configuration
