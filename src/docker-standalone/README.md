@@ -123,6 +123,7 @@ The following options are available in Nest_config.json options object. These ap
 | debug             | Detailed debugging                                                                            | false      |
 | elevation         | Height above sea level for the weather station                                                | 0          |
 | eveHistory        | Provide history in EveHome application where applicable                                       | true       |
+| ffmegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                 | false      |
 | ffmegPath         | Path to an ffmpeg binary for us to use. Will look in current directory by default             |            |
 | hkPairingCode     | HomeKit pairing code in format of "xxx-xx-xxx" or "xxxx-xxxx"                                 | 031-45-154 |
 | hksv              | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                           | false      |

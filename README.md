@@ -99,6 +99,7 @@ The following options are available in the config.json options object. These app
 |-------------------|-----------------------------------------------------------------------------------------------|------------|
 | elevation         | Height above sea level for the weather station                                                | 0          |
 | eveHistory        | Provide history in EveHome application where applicable                                       | true       |
+| ffmegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                 | false      |
 | ffmegPath         | Path to an ffmpeg binary for us to use. Will look in current directory by default             |            |
 | hksv              | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                           | false      |
 | maxStreams        | Maximum number of concurrent video streams in HomeKit for supported camera(s) and doorbell(s) | 2          |
@@ -133,7 +134,7 @@ To support streaming and recording from cameras, an ffmpeg binary needs to be pr
   - libspeex
   - libopus
 
-By default, we look in the current directory where the plug-in excutes for an ffmpeg binary, however, you can specify a specific ffmpeg binary to use va the configuration option 'ffmpegPath'
+By default, we look in the current directory where the plug-in excutes for an ffmpeg binary, however, you can specify a specific ffmpeg binary to use via the configuration option 'ffmpegPath'
 
 ## Disclaimer
 
