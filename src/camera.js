@@ -466,10 +466,9 @@ export default class NestCamera extends HomeKitDevice {
     });
 
     // ffmpeg console output is via stderr
-    // eslint-disable-next-line no-unused-vars
     ffmpegRecording.stderr.on('data', (data) => {
-      if (data.toString().includes('frame=') === false) {
-        // Monitor ffmpeg output while
+      if (data.toString().includes('frame=') === false && this.deviceData?.ffmpeg?.debug === true) {
+        // Monitor ffmpeg output
         this?.log?.debug && this.log.debug(data.toString());
       }
     });
@@ -810,12 +809,6 @@ export default class NestCamera extends HomeKitDevice {
         stdio: ['pipe', 'pipe', 'pipe', includeAudio === true ? 'pipe' : ''],
       });
 
-      // ffmpeg console output is via stderr
-      // eslint-disable-next-line no-unused-vars
-      ffmpegStreaming.stderr.on('data', (data) => {
-        // empty
-      });
-
       ffmpegStreaming.on('exit', (code, signal) => {
         if (signal !== 'SIGKILL' || signal === null) {
           this?.log?.error &&
@@ -830,18 +823,17 @@ export default class NestCamera extends HomeKitDevice {
         }
       });
 
+      // ffmpeg console output is via stderr
+      ffmpegStreaming.stderr.on('data', (data) => {
+        if (data.toString().includes('frame=') === false && this.deviceData?.ffmpeg?.debug === true) {
+          // Monitor ffmpeg output
+          this?.log?.debug && this.log.debug(data.toString());
+        }
+      });
+
       // eslint-disable-next-line no-unused-vars
       ffmpegStreaming.on('error', (error) => {
         // Empty
-      });
-
-      // ffmpeg console output is via stderr
-      // eslint-disable-next-line no-unused-vars
-      ffmpegStreaming.stderr.on('data', (data) => {
-        if (data.toString().includes('frame=') === false) {
-          // Monitor ffmpeg output while
-          this?.log?.debug && this.log.debug(data.toString());
-        }
       });
 
       // We only enable two/way audio on camera/doorbell if we have the required libraries in ffmpeg AND two-way/audio is enabled
@@ -928,9 +920,11 @@ export default class NestCamera extends HomeKitDevice {
         });
 
         // ffmpeg console output is via stderr
-        // eslint-disable-next-line no-unused-vars
         ffmpegAudioTalkback.stderr.on('data', (data) => {
-          // Empty
+          if (data.toString().includes('frame=') === false && this.deviceData?.ffmpeg?.debug === true) {
+            // Monitor ffmpeg output
+            this?.log?.debug && this.log.debug(data.toString());
+          }
         });
 
         // Write out SDP configuration

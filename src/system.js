@@ -140,6 +140,7 @@ export default class NestAccfactory {
     // Check if a ffmpeg binary exists in current path OR the specific path via configuration
     // If using HomeBridge, the default path will be where the Homebridge user folder is, otherwise the current directory
     this.config.options.ffmpeg = {};
+    this.config.options.ffmpeg.debug = typeof this.config.options?.ffmpegDebug === 'boolean' ? this.config.options.ffmpegDebug : false;
     this.config.options.ffmpeg.binary = path.resolve(
       typeof this.config.options?.ffmpegPath === 'string' && this.config.options.ffmpegPath !== ''
         ? this.config.options.ffmpegPath
