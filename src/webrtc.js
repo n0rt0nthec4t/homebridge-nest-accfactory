@@ -3,7 +3,7 @@
 //
 // Handles connection and data from Google WebRTC systems
 //
-// Code version 12/10/2024
+// Code version 10/11/2024
 // Mark Hulskamp
 'use strict';
 
@@ -278,7 +278,7 @@ export default class WebRTC extends Streamer {
               });
 
               if (homeFoyerResponse?.data?.[0]?.streamExtensionStatus !== 'STATUS_STREAM_EXTENDED') {
-                this?.log?.debug && this.log.debug('Error occured while requested stream extention for uuid "%s"', this.uuid);
+                this?.log?.debug && this.log.debug('Error occurred while requested stream extension for uuid "%s"', this.uuid);
 
                 if (typeof this.#peerConnection?.close === 'function') {
                   await this.#peerConnection.close();
@@ -372,7 +372,7 @@ export default class WebRTC extends Streamer {
 
         if (homeFoyerResponse?.status !== 0) {
           this.audio.talking = undefined;
-          this?.log?.debug && this.log.debug('Error occured while requesting talkback to start for uuid "%s"', this.uuid);
+          this?.log?.debug && this.log.debug('Error occurred while requesting talkback to start for uuid "%s"', this.uuid);
         }
         if (homeFoyerResponse?.status === 0) {
           this.audio.talking = true;
@@ -404,7 +404,7 @@ export default class WebRTC extends Streamer {
         command: 'COMMAND_STOP',
       });
       if (homeFoyerResponse?.status !== 0) {
-        this?.log?.debug && this.log.debug('Error occured while requesting talkback to stop for uuid "%s"', this.uuid);
+        this?.log?.debug && this.log.debug('Error occurred while requesting talkback to stop for uuid "%s"', this.uuid);
       }
       if (homeFoyerResponse?.status === 0) {
         this?.log?.debug && this.log.debug('Talking ended on uuid "%s"', this.uuid);
@@ -449,13 +449,17 @@ export default class WebRTC extends Streamer {
     // Setup up a timeout to monitor for no packets recieved in a certain period
     // If its trigger, we'll attempt to restart the stream and/or connection
     clearTimeout(this.stalledTimer);
-    this.stalledTimer = setTimeout(() => {
+    this.stalledTimer = setTimeout(async () => {
       this?.log?.debug &&
         this.log.debug(
           'We have not received any data from webrtc in the past "%s" seconds for uuid "%s". Attempting restart',
           10,
           this.uuid,
         );
+
+      if (typeof this.#peerConnection?.close === 'function') {
+        await this.#peerConnection.close();
+      }
     }, 10000);
 
     if (weriftRtpPacket.header.payloadType !== undefined && weriftRtpPacket.header.payloadType === this.video?.id) {

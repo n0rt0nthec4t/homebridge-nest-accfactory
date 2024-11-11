@@ -141,6 +141,7 @@ The following options are available on a per-device level in Nest_config.json fi
 | elevation         | Height above sea level for the specific weather station                                       | 0          |
 | eveHistory        | Provide history in EveHome application where applicable for the specific device               | true       |
 | exclude           | Exclude the device                                                                            | false      |
+| ffmegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                 | false      |
 | hkPairingCode     | HomeKit pairing code in format of "xxx-xx-xxx" or "xxxx-xxxx"                                 | 031-45-154 |
 | hksv              | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                           | false      |
 | humiditySensor    | Create a seperate humidity sensor for supported thermostat(s)                                 | false      |
@@ -161,7 +162,7 @@ To support streaming and recording from cameras, an ffmpeg binary needs to be pr
   - libspeex
   - libopus
 
-By default, we look in the current directory where excuted from for an ffmpeg binary, however, you can specify a specific ffmpeg binary to use va the configuration option 'ffmpegPath'
+By default, we look in the current directory where excuted from for an ffmpeg binary, however, you can specify a specific ffmpeg binary to use via the configuration option 'ffmpegPath'
 
 ## Docker Image
 

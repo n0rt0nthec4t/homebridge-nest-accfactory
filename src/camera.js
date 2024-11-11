@@ -1,7 +1,7 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 12/10/2024
+// Code version 10/11/2024
 // Mark Hulskamp
 'use strict';
 
@@ -408,7 +408,7 @@ export default class NestCamera extends HomeKitDevice {
     // audio is pipe #3 if including audio
     this?.log?.debug &&
       this.log.debug(
-        'ffmpeg process using for recording stream from "%s" will be called using the following commandline',
+        'ffmpeg process for recording stream from "%s" will be called using the following commandline',
         this.deviceData.description,
         commandLine.join(' ').toString(),
       );
@@ -800,7 +800,7 @@ export default class NestCamera extends HomeKitDevice {
       // audio is pipe #3 if including audio
       this?.log?.debug &&
         this.log.debug(
-          'ffmpeg process using for live streaming from "%s" will be called using the following commandline',
+          'ffmpeg process for live streaming from "%s" will be called using the following commandline',
           this.deviceData.description,
           commandLine.join(' ').toString(),
         );
@@ -892,7 +892,7 @@ export default class NestCamera extends HomeKitDevice {
 
         this?.log?.debug &&
           this.log.debug(
-            'ffmpeg process using for talkback on "%s" will be called using the following commandline',
+            'ffmpeg process for talkback on "%s" will be called using the following commandline',
             this.deviceData.description,
             commandLine.join(' ').toString(),
           );

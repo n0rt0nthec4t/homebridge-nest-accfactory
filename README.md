@@ -116,6 +116,7 @@ The following options are available on a per-device level in the config.json dev
 | elevation         | Height above sea level for the specific weather station                                       | 0          |
 | eveHistory        | Provide history in EveHome application where applicable for the specific device               | true       |
 | exclude           | Exclude the device                                                                            | false      |
+| ffmegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                 | false      |
 | hksv              | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                           | false      |
 | humiditySensor    | Create a seperate humidity sensor for supported thermostat(s)                                 | false      |
 | localAccess       | Use direct access to supported camera(s) and doorbell(s) for video streaming and recording    | false      |    

@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 7/10/2024
+// Code version 11/11/2024
 // Mark Hulskamp
 'use strict';
 
@@ -105,7 +105,7 @@ export default class NestAccfactory {
           authorised: false,
           issuetoken: this.config[key].issuetoken,
           cookie: this.config[key].cookie,
-          fieldTest: typeof this.config[key]?.fieldTest === 'boolean' ? this.config[key].fieldTest : false,
+          fieldTest: this.config[key]?.fieldTest === true,
           referer: this.config[key]?.fieldTest === true ? 'home.ft.nest.com' : 'home.nest.com',
           restAPIHost: this.config[key]?.fieldTest === true ? 'home.ft.nest.com' : 'home.nest.com',
           cameraAPIHost: this.config[key]?.fieldTest === true ? 'camera.home.ft.nest.com' : 'camera.home.nest.com',
@@ -124,10 +124,10 @@ export default class NestAccfactory {
       this.config.options = {};
     }
 
-    this.config.options.eveHistory = typeof this.config.options?.eveHistory === 'boolean' ? this.config.options.eveHistory : false;
+    this.config.options.eveHistory = this.config.options?.eveHistory === true;
     this.config.options.elevation = isNaN(this.config.options?.elevation) === false ? Number(this.config.options.elevation) : 0;
-    this.config.options.weather = typeof this.config.options?.weather === 'boolean' ? this.config.options.weather : false;
-    this.config.options.hksv = typeof this.config.options?.hksv === 'boolean' ? this.config.options.hksv : false;
+    this.config.options.weather = this.config.options?.weather === true;
+    this.config.options.hksv = this.config.options?.hksv === true;
 
     // Get configuration for max number of concurrent 'live view' streams. For HomeKit Secure Video, this will always be 1
     this.config.options.maxStreams =
@@ -140,7 +140,7 @@ export default class NestAccfactory {
     // Check if a ffmpeg binary exists in current path OR the specific path via configuration
     // If using HomeBridge, the default path will be where the Homebridge user folder is, otherwise the current directory
     this.config.options.ffmpeg = {};
-    this.config.options.ffmpeg.debug = typeof this.config.options?.ffmpegDebug === 'boolean' ? this.config.options.ffmpegDebug : false;
+    this.config.options.ffmpeg.debug = this.config.options?.ffmpegDebug === true;
     this.config.options.ffmpeg.binary = path.resolve(
       typeof this.config.options?.ffmpegPath === 'string' && this.config.options.ffmpegPath !== ''
         ? this.config.options.ffmpegPath
@@ -2300,7 +2300,12 @@ export default class NestAccfactory {
               : 120;
           tempDevice.chimeSwitch = this.config?.devices?.[tempDevice.serialNumber]?.chimeSwitch === true; // Control 'indoor' chime by switch
           tempDevice.localAccess = this.config?.devices?.[tempDevice.serialNumber]?.localAccess === true; // Local network video streaming rather than from cloud from camera/doorbells
-          tempDevice.ffmpeg = this.config.options.ffmpeg; // ffmpeg details, path, libraries. No ffmpeg = undefined
+          // eslint-disable-next-line no-undef
+          tempDevice.ffmpeg = structuredClone(this.config.options.ffmpeg); // ffmpeg details, path, libraries. No ffmpeg = undefined
+          if (this.config?.devices?.[tempDevice.serialNumber]?.ffmpegDebug !== undefined) {
+            // Device specific ffmpeg debugging
+            tempDevice.ffmpeg.debug = this.config?.devices?.[tempDevice.serialNumber]?.ffmpegDebug === true;
+          }
           tempDevice.maxStreams =
             isNaN(this.config.options?.maxStreams) === false
               ? Number(this.config.options.maxStreams)
