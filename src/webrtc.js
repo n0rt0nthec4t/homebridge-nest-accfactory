@@ -3,7 +3,7 @@
 //
 // Handles connection and data from Google WebRTC systems
 //
-// Code version 10/11/2024
+// Code version 15/11/2024
 // Mark Hulskamp
 'use strict';
 
@@ -169,7 +169,7 @@ export default class WebRTC extends Streamer {
                   { type: 'nack', parameter: 'pli' },
                   { type: 'goog-remb' },
                 ],
-                parameters: 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=4de020',
+                parameters: 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
                 payloadType: RTP_VIDEO_PAYLOAD_TYPE,
               }),
             ],

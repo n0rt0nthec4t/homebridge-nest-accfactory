@@ -17,7 +17,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 29/9/2024
+// Code version 19/11/2024
 // Mark Hulskamp
 'use strict';
 
@@ -361,9 +361,14 @@ export default class Streamer {
       return;
     }
 
+    if (data.indexOf(H264NALSTARTCODE) === 0) {
+      // Strip H264 start code from input buffer. We'll handle this later
+      data = data.subarray(H264NALSTARTCODE.length);
+    }
+
     Object.values(this.#outputs).forEach((output) => {
       output.buffer.push({
-        time: Date.now(), // Timestamp of when tgis was added to buffer
+        time: Date.now(), // Timestamp of when this was added to buffer
         type: type,
         data: data,
       });
