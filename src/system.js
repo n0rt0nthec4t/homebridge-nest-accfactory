@@ -2115,7 +2115,8 @@ export default class NestAccfactory {
         try {
           if (
             value?.source === NestAccfactory.DataSource.PROTOBUF &&
-            value.value?.streaming_protocol?.supportedProtocols !== undefined &&
+            Array.isArray(value.value?.streaming_protocol?.supportedProtocols) === true &&
+            value.value.streaming_protocol.supportedProtocols.includes('PROTOCOL_WEBRTC') === true &&
             (value.value?.configuration_done?.deviceReady === true ||
               value.value?.camera_migration_status?.state?.where === 'MIGRATED_TO_GOOGLE_HOME')
           ) {

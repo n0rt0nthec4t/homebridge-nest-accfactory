@@ -17,7 +17,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 19/11/2024
+// Code version 20/11/2024
 // Mark Hulskamp
 'use strict';
 
@@ -143,11 +143,7 @@ export default class Streamer {
         if (output.type === 'live' || output.type === 'record') {
           let packet = output.buffer.shift();
           if (packet?.type === 'video' && typeof output?.video?.write === 'function') {
-            // H264 NAL Units '0001' are required to be added to beginning of any video data we output
-            // If this is missing, add on beginning of data packet
-            if (packet.data.indexOf(H264NALSTARTCODE) !== 0) {
-              packet.data = Buffer.concat([H264NALSTARTCODE, packet.data]);
-            }
+            packet.data = Buffer.concat([H264NALSTARTCODE, packet.data]);
             output.video.write(packet.data);
           }
           if (packet?.type === 'audio' && typeof output?.audio?.write === 'function') {

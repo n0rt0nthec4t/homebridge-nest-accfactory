@@ -5,7 +5,7 @@
 //
 // Credit to https://github.com/Brandawg93/homebridge-nest-cam for the work on the Nest Camera comms code on which this is based
 //
-// Code version 10/12/2024
+// Code version 20/11/2024
 // Mark Hulskamp
 'use strict';
 
@@ -325,7 +325,7 @@ export default class NexusTalk extends Streamer {
               requireConnectedCamera: false,
               userAgent: USERAGENT,
               deviceId: crypto.randomUUID(),
-              ClientType: 'IOS',
+              clientType: 'IOS',
               authoriseRequest: authoriseRequest,
             }),
           ).finish();
