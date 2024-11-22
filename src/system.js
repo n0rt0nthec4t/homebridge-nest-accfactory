@@ -3056,9 +3056,9 @@ export default class NestAccfactory {
         },
         encodedData,
       )
-        .then((response) => response.bytes())
+        .then((response) => response.arrayBuffer())
         .then((data) => {
-          commandResponse = TraitMapResponse.decode(data).toJSON();
+          commandResponse = TraitMapResponse.decode(Buffer.from(data)).toJSON();
         })
         .catch((error) => {
           this?.log?.debug && this.log.debug('Protobuf gateway service command failed with error. Error was "%s"', error?.code);
