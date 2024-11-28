@@ -898,11 +898,15 @@ export default class NestAccfactory {
                     // Tidy up tracked devices since this one is removed
                     if (this.#trackedDevices[this.#rawData?.[resource.resourceId]?.value?.device_identity?.serialNumber] !== undefined) {
                       // Remove any active running timers we have for this device
-                      Object.values(
-                        this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber]?.timers,
-                      ).forEach((timers) => {
-                        clearInterval(timers);
-                      });
+                      if (
+                        this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber]?.timers !== undefined
+                      ) {
+                        Object.values(
+                          this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber]?.timers,
+                        ).forEach((timers) => {
+                          clearInterval(timers);
+                        });
+                      }
 
                       // Send removed notice onto HomeKit device for it to process
                       this.#eventEmitter.emit(
