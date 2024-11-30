@@ -1747,23 +1747,45 @@ export default class NestAccfactory {
             );
 
             // Work out current mode. ie: off, cool, heat, range and get temperature low (heat) and high (cool)
-            RESTTypeData.hvac_mode = this.#rawData?.['shared.' + value.value.serial_number].value.target_temperature_type;
-            RESTTypeData.target_temperature_low = this.#rawData?.['shared.' + value.value.serial_number].value.target_temperature_low;
-            RESTTypeData.target_temperature_high = this.#rawData?.['shared.' + value.value.serial_number].value.target_temperature_high;
+            RESTTypeData.hvac_mode =
+              this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_type !== undefined
+                ? this.#rawData?.['shared.' + value.value.serial_number].value.target_temperature_type
+                : 'off';
+            RESTTypeData.target_temperature =
+              isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature) === false
+                ? Number(this.#rawData['shared.' + value.value.serial_number].value.target_temperature)
+                : 0.0;
+            RESTTypeData.target_temperature_low =
+              isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_low) === false
+                ? Number(this.#rawData['shared.' + value.value.serial_number].value.target_temperature_low)
+                : 0.0;
+            RESTTypeData.target_temperature_high =
+              isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_high) === false
+                ? Number(this.#rawData['shared.' + value.value.serial_number].value.target_temperature_high)
+                : 0.0;
             if (this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_type.toUpperCase() === 'COOL') {
               // Target temperature is the cooling point
-              RESTTypeData.target_temperature = this.#rawData['shared.' + value.value.serial_number].value.target_temperature_high;
+              RESTTypeData.target_temperature =
+                isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_high) === false
+                  ? Number(this.#rawData['shared.' + value.value.serial_number].value.target_temperature_high)
+                  : 0.0;
             }
             if (this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_type.toUpperCase() === 'HEAT') {
               // Target temperature is the heating point
-              RESTTypeData.target_temperature = this.#rawData['shared.' + value.value.serial_number].value.target_temperature_low;
+              RESTTypeData.target_temperature =
+                isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_low) === false
+                  ? Number(this.#rawData['shared.' + value.value.serial_number].value.target_temperature_low)
+                  : 0.0;
             }
             if (this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_type.toUpperCase() === 'RANGE') {
               // Target temperature is in between the heating and cooling point
               RESTTypeData.target_temperature =
-                (this.#rawData['shared.' + value.value.serial_number].value.target_temperature_low +
-                  this.#rawData['shared.' + value.value.serial_number].value.target_temperature_high) *
-                0.5;
+                isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_low) === false &&
+                isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_high) === false
+                  ? (Number(this.#rawData['shared.' + value.value.serial_number].value.target_temperature_low) +
+                      Number(this.#rawData['shared.' + value.value.serial_number].value.target_temperature_high)) *
+                    0.5
+                  : 0.0;
             }
 
             // Work out if eco mode is active and adjust temperature low/high and target
@@ -2794,7 +2816,7 @@ export default class NestAccfactory {
                 (key === 'target_temperature_high' && isNaN(value) === false)
               ) {
                 RESTStructureUUID = 'shared.' + nest_google_uuid.split('.')[1];
-                subscribeJSONData.objects.push({ object_key: RESTStructureUUID, op: 'MERGE', value: {'target_change_pending': true } });
+                subscribeJSONData.objects.push({ object_key: RESTStructureUUID, op: 'MERGE', value: { target_change_pending: true } });
               }
 
               if (key === 'fan_state' && typeof value === 'boolean') {
