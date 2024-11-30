@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 11/11/2024
+// Code version 2024/12/01
 // Mark Hulskamp
 'use strict';
 
@@ -916,7 +916,7 @@ export default class NestAccfactory {
                       );
 
                       // Finally, remove from tracked devices
-                      delete this.#trackedDevices[this.#rawData?.[resource.resourceId].value.device_identity.serialNumber];
+                      delete this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber];
                     }
                     delete this.#rawData[resource.resourceId];
                   }
@@ -2435,7 +2435,7 @@ export default class NestAccfactory {
     }
 
     let nest_google_uuid = values.uuid; // Nest/Google structure uuid for this get request
-    let connectionUuid = this.#rawData[values.uuid].connection; // Associated connection uuid for the uuid
+    let connectionUuid = this.#rawData[values.uuid].connection; // Associated connection uuid for the device
 
     if (this.#protobufRoot !== null && this.#rawData?.[nest_google_uuid]?.source === NestAccfactory.DataSource.PROTOBUF) {
       let updatedTraits = [];
@@ -2777,7 +2777,7 @@ export default class NestAccfactory {
               subscribeJSONData.objects.push({ object_key: nest_google_uuid, op: 'MERGE', value: { [key]: value } });
             }
 
-            // Some elements when setting thermostat data are located in a different object locations than with the device object
+            // Some elements when setting thermostat data are located in a different object location than with the device object
             // Handle this scenario below
             if (nest_google_uuid.startsWith('device.') === true) {
               let RESTStructureUUID = nest_google_uuid;
@@ -2794,6 +2794,7 @@ export default class NestAccfactory {
                 (key === 'target_temperature_high' && isNaN(value) === false)
               ) {
                 RESTStructureUUID = 'shared.' + nest_google_uuid.split('.')[1];
+                subscribeJSONData.objects.push({ object_key: RESTStructureUUID, op: 'MERGE', value: {'target_change_pending': true } });
               }
 
               if (key === 'fan_state' && typeof value === 'boolean') {
