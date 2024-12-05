@@ -368,7 +368,7 @@ export default class NestAccfactory {
                     this.#connections[connectionUUID].token = googleToken;
                     this.#connections[connectionUUID].cameraAPI = {
                       key: 'Authorization',
-                      value: 'Basic ',  // NOTE: extra space required
+                      value: 'Basic ', // NOTE: extra space required
                       token: googleToken,
                       oauth2: googleOAuth2Token,
                     };
