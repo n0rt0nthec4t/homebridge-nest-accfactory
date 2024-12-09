@@ -1,6 +1,0 @@
-[submodule "HomeKitDevice"]
-	path = HomeKitDevice
-	url = https://github.com/n0rt0nthec4t/HomeKitDevice.git
-[submodule "HomeKitHistory"]
-	path = HomeKitHistory
-	url = https://github.com/n0rt0nthec4t/HomeKitHistory.git
