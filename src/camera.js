@@ -414,7 +414,7 @@ export default class NestCamera extends HomeKitDevice {
       );
     let ffmpegRecording = child_process.spawn(this.deviceData.ffmpeg.binary, commandLine.join(' ').split(' '), {
       env: process.env,
-      stdio: ['pipe', 'pipe', 'pipe', includeAudio === true ? 'pipe' : ''],
+      stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
     });
 
     // Process FFmpeg output and parse out the fMP4 stream it's generating for HomeKit Secure Video.
@@ -806,7 +806,7 @@ export default class NestCamera extends HomeKitDevice {
         );
       let ffmpegStreaming = child_process.spawn(this.deviceData.ffmpeg.binary, commandLine.join(' ').split(' '), {
         env: process.env,
-        stdio: ['pipe', 'pipe', 'pipe', includeAudio === true ? 'pipe' : ''],
+        stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
       });
 
       ffmpegStreaming.on('exit', (code, signal) => {
