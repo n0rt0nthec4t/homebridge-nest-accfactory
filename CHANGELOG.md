@@ -2,7 +2,7 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.2.4 (2024/12/10)
+## v0.2.4a (2024/12/10)
 
 - Fix for camera video stream when audio disabled
 
