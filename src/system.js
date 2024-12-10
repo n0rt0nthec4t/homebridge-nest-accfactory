@@ -34,7 +34,7 @@ const CAMERAZONEPOLLING = 30000; // Camera zones changes polling timer
 const WEATHERPOLLING = 300000; // Weather data polling timer
 const NESTAPITIMEOUT = 10000; // Nest API timeout
 const USERAGENT = 'Nest/5.78.0 (iOScom.nestlabs.jasper.release) os=18.0'; // User Agent string
-const FFMPEGVERSION = '6.0.0'; // Minimum version of ffmpeg we require
+const FFMPEGVERSION = '6.0'; // Minimum version of ffmpeg we require
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 
@@ -186,7 +186,11 @@ export default class NestAccfactory {
         this.config.options.ffmpeg.libx264 = ffmpegProcess.stdout.toString().includes('--enable-libx264') === true;
         this.config.options.ffmpeg.libfdk_aac = ffmpegProcess.stdout.toString().includes('--enable-libfdk-aac') === true;
         if (
-          this.config.options.ffmpeg.version.replace(/\./gi, '') < parseFloat(FFMPEGVERSION.toString().replace(/\./gi, '')) ||
+          this.config.options.ffmpeg.version.localeCompare(FFMPEGVERSION, undefined, {
+            numeric: true,
+            sensitivity: 'case',
+            caseFirst: 'upper',
+          }) === -1 ||
           this.config.options.ffmpeg.libspeex === false ||
           this.config.options.ffmpeg.libopus === false ||
           this.config.options.ffmpeg.libx264 === false ||
@@ -194,7 +198,13 @@ export default class NestAccfactory {
         ) {
           this?.log?.warn &&
             this.log.warn('ffmpeg binary "%s" does not meet the minimum support requirements', this.config.options.ffmpeg.binary);
-          if (this.config.options.ffmpeg.version.replace(/\./gi, '') < parseFloat(FFMPEGVERSION.toString().replace(/\./gi, ''))) {
+          if (
+            this.config.options.ffmpeg.version.localeCompare(FFMPEGVERSION, undefined, {
+              numeric: true,
+              sensitivity: 'case',
+              caseFirst: 'upper',
+            }) === -1
+          ) {
             this?.log?.warn &&
               this.log.warn(
                 'Minimum binary version is "%s", however the installed version is "%s"',
