@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2024/12/01
+// Code version 2024/12/11
 // Mark Hulskamp
 'use strict';
 
@@ -34,7 +34,7 @@ const CAMERAZONEPOLLING = 30000; // Camera zones changes polling timer
 const WEATHERPOLLING = 300000; // Weather data polling timer
 const NESTAPITIMEOUT = 10000; // Nest API timeout
 const USERAGENT = 'Nest/5.78.0 (iOScom.nestlabs.jasper.release) os=18.0'; // User Agent string
-const FFMPEGVERSION = '6.0'; // Minimum version of ffmpeg we require
+const FFMPEGVERSION = '6.0.0'; // Minimum version of ffmpeg we require
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 
