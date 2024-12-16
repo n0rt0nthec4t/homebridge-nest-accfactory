@@ -45,8 +45,8 @@
     ],
     "scripts": {
         "clean": "rimraf ./dist*",
-        "format": "prettier --write src/*.js src/**/*.js",
-        "lint": "eslint src/*.js src/**/*.js --max-warnings=20",
+        "format": "prettier --write src/*.js src/**/*.js src/**/*.mjs",
+        "lint": "eslint src/*.js src/**/*.js src/**/*.mjs --max-warnings=20",
         "build": "npm run clean && copyfiles -u 1 src/*.js dist && copyfiles -u 2 src/HomeKitDevice/*.js dist && copyfiles -u 2 src/HomeKitHistory/*.js dist && copyfiles -u 1 src/res/*.h264 dist && copyfiles -u 1 src/res/*.jpg dist && copyfiles -u 1 'src/protobuf/**/*.proto' dist",
         "prepublishOnly": "npm run lint && npm run build"
     },
