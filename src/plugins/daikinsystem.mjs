@@ -72,8 +72,11 @@ async function cool(temperature) {
     {},
   )
     .then((response) => response.text())
-    // eslint-disable-next-line no-unused-vars
     .then((data) => {
+      if (data.search('OK') === -1) {
+        throw new Error('Daikin A/C system get failed with error');
+      }
+
       log?.info && log.info('[External Daikin] Cool mode on "%s" with target temperature of "%s °C"', systemURL, temperature);
     })
     // eslint-disable-next-line no-unused-vars
@@ -108,8 +111,11 @@ async function heat(temperature) {
     {},
   )
     .then((response) => response.text())
-    // eslint-disable-next-line no-unused-vars
     .then((data) => {
+      if (data.search('OK') === -1) {
+        throw new Error('Daikin A/C system get failed with error');
+      }
+
       log?.info && log.info('[External Daikin] Heat mode on "%s" with target temperature of "%s °C"', systemURL, temperature);
     })
     // eslint-disable-next-line no-unused-vars
@@ -144,8 +150,11 @@ async function dehumififier(humidity) {
     {},
   )
     .then((response) => response.text())
-    // eslint-disable-next-line no-unused-vars
     .then((data) => {
+      if (data.search('OK') === -1) {
+        throw new Error('Daikin A/C system get failed with error');
+      }
+
       log?.info && log.info('[External Daikin] Dehumidifier mode on "%s" with target humidity of "%s"', systemURL, humidity);
     })
     // eslint-disable-next-line no-unused-vars
@@ -201,8 +210,11 @@ async function fan(speed) {
     {},
   )
     .then((response) => response.text())
-    // eslint-disable-next-line no-unused-vars
     .then((data) => {
+      if (data.search('OK') === -1) {
+        throw new Error('Daikin A/C system get failed with error');
+      }
+
       log?.info && log.info('[External Daikin] Fan mode on "%s" with speed of "%s"', systemURL, rate);
     })
     // eslint-disable-next-line no-unused-vars
@@ -236,8 +248,11 @@ async function off() {
     {},
   )
     .then((response) => response.text())
-    // eslint-disable-next-line no-unused-vars
     .then((data) => {
+      if (data.search('OK') === -1) {
+        throw new Error('Daikin A/C system get failed with error');
+      }
+
       log?.info && log.info('[External Daikin] Turned off "%s"', systemURL);
     })
     // eslint-disable-next-line no-unused-vars
