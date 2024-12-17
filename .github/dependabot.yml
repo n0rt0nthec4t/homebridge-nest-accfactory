@@ -1,6 +1,8 @@
 version: 2
 updates:
   - package-ecosystem: "npm"
-    directory: "/" # Location of package manifests
+    directories:
+      - "/"
+      - "/src/docker-standalone"
     schedule:
       interval: "weekly"
