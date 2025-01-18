@@ -711,11 +711,13 @@ export default class NestAccfactory {
                         });
 
                         // Send removed notice onto HomeKit device for it to process
-                        this.#eventEmitter.emit(
-                          this.#trackedDevices[this.#rawData[object_key].value.serial_number].uuid,
-                          HomeKitDevice.REMOVE,
-                          {},
-                        );
+                        if (this.#eventEmitter !== undefined) {
+                          this.#eventEmitter.emit(
+                            this.#trackedDevices[this.#rawData[object_key].value.serial_number].uuid,
+                            HomeKitDevice.REMOVE,
+                            {},
+                          );
+                        }
 
                         // Finally, remove from tracked devices
                         delete this.#trackedDevices[this.#rawData[object_key].value.serial_number];
@@ -919,11 +921,13 @@ export default class NestAccfactory {
                       }
 
                       // Send removed notice onto HomeKit device for it to process
-                      this.#eventEmitter.emit(
-                        this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber].uuid,
-                        HomeKitDevice.REMOVE,
-                        {},
-                      );
+                      if (this.#eventEmitter !== undefined) {
+                        this.#eventEmitter.emit(
+                          this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber].uuid,
+                          HomeKitDevice.REMOVE,
+                          {},
+                        );
+                      }
 
                       // Finally, remove from tracked devices
                       delete this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber];
@@ -1107,7 +1111,7 @@ export default class NestAccfactory {
                     this.#rawData[nest_google_uuid].value.activity_zones = zones;
 
                     // Send updated data onto HomeKit device for it to process
-                    if (this.#trackedDevices?.[deviceData?.serialNumber]?.uuid !== undefined) {
+                    if (this.#eventEmitter !== undefined && this.#trackedDevices?.[deviceData?.serialNumber]?.uuid !== undefined) {
                       this.#eventEmitter.emit(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, {
                         activity_zones: zones,
                       });
@@ -1268,7 +1272,7 @@ export default class NestAccfactory {
               this.#rawData[nest_google_uuid].value.alerts = alerts;
 
               // Send updated alerts onto HomeKit device for it to process
-              if (this.#trackedDevices?.[deviceData?.serialNumber]?.uuid !== undefined) {
+              if (this.#eventEmitter !== undefined && this.#trackedDevices?.[deviceData?.serialNumber]?.uuid !== undefined) {
                 this.#eventEmitter.emit(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, {
                   alerts: alerts,
                 });
@@ -1302,7 +1306,7 @@ export default class NestAccfactory {
               );
 
               // Send updated weather data onto HomeKit device for it to process
-              if (this.#trackedDevices?.[deviceData?.serialNumber]?.uuid !== undefined) {
+              if (this.#eventEmitter !== undefined && this.#trackedDevices?.[deviceData?.serialNumber]?.uuid !== undefined) {
                 this.#eventEmitter.emit(
                   this.#trackedDevices[deviceData.serialNumber].uuid,
                   HomeKitDevice.UPDATE,
@@ -1333,7 +1337,9 @@ export default class NestAccfactory {
           this.#trackedDevices[deviceData.serialNumber].rawDataUuid = deviceData.nest_google_uuid;
         }
 
-        this.#eventEmitter.emit(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, deviceData);
+        if (this.#eventEmitter !== undefined) {
+          this.#eventEmitter.emit(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, deviceData);
+        }
       }
     });
   }
