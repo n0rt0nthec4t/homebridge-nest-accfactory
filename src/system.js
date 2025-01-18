@@ -2096,7 +2096,7 @@ export default class NestAccfactory {
               typeof value.value?.safety_structure_settings?.structureHushKey === 'string'
                 ? value.value.safety_structure_settings.structureHushKey
                 : '';
-            RESTTypeData.detected_motion = value.value?.legacy_protect_device_info?.autoAway !== true;  // undefined or false = motion
+            RESTTypeData.detected_motion = value.value?.legacy_protect_device_info?.autoAway !== true; // undefined or false = motion
             RESTTypeData.description = typeof value.value?.label?.label === 'string' ? value.value.label.label : '';
             RESTTypeData.location = get_location_name(
               value.value?.device_info?.pairerId?.resourceId,
