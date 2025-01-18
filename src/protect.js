@@ -1,7 +1,7 @@
 // Nest Protect
 // Part of homebridge-nest-accfactory
 //
-// Code version 5/10/2024
+// Code version 2025/01/17
 // Mark Hulskamp
 'use strict';
 
@@ -74,7 +74,7 @@ export default class NestProtect extends HomeKitDevice {
         EveSmoke_alarmtest: this.deviceData.self_test_in_progress,
         EveSmoke_heatstatus: this.deviceData.heat_status,
         EveSmoke_hushedstate: this.deviceData.hushed_state,
-        EveSmoke_statusled: this.deviceData.ntp_green_led_enable,
+        Evesmoke_statusled: this.deviceData.ntp_green_led_enable,
         EveSmoke_smoketestpassed: this.deviceData.smoke_test_passed,
         EveSmoke_heattestpassed: this.deviceData.heat_test_passed,
       });
@@ -103,48 +103,57 @@ export default class NestProtect extends HomeKitDevice {
     );
 
     // Update smoke details
-    // If protect isn't online, removed from base, replacement date past, report in HomeKit
+    // If protect isn't online, replacement date past, report in HomeKit
     this.smokeService.updateCharacteristic(
       this.hap.Characteristic.StatusActive,
-      deviceData.online === true && deviceData.removed_from_base === false && Math.floor(Date.now() / 1000) <= deviceData.replacement_date,
+      deviceData.online === true && Math.floor(Date.now() / 1000) <= deviceData.replacement_date,
     );
 
     this.smokeService.updateCharacteristic(
       this.hap.Characteristic.StatusFault,
-      deviceData.online === true && deviceData.removed_from_base === false && Math.floor(Date.now() / 1000) <= deviceData.replacement_date
+      deviceData.online === true && Math.floor(Date.now() / 1000) <= deviceData.replacement_date
         ? this.hap.Characteristic.StatusFault.NO_FAULT
         : this.hap.Characteristic.StatusFault.GENERAL_FAULT,
     );
 
     this.smokeService.updateCharacteristic(
       this.hap.Characteristic.SmokeDetected,
-      deviceData.smoke_status === 2
+      deviceData.smoke_status === true
         ? this.hap.Characteristic.SmokeDetected.SMOKE_DETECTED
         : this.hap.Characteristic.SmokeDetected.SMOKE_NOT_DETECTED,
     );
 
-    if (deviceData.smoke_status !== 0 && this.deviceData.smoke_status === 0) {
+    if (deviceData.smoke_status === true && this.deviceData.smoke_status === false) {
       this?.log?.warn && this.log.warn('Smoke detected in "%s"', deviceData.description);
     }
 
-    if (deviceData.smoke_status === 0 && this.deviceData.smoke_status !== 0) {
+    if (deviceData.smoke_status === false && this.deviceData.smoke_status === true) {
       this?.log?.info && this.log.info('Smoke is nolonger detected in "%s"', deviceData.description);
     }
 
     // Update carbon monoxide details
     this.carbonMonoxideService.updateCharacteristic(
       this.hap.Characteristic.CarbonMonoxideDetected,
-      deviceData.co_status !== 0
+      deviceData.co_status === true
         ? this.hap.Characteristic.CarbonMonoxideDetected.CO_LEVELS_ABNORMAL
         : this.hap.Characteristic.CarbonMonoxideDetected.CO_LEVELS_NORMAL,
     );
 
-    if (deviceData.co_status !== 0 && this.deviceData.co_status === 0) {
+    if (deviceData.co_status === true && this.deviceData.co_status === false) {
       this?.log?.warn && this.log.warn('Abnormal carbon monoxide levels detected in "%s"', deviceData.description);
     }
 
-    if (deviceData.co_status === 0 && this.deviceData.co_status !== 0) {
+    if (deviceData.co_status === false && this.deviceData.co_status === true) {
       this?.log?.info && this.log.info('Carbon monoxide levels have returned to normal in "%s"', deviceData.description);
+    }
+
+    // Update self testing details
+    if (deviceData.self_test_in_progress === true && this.deviceData.self_test_in_progress === false) {
+      this?.log?.warn && this.log.info('Smoke and Carbon monoxide sensor testing has started in "%s"', deviceData.description);
+    }
+
+    if (deviceData.self_test_in_progress === false && this.deviceData.self_test_in_progress === true) {
+      this?.log?.info && this.log.info('Smoke and Carbon monoxide sensor testing completed in "%s"', deviceData.description);
     }
 
     // Update motion service if present

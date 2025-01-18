@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2024/12/11
+// Code version 2025/01/17
 // Mark Hulskamp
 'use strict';
 
@@ -2056,6 +2056,54 @@ export default class NestAccfactory {
       .forEach(([object_key, value]) => {
         let tempDevice = {};
         try {
+          if (value?.source === NestAccfactory.DataSource.PROTOBUF && value.value?.configuration_done?.deviceReady === true) {
+            let RESTTypeData = {};
+            RESTTypeData.serialNumber = value.value.device_identity.serialNumber;
+            RESTTypeData.softwareVersion =
+              value.value.device_identity.softwareVersion.split(/\s+/)?.[3] !== undefined
+                ? value.value.device_identity.softwareVersion.split(/\s+/)?.[3]
+                : value.value.device_identity.softwareVersion;
+            RESTTypeData.online = value.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE';
+            RESTTypeData.line_power_present = value.value?.wall_power?.status === 'POWER_SOURCE_STATUS_ACTIVE';
+            RESTTypeData.wired_or_battery = typeof value.value?.wall_power?.status === 'string' ? 0 : 1;
+            RESTTypeData.battery_level = parseFloat(value.value.battery_voltage_bank1.batteryValue.batteryVoltage.value);
+            RESTTypeData.battery_health_state = value.value.battery_voltage_bank1.faultInformation;
+            RESTTypeData.smoke_status = value.value?.safety_alarm_smoke?.alarmState === 'ALARM_STATE_ALARM';
+            RESTTypeData.co_status = value.value?.safety_alarm_co?.alarmState === 'ALARM_STATE_ALARM';
+            RESTTypeData.heat_status = false; // To find in protobuf
+            RESTTypeData.hushed_state =
+              value.value?.safety_alarm_smoke?.silenceState === 'SILENCE_STATE_SILENCED' ||
+              value.value?.safety_alarm_co?.silenceState === 'SILENCE_STATE_SILENCED';
+            RESTTypeData.ntp_green_led = value.value?.night_time_promise_settings?.greenLedEnabled === true;
+            RESTTypeData.smoke_test_passed =
+              typeof value.value.safety_summary?.warningDevices?.failures === 'object'
+                ? value.value.safety_summary?.warningDevices?.failures.includes('FAILURE_TYPE_SMOKE') === false
+                : true;
+            RESTTypeData.heat_test_passed =
+              typeof value.value.safety_summary?.warningDevices?.failures === 'object'
+                ? value.value.safety_summary?.warningDevices?.failures.includes('FAILURE_TYPE_TEMP') === false
+                : true;
+            RESTTypeData.latest_alarm_test =
+              isNaN(value.value.self_test?.lastMstEnd?.seconds) === false ? Number(value.value.self_test.lastMstEnd.seconds) : 0;
+            RESTTypeData.self_test_in_progress =
+              value.value?.legacy_structure_self_test?.mstInProgress === true ||
+              value.value?.legacy_structure_self_test?.astInProgress === true;
+            RESTTypeData.replacement_date =
+              isNaN(value.value.legacy_protect_device_settings?.replaceByDate?.seconds) === false
+                ? Number(value.value.legacy_protect_device_settings.replaceByDate.seconds)
+                : 0;
+            RESTTypeData.topaz_hush_key =
+              typeof value.value?.safety_structure_settings?.structureHushKey === 'string'
+                ? value.value.safety_structure_settings.structureHushKey
+                : '';
+            RESTTypeData.detected_motion = value.value?.legacy_protect_device_info?.autoAway !== true;  // undefined or false = motion
+            RESTTypeData.description = typeof value.value?.label?.label === 'string' ? value.value.label.label : '';
+            RESTTypeData.location = get_location_name(
+              value.value?.device_info?.pairerId?.resourceId,
+              value.value?.device_located_settings?.whereAnnotationRid?.resourceId,
+            );
+            tempDevice = process_protect_data(object_key, RESTTypeData);
+          }
           if (
             value?.source === NestAccfactory.DataSource.REST &&
             value.value?.where_id !== undefined &&
@@ -2072,9 +2120,9 @@ export default class NestAccfactory {
             RESTTypeData.wired_or_battery = value.value.wired_or_battery;
             RESTTypeData.battery_level = value.value.battery_level;
             RESTTypeData.battery_health_state = value.value.battery_health_state;
-            RESTTypeData.smoke_status = value.value.smoke_status;
-            RESTTypeData.co_status = value.value.co_status;
-            RESTTypeData.heat_status = value.value.heat_status;
+            RESTTypeData.smoke_status = value.value.smoke_status !== 0;
+            RESTTypeData.co_status = value.value.co_status !== 0;
+            RESTTypeData.heat_status = value.value.heat_status !== 0;
             RESTTypeData.hushed_state = value.value.hushed_state === true;
             RESTTypeData.ntp_green_led_enable = value.value.ntp_green_led_enable === true;
             RESTTypeData.smoke_test_passed = value.value.component_smoke_test_passed === true;
@@ -2083,7 +2131,6 @@ export default class NestAccfactory {
             RESTTypeData.self_test_in_progress =
               this.#rawData?.['safety.' + value.value.structure_id]?.value?.manual_self_test_in_progress === true;
             RESTTypeData.replacement_date = value.value.replace_by_date_utc_secs;
-            RESTTypeData.removed_from_base = value.value.removed_from_base === true;
             RESTTypeData.topaz_hush_key =
               typeof this.#rawData?.['structure.' + value.value.structure_id]?.value?.topaz_hush_key === 'string'
                 ? this.#rawData?.['structure.' + value.value.structure_id]?.value?.topaz_hush_key
