@@ -3,13 +3,13 @@
 //
 // Handles connection and data from Google WebRTC systems
 //
-// Code version 15/11/2024
+// Code version 2025/01/18
 // Mark Hulskamp
 'use strict';
 
 // Define external library requirements
 import protobuf from 'protobufjs';
-import werift from 'werift';
+import * as werift from 'werift'
 
 // Define nodejs module requirements
 import EventEmitter from 'node:events';
