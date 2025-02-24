@@ -65,7 +65,7 @@
     },
     "dependencies": {
         "protobufjs": "^7.4.0",
-        "werift": "^0.21.10",
+        "werift": "^0.22.1",
         "ws": "^8.18.0"
     }
 }
