@@ -90,7 +90,8 @@
                     "ffmpegPath": {
                         "title": "Path to ffmpeg binary",
                         "type": "string",
-                        "placeholder": "Path to an ffmpeg binary. By default, we look in HomeBridge user path"
+                        "placeholder": "Path to an ffmpeg binary",
+                        "default": "/usr/local/bin/ffmpeg"
                     }
                 }
             }

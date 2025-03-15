@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/01/17
+// Code version 2025/03/16
 // Mark Hulskamp
 'use strict';
 
@@ -129,6 +129,10 @@ export default class NestAccfactory {
     this.config.options.weather = this.config.options?.weather === true;
     this.config.options.hksv = this.config.options?.hksv === true;
 
+    // Controls what APIs we use, default is to use both REST and protobuf APIs
+    this.config.options.restAPI = this.config.options?.restAPI === true || this.config.options?.restAPI === undefined;
+    this.config.options.protobufAPI = this.config.options?.protobufAPI === true || this.config.options?.protobufAPI === undefined;
+
     // Get configuration for max number of concurrent 'live view' streams. For HomeKit Secure Video, this will always be 1
     this.config.options.maxStreams =
       isNaN(this.config.options?.maxStreams) === false && this.deviceData?.hksv === false
@@ -137,16 +141,13 @@ export default class NestAccfactory {
           ? 1
           : 2;
 
-    // Check if a ffmpeg binary exists in current path OR the specific path via configuration
-    // If using HomeBridge, the default path will be where the Homebridge user folder is, otherwise the current directory
+    // Check if a ffmpeg binary exist via a specific path in configuration OR /usr/local/bin
     this.config.options.ffmpeg = {};
     this.config.options.ffmpeg.debug = this.config.options?.ffmpegDebug === true;
     this.config.options.ffmpeg.binary = path.resolve(
       typeof this.config.options?.ffmpegPath === 'string' && this.config.options.ffmpegPath !== ''
         ? this.config.options.ffmpegPath
-        : typeof api?.user?.storagePath === 'function'
-          ? api.user.storagePath()
-          : __dirname,
+        : '/usr/local/bin',
     );
 
     // If the path doesn't include 'ffmpeg' on the end, we'll add it here
@@ -170,6 +171,7 @@ export default class NestAccfactory {
       this.config.options.ffmpeg.binary = undefined;
     }
 
+    // Process ffmpeg binary to see if we can use it
     if (fs.existsSync(this.config.options.ffmpeg.binary) === true) {
       let ffmpegProcess = child_process.spawnSync(this.config.options.ffmpeg.binary, ['-version'], {
         env: process.env,
@@ -253,6 +255,10 @@ export default class NestAccfactory {
       }
     }
 
+    if (this.config.options.ffmpeg.binary !== undefined) {
+      this?.log?.success && this.log.success('Found valid ffmpeg binary in %s', this.config.options.ffmpeg.binary);
+    }
+
     if (this.api instanceof EventEmitter === true) {
       this.api.on('didFinishLaunching', async () => {
         // We got notified that Homebridge has finished loading, so we are ready to process
@@ -297,7 +303,7 @@ export default class NestAccfactory {
   }
 
   configureAccessory(accessory) {
-    // This gets called from HomeBridge each time it restores an accessory from its cache
+    // This gets called from Homebridge each time it restores an accessory from its cache
     this?.log?.info && this.log.info('Loading accessory from cache:', accessory.displayName);
 
     // add the restored accessory to the accessories cache, so we can track if it has already been registered
@@ -308,8 +314,10 @@ export default class NestAccfactory {
     Object.keys(this.#connections).forEach((uuid) => {
       if (this.#connections[uuid].authorised === false) {
         this.#connect(uuid).then(() => {
-          if (this.#connections[uuid].authorised === true) {
+          if (this.#connections[uuid].authorised === true && this.config.options?.restAPI === true) {
             this.#subscribeREST(uuid, true);
+          }
+          if (this.#connections[uuid].authorised === true && this.config.options?.protobufAPI === true) {
             this.#subscribeProtobuf(uuid, true);
           }
         });
@@ -1474,7 +1482,11 @@ export default class NestAccfactory {
       .forEach(([object_key, value]) => {
         let tempDevice = {};
         try {
-          if (value?.source === NestAccfactory.DataSource.PROTOBUF && value.value?.configuration_done?.deviceReady === true) {
+          if (
+            value?.source === NestAccfactory.DataSource.PROTOBUF &&
+            this.config.options?.protobufAPI === true &&
+            value.value?.configuration_done?.deviceReady === true
+          ) {
             let RESTTypeData = {};
             RESTTypeData.serialNumber = value.value.device_identity.serialNumber;
             RESTTypeData.softwareVersion =
@@ -1704,7 +1716,11 @@ export default class NestAccfactory {
             tempDevice = process_thermostat_data(object_key, RESTTypeData);
           }
 
-          if (value?.source === NestAccfactory.DataSource.REST && value.value?.where_id !== undefined) {
+          if (
+            value?.source === NestAccfactory.DataSource.REST &&
+            this.config.options?.restAPI === true &&
+            value.value?.where_id !== undefined
+          ) {
             let RESTTypeData = {};
             RESTTypeData.serialNumber = value.value.serial_number;
             RESTTypeData.softwareVersion = value.value.current_version;
@@ -1969,6 +1985,7 @@ export default class NestAccfactory {
         try {
           if (
             value?.source === NestAccfactory.DataSource.PROTOBUF &&
+            this.config.options?.protobufAPI === true &&
             value.value?.configuration_done?.deviceReady === true &&
             typeof value?.value?.associated_thermostat === 'string' &&
             value?.value?.associated_thermostat !== ''
@@ -1993,6 +2010,7 @@ export default class NestAccfactory {
           }
           if (
             value?.source === NestAccfactory.DataSource.REST &&
+            this.config.options?.restAPI === true &&
             value.value?.where_id !== undefined &&
             value.value?.structure_id !== undefined &&
             typeof value?.value?.associated_thermostat === 'string' &&
@@ -2030,7 +2048,6 @@ export default class NestAccfactory {
         // Fix up data we need to
         data = process_common_data(object_key, data);
         data.device_type = NestAccfactory.DeviceType.SMOKESENSOR; // Nest Protect
-        data.battery_level = scaleValue(data.battery_level, 0, 5400, 0, 100);
         data.model = 'Protect';
         if (data.wired_or_battery === 0) {
           data.model = data.model + ' (wired'; // Mains powered
@@ -2062,7 +2079,11 @@ export default class NestAccfactory {
       .forEach(([object_key, value]) => {
         let tempDevice = {};
         try {
-          if (value?.source === NestAccfactory.DataSource.PROTOBUF && value.value?.configuration_done?.deviceReady === true) {
+          if (
+            value?.source === NestAccfactory.DataSource.PROTOBUF &&
+            this.config.options?.protobufAPI === true &&
+            value.value?.configuration_done?.deviceReady === true
+          ) {
             let RESTTypeData = {};
             RESTTypeData.serialNumber = value.value.device_identity.serialNumber;
             RESTTypeData.softwareVersion =
@@ -2072,8 +2093,15 @@ export default class NestAccfactory {
             RESTTypeData.online = value.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE';
             RESTTypeData.line_power_present = value.value?.wall_power?.status === 'POWER_SOURCE_STATUS_ACTIVE';
             RESTTypeData.wired_or_battery = typeof value.value?.wall_power?.status === 'string' ? 0 : 1;
-            RESTTypeData.battery_level = parseFloat(value.value.battery_voltage_bank1.batteryValue.batteryVoltage.value);
-            RESTTypeData.battery_health_state = value.value.battery_voltage_bank1.faultInformation;
+            RESTTypeData.battery_level =
+              isNaN(value.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === false
+                ? scaleValue(Number(value.value.battery_voltage_bank1.batteryValue.batteryVoltage.value), 0, 5.4, 0, 100)
+                : 0;
+            RESTTypeData.battery_health_state =
+              value.value?.battery_voltage_bank0?.faultInformation === undefined &&
+              value.value?.battery_voltage_bank1?.faultInformation === undefined
+                ? 0
+                : 1;
             RESTTypeData.smoke_status = value.value?.safety_alarm_smoke?.alarmState === 'ALARM_STATE_ALARM';
             RESTTypeData.co_status = value.value?.safety_alarm_co?.alarmState === 'ALARM_STATE_ALARM';
             RESTTypeData.heat_status = false; // To find in protobuf
@@ -2112,6 +2140,7 @@ export default class NestAccfactory {
           }
           if (
             value?.source === NestAccfactory.DataSource.REST &&
+            this.config.options?.restAPI === true &&
             value.value?.where_id !== undefined &&
             value.value?.structure_id !== undefined
           ) {
@@ -2124,7 +2153,7 @@ export default class NestAccfactory {
                 : false;
             RESTTypeData.line_power_present = value.value.line_power_present === true;
             RESTTypeData.wired_or_battery = value.value.wired_or_battery;
-            RESTTypeData.battery_level = value.value.battery_level;
+            RESTTypeData.battery_level = scaleValue(value.value.battery_level, 0, 5400, 0, 100);
             RESTTypeData.battery_health_state = value.value.battery_health_state;
             RESTTypeData.smoke_status = value.value.smoke_status !== 0;
             RESTTypeData.co_status = value.value.co_status !== 0;
@@ -2204,6 +2233,7 @@ export default class NestAccfactory {
         try {
           if (
             value?.source === NestAccfactory.DataSource.PROTOBUF &&
+            this.config.options?.protobufAPI === true &&
             Array.isArray(value.value?.streaming_protocol?.supportedProtocols) === true &&
             value.value.streaming_protocol.supportedProtocols.includes('PROTOCOL_WEBRTC') === true &&
             (value.value?.configuration_done?.deviceReady === true ||
@@ -2318,6 +2348,7 @@ export default class NestAccfactory {
 
           if (
             value?.source === NestAccfactory.DataSource.REST &&
+            this.config.options?.restAPI === true &&
             value.value?.where_id !== undefined &&
             value.value?.structure_id !== undefined &&
             value.value?.nexus_api_http_server_url !== undefined &&
@@ -2451,6 +2482,7 @@ export default class NestAccfactory {
         try {
           if (
             value?.source === NestAccfactory.DataSource.PROTOBUF &&
+            this.config.options?.protobufAPI === true &&
             value.value?.structure_location?.geoCoordinate?.latitude !== undefined &&
             value.value?.structure_location?.geoCoordinate?.longitude !== undefined
           ) {
@@ -2475,6 +2507,7 @@ export default class NestAccfactory {
 
           if (
             value?.source === NestAccfactory.DataSource.REST &&
+            this.config.options?.restAPI === true &&
             value.value?.latitude !== undefined &&
             value.value?.longitude !== undefined
           ) {
@@ -3193,7 +3226,7 @@ function makeHomeKitName(nameToMakeValid) {
   // Matches against uni-code characters
   return typeof nameToMakeValid === 'string'
     ? nameToMakeValid
-        .replace(/[^\p{L}\p{N}\p{Z}\u2019.,-]/gu, '')
+        .replace(/[^\p{L}\p{N}\p{Z}\u2019 '.,-]/gu, '')
         .replace(/^[^\p{L}\p{N}]*/gu, '')
         .replace(/[^\p{L}\p{N}]+$/gu, '')
     : nameToMakeValid;

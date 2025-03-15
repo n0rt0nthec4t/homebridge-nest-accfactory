@@ -95,37 +95,35 @@ Sample config.json entries below
 
 The following options are available in the config.json options object. These apply to all discovered devices.
 
-| Name              | Description                                                                                   | Default    |
-|-------------------|-----------------------------------------------------------------------------------------------|------------|
-| elevation         | Height above sea level for the weather station                                                | 0          |
-| eveHistory        | Provide history in EveHome application where applicable                                       | true       |
-| ffmegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                 | false      |
-| ffmegPath         | Path to an ffmpeg binary for us to use. Will look in current directory by default             |            |
-| hksv              | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                           | false      |
-| maxStreams        | Maximum number of concurrent video streams in HomeKit for supported camera(s) and doorbell(s) | 2          |
-| weather           | Virtual weather station for each Nest/Google home we discover                                 | false      |
+| Name              | Description                                                                                   | Default        |
+|-------------------|-----------------------------------------------------------------------------------------------|----------------|
+| elevation         | Height above sea level for the weather station                                                | 0              |
+| eveHistory        | Provide history in EveHome application where applicable                                       | true           |
+| ffmegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                 | false          |
+| ffmegPath         | Path to an ffmpeg binary for us to use                                                        | /usr/local/bin |
+| hksv              | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                           | false          |
+| maxStreams        | Maximum number of concurrent video streams in HomeKit for supported camera(s) and doorbell(s) | 2              |
+| weather           | Virtual weather station for each Nest/Google home we discover                                 | false          |
 
 #### devices
 
 The following options are available on a per-device level in the config.json devices object. The device is specified by using its serial number (in uppercase)
 
-| Name              | Description                                                                                   | Default    |
-|-------------------|-----------------------------------------------------------------------------------------------|------------|
-| chimeSwitch       | Create a switch for supported doorbell(s) which allows the indoor chime to be turned on/off   | false      |
-| doorbellCooldown  | Time in seconds between doorbell press events                                                 | 60         | 
-| elevation         | Height above sea level for the specific weather station                                       | 0          |
-| eveHistory        | Provide history in EveHome application where applicable for the specific device               | true       |
-| exclude           | Exclude the device                                                                            | false      |
-| ffmegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                 | false      |
-| hksv              | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                           | false      |
-| humiditySensor    | Create a seperate humidity sensor for supported thermostat(s)                                 | false      |
-| localAccess       | Use direct access to supported camera(s) and doorbell(s) for video streaming and recording    | false      |    
-| motionCooldown    | Time in seconds between detected motion events                                                | 60         |
-| personCooldown    | Time in seconds between detected person events                                                | 120        |
+| Name              | Description                                                                                   | Default        |
+|-------------------|-----------------------------------------------------------------------------------------------|----------------|
+| chimeSwitch       | Create a switch for supported doorbell(s) which allows the indoor chime to be turned on/off   | false          |
+| doorbellCooldown  | Time in seconds between doorbell press events                                                 | 60             | 
+| elevation         | Height above sea level for the specific weather station                                       | 0              |
+| eveHistory        | Provide history in EveHome application where applicable for the specific device               | true           |
+| exclude           | Exclude the device                                                                            | false          |
+| ffmegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                 | false          |
+| hksv              | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                           | false          |
+| humiditySensor    | Create a seperate humidity sensor for supported thermostat(s)                                 | false          |
+| localAccess       | Use direct access to supported camera(s) and doorbell(s) for video streaming and recording    | false          |    
+| motionCooldown    | Time in seconds between detected motion events                                                | 60             |
+| personCooldown    | Time in seconds between detected person events                                                | 120            |
 
 ## ffmpeg
-
-**As of 3/10/2024, the [Homebridge Docker Image](https://hub.docker.com/r/homebridge/homebridge) includes an ffmpeg binary meeting our requirements. Its located in /usr/local/bin/ffmpeg**
 
 To support streaming and recording from cameras, an ffmpeg binary needs to be present. We have specific requirements, which are:
 - version 6.0 or later
@@ -135,7 +133,7 @@ To support streaming and recording from cameras, an ffmpeg binary needs to be pr
   - libspeex
   - libopus
 
-By default, we look in the current directory where the plug-in excutes for an ffmpeg binary, however, you can specify a specific ffmpeg binary to use via the configuration option 'ffmpegPath'
+By default, we look in /usr/local/bin for an ffmpeg binary, however, you can specify a specific ffmpeg binary to use via the configuration option 'ffmpegPath'
 
 ## Disclaimer
 

@@ -9,7 +9,7 @@
 
 // Define external library requirements
 import protobuf from 'protobufjs';
-import * as werift from 'werift'
+import * as werift from 'werift';
 
 // Define nodejs module requirements
 import EventEmitter from 'node:events';
