@@ -17,7 +17,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 20/11/2024
+// Code version 2025/03/16
 // Mark Hulskamp
 'use strict';
 
@@ -162,7 +162,7 @@ export default class Streamer {
   startBuffering() {
     if (this.#outputs?.buffer === undefined) {
       // No active buffer session, start connection to streamer
-      if (this.connected === undefined && typeof this.connect === 'function') {
+      if (this.online === true && this.videoEnabled === true && this.connected === undefined && typeof this.connect === 'function') {
         this?.log?.debug && this.log.debug('Started buffering for uuid "%s"', this.uuid);
         this.connect();
       }
@@ -209,7 +209,7 @@ export default class Streamer {
       });
     }
 
-    if (this.connected === undefined && typeof this.connect === 'function') {
+    if (this.online === true && this.videoEnabled === true && this.connected === undefined && typeof this.connect === 'function') {
       // We do not have an active connection, so startup connection
       this.connect();
     }
@@ -247,7 +247,7 @@ export default class Streamer {
       });
     }
 
-    if (this.connected === undefined && typeof this.connect === 'function') {
+    if (this.connected === undefined && typeof this.connect === 'function' && this.online === true && this.videoEnabled === true) {
       // We do not have an active connection, so startup connection
       this.connect();
     }
@@ -328,7 +328,7 @@ export default class Streamer {
         if (typeof this.close === 'function') {
           this.close();
         }
-        if (typeof this.connect === 'function') {
+        if (this.online === true && this.videoEnabled === true && this.connected === undefined && typeof this.connect === 'function') {
           this.connect();
         }
       }

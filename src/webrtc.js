@@ -2,8 +2,9 @@
 // Part of homebridge-nest-accfactory
 //
 // Handles connection and data from Google WebRTC systems
+// Currently a "work in progress"
 //
-// Code version 2025/01/18
+// Code version 2025/03/16
 // Mark Hulskamp
 'use strict';
 
@@ -98,194 +99,196 @@ export default class WebRTC extends Streamer {
     this.stalledTimer = undefined;
     this.#id = undefined;
 
-    if (this.#googleHomeDeviceUUID === undefined) {
-      // We don't have the 'google id' yet for this device, so obtain
-      let homeFoyerResponse = await this.#googleHomeFoyerCommand('StructuresService', 'GetHomeGraph', {
-        requestId: crypto.randomUUID(),
-      });
+    if (this.online === true && this.videoEnabled === true) {
+      if (this.#googleHomeDeviceUUID === undefined) {
+        // We don't have the 'google id' yet for this device, so obtain
+        let homeFoyerResponse = await this.#googleHomeFoyerCommand('StructuresService', 'GetHomeGraph', {
+          requestId: crypto.randomUUID(),
+        });
 
-      // Translate our uuid (DEVICE_xxxxxxxxxx) into the associated 'google id' from the Google Home Foyer
-      // We need this id for SOME calls to Google Home Foyer services. Gotta love consistancy :-)
-      if (homeFoyerResponse?.data?.[0]?.homes !== undefined) {
-        Object.values(homeFoyerResponse?.data?.[0]?.homes).forEach((home) => {
-          Object.values(home.devices).forEach((device) => {
-            if (device?.id?.googleUuid !== undefined && device?.otherIds?.otherThirdPartyId !== undefined) {
-              // Test to see if our uuid matches here
-              let currentGoogleUuid = device?.id?.googleUuid;
-              Object.values(device.otherIds.otherThirdPartyId).forEach((other) => {
-                if (other?.id === this.uuid) {
-                  this.#googleHomeDeviceUUID = currentGoogleUuid;
-                }
-              });
-            }
+        // Translate our uuid (DEVICE_xxxxxxxxxx) into the associated 'google id' from the Google Home Foyer
+        // We need this id for SOME calls to Google Home Foyer services. Gotta love consistancy :-)
+        if (homeFoyerResponse?.data?.[0]?.homes !== undefined) {
+          Object.values(homeFoyerResponse?.data?.[0]?.homes).forEach((home) => {
+            Object.values(home.devices).forEach((device) => {
+              if (device?.id?.googleUuid !== undefined && device?.otherIds?.otherThirdPartyId !== undefined) {
+                // Test to see if our uuid matches here
+                let currentGoogleUuid = device?.id?.googleUuid;
+                Object.values(device.otherIds.otherThirdPartyId).forEach((other) => {
+                  if (other?.id === this.uuid) {
+                    this.#googleHomeDeviceUUID = currentGoogleUuid;
+                  }
+                });
+              }
+            });
           });
-        });
-      }
-    }
-
-    if (this.#googleHomeDeviceUUID !== undefined) {
-      // Start setting up connection to camera stream
-      this.connected = false; // Starting connection
-      let homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'SendCameraViewIntent', {
-        request: {
-          googleDeviceId: {
-            value: this.#googleHomeDeviceUUID,
-          },
-          command: 'VIEW_INTENT_START',
-        },
-      });
-
-      if (homeFoyerResponse.status !== 0) {
-        this.connected = undefined;
-        this?.log?.debug && this.log.debug('Request to start camera viewing was not accepted for uuid "%s"', this.uuid);
+        }
       }
 
-      if (homeFoyerResponse.status === 0) {
-        // Setup our WebWRTC peer connection for this device
-        this.#peerConnection = new werift.RTCPeerConnection({
-          iceUseIpv4: true,
-          iceUseIpv6: false,
-          bundlePolicy: 'max-bundle',
-          codecs: {
-            audio: [
-              new werift.RTCRtpCodecParameters({
-                mimeType: 'audio/opus',
-                clockRate: 48000,
-                channels: 2,
-                rtcpFeedback: [{ type: 'transport-cc' }, { type: 'nack' }],
-                parameters: 'minptime=10;useinbandfec=1',
-                payloadType: RTP_AUDIO_PAYLOAD_TYPE,
-              }),
-            ],
-            video: [
-              // H264 Main profile, level 4.0
-              new werift.RTCRtpCodecParameters({
-                mimeType: 'video/H264',
-                clockRate: 90000,
-                rtcpFeedback: [
-                  { type: 'transport-cc' },
-                  { type: 'ccm', parameter: 'fir' },
-                  { type: 'nack' },
-                  { type: 'nack', parameter: 'pli' },
-                  { type: 'goog-remb' },
-                ],
-                parameters: 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
-                payloadType: RTP_VIDEO_PAYLOAD_TYPE,
-              }),
-            ],
+      if (this.#googleHomeDeviceUUID !== undefined) {
+        // Start setting up connection to camera stream
+        this.connected = false; // Starting connection
+        let homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'SendCameraViewIntent', {
+          request: {
+            googleDeviceId: {
+              value: this.#googleHomeDeviceUUID,
+            },
+            command: 'VIEW_INTENT_START',
           },
-          headerExtensions: {
-            audio: [werift.useTransportWideCC(), werift.useAudioLevelIndication()],
-          },
-        });
-
-        this.#peerConnection.createDataChannel('webrtc-datachannel');
-
-        this.#audioTransceiver = this.#peerConnection.addTransceiver('audio', {
-          direction: 'sendrecv',
-        });
-
-        this.#videoTransceiver = this.#peerConnection.addTransceiver('video', {
-          direction: 'recvonly',
-        });
-
-        let webRTCOffer = await this.#peerConnection.createOffer();
-        await this.#peerConnection.setLocalDescription(webRTCOffer);
-
-        this?.log?.debug && this.log.debug('Sending WebRTC offer for uuid "%s"', this.uuid);
-
-        homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'JoinStream', {
-          command: 'offer',
-          deviceId: this.uuid,
-          local: this.localAccess,
-          streamContext: 'STREAM_CONTEXT_DEFAULT',
-          requestedVideoResolution: 'VIDEO_RESOLUTION_FULL_HIGH',
-          sdp: webRTCOffer.sdp,
         });
 
         if (homeFoyerResponse.status !== 0) {
           this.connected = undefined;
-          this?.log?.debug && this.log.debug('WebRTC offer was not agreed with remote for uuid "%s"', this.uuid);
+          this?.log?.debug && this.log.debug('Request to start camera viewing was not accepted for uuid "%s"', this.uuid);
         }
 
-        if (
-          homeFoyerResponse.status === 0 &&
-          homeFoyerResponse.data?.[0]?.responseType === 'answer' &&
-          homeFoyerResponse.data?.[0]?.streamId !== undefined
-        ) {
-          this?.log?.debug && this.log.debug('WebRTC offer agreed with remote for uuid "%s"', this.uuid);
+        if (homeFoyerResponse.status === 0) {
+          // Setup our WebWRTC peer connection for this device
+          this.#peerConnection = new werift.RTCPeerConnection({
+            iceUseIpv4: true,
+            iceUseIpv6: false,
+            bundlePolicy: 'max-bundle',
+            codecs: {
+              audio: [
+                new werift.RTCRtpCodecParameters({
+                  mimeType: 'audio/opus',
+                  clockRate: 48000,
+                  channels: 2,
+                  rtcpFeedback: [{ type: 'transport-cc' }, { type: 'nack' }],
+                  parameters: 'minptime=10;useinbandfec=1',
+                  payloadType: RTP_AUDIO_PAYLOAD_TYPE,
+                }),
+              ],
+              video: [
+                // H264 Main profile, level 4.0
+                new werift.RTCRtpCodecParameters({
+                  mimeType: 'video/H264',
+                  clockRate: 90000,
+                  rtcpFeedback: [
+                    { type: 'transport-cc' },
+                    { type: 'ccm', parameter: 'fir' },
+                    { type: 'nack' },
+                    { type: 'nack', parameter: 'pli' },
+                    { type: 'goog-remb' },
+                  ],
+                  parameters: 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
+                  payloadType: RTP_VIDEO_PAYLOAD_TYPE,
+                }),
+              ],
+            },
+            headerExtensions: {
+              audio: [werift.useTransportWideCC(), werift.useAudioLevelIndication()],
+            },
+          });
 
-          this.#audioTransceiver?.onTrack &&
-            this.#audioTransceiver.onTrack.subscribe((track) => {
-              this.#handlePlaybackBegin(track);
+          this.#peerConnection.createDataChannel('webrtc-datachannel');
 
-              track.onReceiveRtp.subscribe((rtp) => {
-                this.#handlePlaybackPacket(rtp);
+          this.#audioTransceiver = this.#peerConnection.addTransceiver('audio', {
+            direction: 'sendrecv',
+          });
+
+          this.#videoTransceiver = this.#peerConnection.addTransceiver('video', {
+            direction: 'recvonly',
+          });
+
+          let webRTCOffer = await this.#peerConnection.createOffer();
+          await this.#peerConnection.setLocalDescription(webRTCOffer);
+
+          this?.log?.debug && this.log.debug('Sending WebRTC offer for uuid "%s"', this.uuid);
+
+          homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'JoinStream', {
+            command: 'offer',
+            deviceId: this.uuid,
+            local: this.localAccess,
+            streamContext: 'STREAM_CONTEXT_DEFAULT',
+            requestedVideoResolution: 'VIDEO_RESOLUTION_FULL_HIGH',
+            sdp: webRTCOffer.sdp,
+          });
+
+          if (homeFoyerResponse.status !== 0) {
+            this.connected = undefined;
+            this?.log?.debug && this.log.debug('WebRTC offer was not agreed with remote for uuid "%s"', this.uuid);
+          }
+
+          if (
+            homeFoyerResponse.status === 0 &&
+            homeFoyerResponse.data?.[0]?.responseType === 'answer' &&
+            homeFoyerResponse.data?.[0]?.streamId !== undefined
+          ) {
+            this?.log?.debug && this.log.debug('WebRTC offer agreed with remote for uuid "%s"', this.uuid);
+
+            this.#audioTransceiver?.onTrack &&
+              this.#audioTransceiver.onTrack.subscribe((track) => {
+                this.#handlePlaybackBegin(track);
+
+                track.onReceiveRtp.subscribe((rtp) => {
+                  this.#handlePlaybackPacket(rtp);
+                });
               });
-            });
 
-          this.#videoTransceiver?.onTrack &&
-            this.#videoTransceiver.onTrack.subscribe((track) => {
-              this.#handlePlaybackBegin(track);
+            this.#videoTransceiver?.onTrack &&
+              this.#videoTransceiver.onTrack.subscribe((track) => {
+                this.#handlePlaybackBegin(track);
 
-              track.onReceiveRtp.subscribe((rtp) => {
-                this.#handlePlaybackPacket(rtp);
+                track.onReceiveRtp.subscribe((rtp) => {
+                  this.#handlePlaybackPacket(rtp);
+                });
+                track.onReceiveRtcp.once(() => {
+                  setInterval(() => {
+                    if (this.#videoTransceiver?.receiver !== undefined) {
+                      this.#videoTransceiver.receiver.sendRtcpPLI(track.ssrc);
+                    }
+                  }, 2000);
+                });
               });
-              track.onReceiveRtcp.once(() => {
-                setInterval(() => {
-                  if (this.#videoTransceiver?.receiver !== undefined) {
-                    this.#videoTransceiver.receiver.sendRtcpPLI(track.ssrc);
+
+            this.#id = homeFoyerResponse.data[0].streamId;
+            this.#peerConnection &&
+              (await this.#peerConnection.setRemoteDescription({
+                type: 'answer',
+                sdp: homeFoyerResponse.data[0].sdp,
+              }));
+
+            this?.log?.debug && this.log.debug('Playback started from WebRTC for uuid "%s" with session ID "%s"', this.uuid, this.#id);
+            this.connected = true;
+
+            // Monitor connection status. If closed and there are still output streams, re-connect
+            // Never seem to get a 'connected' status. Could use that for something?
+            this.#peerConnection &&
+              this.#peerConnection.connectionStateChange.subscribe((state) => {
+                if (state !== 'connected' && state !== 'connecting') {
+                  this?.log?.debug && this.log.debug('Connection closed to WebRTC for uuid "%s"', this.uuid);
+                  this.connected = undefined;
+                  if (this.haveOutputs() === true) {
+                    this.connect();
                   }
-                }, 2000);
-              });
-            });
-
-          this.#id = homeFoyerResponse.data[0].streamId;
-          this.#peerConnection &&
-            (await this.#peerConnection.setRemoteDescription({
-              type: 'answer',
-              sdp: homeFoyerResponse.data[0].sdp,
-            }));
-
-          this?.log?.debug && this.log.debug('Playback started from WebRTC for uuid "%s" with session ID "%s"', this.uuid, this.#id);
-          this.connected = true;
-
-          // Monitor connection status. If closed and there are still output streams, re-connect
-          // Never seem to get a 'connected' status. Could use that for something?
-          this.#peerConnection &&
-            this.#peerConnection.connectionStateChange.subscribe((state) => {
-              if (state !== 'connected' && state !== 'connecting') {
-                this?.log?.debug && this.log.debug('Connection closed to WebRTC for uuid "%s"', this.uuid);
-                this.connected = undefined;
-                if (this.haveOutputs() === true) {
-                  this.connect();
                 }
-              }
-            });
-
-          // Create a timer to extend the active stream every period as defined
-          this.extendTimer = setInterval(async () => {
-            if (
-              this.#googleHomeFoyer !== undefined &&
-              this.connected === true &&
-              this.#id !== undefined &&
-              this.#googleHomeDeviceUUID !== undefined
-            ) {
-              let homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'JoinStream', {
-                command: 'extend',
-                deviceId: this.uuid,
-                streamId: this.#id,
               });
 
-              if (homeFoyerResponse?.data?.[0]?.streamExtensionStatus !== 'STATUS_STREAM_EXTENDED') {
-                this?.log?.debug && this.log.debug('Error occurred while requested stream extension for uuid "%s"', this.uuid);
+            // Create a timer to extend the active stream every period as defined
+            this.extendTimer = setInterval(async () => {
+              if (
+                this.#googleHomeFoyer !== undefined &&
+                this.connected === true &&
+                this.#id !== undefined &&
+                this.#googleHomeDeviceUUID !== undefined
+              ) {
+                let homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'JoinStream', {
+                  command: 'extend',
+                  deviceId: this.uuid,
+                  streamId: this.#id,
+                });
 
-                if (typeof this.#peerConnection?.close === 'function') {
-                  await this.#peerConnection.close();
+                if (homeFoyerResponse?.data?.[0]?.streamExtensionStatus !== 'STATUS_STREAM_EXTENDED') {
+                  this?.log?.debug && this.log.debug('Error occurred while requested stream extension for uuid "%s"', this.uuid);
+
+                  if (typeof this.#peerConnection?.close === 'function') {
+                    await this.#peerConnection.close();
+                  }
                 }
               }
-            }
-          }, EXTENDINTERVAL);
+            }, EXTENDINTERVAL);
+          }
         }
       }
     }
