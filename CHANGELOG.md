@@ -4,6 +4,7 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 ## v0.2.6 (alpha)
 
+- General code cleanup and bug fixes
 - Support for Nest Protect(s) in Google Home app
 - Default location to check for ffmpeg binary is now /usr/local/bin
 - Logs Nest Protect(s) self testing status
