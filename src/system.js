@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/03/16
+// Code version 2025/03/20
 // Mark Hulskamp
 'use strict';
 
@@ -994,6 +994,7 @@ export default class NestAccfactory {
           this.log.debug('Error was "%s"', error);
         }
       })
+
       .finally(() => {
         this?.log?.debug && this.log.debug('Restarting Protobuf API trait observe for connection uuid "%s"', connectionUUID);
         setTimeout(this.#subscribeProtobuf.bind(this, connectionUUID, false), 1000);
@@ -1005,7 +1006,16 @@ export default class NestAccfactory {
       if (this.#trackedDevices?.[deviceData?.serialNumber] === undefined && deviceData?.excluded === true) {
         // We haven't tracked this device before (ie: should be a new one) and but its excluded
         this?.log?.warn && this.log.warn('Device "%s" is ignored due to it being marked as excluded', deviceData.description);
+
+        // Track this device even though its excluded
+        this.#trackedDevices[deviceData.serialNumber] = {
+          uuid: undefined,
+          rawDataUuid: deviceData.nest_google_uuid,
+          source: undefined,
+          exclude: true,
+        };
       }
+
       if (this.#trackedDevices?.[deviceData?.serialNumber] === undefined && deviceData?.excluded === false) {
         // We haven't tracked this device before (ie: should be a new one) and its not excluded
         // so create the required HomeKit accessories based upon the device data
