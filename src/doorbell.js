@@ -1,7 +1,7 @@
 // Nest Doorbell(s)
 // Part of homebridge-nest-accfactory
 //
-// Code version 11/10/2024
+// Code version 2025/03/19
 // Mark Hulskamp
 'use strict';
 
@@ -21,13 +21,9 @@ export default class NestDoorbell extends NestCamera {
 
   // Class functions
   addServices() {
-    // Setup some details around the doorbell BEFORE will call out parent addServices function
-    this.createCameraMotionServices();
-    this.controller = new this.hap.DoorbellController(this.generateControllerOptions());
-    this.accessory.configureController(this.controller);
-
     // Call parent to setup the common camera things. Once we return, we can add in the specifics for our doorbell
-    let postSetupDetails = super.addServices();
+    // We pass in the HAP Doorbell controller constructor function here also
+    let postSetupDetails = super.addServices(this.hap.DoorbellController);
 
     this.switchService = this.accessory.getService(this.hap.Service.Switch);
     if (this.deviceData.has_indoor_chime === true && this.deviceData.chimeSwitch === true) {

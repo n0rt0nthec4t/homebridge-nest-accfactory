@@ -1,7 +1,7 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 2024/12/11
+// Code version 2025/03/19
 // Mark Hulskamp
 'use strict';
 
@@ -71,15 +71,19 @@ export default class NestCamera extends HomeKitDevice {
   }
 
   // Class functions
-  addServices() {
+  addServices(hapController = this.hap.CameraController) {
     // Setup motion services
     if (this.motionServices === undefined) {
       this.createCameraMotionServices();
     }
 
-    // Setup HomeKit camera controller
-    if (this.controller === undefined) {
-      this.controller = new this.hap.CameraController(this.generateControllerOptions());
+    // Setup HomeKit camera/doorbell controller
+    if (this.controller === undefined && typeof hapController === 'function') {
+      // Need to cleanup the CameraOperatingMode service. This is to allow seamless configuration
+      // switching between enabling hksv or not
+      // Thanks to @bcullman (Brad Ullman) for catching this
+      this.accessory.removeService(this.accessory.getService(this.hap.Service.CameraOperatingMode));
+      this.controller = new hapController(this.generateControllerOptions());
       this.accessory.configureController(this.controller);
     }
 
@@ -87,7 +91,7 @@ export default class NestCamera extends HomeKitDevice {
     this.operatingModeService = this.controller?.recordingManagement?.operatingModeService;
     if (this.operatingModeService === undefined) {
       // Add in operating mode service for a non-hksv camera/doorbell
-      // Allow us to change things such as night vision, camera indicator etc within HomeKit for those also:-)
+      // Allow us to change things such as night vision, camera indicator etc within HomeKit for those also :-)
       this.operatingModeService = this.accessory.getService(this.hap.Service.CameraOperatingMode);
       if (this.operatingModeService === undefined) {
         this.operatingModeService = this.accessory.addService(this.hap.Service.CameraOperatingMode, '', 1);
