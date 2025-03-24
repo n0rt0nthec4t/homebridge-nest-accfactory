@@ -27,6 +27,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with: 
+          submodules: true
       
       # Extract version number from package.json
       - name: Extract version
