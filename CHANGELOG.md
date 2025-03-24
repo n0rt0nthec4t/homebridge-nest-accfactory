@@ -2,7 +2,7 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.2.6 (205/03/23)
+## v0.2.8 (2025/03/23)
 
 - General code cleanup and bug fixes
 - Support for Nest Protect(s) in Google Home app
