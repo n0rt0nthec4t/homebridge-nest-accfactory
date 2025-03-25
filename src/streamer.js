@@ -17,7 +17,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2025/03/16
+// Code version 2025/03/25
 // Mark Hulskamp
 'use strict';
 
@@ -273,7 +273,7 @@ export default class Streamer {
     }
 
     // If we have no more output streams active, we'll close the connection
-    if (Object.keys(this.#outputs).length === 0 && typeof this.close === 'function') {
+    if (this.haveOutputs() === false && typeof this.close === 'function') {
       this.close();
     }
   }
@@ -286,7 +286,7 @@ export default class Streamer {
     }
 
     // If we have no more output streams active, we'll close the connection
-    if (Object.keys(this.#outputs).length === 0 && typeof this.close === 'function') {
+    if (this.haveOutputs() === false && typeof this.close === 'function') {
       this.close();
     }
   }
@@ -298,13 +298,13 @@ export default class Streamer {
     }
 
     // If we have no more output streams active, we'll close the connection
-    if (Object.keys(this.#outputs).length === 0 && typeof this.close === 'function') {
+    if (this.haveOutputs() === false && typeof this.close === 'function') {
       this.close();
     }
   }
 
   stopEverything() {
-    if (Object.keys(this.#outputs).length > 0) {
+    if (this.haveOutputs() === true) {
       this?.log?.debug && this.log.debug('Stopped buffering, live and recording from uuid "%s"', this.uuid);
       this.#outputs = {}; // No more outputs
       if (typeof this.close === 'function') {
@@ -323,8 +323,8 @@ export default class Streamer {
     if (this.uuid !== deviceData?.nest_google_uuid) {
       this.uuid = deviceData?.nest_google_uuid;
 
-      if (Object.keys(this.#outputs).length > 0) {
-        // Since the uuid has change and a streamer may use this, if there any any active outpuyts, close and connect again
+      if (this.haveOutputs() === true) {
+        // Since the uuid has change and a streamer may use this, if there any any active outputs, close and connect again
         if (typeof this.close === 'function') {
           this.close();
         }
@@ -343,11 +343,15 @@ export default class Streamer {
       this.online = deviceData?.online === true;
       this.videoEnabled = deviceData?.streaming_enabled === true;
       this.audioEnabled = deviceData?.audio_enabled === true;
-      if ((this.online === false || this.videoEnabled === false || this.audioEnabled === false) && typeof this.close === 'function') {
-        this.close(); // as offline or streaming not enabled, close streamer
-      }
-      if (this.online === true && this.videoEnabled === true && this.connected === undefined && typeof this.connect === 'function') {
-        this.connect(); // Connect for stream
+
+      if (this.haveOutputs() === true) {
+        // Since online, video, audio enabled status has changed, if there any any active outputs, close and connect again
+        if ((this.online === false || this.videoEnabled === false || this.audioEnabled === false) && typeof this.close === 'function') {
+          this.close(); // as offline or streaming not enabled, close streamer
+        }
+        if (this.online === true && this.videoEnabled === true && this.connected === undefined && typeof this.connect === 'function') {
+          this.connect(); // Connect for stream
+        }
       }
     }
   }
