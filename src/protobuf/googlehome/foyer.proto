@@ -211,47 +211,6 @@ message UpdateTraitsResponse {
 
 }
 
-message GetAssistantDeviceSettingsResponse {
-  message Message1 {
-    uint32 num1 = 1;
-    uint32 num2 = 2;
-    uint32 num4 = 4;
-    uint32 num5 = 5;
-    uint32 num6 = 6;
-    string string10 = 10;
-  }
-  Message1 message1 = 1;
-}
-
-message UpdateAssistantDeviceSettingsRequest {
-  string string1 = 1;
-
-  message DeviceInfo {
-    string device_id = 1;
-
-    message ProjectInfo {
-      string api_project_id = 1;
-      string string2 = 2;
-    }
-    ProjectInfo project_info = 2;
-  }
-  DeviceInfo device_info = 2;
-
-  message UpdateData {
-    message Message1 {
-      uint32 youtube_restricted_mode = 4; // 1=off, 2=on
-      uint32 youtube_tv_content_filter = 5; // 1=off, 2=on
-      string locale = 10; // local like "en-US"
-    }
-    Message1 message1 = 1;
-  }
-  UpdateData update_data = 3;
-}
-
-message UpdateAssistantDeviceSettingsResponse {
-  string string1 = 1;
-}
-
 service StructuresService {
   rpc GetHomeGraph(GetHomeGraphRequest) returns (GetHomeGraphResponse);
 }
@@ -264,9 +223,4 @@ service CameraService {
 
 service HomeControlService {
   rpc UpdateTraits(UpdateTraitsRequest) returns (UpdateTraitsResponse);
-}
-
-service HomeDevicesService {
-  rpc GetAssistantDeviceSettings (GetAssistantDeviceSettingsRequest) returns (stream GetAssistantDeviceSettingsResponse);
-  rpc UpdateAssistantDeviceSettings (UpdateAssistantDeviceSettingsRequest) returns (stream UpdateAssistantDeviceSettingsResponse);
 }
