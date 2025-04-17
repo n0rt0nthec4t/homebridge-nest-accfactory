@@ -50,5 +50,5 @@ message FloodlightSettingsTrait {
     OnOffTrigger liveViewingTrigger = 4;
     DaylightSensitivity daylightSensitivity = 5;
     OnOffTrigger cameraEventTrigger = 6;
-    uin32 lightState = 7;
+    uint32 lightState = 7;
 }

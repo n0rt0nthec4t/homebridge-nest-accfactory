@@ -15,6 +15,9 @@
                 "title": "Nest Account",
                 "type": "object",
                 "expandable": true,
+                "expanded": {
+                    "functionBody": "return model.nest && model.nest.access_token"
+                },
                 "properties": {
                     "access_token": {
                         "title": "Access Token",
@@ -36,6 +39,9 @@
                 "title": "Google Account",
                 "type": "object",
                 "expandable": true,
+                "expanded": {
+                    "functionBody": "return model.google && model.google.issuetoken && model.google.cookie"
+                },
                 "properties": {
                     "issuetoken": {
                         "title": "Issue Token",
@@ -57,12 +63,13 @@
                             "functionBody": "return model.google.issuetoken && model.google.cookie"
                         }
                     }
-                }   
+                }
             },
             "options": {
                 "title": "Options",
                 "type": "object",
                 "expandable": true,
+                "expanded": true,
                 "properties": {
                     "eveHistory": {
                         "title": "EveHome History",
