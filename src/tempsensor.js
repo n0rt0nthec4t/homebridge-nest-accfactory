@@ -13,6 +13,7 @@ const LOWBATTERYLEVEL = 10; // Low battery level percentage
 export default class NestTemperatureSensor extends HomeKitDevice {
   batteryService = undefined;
   temperatureService = undefined;
+  switchService = undefined;
 
   constructor(accessory, api, log, eventEmitter, deviceData) {
     super(accessory, api, log, eventEmitter, deviceData);
@@ -33,6 +34,21 @@ export default class NestTemperatureSensor extends HomeKitDevice {
       this.batteryService = this.accessory.addService(this.hap.Service.Battery, '', 1);
     }
     this.batteryService.setHiddenService(true);
+
+    // Setup active temperature switch
+    this.switchService = this.accessory.getService(this.hap.Service.Switch);
+    if (this.switchService === undefined) {
+      this.switchService = this.accessory.addService(this.hap.Service.Switch, '', 'active-sensor');
+    }
+    this.switchService.setHiddenService(true);
+    
+    this.switchService.getCharacteristic(this.hap.Characteristic.On).onSet((value) => {
+      if (value !== this.deviceData.active_sensor) {
+        this.set({ uuid: this.deviceData.nest_google_uuid, active_temperature_sensor: value, associated_thermostat: this.deviceData.associated_thermostat });
+
+        this?.log?.info && this.log.info('Temperature sensor "%s" was made', this.deviceData.description, value === true ? 'active' : 'inactive');
+      }
+    });
 
     // Setup linkage to EveHome app if configured todo so
     if (
@@ -65,6 +81,11 @@ export default class NestTemperatureSensor extends HomeKitDevice {
         this.hap.Characteristic.StatusActive,
         deviceData.online === true && deviceData?.active_sensor === true,
       );
+
+      if (this.switchService !== undefined) {
+        // Update the switch as well
+        this.switchService.updateCharacteristic(this.hap.Characteristic.On, deviceData?.active_sensor === true);
+      }
     }
 
     // Update temperature

@@ -2814,6 +2814,19 @@ export default class NestAccfactory {
               protobufElement.state.value.brightness = scaleValue(Number(value), 0, 100, 0, 10); // Scale to required level
             }
 
+            if (key === 'active_temperature_sensor' && typeof value === 'boolean') {
+              protobufElement.traitRequest.resourceId = this.#rawData[nest_google_uuid].value.associated_thermostat;
+              protobufElement.traitRequest.traitLabel = 'remote_comfort_sensing_settings';
+              protobufElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.RemoteComfortSensingSettingsTrait';
+              protobufElement.state.value = {
+                activeRcsSelection: {
+                  activeRcsSensor: {
+                    resourceId: nest_google_uuid,
+                  }
+                }
+              };
+            }
+
             if (protobufElement.traitRequest.traitLabel === '' || protobufElement.state.type_url === '') {
               this?.log?.debug && this.log.debug('Unknown Protobuf set key "%s" for device uuid "%s"', key, nest_google_uuid);
             }
