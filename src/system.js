@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/03/20
+// Code version 2025/05/02
 // Mark Hulskamp
 'use strict';
 
@@ -1009,11 +1009,22 @@ export default class NestAccfactory {
 
         // Track this device even though its excluded
         this.#trackedDevices[deviceData.serialNumber] = {
-          uuid: undefined,
+          uuid: HomeKitDevice.generateUUID(HomeKitDevice.PLUGIN_NAME, this.api, deviceData.serialNumber),
           rawDataUuid: deviceData.nest_google_uuid,
           source: undefined,
           exclude: true,
         };
+
+        // If we're running under Homebridge, and the device is now marked as excluded and present in accessory cache
+        // Then we'll unregister it from the Homebridge platform
+        if (this.api instanceof EventEmitter === true) {
+          let accessory = this.cachedAccessories.find(
+            (accessory) => accessory?.UUID === this.#trackedDevices[deviceData.serialNumber].uuid,
+          );
+          if (accessory !== undefined && typeof accessory === 'object') {
+            this.api.unregisterPlatformAccessories(HomeKitDevice.PLUGIN_NAME, HomeKitDevice.PLATFORM_NAME, [accessory]);
+          }
+        }
       }
 
       if (this.#trackedDevices?.[deviceData?.serialNumber] === undefined && deviceData?.excluded === false) {
@@ -1023,6 +1034,7 @@ export default class NestAccfactory {
           // Nest Thermostat(s) - Categories.THERMOSTAT = 9
           let tempDevice = new NestThermostat(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
           tempDevice.add('Nest Thermostat', 9, true);
+
           // Track this device once created
           this.#trackedDevices[deviceData.serialNumber] = {
             uuid: tempDevice.uuid,
@@ -1035,6 +1047,7 @@ export default class NestAccfactory {
           // Nest Temperature Sensor - Categories.SENSOR = 10;
           let tempDevice = new NestTemperatureSensor(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
           tempDevice.add('Nest Temperature Sensor', 10, true);
+
           // Track this device once created
           this.#trackedDevices[deviceData.serialNumber] = {
             uuid: tempDevice.uuid,
@@ -1047,6 +1060,7 @@ export default class NestAccfactory {
           // Nest Protect(s) - Categories.SENSOR = 10
           let tempDevice = new NestProtect(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
           tempDevice.add('Nest Protect', 10, true);
+
           // Track this device once created
           this.#trackedDevices[deviceData.serialNumber] = {
             uuid: tempDevice.uuid,
