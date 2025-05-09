@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/05/02
+// Code version 2025/05/08
 // Mark Hulskamp
 'use strict';
 
@@ -2828,6 +2828,24 @@ export default class NestAccfactory {
               protobufElement.state.value.brightness = scaleValue(Number(value), 0, 100, 0, 10); // Scale to required level
             }
 
+            if (
+              key === 'active_sensor' &&
+              typeof value === 'boolean' &&
+              typeof this.#rawData?.[this.#rawData[nest_google_uuid]?.value?.associated_thermostat]?.value
+                ?.remote_comfort_sensing_settings === 'object'
+            ) {
+              // Set active temperature sensor for associated thermostat
+              protobufElement.traitRequest.resourceId = this.#rawData[nest_google_uuid].value.associated_thermostat;
+              protobufElement.traitRequest.traitLabel = 'remote_comfort_sensing_settings';
+              protobufElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.RemoteComfortSensingSettingsTrait';
+              protobufElement.state.value =
+                this.#rawData[this.#rawData[nest_google_uuid].value.associated_thermostat].value.remote_comfort_sensing_settings;
+              protobufElement.state.value.activeRcsSelection =
+                value === true
+                  ? { rcsSourceType: 'RCS_SOURCE_TYPE_SINGLE_SENSOR', activeRcsSensor: { resourceId: nest_google_uuid } }
+                  : { rcsSourceType: 'RCS_SOURCE_TYPE_BACKPLATE' };
+            }
+
             if (protobufElement.traitRequest.traitLabel === '' || protobufElement.state.type_url === '') {
               this?.log?.debug && this.log.debug('Unknown Protobuf set key "%s" for device uuid "%s"', key, nest_google_uuid);
             }
@@ -2914,16 +2932,30 @@ export default class NestAccfactory {
           .filter(([key]) => key !== 'uuid')
           .map(async ([key, value]) => {
             let subscribeJSONData = { objects: [] };
+            let RESTStructureUUID = nest_google_uuid;
 
-            if (nest_google_uuid.startsWith('device.') === false) {
-              subscribeJSONData.objects.push({ object_key: nest_google_uuid, op: 'MERGE', value: { [key]: value } });
+            if (nest_google_uuid.startsWith('kryptonite.') === true) {
+              if (
+                key === 'active_sensor' &&
+                typeof value === 'boolean' &&
+                typeof this.#rawData?.['rcs_settings.' + this.#rawData?.[nest_google_uuid]?.value?.associated_thermostat.split('.')[1]]
+                  ?.value?.active_rcs_sensors === 'object'
+              ) {
+                // Set active temperature sensor for associated thermostat
+                RESTStructureUUID = 'rcs_settings.' + this.#rawData[nest_google_uuid].value.associated_thermostat.split('.')[1];
+                subscribeJSONData.objects.push({
+                  object_key: RESTStructureUUID,
+                  op: 'MERGE',
+                  value:
+                    value === true
+                      ? { active_rcs_sensors: [nest_google_uuid], rcs_control_setting: 'OVERRIDE' }
+                      : { active_rcs_sensors: [], rcs_control_setting: 'OFF' },
+                });
+              }
             }
 
-            // Some elements when setting thermostat data are located in a different object location than with the device object
-            // Handle this scenario below
             if (nest_google_uuid.startsWith('device.') === true) {
-              let RESTStructureUUID = nest_google_uuid;
-
+              // Set thermostat settings. Some settings are located in a different ocject location, so we handle this below also
               if (
                 (key === 'hvac_mode' &&
                   typeof value === 'string' &&
@@ -2949,6 +2981,11 @@ export default class NestAccfactory {
               }
 
               subscribeJSONData.objects.push({ object_key: RESTStructureUUID, op: 'MERGE', value: { [key]: value } });
+            }
+
+            if (nest_google_uuid.startsWith('device.') === false && nest_google_uuid.startsWith('kryptonite.') === false) {
+              // Set other REST object settings ie: not thermostat or temperature sensors
+              subscribeJSONData.objects.push({ object_key: nest_google_uuid, op: 'MERGE', value: { [key]: value } });
             }
 
             if (subscribeJSONData.objects.length !== 0) {

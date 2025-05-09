@@ -1,7 +1,7 @@
 // Nest Temperature Sensor
 // Part of homebridge-nest-accfactory
 //
-// Code version 27/8/2024
+// Code version 2025/05/08
 // Mark Hulskamp
 'use strict';
 
@@ -59,8 +59,8 @@ export default class NestTemperatureSensor extends HomeKitDevice {
 
     this.temperatureService.updateCharacteristic(this.hap.Characteristic.StatusActive, deviceData.online);
     if (typeof deviceData?.associated_thermostat === 'string' && deviceData.associated_thermostat !== '') {
-      // This tempature sensor is assocated with a theromstat
-      // Update sttaus if providing active temperature for the thermostats
+      // This temperature sensor is assocated with a theromstat
+      // Update status if providing active temperature for the thermostats
       this.temperatureService.updateCharacteristic(
         this.hap.Characteristic.StatusActive,
         deviceData.online === true && deviceData?.active_sensor === true,
