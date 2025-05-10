@@ -49,21 +49,21 @@
         "prepublishOnly": "npm run lint && npm run build"
     },
     "devDependencies": {
-        "@eslint/js": "^9.25.1",
+        "@eslint/js": "^9.26.0",
         "@stylistic/eslint-plugin": "^4.2.0",
-        "@types/node": "^22.14.1",
-        "@typescript-eslint/parser": "^8.30.1",
+        "@types/node": "^22.15.17",
+        "@typescript-eslint/parser": "^8.32.0",
         "copyfiles": "^2.4.1",
-        "eslint": "^9.25.1",
+        "eslint": "^9.26.0",
         "prettier": "^3.5.3",
-        "prettier-eslint": "^16.4.1",
+        "prettier-eslint": "^16.4.2",
         "rimraf": "^6.0.1"
     },
     "dependencies": {
         "hap-nodejs": "^1.1.1",
         "chalk": "^5.4.1",
-        "protobufjs": "^7.5.0",
-        "ws": "^8.18.1",
+        "protobufjs": "^7.5.1",
+        "ws": "^8.18.2",
         "werift": "^0.22.1"
     }
 }
