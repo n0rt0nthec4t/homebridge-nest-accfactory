@@ -2,6 +2,12 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.2.12 (alpha)
+
+- General code cleanup and bug fixes
+- Remove excluded devices from Homebridge cache
+- Internal support for selecting active temperature sensor
+
 ## v0.2.11 (2025/04/17)
 
 - General code cleanup and bug fixes
