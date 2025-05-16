@@ -1,5 +1,11 @@
 version: 2
 updates:
+  - package-ecosystem: "gitsubmodule"
+    directories:
+      - "/src/HomeKitDevice"
+      - "/src/HomeKitHistory"
+    schedule:
+      interval: "daily"
   - package-ecosystem: "npm"
     directories:
       - "/"
