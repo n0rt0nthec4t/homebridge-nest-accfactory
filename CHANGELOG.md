@@ -6,7 +6,8 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 - General code cleanup and bug fixes
 - Remove excluded devices from Homebridge cache
-- Internal support for selecting active temperature sensor
+- Internal support for selecting active temperature sensor (not exposed yet to HomeKit)
+- Fix retaining custom "devices" section using plugin config GUI
 
 ## v0.2.11 (2025/04/17)
 
