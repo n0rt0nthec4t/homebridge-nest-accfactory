@@ -1,7 +1,7 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/03/19
+// Code version 2025/05/20
 // Mark Hulskamp
 'use strict';
 
@@ -1079,10 +1079,14 @@ export default class NestCamera extends HomeKitDevice {
       ) {
         if (this.motionServices?.[zone.id]?.service === undefined) {
           // Zone doesn't have an associated motion sensor, so add one
-          let tempService = this.accessory.addService(this.hap.Service.MotionSensor, zone.id === 1 ? '' : zone.name, zone.id);
+          let tempService = this.accessory.getServiceById(this.hap.Service.MotionSensor, zone.id);
+          if (tempService === undefined) {
+            tempService = this.accessory.addService(this.hap.Service.MotionSensor, zone.id === 1 ? '' : zone.name, zone.id);
+          }
           if (tempService.testCharacteristic(this.hap.Characteristic.Active) === false) {
             tempService.addCharacteristic(this.hap.Characteristic.Active);
           }
+          tempService.updateCharacteristic(this.hap.Characteristic.Name, zone.id === 1 ? '' : zone.name);
           tempService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
           this.motionServices[zone.id] = { service: tempService, timer: undefined };
         }
@@ -1270,10 +1274,14 @@ export default class NestCamera extends HomeKitDevice {
       // A zone with the ID of 1 is treated as the main motion sensor
       this.deviceData.activity_zones.forEach((zone) => {
         if (this.deviceData.hksv === false || (this.deviceData.hksv === true && zone.id === 1)) {
-          let tempService = this.accessory.addService(this.hap.Service.MotionSensor, zone.id === 1 ? '' : zone.name, zone.id);
+          let tempService = this.accessory.getServiceById(this.hap.Service.MotionSensor, zone.id);
+          if (tempService === undefined) {
+            tempService = this.accessory.addService(this.hap.Service.MotionSensor, zone.id === 1 ? '' : zone.name, zone.id);
+          }
           if (tempService.testCharacteristic(this.hap.Characteristic.Active) === false) {
             tempService.addCharacteristic(this.hap.Characteristic.Active);
           }
+          tempService.updateCharacteristic(this.hap.Characteristic.Name, zone.id === 1 ? '' : zone.name);
           tempService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
           this.motionServices[zone.id] = { service: tempService, timer: undefined };
         }
