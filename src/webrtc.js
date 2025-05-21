@@ -4,7 +4,7 @@
 // Handles connection and data from Google WebRTC systems
 // Currently a "work in progress"
 //
-// Code version 2025/03/16
+// Code version 2025/05/21
 // Mark Hulskamp
 'use strict';
 
@@ -58,6 +58,7 @@ export default class WebRTC extends Streamer {
   // Internal data only for this class
   #protobufFoyer = undefined; // Protobuf for Google Home Foyer
   #googleHomeFoyer = undefined; // HTTP/2 connection to Google Home Foyer APIs
+  #googleHomeFoyerAPIHost = 'https://googlehomefoyer-pa.googleapis.com'; // Default API endpoint for Google Home Foyer
   #id = undefined; // Session ID
   #googleHomeDeviceUUID = undefined; // Normal Nest/Google protobuf device ID translated to a Google Foyer device ID
   #peerConnection = undefined;
@@ -77,6 +78,11 @@ export default class WebRTC extends Streamer {
     // Store data we need from the device data passed it
     this.token = deviceData?.apiAccess?.oauth2;
     this.localAccess = deviceData?.localAccess === true;
+
+    // Update Google Home Foyer api host if using field test
+    if (deviceData?.apiAccess?.fieldTest === true) {
+      this.#googleHomeFoyerAPIHost = 'https://preprod-googlehomefoyer-pa.sandbox.googleapis.com';
+    }
 
     // Set our streamer codec types
     this.codecs = {
@@ -510,11 +516,11 @@ export default class WebRTC extends Streamer {
     if (TraitMapRequest !== null && TraitMapResponse !== null && this.token !== undefined) {
       if (this.#googleHomeFoyer === undefined || (this.#googleHomeFoyer?.connected === false && this.#googleHomeFoyer?.closed === true)) {
         // No current HTTP/2 connection or current session is closed
-        this?.log?.debug && this.log.debug('Connection started to Google Home Foyer');
-        this.#googleHomeFoyer = http2.connect('https://googlehomefoyer-pa.googleapis.com');
+        this?.log?.debug && this.log.debug('Connection started to Google Home Foyer "%s"', this.#googleHomeFoyerAPIHost);
+        this.#googleHomeFoyer = http2.connect(this.#googleHomeFoyerAPIHost);
 
         this.#googleHomeFoyer.on('connect', () => {
-          this?.log?.debug && this.log.debug('Connection established to Google Home Foyer');
+          this?.log?.debug && this.log.debug('Connection established to Google Home Foyer "%s"', this.#googleHomeFoyerAPIHost);
 
           clearInterval(this.pingTimer);
           this.pingTimer = setInterval(() => {
@@ -542,7 +548,7 @@ export default class WebRTC extends Streamer {
           clearInterval(this.pingTimer);
           this.pingTimer = undefined;
           this.#googleHomeFoyer = undefined;
-          this?.log?.debug && this.log.debug('Connection closed to Google Home Foyer');
+          this?.log?.debug && this.log.debug('Connection closed to Google Home Foyer "%s"', this.#googleHomeFoyerAPIHost);
         });
       }
 

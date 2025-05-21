@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/05/08
+// Code version 2025/05/20
 // Mark Hulskamp
 'use strict';
 
@@ -389,6 +389,7 @@ export default class NestAccfactory {
                       value: 'Basic ', // NOTE: extra space required
                       token: googleToken,
                       oauth2: googleOAuth2Token,
+                      fieldTest: this.#connections[connectionUUID]?.fieldTest === true,
                     };
 
                     // Set timeout for token expiry refresh
@@ -466,6 +467,7 @@ export default class NestAccfactory {
                   key: 'cookie',
                   value: this.#connections[connectionUUID].fieldTest === true ? 'website_ft=' : 'website_2=',
                   token: nestToken,
+                  fieldTest: this.#connections[connectionUUID]?.fieldTest === true,
                 };
 
                 // Set timeout for token expiry refresh
