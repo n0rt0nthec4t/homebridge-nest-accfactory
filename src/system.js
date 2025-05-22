@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/05/22
+// Code version 2025/05/23
 // Mark Hulskamp
 'use strict';
 
@@ -1525,6 +1525,7 @@ export default class NestAccfactory {
     };
 
     const PROTOBUF_THERMOSTAT_RESOURCES = [
+      'nest.resource.NestAmber2DisplayResource',
       'nest.resource.NestLearningThermostat3Resource',
       'nest.resource.NestAgateDisplayResource',
       'nest.resource.NestOnyxResource',
@@ -1553,21 +1554,29 @@ export default class NestAccfactory {
                 ? value.value.device_identity.softwareVersion.split(/\s+/)?.[3]
                 : value.value.device_identity.softwareVersion;
             RESTTypeData.model = 'Thermostat';
-            if (value.value.device_info.typeName === 'nest.resource.NestLearningThermostat3Resource') {
+            if (
+              value.value.device_info.typeName === 'nest.resource.NestLearningThermostat3Resource' ||
+              value.value.device_info.typeName === 'nest.resource.NestAmber2DisplayResource'
+            ) {
               RESTTypeData.model = 'Learning Thermostat (3rd gen)';
             }
             if (value.value.device_info.typeName === 'google.resource.GoogleBismuth1Resource') {
               RESTTypeData.model = 'Learning Thermostat (4th gen)';
             }
-            if (value.value.device_info.typeName === 'nest.resource.NestAgateDisplayResource') {
-              RESTTypeData.model = 'Thermostat E';
-            }
-            if (value.value.device_info.typeName === 'nest.resource.NestOnyxResource') {
+            if (
+              value.value.device_info.typeName === 'nest.resource.NestOnyxResource' ||
+              value.value.device_info.typeName === 'nest.resource.NestAgateDisplayResource'
+            ) {
               RESTTypeData.model = 'Thermostat E (1st gen)';
             }
             if (value.value.device_info.typeName === 'google.resource.GoogleZirconium1Resource') {
-              RESTTypeData.model = 'Thermostat (2020 Model)';
+              RESTTypeData.model = 'Thermostat (Mirror)';
             }
+            // If we have hot water control, it should be a 'Heat Link' model, so add that after the 'gen' tag in the model name
+            RESTTypeData.model =
+              value.value?.hvac_equipment_capabilities?.hasHotWaterControl === true
+                ? RESTTypeData.model.replace(/\bgen\)/, 'gen, Heat Link)')
+                : RESTTypeData.model;
             RESTTypeData.current_humidity =
               isNaN(value.value.current_humidity.humidityValue.humidity.value) === false
                 ? Number(value.value.current_humidity.humidityValue.humidity.value)
@@ -1579,10 +1588,11 @@ export default class NestAccfactory {
             RESTTypeData.battery_level = parseFloat(value.value.battery_voltage.batteryValue.batteryVoltage.value);
             RESTTypeData.online = value.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE';
             RESTTypeData.leaf = value.value?.leaf?.active === true;
-            RESTTypeData.has_humidifier = value.value.hvac_equipment_capabilities.hasHumidifier === true;
-            RESTTypeData.has_dehumidifier = value.value.hvac_equipment_capabilities.hasDehumidifier === true;
+            RESTTypeData.has_humidifier = value.value?.hvac_equipment_capabilities?.hasHumidifier === true;
+            RESTTypeData.has_dehumidifier = value.value?.hvac_equipment_capabilities?.hasDehumidifier === true;
+            RESTTypeData.has_hot_water_control = value.value?.hvac_equipment_capabilities?.hasHotWaterControl === true;
             RESTTypeData.has_fan =
-              typeof value.value.fan_control_capabilities.maxAvailableSpeed === 'string' &&
+              typeof value.value?.fan_control_capabilities?.maxAvailableSpeed === 'string' &&
               value.value.fan_control_capabilities.maxAvailableSpeed !== 'FAN_SPEED_SETTING_OFF'
                 ? true
                 : false;
@@ -1787,15 +1797,18 @@ export default class NestAccfactory {
             if (value.value.serial_number.substring(0, 2) === '15') {
               RESTTypeData.model = 'Thermostat E (1st gen)'; // Nest Thermostat E
             }
-            if (value.value.serial_number.substring(0, 2) === '09') {
-              RESTTypeData.model = 'Thermostat (3rd gen)'; // Nest Thermostat 3rd Gen
+            if (value.value.serial_number.substring(0, 2) === '09' || value.value.serial_number.substring(0, 2) === '10') {
+              RESTTypeData.model = 'Thermostat (3rd gen)'; // Nest Thermostat 3rd gen
             }
             if (value.value.serial_number.substring(0, 2) === '02') {
-              RESTTypeData.model = 'Thermostat (2nd gen)'; // Nest Thermostat 2nd Gen
+              RESTTypeData.model = 'Thermostat (2nd gen)'; // Nest Thermostat 2nd gen
             }
             if (value.value.serial_number.substring(0, 2) === '01') {
-              RESTTypeData.model = 'Thermostat (1st gen)'; // Nest Thermostat 1st Gen
+              RESTTypeData.model = 'Thermostat (1st gen)'; // Nest Thermostat 1st gen
             }
+            // If we have hot water control, it should be a 'Heat Link' model, so add that after the 'gen' tag in the model name
+            RESTTypeData.model =
+              value.value.has_hot_water_control === true ? RESTTypeData.model.replace(/\bgen\)/, 'gen, Heat Link)') : RESTTypeData.model;
             RESTTypeData.current_humidity = value.value.current_humidity;
             RESTTypeData.temperature_scale = value.value.temperature_scale;
             RESTTypeData.removed_from_base = value.value.nlclient_state.toUpperCase() === 'BPD';
@@ -1806,6 +1819,7 @@ export default class NestAccfactory {
             RESTTypeData.leaf = value.value.leaf === true;
             RESTTypeData.has_humidifier = value.value.has_humidifier === true;
             RESTTypeData.has_dehumidifier = value.value.has_dehumidifier === true;
+            RESTTypeData.has_hot_water_control = value.value.has_hot_water_control === true;
             RESTTypeData.has_fan = value.value.has_fan === true;
             RESTTypeData.can_cool = this.#rawData?.['shared.' + value.value.serial_number]?.value?.can_cool === true;
             RESTTypeData.can_heat = this.#rawData?.['shared.' + value.value.serial_number]?.value?.can_heat === true;
