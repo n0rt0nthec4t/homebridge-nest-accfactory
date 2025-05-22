@@ -105,6 +105,12 @@
                         "type": "string",
                         "placeholder": "Path to an ffmpeg binary",
                         "default": "/usr/local/bin/ffmpeg"
+                    },
+                    "ffmegDebug": {
+                        "type": "boolean"
+                    },
+                    "maxStreams": {
+                        "type": "integer"
                     }
                 }
             },
