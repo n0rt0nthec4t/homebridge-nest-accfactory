@@ -5,9 +5,11 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 ## v0.2.12 (alpha)
 
 - General code cleanup and bug fixes
+- Updated README.md to account for changes to "devices" section in configuration
 - Remove excluded devices from Homebridge cache
 - Internal support for selecting active temperature sensor (not exposed yet to HomeKit)
 - Fix retaining custom "devices" section using plugin config GUI
+- Fix for motion services created when restored from Homebridge cache
 
 ## v0.2.11 (2025/04/17)
 

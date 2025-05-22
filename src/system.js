@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/05/20
+// Code version 2025/05/22
 // Mark Hulskamp
 'use strict';
 
@@ -257,6 +257,35 @@ export default class NestAccfactory {
 
     if (this.config.options.ffmpeg.binary !== undefined) {
       this?.log?.success && this.log.success('Found valid ffmpeg binary in %s', this.config.options.ffmpeg.binary);
+    }
+
+    // Process per device configuration(s)
+    if (this.config?.devices === undefined) {
+      this.config.devices = [];
+    }
+
+    if (this.config?.devices !== undefined && Array.isArray(this.config?.devices) === false) {
+      // If the devices section is a JSON oject keyed by the devices serial number, convert to devices array object
+      let newDeviceArray = [];
+      for (const [serialNumber, props] of Object.entries(this.config.devices)) {
+        newDeviceArray.push({
+          serialNumber,
+          ...props,
+        });
+      }
+      this.config.devices = newDeviceArray;
+
+      // Alert user to changed configuration for them to update config
+      this?.log?.warn && this.log.warn('');
+      this?.log?.warn && this.log.warn('NOTICE');
+      this?.log?.warn &&
+        this.log.warn('> The per device configuration contains legacy options. Please review the readme at the link below');
+      this?.log?.warn &&
+        this.log.warn(
+          '> Consider updating your configuration file as the mapping from legacy to current per device configuration maybe removed',
+        );
+      this?.log?.warn && this.log.warn('> https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/blob/main/src/README.md');
+      this?.log?.warn && this.log.warn('');
     }
 
     if (this.api instanceof EventEmitter === true) {
@@ -836,7 +865,7 @@ export default class NestAccfactory {
     let observeRequest = this.#protobufRoot.lookup('nestlabs.gateway.v2.ObserveRequest');
     if (traitTypeObserveParam !== null && observeRequest !== null) {
       traverseTypes(this.#protobufRoot, (type) => {
-        // We only want to have certain trait'families' in our observe reponse we are building
+        // We only want to have certain trait 'families' in our observe reponse we are building
         // This also depends on the account type we connected with
         // Nest accounts cannot observe camera/doorbell product traits
         if (
@@ -1424,7 +1453,7 @@ export default class NestAccfactory {
         // Fix up data we need to
         data.nest_google_uuid = object_key;
         data.serialNumber = data.serialNumber.toUpperCase(); // ensure serial numbers are in upper case
-        data.excluded = this.config?.devices?.[data?.serialNumber]?.exclude === true; // Mark device as excluded or not
+        data.excluded = this?.config?.devices?.find((device) => device.serialNumber === data?.serialNumber)?.exclude === true; // Mark device as excluded or not
         data.manufacturer = typeof data?.manufacturer === 'string' ? data.manufacturer : 'Nest';
         data.softwareVersion =
           typeof data?.softwareVersion === 'string' ? data.softwareVersion.replace(/([a-zA-Z]+)/g, '.').replace(/-/g, '.') : '0.0.0';
@@ -1446,10 +1475,14 @@ export default class NestAccfactory {
           data.hkPairingCode = this.config.options.hkPairingCode;
         }
         if (
-          new RegExp(/^([0-9]{3}-[0-9]{2}-[0-9]{3})$/).test(this.config?.devices?.[data.serialNumber]?.hkPairingCode) === true ||
-          new RegExp(/^([0-9]{4}-[0-9]{4})$/).test(this.config?.devices?.[data.serialNumber]?.hkPairingCode) === true
+          new RegExp(/^([0-9]{3}-[0-9]{2}-[0-9]{3})$/).test(
+            this?.config?.devices?.find((device) => device.serialNumber === data?.serialNumber)?.hkPairingCode,
+          ) === true ||
+          new RegExp(/^([0-9]{4}-[0-9]{4})$/).test(
+            this?.config?.devices?.find((device) => device.serialNumber === data?.serialNumber)?.hkPairingCode,
+          ) === true
         ) {
-          data.hkPairingCode = this.config.devices[data.serialNumber].hkPairingCode;
+          data.hkPairingCode = this?.config?.devices?.find((device) => device.serialNumber === data?.serialNumber)?.hkPairingCode;
         }
 
         // If we have a hkPairingCode defined, we need to generate a hkUsername also
@@ -1956,26 +1989,15 @@ export default class NestAccfactory {
         }
 
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
+          let deviceOptions = this.config?.devices?.find((d) => d.serialNumber === tempDevice?.serialNumber);
           // Insert any extra options we've read in from configuration file for this device
-          tempDevice.eveHistory =
-            this.config.options.eveHistory === true || this.config?.devices?.[tempDevice.serialNumber]?.eveHistory === true;
-          tempDevice.humiditySensor = this.config?.devices?.[tempDevice.serialNumber]?.humiditySensor === true;
-          tempDevice.externalCool =
-            typeof this.config?.devices?.[tempDevice.serialNumber]?.externalCool === 'string'
-              ? this.config.devices[tempDevice.serialNumber].externalCool
-              : undefined; // Config option for external cooling source
-          tempDevice.externalHeat =
-            typeof this.config?.devices?.[tempDevice.serialNumber]?.externalHeat === 'string'
-              ? this.config.devices[tempDevice.serialNumber].externalHeat
-              : undefined; // Config option for external heating source
-          tempDevice.externalFan =
-            typeof this.config?.devices?.[tempDevice.serialNumber]?.externalFan === 'string'
-              ? this.config.devices[tempDevice.serialNumber].externalFan
-              : undefined; // Config option for external fan source
+          tempDevice.eveHistory = this.config.options.eveHistory === true || deviceOptions?.eveHistory === true;
+          tempDevice.humiditySensor = deviceOptions?.humiditySensor === true;
+          tempDevice.externalCool = typeof deviceOptions?.externalCool === 'string' ? deviceOptions.externalCool : undefined; // Config option for external cooling source
+          tempDevice.externalHeat = typeof deviceOptions?.externalHeat === 'string' ? deviceOptions.externalHeat : undefined; // Config option for external heating source
+          tempDevice.externalFan = typeof deviceOptions?.externalFan === 'string' ? deviceOptions.externalFan : undefined; // Config option for external fan source
           tempDevice.externalDehumidifier =
-            typeof this.config?.devices?.[tempDevice.serialNumber]?.externalDehumidifier === 'string'
-              ? this.config.devices[tempDevice.serialNumber].externalDehumidifier
-              : undefined; // Config option for external dehumidifier source
+            typeof deviceOptions?.externalDehumidifier === 'string' ? deviceOptions.externalDehumidifier : undefined; // Config option for external dehumidifier source
           devices[tempDevice.serialNumber] = tempDevice; // Store processed device
         }
       });
@@ -2060,9 +2082,9 @@ export default class NestAccfactory {
           this?.log?.debug && this.log.debug('Error processing data for temperature sensor(s)');
         }
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
+          let deviceOptions = this.config?.devices?.find((d) => d.serialNumber === tempDevice?.serialNumber);
           // Insert any extra options we've read in from configuration file for this device
-          tempDevice.eveHistory =
-            this.config.options.eveHistory === true || this.config?.devices?.[tempDevice.serialNumber]?.eveHistory === true;
+          tempDevice.eveHistory = this.config.options.eveHistory === true || deviceOptions?.eveHistory === true;
           devices[tempDevice.serialNumber] = tempDevice; // Store processed device
         }
       });
@@ -2207,9 +2229,9 @@ export default class NestAccfactory {
         }
 
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
+          let deviceOptions = this.config?.devices?.find((d) => d.serialNumber === tempDevice?.serialNumber);
           // Insert any extra options we've read in from configuration file for this device
-          tempDevice.eveHistory =
-            this.config.options.eveHistory === true || this.config?.devices?.[tempDevice.serialNumber]?.eveHistory === true;
+          tempDevice.eveHistory = this.config.options.eveHistory === true || deviceOptions?.eveHistory === true;
           devices[tempDevice.serialNumber] = tempDevice; // Store processed device
         }
       });
@@ -2429,29 +2451,20 @@ export default class NestAccfactory {
         }
 
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
+          let deviceOptions = this.config?.devices?.find((d) => d.serialNumber === tempDevice?.serialNumber);
           // Insert any extra options we've read in from configuration file for this device
-          tempDevice.eveHistory =
-            this.config.options.eveHistory === true || this.config?.devices?.[tempDevice.serialNumber]?.eveHistory === true;
-          tempDevice.hksv = this.config.options.hksv === true || this.config?.devices?.[tempDevice.serialNumber]?.hksv === true;
-          tempDevice.doorbellCooldown =
-            isNaN(this.config?.devices?.[tempDevice.serialNumber]?.doorbellCooldown) === false
-              ? Number(this.config.devices[tempDevice.serialNumber].doorbellCooldown)
-              : 60;
-          tempDevice.motionCooldown =
-            isNaN(this.config?.devices?.[tempDevice.serialNumber]?.motionCooldown) === false
-              ? Number(this.config.devices[tempDevice.serialNumber].motionCooldown)
-              : 60;
-          tempDevice.personCooldown =
-            isNaN(this.config?.devices?.[tempDevice.serialNumber]?.personCooldown) === false
-              ? Number(this.config.devices[tempDevice.serialNumber].personCooldown)
-              : 120;
-          tempDevice.chimeSwitch = this.config?.devices?.[tempDevice.serialNumber]?.chimeSwitch === true; // Control 'indoor' chime by switch
-          tempDevice.localAccess = this.config?.devices?.[tempDevice.serialNumber]?.localAccess === true; // Local network video streaming rather than from cloud from camera/doorbells
+          tempDevice.eveHistory = this.config.options.eveHistory === true || deviceOptions?.eveHistory === true;
+          tempDevice.hksv = this.config.options.hksv === true || deviceOptions?.hksv === true;
+          tempDevice.doorbellCooldown = isNaN(deviceOptions?.doorbellCooldown) === false ? Number(deviceOptions.doorbellCooldown) : 60;
+          tempDevice.motionCooldown = isNaN(deviceOptions?.motionCooldown) === false ? Number(deviceOptions.motionCooldown) : 60;
+          tempDevice.personCooldown = isNaN(deviceOptions?.personCooldown) === false ? Number(deviceOptions.personCooldown) : 120;
+          tempDevice.chimeSwitch = deviceOptions?.chimeSwitch === true; // Control 'indoor' chime by switch
+          tempDevice.localAccess = deviceOptions?.localAccess === true; // Local network video streaming rather than from cloud from camera/doorbells
           // eslint-disable-next-line no-undef
           tempDevice.ffmpeg = structuredClone(this.config.options.ffmpeg); // ffmpeg details, path, libraries. No ffmpeg = undefined
-          if (this.config?.devices?.[tempDevice.serialNumber]?.ffmpegDebug !== undefined) {
+          if (deviceOptions?.ffmpegDebug !== undefined) {
             // Device specific ffmpeg debugging
-            tempDevice.ffmpeg.debug = this.config?.devices?.[tempDevice.serialNumber]?.ffmpegDebug === true;
+            tempDevice.ffmpeg.debug = deviceOptions?.ffmpegDebug === true;
           }
           tempDevice.maxStreams =
             isNaN(this.config.options?.maxStreams) === false
@@ -2483,8 +2496,8 @@ export default class NestAccfactory {
         data.station = data.weather.station;
         data.forecast = data.weather.forecast;
         data.elevation =
-          isNaN(this.config?.devices?.[data?.serial_number]?.elevation) === false
-            ? Number(this.config.devices[data.serial_number].elevation)
+          isNaN(this?.config?.devices?.find((device) => device.serialNumber === data?.serialNumber)?.elevation) === false
+            ? Number(this?.config?.devices?.find((device) => device.serialNumber === data?.serialNumber)?.elevation)
             : isNaN(this.config?.options?.elevation) === false
               ? Number(this.config.options.elevation)
               : 0;
@@ -2556,9 +2569,9 @@ export default class NestAccfactory {
         }
 
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
+          let deviceOptions = this.config?.devices?.find((d) => d.serialNumber === tempDevice?.serialNumber);
           // Insert any extra options we've read in from configuration file for this device
-          tempDevice.eveHistory =
-            this.config.options.eveHistory === true || this.config?.devices?.[tempDevice.serialNumber]?.eveHistory === true;
+          tempDevice.eveHistory = this.config.options.eveHistory === true || deviceOptions?.eveHistory === true;
           devices[tempDevice.serialNumber] = tempDevice; // Store processed device
         }
       });

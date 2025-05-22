@@ -103,14 +103,15 @@ An advanced configuration example is below
         "elevation": 600,
         "hksv": false
     },
-    "devices": {
-        "XXXXXXXX": {
+    "devices": [
+        {
+            "serialNumber": "XXXXXXXX",
             "exclude": false
         },
-        "YYYYYYYY" : {
+            "serialNumber": "YYYYYYYY",
             "hksv" : true
-        },
-    }
+        }
+    ],
 }
 ```
 
@@ -132,7 +133,7 @@ The following options are available in Nest_config.json options object. These ap
 
 #### devices
 
-The following options are available on a per-device level in Nest_config.json file devices object. The device is specified by using its serial number (in uppercase)
+The following options are available on a per-device level in the `Nest_config.json` `devices` array. Each device is specified as a JSON object, and the device is identified using the `"serialNumber"` key with the value of its serial number (in uppercase).
 
 | Name              | Description                                                                                   | Default        |
 |-------------------|-----------------------------------------------------------------------------------------------|----------------|

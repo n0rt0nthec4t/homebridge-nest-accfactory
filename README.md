@@ -79,14 +79,15 @@ Sample config.json entries below
         "elevation": 600,
         "hksv": false
     },
-    "devices": {
-        "XXXXXXXX": {
+    "devices": [
+        {
+            "serialNumber": "XXXXXXXX",
             "exclude": false
         },
-        "YYYYYYYY" : {
+            "serialNumber": "YYYYYYYY",
             "hksv" : true
         }
-    },
+    ],
     "platform": "NestAccfactory"
 }
 ```
@@ -107,7 +108,7 @@ The following options are available in the config.json options object. These app
 
 #### devices
 
-The following options are available on a per-device level in the config.json devices object. The device is specified by using its serial number (in uppercase)
+The following options are available on a per-device level in the `config.json` `devices` array. Each device is specified as a JSON object, and the device is identified using the `"serialNumber"` key with the value of its serial number (in uppercase).
 
 | Name              | Description                                                                                   | Default        |
 |-------------------|-----------------------------------------------------------------------------------------------|----------------|

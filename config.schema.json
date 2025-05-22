@@ -107,6 +107,69 @@
                         "default": "/usr/local/bin/ffmpeg"
                     }
                 }
+            },
+            "devices": {
+                "title": "Per device configuration options",
+                "type": "array",
+                "items": {
+                    "title": "Device",
+                    "type": "object",
+                    "properties": {
+                        "serialNumber": {
+                            "title": "Device Serial Number",
+                            "type": "string",
+                            "required": true
+                        },
+                        "chimeSwitch": {
+                            "type": "boolean"
+                        },
+                        "doorbellCooldown": {
+                            "type": "number"
+                        },
+                        "elevation": {
+                            "type": "number"
+                        },
+                        "eveHistory": {
+                            "type": "boolean"
+                        },
+                        "exclude": {
+                            "type": "boolean"
+                        },
+                        "externalCool": {
+                            "type": "string"
+                        },
+                        "externalDehumidifier": {
+                            "type": "string"
+                        },
+                        "externalFan": {
+                            "type": "string"
+                        },
+                        "externalHeat": {
+                            "type": "string"
+                        },
+                        "ffmegDebug": {
+                            "type": "boolean"
+                        },
+                        "hkPairingCode": {
+                            "type": "string"
+                        },
+                        "hksv": {
+                            "type": "boolean"
+                        },
+                        "humiditySensor": {
+                            "type": "boolean"
+                        },
+                        "localAccess": {
+                            "type": "boolean"
+                        },
+                        "motionCooldown": {
+                            "type": "number"
+                        },
+                        "personCooldown": {
+                            "type": "number"
+                        }
+                    }
+                }
             }
         }
     },
@@ -116,6 +179,46 @@
         },
         {
             "required": ["google"]
+        }
+    ],
+    "layout": [
+        {
+            "type": "fieldset",
+            "title": "Nest Account",
+            "expandable": true,
+            "expanded": {
+                "functionBody": "return model.nest && model.nest.access_token"
+            },
+            "items": [
+                "nest.access_token",
+                "nest.fieldTest"
+            ]
+        },
+        {
+            "type": "fieldset",
+            "title": "Google Account",
+            "expandable": true,
+            "expanded": {
+                "functionBody": "return model.google && model.google.issuetoken && model.google.cookie"
+            },
+            "items": [
+                "google.issuetoken",
+                "google.cookie",
+                "google.fieldTest"
+            ]
+        },
+        {
+            "type": "fieldset",
+            "title": "Options",
+            "expandable": true,
+            "expanded": true,
+            "items": [
+                "options.eveHistory",
+                "options.weather",
+                "options.elevation",
+                "options.hksv",
+                "options.ffmpegPath"
+            ]
         }
     ]
 }
