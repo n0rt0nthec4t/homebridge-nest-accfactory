@@ -1,7 +1,7 @@
 // Nest Protect
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/01/17
+// Code version 2025/05/26
 // Mark Hulskamp
 'use strict';
 
@@ -101,6 +101,7 @@ export default class NestProtect extends HomeKitDevice {
         ? this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
         : this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW,
     );
+    this.batteryService.updateCharacteristic(this.hap.Characteristic.ChargingState, this.hap.Characteristic.ChargingState.NOT_CHARGEABLE);
 
     // Update smoke details
     // If protect isn't online, replacement date past, report in HomeKit
