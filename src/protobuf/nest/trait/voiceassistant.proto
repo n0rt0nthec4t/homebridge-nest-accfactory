@@ -13,6 +13,7 @@ message GoogleAssistantSetupTrait {
 
     message ActivateAssistantDiscoverabilityRequest {
         string obfuscatedDeviceId = 1;
+        string rtsDeviceId = 2;
     }
 
     message ActivateAssistantDiscoverabilityResponse {

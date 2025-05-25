@@ -4,6 +4,46 @@ import "google/protobuf/duration.proto";
 
 package nest.trait.ui;
 
+message SoyMessage {
+    message SoyTemplateMessage {
+        string messageNamespace = 1;
+        map<uint32, SoyParameter> parameters = 4;
+    }
+
+    message Any {
+        string typeUrl = 1;
+        bytes value = 2;
+    }
+
+    message SoyParameter {
+        string key = 1;
+        SoyParameterValue value = 2;
+    }
+
+    message SoyParameterValue {
+        string singleValue = 1;
+        bool boolValue = 2;
+        int64 intValue = 3;
+        Any protoValue = 4;
+        StringList stringListValue = 5;
+    }
+
+    message StringList {
+        repeated string values = 1;
+    }
+
+    message SoyTemplateImage {
+        string url = 1;
+        SoyTemplateMessage accessibilityText = 2;
+        int32 width = 3;
+        int32 height = 4;
+    }
+
+    message SoyTemplateInfo {
+        string msgIdString = 1;
+    }
+}
+
 message EnhancedPathlightSettingsTrait {
     map<uint32, PathlightTrigger> triggers = 1;
     PathlightBrightnessDiscrete brightnessDiscrete = 3;

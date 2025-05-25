@@ -71,6 +71,7 @@ enum QuantityType {
     PPM = 48;
     PIRMEASUREMENT = 256;
     NORMALIZED = 257;
+    ANGLE = 259;
 }
 
 message ResourceId {

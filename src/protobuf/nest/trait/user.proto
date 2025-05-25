@@ -89,6 +89,11 @@ message UserLockNotificationSettingsTrait {
         bool unlockNotificationEnabled = 3;
         bool lockReminderEnabled = 4;
         bool unlockReminderEnabled = 5;
+        map<string, bool> userUnlockNotificationsEnabledMap = 6;
+        bool manualUnlockNotificationsEnabled = 7;
+        map<string, bool> userLockNotificationsEnabledMap = 8;
+        bool manualLockNotificationsEnabled = 9;
+        bool proximityUnlockEnabled = 10;
     }
 }
 

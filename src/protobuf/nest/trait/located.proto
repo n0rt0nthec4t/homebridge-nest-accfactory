@@ -128,6 +128,7 @@ message LocatedTrait {
 message LocatedAnnotationsTrait {
     map<uint32, WhereItem> predefinedWheres = 1;
     map<uint32, WhereItem> customWheres = 2;
+    map<uint32, weave.common.ResourceId> deprecatedPredefinedWheresToInclude = 3;
 
     enum StatusCode {
         STATUS_CODE_UNSPECIFIED = 0;
@@ -171,14 +172,6 @@ message LocatedAnnotationsTrait {
     }
 }
 
-message DeviceLocatedCapabilitiesTrait {
-    repeated weave.common.ResourceId validWhereAnnotationRids = 1;
-    repeated weave.common.ResourceId validWhereSpokenAnnotationRids = 2;
-    repeated weave.common.ResourceId validFixtureAnnotationRids = 3;
-    repeated weave.common.ResourceId validFixtureSpokenAnnotationRids = 4;
-    repeated LocatedTrait.LocatedFixtureType validFixtureTypes = 5;
-}
-
 message DeviceLocatedSettingsTrait {
     weave.common.ResourceId whereAnnotationRid = 2;
     weave.common.ResourceId fixtureAnnotationRid = 3;
@@ -190,4 +183,54 @@ message DeviceLocatedSettingsTrait {
     google.protobuf.Timestamp lastModifiedTimestamp = 9;
     google.protobuf.Timestamp lastKnownRelocationTimestamp = 10;
     string whereLegacyUuid = 11;
+
+    enum StatusCode {
+        STATUS_CODE_UNSPECIFIED = 0;
+        STATUS_CODE_SUCCESS = 1;
+        STATUS_CODE_INTERNAL = 2;
+        STATUS_CODE_UNAUTHORIZED = 3;
+        STATUS_CODE_RESOURCE_NOT_FOUND = 4;
+    }
+
+    message SetWhereRequest {
+        string whereLabel = 1;
+        string locale = 2;
+    }
+
+    message SetWhereResponse {
+        weave.common.ResourceId whereAnnotationRid = 1;
+    }
+
+    message SyncRoomAssignmentRequest {
+        weave.common.ResourceId resourceId = 1;
+        string roomName = 2;
+    }
+
+    message SyncRoomAssignmentResponse {
+        StatusCode status = 1;
+        weave.common.ResourceId resourceId = 2;
+    }
+}
+
+message GeoCommon {
+    message GeoCoordinateStruct {
+        float latitude = 1;
+        float longitude = 2;
+    }
+
+    message PostalAddress {
+        google.protobuf.StringValue postalCode = 1;
+        string regionCode = 2;
+        repeated string addressLines = 3;
+        google.protobuf.StringValue locality = 4;
+        google.protobuf.StringValue administrativeArea = 5;
+    }
+}
+
+message DeviceLocatedCapabilitiesTrait {
+    repeated weave.common.ResourceId validWhereAnnotationRids = 1;
+    repeated weave.common.ResourceId validWhereSpokenAnnotationRids = 2;
+    repeated weave.common.ResourceId validFixtureAnnotationRids = 3;
+    repeated weave.common.ResourceId validFixtureSpokenAnnotationRids = 4;
+    repeated LocatedTrait.LocatedFixtureType validFixtureTypes = 5;
 }

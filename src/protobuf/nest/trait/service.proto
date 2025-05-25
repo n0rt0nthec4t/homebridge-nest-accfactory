@@ -18,6 +18,8 @@ message DeviceInfoTrait {
     string resourceInstanceId = 10;
     repeated DeviceCapability deviceCapabilities = 11;
     repeated DeviceRadio deviceRadios = 12;
+    google.protobuf.StringValue hgDeviceId = 13;
+    google.protobuf.StringValue environmentTag = 14;
 
     enum DeviceCapability {
         DEVICE_CAPABILITY_UNSPECIFIED = 0;

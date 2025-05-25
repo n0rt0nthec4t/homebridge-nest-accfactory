@@ -8,6 +8,65 @@ import "../../../weave/common.proto";
 
 package nest.trait.product.protect;
 
+message LegacyStructureSelfTestTrait {
+    bool lastMstCancelled = 1;
+    bool mstInProgress = 2;
+    google.protobuf.Timestamp lastMstStartUtcSecs = 3;
+    google.protobuf.Timestamp lastMstEndUtcSecs = 4;
+    google.protobuf.Timestamp lastMstSuccessUtcSecs = 5;
+    bool astInProgress = 6;
+    google.protobuf.Timestamp lastAstStartUtcSecs = 7;
+    google.protobuf.Timestamp lastAstEndUtcSecs = 8;
+    google.protobuf.Timestamp astRequestUtcSecs = 9;
+    google.protobuf.Timestamp astSkipUtcSecs = 10;
+    repeated uint64 astParticipants = 11;
+
+    enum SelfTestType {
+        SELF_TEST_TYPE_UNSPECIFIED = 0;
+        SELF_TEST_TYPE_AST = 1;
+        SELF_TEST_TYPE_MST = 2;
+    }
+
+    enum StartSelfTestStatus {
+        START_SELF_TEST_STATUS_UNSPECIFIED = 0;
+        START_SELF_TEST_STATUS_OK = 1;
+        START_SELF_TEST_STATUS_FAILED = 2;
+    }
+
+    enum EndSelfTestStatus {
+        END_SELF_TEST_STATUS_UNSPECIFIED = 0;
+        END_SELF_TEST_STATUS_OK = 1;
+        END_SELF_TEST_STATUS_FAILED = 2;
+    }
+
+    message StartSelfTestRequest {
+        SelfTestType type = 1;
+        nest.trait.selftest.SelfTestRunnerTrait.TestId testId = 2;
+    }
+
+    message StartSelfTestResponse {
+        StartSelfTestStatus status = 1;
+    }
+
+    message EndSelfTestRequest {
+        SelfTestType type = 1;
+        nest.trait.selftest.SelfTestRunnerTrait.TestId testId = 2;
+    }
+
+    message EndSelfTestResponse {
+        EndSelfTestStatus status = 1;
+    }
+
+    message AutomatedSelfTestSkipEvent {
+    }
+
+    message AutomatedSelfTestCompleteEvent {
+    }
+
+    message ManualSelfTestCompleteEvent {
+    }
+}
+
 message SelfTestTrait {
     google.protobuf.Timestamp lastMstStart = 1;
     google.protobuf.Timestamp lastMstEnd = 2;
@@ -68,56 +127,6 @@ message SelfTestTrait {
         bool orchestrator = 1;
         uint32 newState = 2;
         uint32 oldState = 3;
-    }
-}
-
-message LegacyStructureSelfTestTrait {
-    bool lastMstCancelled = 1;
-    bool mstInProgress = 2;
-    google.protobuf.Timestamp lastMstStartUtcSecs = 3;
-    google.protobuf.Timestamp lastMstEndUtcSecs = 4;
-    google.protobuf.Timestamp lastMstSuccessUtcSecs = 5;
-    bool astInProgress = 6;
-    google.protobuf.Timestamp lastAstStartUtcSecs = 7;
-    google.protobuf.Timestamp lastAstEndUtcSecs = 8;
-    google.protobuf.Timestamp astRequestUtcSecs = 9;
-    google.protobuf.Timestamp astSkipUtcSecs = 10;
-    repeated uint64 astParticipants = 11;
-
-    enum SelfTestType {
-        SELF_TEST_TYPE_UNSPECIFIED = 0;
-        SELF_TEST_TYPE_AST = 1;
-        SELF_TEST_TYPE_MST = 2;
-    }
-
-    enum StartSelfTestStatus {
-        START_SELF_TEST_STATUS_UNSPECIFIED = 0;
-        START_SELF_TEST_STATUS_OK = 1;
-        START_SELF_TEST_STATUS_FAILED = 2;
-    }
-
-    enum EndSelfTestStatus {
-        END_SELF_TEST_STATUS_UNSPECIFIED = 0;
-        END_SELF_TEST_STATUS_OK = 1;
-        END_SELF_TEST_STATUS_FAILED = 2;
-    }
-
-    message StartSelfTestRequest {
-        SelfTestType type = 1;
-        nest.trait.selftest.SelfTestRunnerTrait.TestId testId = 2;
-    }
-
-    message StartSelfTestResponse {
-        StartSelfTestStatus status = 1;
-    }
-
-    message EndSelfTestRequest {
-        SelfTestType type = 1;
-        nest.trait.selftest.SelfTestRunnerTrait.TestId testId = 2;
-    }
-
-    message EndSelfTestResponse {
-        EndSelfTestStatus status = 1;
     }
 }
 
@@ -295,6 +304,20 @@ message LegacyAlarmHistoryTrait {
     }
 }
 
+message LegacySelfTestSettingsTrait {
+    bool astEnabled = 1;
+    bool astNotify = 2;
+    google.protobuf.Duration astRepeatSecs = 3;
+    google.protobuf.Duration astForceSecs = 4;
+    google.protobuf.Duration astStartOffsetUtcSecs = 5;
+    google.protobuf.Duration astEndOffsetUtcSecs = 6;
+
+    message AutomatedSelfTestScheduleChangeEvent {
+        google.protobuf.Duration astStartOffsetUtcSecs = 1;
+        google.protobuf.Duration astEndOffsetUtcSecs = 2;
+    }
+}
+
 message NightTimePromiseSettingsTrait {
     bool greenLedEnabled = 1;
     NightTimePromiseBrightness greenLedBrightness = 2;
@@ -327,15 +350,6 @@ message LegacyProtectDeviceInfoTrait {
 
 message LegacyProtectDeviceSettingsTrait {
     google.protobuf.Timestamp replaceByDate = 1;
-}
-
-message LegacySelfTestSettingsTrait {
-    bool astEnabled = 1;
-    bool astNotify = 2;
-    google.protobuf.Duration astRepeatSecs = 3;
-    google.protobuf.Duration astForceSecs = 4;
-    google.protobuf.Duration astStartOffsetUtcSecs = 5;
-    google.protobuf.Duration astEndOffsetUtcSecs = 6;
 }
 
 message SafetyStructureSettingsTrait {

@@ -16,6 +16,9 @@ message StructureModeTrait {
     StructureMode activityAgnosticStructureMode = 7;
     google.protobuf.Timestamp activityAgnosticStructureModeEffectiveTime = 8;
     PrivateTraitHandlerState privateState = 9;
+    map<uint32, StructureModeBlame> blames = 10;
+    StructureModeActorMethod actorMethod = 11;
+    StructureModeBlame primaryBlame = 12;
 
     enum StructureMode {
         STRUCTURE_MODE_UNSPECIFIED = 0;
@@ -54,6 +57,28 @@ message StructureModeTrait {
         STRUCTURE_MODE_REASON_IDENTIFIED_PRESENCE = 5;
         STRUCTURE_MODE_REASON_IDENTIFIED_ABSENCE = 6;
         STRUCTURE_MODE_REASON_SCHEDULE = 7;
+    }
+
+    enum StructureModeActorMethod {
+        STRUCTURE_MODE_ACTOR_METHOD_UNSPECIFIED = 0;
+        STRUCTURE_MODE_ACTOR_METHOD_LEGACY_NEST_APP = 1;
+        STRUCTURE_MODE_ACTOR_METHOD_GOOGLE_HOME_APP = 2;
+        STRUCTURE_MODE_ACTOR_METHOD_GOOGLE_ASSISTANT = 3;
+    }
+
+    enum UserBlameType {
+        USER_BLAME_TYPE_UNSPECIFIED = 0;
+        USER_BLAME_TYPE_PHONE_LOCATION = 1;
+        USER_BLAME_TYPE_MANUAL_CHANGE = 2;
+    }
+
+    enum DeviceBlameType {
+        DEVICE_BLAME_TYPE_UNSPECIFIED = 0;
+        DEVICE_BLAME_TYPE_LOCK = 1;
+        DEVICE_BLAME_TYPE_UNLOCK = 2;
+        DEVICE_BLAME_TYPE_MOTION_DETECTION = 3;
+        DEVICE_BLAME_TYPE_TOUCH_INTERACTION = 4;
+        DEVICE_BLAME_TYPE_VOICE_INTERACTION = 5;
     }
 
     enum NonPropagatingChangeSourceType {
@@ -145,12 +170,32 @@ message StructureModeTrait {
         google.protobuf.Timestamp modeStickinessExpiration = 3;
     }
 
+    message UserBlame {
+        int64 gaiaId = 1;
+        UserBlameType blameType = 2;
+    }
+
+    message DeviceBlame {
+        string hgsDeviceId = 1;
+        DeviceBlameType blameType = 2;
+    }
+
+    message StructureModeBlame {
+        google.protobuf.Timestamp observedTimestamp = 1;
+        string payloadTypeUrl = 2;
+        string leafEventUrl = 3;
+        bytes payload = 4;
+        UserBlame userBlame = 5;
+        DeviceBlame deviceBlame = 6;
+    }
+
     message PrivateTraitHandlerState {
         bool isCzUpdateStateOk = 1;
     }
 
     message UserInfo {
         google.protobuf.StringValue rtsUserId = 1;
+        google.protobuf.StringValue phoenixUserId = 2;
     }
 
     message StructureModeChangeRequest {
@@ -158,6 +203,7 @@ message StructureModeTrait {
         StructureModeReason reason = 2;
         weave.common.ResourceId userId = 3;
         NonPropagatingChangeDetails nonPropagatingChangeDetails = 4;
+        StructureModeActorMethod actorMethod = 5;
     }
 
     message NonPropagatingChangeDetails {
@@ -183,6 +229,9 @@ message StructureModeTrait {
         google.protobuf.Timestamp identifiedPresenceChangeTime = 11;
         repeated UserInfo recentUserArrivals = 12;
         repeated UserInfo recentUserDepartures = 13;
+        string mlpSessionId = 14;
+        map<uint32, StructureModeBlame> blames = 15;
+        StructureModeBlame primaryBlame = 16;
     }
 
     message StructureModeCompleteUpdateResponse {
@@ -203,6 +252,17 @@ message StructureModeTrait {
         float vacantProbability = 3;
         float identifiedPresenceProbability = 4;
         google.protobuf.Timestamp lastMotionEventTimestamp = 5;
+        float unknownProbability = 6;
+        google.protobuf.Timestamp evaluationTimestamp = 7;
+        google.protobuf.Timestamp transitionEvaluationTimestamp = 8;
+        UserInfo identifiedPresenceChangeUserId = 9;
+        google.protobuf.Timestamp identifiedPresenceChangeTime = 10;
+        repeated UserInfo recentUserArrivals = 12;
+        repeated UserInfo recentUserDepartures = 13;
+    }
+
+    message ConsumeOccupancyStateBeliefResponse {
+        StructureModeChangeResponseType responseType = 1;
     }
 
     message ConsumeSecurityArmStateChangeRequest {
@@ -228,6 +288,9 @@ message StructureModeTrait {
         google.protobuf.StringValue rtsDeviceId = 6;
         google.protobuf.StringValue controlEventTypeUrl = 7;
         google.protobuf.StringValue wwnId = 8;
+        map<uint32, StructureModeBlame> blames = 9;
+        StructureModeActorMethod actorMethod = 10;
+        StructureModeBlame primaryBlame = 11;
     }
 
     message OccupancyChangeEvent {
@@ -295,6 +358,81 @@ message StructureModeTrait {
     }
 }
 
+message StructureGeofencingTrait {
+    GeofenceEnhancedAutoAwayStatus geofenceEnhancedAutoawayStatus = 1;
+    map<uint32, GeofenceEnrolledUser> geofenceEnrolledUsers = 2;
+
+    enum GeofenceEnhancedAutoAwayStatus {
+        GEOFENCE_ENHANCED_AUTO_AWAY_STATUS_UNSPECIFIED = 0;
+        GEOFENCE_ENHANCED_AUTO_AWAY_STATUS_NOT_SET = 1;
+        GEOFENCE_ENHANCED_AUTO_AWAY_STATUS_ENABLED = 2;
+        GEOFENCE_ENHANCED_AUTO_AWAY_STATUS_DISABLED = 3;
+    }
+
+    enum GeofenceSourceType {
+        GEOFENCE_SOURCE_TYPE_UNSPECIFIED = 0;
+        GEOFENCE_SOURCE_TYPE_LEGACY_NEST_APP = 1;
+        GEOFENCE_SOURCE_TYPE_GOOGLE_HOME_APP = 2;
+    }
+
+    enum UserGeofenceEnrollmentCause {
+        USER_GEOFENCE_ENROLLMENT_CAUSE_UNSPECIFIED = 0;
+        USER_GEOFENCE_ENROLLMENT_CAUSE_USER_OPTED_IN = 1;
+        USER_GEOFENCE_ENROLLMENT_CAUSE_USER_ADDED_TO_STRUCTURE = 2;
+    }
+
+    enum UserGeofenceDisenrollmentCause {
+        USER_GEOFENCE_DISENROLLMENT_CAUSE_UNSPECIFIED = 0;
+        USER_GEOFENCE_DISENROLLMENT_CAUSE_USER_OPTED_OUT = 1;
+        USER_GEOFENCE_DISENROLLMENT_CAUSE_USER_REMOVED_FROM_STRUCTURE = 2;
+    }
+
+    message GeofenceEnrolledUser {
+        weave.common.ResourceId userId = 1;
+        GeofenceSourceType geofenceSourceType = 2;
+        string mobileDeviceId = 3;
+    }
+
+    message StructureGeofenceStateAssertionEvent {
+        Geofencing.GeofenceState state = 1;
+        weave.common.ResourceId userId = 2;
+        google.protobuf.StringValue rtsFenceId = 3;
+        google.protobuf.StringValue rtsMobileDeviceId = 4;
+    }
+
+    message UserGeofenceEnrollmentEvent {
+        GeofenceSourceType geofenceSourceType = 1;
+        weave.common.ResourceId userId = 2;
+        string mobileDeviceId = 3;
+        UserGeofenceEnrollmentCause enrollmentCause = 4;
+    }
+
+    message UserGeofenceDisenrollmentEvent {
+        GeofenceSourceType geofenceSourceType = 1;
+        weave.common.ResourceId userId = 2;
+        string mobileDeviceId = 3;
+        UserGeofenceDisenrollmentCause disenrollmentCause = 4;
+    }
+
+    message UserGeofenceDeviceChangeEvent {
+        GeofenceSourceType geofenceSourceType = 1;
+        weave.common.ResourceId userId = 2;
+        string previousMobileDeviceId = 3;
+        string currentMobileDeviceId = 4;
+    }
+
+    message StructureGeofenceEnrollmentEvent {
+    }
+
+    message StructureGeofenceDisenrollmentEvent {
+    }
+
+    message NestAppGeofenceHealthCheckEvent {
+        string rtsStructureId = 1;
+        string rtsUserId = 2;
+    }
+}
+
 message StructureModeSettingsTrait {
     bool enableAutoSleep = 1;
     repeated DayTimeSpan sleepSchedule = 2;
@@ -346,26 +484,16 @@ message Geofencing {
     }
 }
 
-message StructureGeofencingTrait {
-    GeofenceEnhancedAutoAwayStatus geofenceEnhancedAutoawayStatus = 1;
-
-    enum GeofenceEnhancedAutoAwayStatus {
-        GEOFENCE_ENHANCED_AUTO_AWAY_STATUS_UNSPECIFIED = 0;
-        GEOFENCE_ENHANCED_AUTO_AWAY_STATUS_NOT_SET = 1;
-        GEOFENCE_ENHANCED_AUTO_AWAY_STATUS_ENABLED = 2;
-        GEOFENCE_ENHANCED_AUTO_AWAY_STATUS_DISABLED = 3;
-    }
-
-    message StructureGeofenceStateAssertionEvent {
-        Geofencing.GeofenceState state = 1;
-        weave.common.ResourceId userId = 2;
-        google.protobuf.StringValue rtsFenceId = 3;
-        google.protobuf.StringValue rtsMobileDeviceId = 4;
-    }
-}
-
 message OccupancyInputSettingsTrait {
     bool deviceActivityConsidered = 1;
+
+    message OccupancyInputEnrollmentEvent {
+        weave.common.ResourceId structureId = 1;
+    }
+
+    message OccupancyInputDisenrollmentEvent {
+        weave.common.ResourceId structureId = 1;
+    }
 }
 
 message StructureModeCapabilitiesTrait {

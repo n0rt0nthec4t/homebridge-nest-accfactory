@@ -56,6 +56,36 @@ message PairingTokenResponse {
     string pairingToken = 1;
 }
 
+message PairingRequestV2 {
+    uint64 weaveNodeId = 1;
+    string pairerId = 2;
+    PairerType pairerType = 3;
+    string userId = 4;
+    int32 weaveVendorId = 5;
+    int32 weaveProductId = 6;
+    string hardwareRevision = 7;
+    string softwareRevision = 8;
+    string pairingToken = 9;
+    uint64 fabricId = 10;
+    google.protobuf.Timestamp pairedAt = 11;
+    InitiatedBy initiatedBy = 12;
+    string serialNumber = 13;
+    string macAddress = 14;
+    string ipAddress = 15;
+    bool reconnectTunnel = 16;
+
+    enum PairerType {
+        PAIRER_TYPE_UNSPECIFIED = 0;
+        PAIRER_TYPE_STRUCTURE = 1;
+        PAIRER_TYPE_USER = 2;
+    }
+}
+
+message PairingResponse {
+    string resourceId = 1;
+    string resourceInstanceId = 2;
+}
+
 message PairNFCTokenDeviceRequest {
     uint64 weaveNodeId = 1;
     string userId = 2;

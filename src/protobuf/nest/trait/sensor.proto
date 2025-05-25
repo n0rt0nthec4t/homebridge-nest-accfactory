@@ -106,6 +106,12 @@ message SmokeTrait {
         google.protobuf.Duration sampleInterval = 1;
         repeated SmokeSample samples = 2;
     }
+
+    message ClearAirOffsetSamplesEvent {
+        google.protobuf.Duration sampleInterval = 1;
+        repeated SmokeSample irLedSamples = 2;
+        repeated SmokeSample blueLedSamples = 3;
+    }
 }
 
 message TemperatureTrait {

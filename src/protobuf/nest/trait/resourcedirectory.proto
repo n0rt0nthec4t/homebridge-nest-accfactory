@@ -7,6 +7,13 @@ package nest.trait.resourcedirectory;
 
 message RelatedResourcesTrait {
     map<uint32, RelatedResource> relatedResources = 1;
+    map<uint32, RelatedResource> allResources = 2;
+
+    enum CloudPlatformVisibility {
+        CLOUD_PLATFORM_VISIBILITY_UNSPECIFIED = 0;
+        CLOUD_PLATFORM_VISIBILITY_RTS = 1;
+        CLOUD_PLATFORM_VISIBILITY_PHOENIX = 2;
+    }
 
     message InterfaceStruct {
         weave.common.InterfaceName interfaceName = 1;
@@ -21,6 +28,7 @@ message RelatedResourcesTrait {
         google.protobuf.UInt32Value productId = 5;
         google.protobuf.StringValue softwareVersion = 6;
         repeated InterfaceStruct interfaces = 7;
+        CloudPlatformVisibility cloudPlatformVisibility = 8;
     }
 
     message SetRelatedResourcesRequest {

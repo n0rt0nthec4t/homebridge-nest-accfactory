@@ -7,6 +7,188 @@ import "../../weave/common.proto";
 
 package nest.trait.firmware;
 
+message SoftwareUpdateTrait {
+    google.protobuf.Timestamp lastUpdateTime = 1;
+    State state = 2;
+    UpdateType updateType = 3;
+    uint32 progressPercent = 4;
+    google.protobuf.Duration estimatedCompletionDuration = 5;
+    google.protobuf.Timestamp estimatedCompletionTime = 6;
+
+    enum State {
+        STATE_UNSPECIFIED = 0;
+        STATE_IDLE = 1;
+        STATE_QUERYING = 2;
+        STATE_DOWNLOADING = 3;
+        STATE_INSTALLING = 4;
+        STATE_ROLLING_BACK = 5;
+    }
+
+    enum StartTrigger {
+        START_TRIGGER_UNSPECIFIED = 0;
+        START_TRIGGER_USER_INITIATED = 1;
+        START_TRIGGER_SCHEDULED = 2;
+        START_TRIGGER_USB = 3;
+        START_TRIGGER_FROM_DFU = 4;
+        START_TRIGGER_BLE = 5;
+        START_TRIGGER_REMOTE_AGENT = 6;
+        START_TRIGGER_OTHER = 7;
+    }
+
+    enum UpdateType {
+        UPDATE_TYPE_UNSPECIFIED = 0;
+        UPDATE_TYPE_BLOCKING = 1;
+        UPDATE_TYPE_NON_BLOCKING = 2;
+    }
+
+    enum UpdateScheme {
+        UPDATE_SCHEME_UNSPECIFIED = 0;
+        UPDATE_SCHEME_HTTPS = 1;
+    }
+
+    enum UpdatePriority {
+        UPDATE_PRIORITY_UNSPECIFIED = 0;
+        UPDATE_PRIORITY_NORMAL = 1;
+        UPDATE_PRIORITY_CRITICAL = 2;
+    }
+
+    enum ResponseType {
+        RESPONSE_TYPE_UNSPECIFIED = 0;
+        RESPONSE_TYPE_AVAILABLE = 1;
+        RESPONSE_TYPE_NO_UPDATE = 2;
+    }
+
+    enum ProductNamespace {
+        PRODUCT_NAMESPACE_UNSPECIFIED = 0;
+        PRODUCT_NAMESPACE_WEAVE = 1;
+    }
+
+    message ProductInfo {
+        ProductNamespace productNamespace = 1;
+        uint32 vendorId = 2;
+        uint32 productId = 3;
+    }
+
+    message SoftwareVersion {
+        int64 softwareVersion = 1;
+        string displaySoftwareVersion = 2;
+        string softwareVersionLabel = 3;
+    }
+
+    message UpdateInfo {
+        string downloadUrl = 1;
+        SoftwareVersion updateSoftwareVersion = 2;
+        UpdateScheme updateScheme = 3;
+    }
+
+    message DeviceId {
+        string deviceSerialNumber = 1;
+    }
+
+    message DeviceInfo {
+        DeviceId deviceId = 1;
+        ProductInfo productInfo = 2;
+        SoftwareVersion currentSoftwareVersion = 3;
+    }
+
+    message SoftwareUpdateCheckRequest {
+        DeviceInfo deviceInfo = 1;
+    }
+
+    message SoftwareUpdateCheckResponse {
+        ResponseType responseType = 1;
+        UpdatePriority updatePriority = 2;
+        UpdateInfo updateInfo = 3;
+        string channelName = 4;
+    }
+
+    message SoftwareUpdateStartEvent {
+        StartTrigger trigger = 1;
+        DeviceInfo deviceInfo = 2;
+    }
+
+    message FailureEvent {
+        State state = 1;
+        uint32 platformReturnCode = 2;
+        weave.common.ProfileSpecificStatusCode primaryStatusCode = 3;
+        weave.common.ProfileSpecificStatusCode remoteStatusCode = 4;
+        string failtureDetail = 5;
+        DeviceInfo deviceInfo = 6;
+    }
+
+    message DownloadFailureEvent {
+        State state = 1;
+        uint32 platformReturnCode = 2;
+        weave.common.ProfileSpecificStatusCode primaryStatusCode = 3;
+        weave.common.ProfileSpecificStatusCode remoteStatusCode = 4;
+        string failtureDetail = 5;
+        DeviceInfo deviceInfo = 6;
+        string bytesDownloaded = 32;
+    }
+
+    message QueryBeginEvent {
+        google.protobuf.StringValue currentSwVersion = 2;
+        google.protobuf.UInt32Value vendorId = 3;
+        google.protobuf.UInt32Value vendorProductId = 4;
+        google.protobuf.UInt32Value productRevision = 5;
+        google.protobuf.StringValue locale = 6;
+        google.protobuf.StringValue queryServerAddr = 7;
+        weave.common.ResourceId queryServerId = 8;
+        DeviceInfo deviceInfo = 9;
+    }
+
+    message QueryFinishEvent {
+        google.protobuf.StringValue imageVersion = 1;
+        google.protobuf.StringValue imageUrl = 2;
+        DeviceInfo deviceInfo = 3;
+        SoftwareVersion imageSoftwareVersion = 4;
+    }
+
+    message DownloadStartEvent {
+        google.protobuf.StringValue imageVersion = 1;
+        google.protobuf.StringValue imageUrl = 2;
+        google.protobuf.StringValue subImageName = 3;
+        google.protobuf.UInt64Value offset = 4;
+        google.protobuf.StringValue destination = 5;
+        DeviceInfo deviceInfo = 6;
+        SoftwareVersion imageSoftwareVersion = 7;
+    }
+
+    message DownloadFinishEvent {
+        google.protobuf.StringValue imageVersion = 1;
+        google.protobuf.StringValue imageUrl = 2;
+        google.protobuf.StringValue subImageName = 3;
+        google.protobuf.StringValue destination = 4;
+        DeviceInfo deviceInfo = 5;
+        SoftwareVersion imageSoftwareVersion = 6;
+    }
+
+    message InstallStartEvent {
+        google.protobuf.StringValue imageVersion = 2;
+        google.protobuf.StringValue subImageName = 3;
+        google.protobuf.StringValue localSource = 4;
+        google.protobuf.StringValue destination = 5;
+        DeviceInfo deviceInfo = 6;
+        SoftwareVersion imageSoftwareVersion = 7;
+    }
+
+    message InstallFinishEvent {
+        google.protobuf.StringValue imageVersion = 2;
+        google.protobuf.StringValue subImageName = 3;
+        DeviceInfo deviceInfo = 4;
+        SoftwareVersion imageSoftwareVersion = 5;
+    }
+
+    message ImageRollbackEvent {
+        google.protobuf.StringValue imageVersion = 2;
+        google.protobuf.StringValue subImageName = 3;
+        google.protobuf.StringValue rollbackFrom = 4;
+        google.protobuf.StringValue rollbackTo = 5;
+        DeviceInfo deviceInfo = 6;
+        SoftwareVersion imageSoftwareVersion = 7;
+    }
+}
+
 message FirmwareTrait {
     enum AssertType {
         ASSERT_TYPE_UNSPECIFIED = 0;
@@ -30,6 +212,13 @@ message FirmwareTrait {
         RESET_TYPE_LOW_BATTERY = 10;
         RESET_TYPE_DEBUG_BOARD = 11;
         RESET_TYPE_PMIC_RESET = 12;
+        RESET_TYPE_SENSOR = 13;
+        RESET_TYPE_NETWORK = 14;
+        RESET_TYPE_INTERACTION = 15;
+        RESET_TYPE_MCU_RESET = 16;
+        RESET_TYPE_VBUS = 17;
+        RESET_TYPE_TAMPER = 18;
+        RESET_TYPE_THERMAL_SHUTDOWN = 19;
     }
 
     message AssertTaskInfoStruct {
@@ -84,6 +273,11 @@ message FirmwareTrait {
         google.protobuf.Duration itemUsage = 2;
     }
 
+    message ItemCountStruct {
+        string itemName = 1;
+        uint32 count = 2;
+    }
+
     message RebootRequest {
     }
 
@@ -101,6 +295,7 @@ message FirmwareTrait {
         repeated IRQStruct irqInfo = 11;
         google.protobuf.UInt32Value availableRam = 12;
         repeated ItemTotalUsageStruct trackedItems = 13;
+        repeated ItemCountStruct countedItems = 14;
     }
 
     message FirmwareBootEvent {
@@ -126,96 +321,19 @@ message FirmwareTrait {
         int32 rngRequests = 4;
         int32 bootCount = 5;
     }
-}
 
-message SoftwareUpdateTrait {
-    google.protobuf.Timestamp lastUpdateTime = 1;
-
-    enum State {
-        STATE_UNSPECIFIED = 0;
-        STATE_IDLE = 1;
-        STATE_QUERYING = 2;
-        STATE_DOWNLOADING = 3;
-        STATE_INSTALLING = 4;
-        STATE_ROLLING_BACK = 5;
+    message EnvStatsEvent {
+        uint32 envWriteCount = 1;
+        uint32 envUsedBytes = 2;
+        uint32 entryCount = 3;
+        uint32 maxSectorEraseCount = 4;
+        uint32 avgSectorEraseCount = 5;
+        uint32 sectorCount = 6;
+        uint32 sectorSize = 7;
+        uint32 recoveryOperationCount = 8;
     }
 
-    enum StartTrigger {
-        START_TRIGGER_UNSPECIFIED = 0;
-        START_TRIGGER_USER_INITIATED = 1;
-        START_TRIGGER_SCHEDULED = 2;
-        START_TRIGGER_USB = 3;
-        START_TRIGGER_FROM_DFU = 4;
-        START_TRIGGER_BLE = 5;
-        START_TRIGGER_REMOTE_AGENT = 6;
-        START_TRIGGER_OTHER = 7;
-    }
-
-    message SoftwareUpdateStartEvent {
-        StartTrigger trigger = 1;
-    }
-
-    message FailureEvent {
-        State state = 1;
-        uint32 platformReturnCode = 2;
-        weave.common.ProfileSpecificStatusCode primaryStatusCode = 3;
-        weave.common.ProfileSpecificStatusCode remoteStatusCode = 4;
-    }
-
-    message DownloadFailureEvent {
-        State state = 1;
-        uint32 platformReturnCode = 2;
-        weave.common.ProfileSpecificStatusCode primaryStatusCode = 3;
-        weave.common.ProfileSpecificStatusCode remoteStatusCode = 4;
-        string bytesDownloaded = 32;
-    }
-
-    message QueryBeginEvent {
-        google.protobuf.StringValue currentSwVersion = 2;
-        google.protobuf.UInt32Value vendorId = 3;
-        google.protobuf.UInt32Value vendorProductId = 4;
-        google.protobuf.UInt32Value productRevision = 5;
-        google.protobuf.StringValue locale = 6;
-        google.protobuf.StringValue queryServerAddr = 7;
-        weave.common.ResourceId queryServerId = 8;
-    }
-
-    message QueryFinishEvent {
-        google.protobuf.StringValue imageVersion = 1;
-        google.protobuf.StringValue imageUrl = 2;
-    }
-
-    message DownloadStartEvent {
-        google.protobuf.StringValue imageVersion = 1;
-        google.protobuf.StringValue imageUrl = 2;
-        google.protobuf.StringValue subImageName = 3;
-        google.protobuf.UInt64Value offset = 4;
-        google.protobuf.StringValue destination = 5;
-    }
-
-    message DownloadFinishEvent {
-        google.protobuf.StringValue imageVersion = 1;
-        google.protobuf.StringValue imageUrl = 2;
-        google.protobuf.StringValue subImageName = 3;
-        google.protobuf.StringValue destination = 4;
-    }
-
-    message InstallStartEvent {
-        google.protobuf.StringValue imageVersion = 2;
-        google.protobuf.StringValue subImageName = 3;
-        google.protobuf.StringValue localSource = 4;
-        google.protobuf.StringValue destination = 5;
-    }
-
-    message InstallFinishEvent {
-        google.protobuf.StringValue imageVersion = 2;
-        google.protobuf.StringValue subImageName = 3;
-    }
-
-    message ImageRollbackEvent {
-        google.protobuf.StringValue imageVersion = 2;
-        google.protobuf.StringValue subImageName = 3;
-        google.protobuf.StringValue rollbackFrom = 4;
-        google.protobuf.StringValue rollbackTo = 5;
+    message FirmwareBootEndEvent {
+        google.protobuf.Duration uptime = 1;
     }
 }

@@ -171,8 +171,9 @@ message WdlCommandOptions {
     bool extendable = 5;
     uint32 reservedTagMin = 6;
     uint32 reservedTagMax = 7;
-    string pb_extends = 8;
+    string extends = 8;
     string completionEvent = 11;
+    WdlPermission permission = 20;
 }
 
 message WdlEventOptions {
@@ -181,7 +182,7 @@ message WdlEventOptions {
     bool extendable = 5;
     uint32 reservedTagMin = 6;
     uint32 reservedTagMax = 7;
-    string pb_extends = 8;
+    string extends = 8;
     EventImportance eventImportance = 9;
 }
 
@@ -373,6 +374,8 @@ message WdlTraitOptions {
     uint32 reservedCommandTagMax = 11;
     uint32 reservedEventTagMin = 12;
     uint32 reservedEventTagMax = 13;
+    WdlPermission permissionRead = 20;
+    WdlPermission permissionUpdate = 21;
 }
 
 message WdlTypespaceOptions {
@@ -438,6 +441,19 @@ message WdlServiceOptions {
     string config = 1;
     WdlTraitOptions trait = 2;
     WdlResourceOptions resource = 3;
+}
+
+message WdlFileOptions {
+}
+
+message WdlPermission {
+    string permission = 1;
+    repeated Override permissionOverrides = 2;
+
+    message Override {
+        string resourceType = 1;
+        string permission = 2;
+    }
 }
 
 message CaspianOptions {

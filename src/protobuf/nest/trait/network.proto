@@ -1,6 +1,7 @@
 syntax = "proto3";
 
 import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
 import "google/protobuf/wrappers.proto";
 import "../../weave/common.proto";
 
@@ -25,6 +26,27 @@ message TelemetryNetworkWpanTrait {
         THREAD_TYPE_UNSPECIFIED = 0;
         THREAD_TYPE_SILABS = 1;
         THREAD_TYPE_OPENTHREAD = 2;
+    }
+
+    enum SrpServerState {
+        SRP_SERVER_STATE_UNSPECIFIED = 0;
+        SRP_SERVER_STATE_DISABLED = 1;
+        SRP_SERVER_STATE_RUNNING = 2;
+        SRP_SERVER_STATE_STOPPED = 3;
+    }
+
+    enum SrpServerAddressMode {
+        SRP_SERVER_ADDRESS_MODE_UNSPECIFIED = 0;
+        SRP_SERVER_ADDRESS_MODE_UNICAST = 1;
+        SRP_SERVER_ADDRESS_MODE_STATE_ANYCAST = 2;
+    }
+
+    enum Nat64State {
+        NAT64_STATE_UNSPECIFIED = 0;
+        NAT64_STATE_DISABLED = 1;
+        NAT64_STATE_NOT_RUNNING = 2;
+        NAT64_STATE_IDLE = 3;
+        NAT64_STATE_ACTIVE = 4;
     }
 
     message ChannelUtilization {
@@ -122,6 +144,7 @@ message TelemetryNetworkWpanTrait {
         uint32 partitionId = 6;
         bytes extAddress = 7;
         int32 instantRssi = 8;
+        uint64 extendedPanId = 9;
     }
 
     message NetworkWpanTopoFullEvent {
@@ -143,6 +166,7 @@ message TelemetryNetworkWpanTrait {
         uint32 childTableSize = 16;
         uint32 neighborTableSize = 17;
         int32 instantRssi = 18;
+        uint64 extendedPanId = 19;
     }
 
     message TopoEntryEvent {
@@ -163,6 +187,7 @@ message TelemetryNetworkWpanTrait {
         google.protobuf.UInt32Value networkDataVersion = 15;
         float macFrameErrorRate = 16;
         float ipMessageErrorRate = 17;
+        int32 version = 18;
     }
 
     message WpanChannelmonStatsEvent {
@@ -183,6 +208,318 @@ message TelemetryNetworkWpanTrait {
         uint32 linkQuality3 = 5;
         uint32 linkQuality2 = 6;
         uint32 linkQuality1 = 7;
+    }
+
+    message Nat64TrafficCounters {
+        int64 ipv4ToIpv6Packets = 1;
+        int64 ipv4ToIpv6Bytes = 2;
+        int64 ipv6ToIpv4Packets = 3;
+        int64 ipv6ToIpv4Bytes = 4;
+    }
+
+    message Nat64ProtocolCounters {
+        Nat64TrafficCounters tcp = 1;
+        Nat64TrafficCounters udp = 2;
+        Nat64TrafficCounters icmp = 3;
+    }
+
+    message Nat64PacketCounters {
+        int64 ipv4ToIpv6Packets = 1;
+        int64 ipv6ToIpv4Packets = 2;
+    }
+
+    message Nat64ErrorCounters {
+        Nat64PacketCounters unknown = 1;
+        Nat64PacketCounters illegalPacket = 2;
+        Nat64PacketCounters unsupportedProtocol = 3;
+        Nat64PacketCounters noMapping = 4;
+    }
+
+    message BorderRoutingCounters {
+        uint32 raRxCount = 1;
+        uint32 raTxCount = 2;
+        uint32 rsRxCount = 3;
+        uint32 rsTxCount = 4;
+        uint32 inboundIpPackets = 5;
+        uint32 inboundIpBytes = 6;
+        uint32 outboundIpPackets = 7;
+        uint32 outboundIpBytes = 8;
+        uint32 raTxSuccessCount = 9;
+        uint32 raTxFailureCount = 10;
+        uint32 rsTxSuccessCount = 11;
+        uint32 rsTxFailureCount = 12;
+        uint64 inboundUnicastPackets = 13;
+        uint64 inboundUnicastBytes = 14;
+        uint64 inboundMulticastPackets = 15;
+        uint64 inboundMulticastBytes = 16;
+        uint64 outboundUnicastPackets = 17;
+        uint64 outboundUnicastBytes = 18;
+        uint64 outboundMulticastPackets = 19;
+        uint64 outboundMulticastBytes = 20;
+        Nat64ProtocolCounters nat64ProtocolCounters = 21;
+        Nat64ErrorCounters nat64ErrorCounters = 22;
+    }
+
+    message SrpServerRegistrationInfo {
+        uint32 freshCount = 1;
+        uint32 deletedCount = 2;
+        uint64 leaseTimeTotal = 3;
+        uint64 keyLeaseTimeTotal = 4;
+        uint64 remainingLeaseTimeTotal = 5;
+        uint64 remainingKeyLeaseTimeTotal = 6;
+    }
+
+    message SrpServerResponseCounters {
+        uint32 successCount = 1;
+        uint32 serverFailureCount = 2;
+        uint32 formatErrorCount = 3;
+        uint32 nameExistsCount = 4;
+        uint32 refusedCount = 5;
+        uint32 otherCount = 6;
+    }
+
+    message SrpServerInfo {
+        SrpServerState state = 1;
+        uint32 port = 2;
+        SrpServerAddressMode addressMode = 3;
+        SrpServerRegistrationInfo hosts = 4;
+        SrpServerRegistrationInfo services = 5;
+        SrpServerResponseCounters responseCounters = 6;
+    }
+
+    message DnsServerResponseCounters {
+        uint32 successCount = 1;
+        uint32 serverFailureCount = 2;
+        uint32 formatErrorCount = 3;
+        uint32 nameErrorCount = 4;
+        uint32 notImplementedCount = 5;
+        uint32 otherCount = 6;
+    }
+
+    message DnsServerInfo {
+        DnsServerResponseCounters responseCounters = 1;
+        uint32 resolvedByLocalSrpCount = 2;
+    }
+
+    message MdnsResponseCounters {
+        uint32 successCount = 1;
+        uint32 notFoundCount = 2;
+        uint32 invalidArgsCount = 3;
+        uint32 duplicatedCount = 4;
+        uint32 notImplementedCount = 5;
+        uint32 unknownErrorCount = 6;
+        uint32 abortedCount = 7;
+        uint32 invalidStateCount = 8;
+    }
+
+    message MdnsInfo {
+        MdnsResponseCounters hostRegistrationResponses = 1;
+        MdnsResponseCounters serviceRegistrationResponses = 2;
+        MdnsResponseCounters hostResolutionResponses = 3;
+        MdnsResponseCounters serviceResolutionResponses = 4;
+        uint32 hostRegistrationEmaLatency = 5;
+        uint32 serviceRegistrationEmaLatency = 6;
+        uint32 hostResolutionEmaLatency = 7;
+        uint32 serviceResolutionEmaLatency = 8;
+    }
+
+    message FeatureFlagMetrics {
+        int64 countSyncSuccess = 1;
+        int64 countSyncFailPushToApply = 2;
+        int64 countSyncFailRetrieveFromDcs = 3;
+    }
+
+    message BorderRoutingNat64State {
+        Nat64State prefixManagerState = 1;
+        Nat64State translatorState = 2;
+    }
+
+    message Nat64Mapping {
+        uint64 mappingId = 1;
+        bytes hashedIpv6Address = 2;
+        Nat64ProtocolCounters counters = 3;
+    }
+
+    message NetworkWpanBorderRouterEvent {
+        BorderRoutingCounters borderRoutingCounters = 1;
+        SrpServerInfo srpServer = 2;
+        DnsServerInfo dnsServer = 3;
+        MdnsInfo mdns = 4;
+        FeatureFlagMetrics featureFlagMetrics = 5;
+        BorderRoutingNat64State nat64State = 6;
+        repeated Nat64Mapping nat64Mappings = 7;
+        repeated int32 experimentId = 8;
+    }
+
+    message DeviceInfoEvent {
+        string releaseChannel = 1;
+        string softwareVersion = 2;
+        string hardwareVersion = 3;
+        string otHostVersion = 4;
+        string otRcpVersion = 5;
+        int32 threadVersion = 6;
+        string threadDaemonVersion = 7;
+        string regionCode = 8;
+        string regionCodeFactory = 9;
+    }
+
+    message RcpStabilityStatistics {
+        uint32 rcpTimeoutCount = 1;
+        uint32 rcpResetCount = 2;
+        uint32 rcpRestorationCount = 3;
+        uint32 spinelParseErrorCount = 4;
+        int32 rcpFirmwareUpdateCount = 5;
+        uint32 threadStackUptime = 6;
+    }
+
+    message RcpInterfaceStatistics {
+        uint32 rcpInterfaceType = 1;
+        uint64 transferredFramesCount = 2;
+        uint64 transferredValidFramesCount = 3;
+        uint64 transferredGarbageFramesCount = 4;
+        uint64 rxFramesCount = 5;
+        uint64 rxBytesCount = 6;
+        uint64 txFramesCount = 7;
+        uint64 txBytesCount = 8;
+    }
+
+    message NetworkWpanRcpEvent {
+        RcpStabilityStatistics rcpStabilityStatistics = 1;
+        RcpInterfaceStatistics rcpInterfaceStatistics = 2;
+    }
+
+    message ThreadCoexMetricsEvent {
+        int64 countTxRequest = 1;
+        int64 countTxGrantImmediate = 2;
+        int64 countTxGrantWait = 3;
+        int64 countTxGrantWaitActivated = 4;
+        int64 countTxGrantWaitTimeout = 5;
+        int64 countTxGrantDeactivatedDuringRequest = 6;
+        int64 txAverageRequestToGrantTime = 7;
+        int64 countRxRequest = 8;
+        int64 countRxGrantImmediate = 9;
+        int64 countRxGrantWait = 10;
+        int64 countRxGrantWaitActivated = 11;
+        int64 countRxGrantWaitTimeout = 12;
+        int64 countRxGrantDeactivatedDuringRequest = 13;
+        int64 countRxGrantNone = 14;
+        int64 rxAverageRequestToGrantTime = 15;
+    }
+
+    message ThreadDataEvent {
+        int32 eventType = 1;
+        bytes data = 2;
+    }
+}
+
+message TelemetryNetworkWifiTrait {
+    enum NetworkCondition {
+        NETWORK_CONDITION_UNSPECIFIED = 0;
+        NETWORK_CONDITION_NO_NETWORK = 1;
+        NETWORK_CONDITION_WEAK = 2;
+        NETWORK_CONDITION_NORMAL = 3;
+        NETWORK_CONDITION_GOOD = 4;
+    }
+
+    enum NetworkConditionRequestResponseStatus {
+        NETWORK_CONDITION_REQUEST_RESPONSE_STATUS_UNSPECIFIED = 0;
+        NETWORK_CONDITION_REQUEST_RESPONSE_STATUS_SUCCESS = 1;
+        NETWORK_CONDITION_REQUEST_RESPONSE_STATUS_FAIL = 2;
+    }
+
+    message NetworkWiFiStatsEvent {
+        int32 rssi = 1;
+        uint32 bcnRecvd = 2;
+        uint32 bcnLost = 3;
+        uint32 pktMcastRx = 4;
+        uint32 pktUcastRx = 5;
+        uint32 currRxRate = 6;
+        uint32 currTxRate = 7;
+        uint32 sleepTimePercent = 8;
+        uint32 bssid = 9;
+        uint32 freq = 10;
+        uint32 numOfAp = 11;
+    }
+
+    message NetworkWiFiDeauthEvent {
+        uint32 reason = 1;
+    }
+
+    message NetworkWiFiInvalidKeyEvent {
+        uint32 reason = 1;
+    }
+
+    message NetworkWiFiConnectionStatusChangeEvent {
+        bool isConnected = 1;
+        google.protobuf.StringValue lnid = 2;
+        google.protobuf.StringValue lnidW = 3;
+    }
+
+    message NetworkWiFiApConnectEvent {
+        uint64 time = 1;
+        uint32 brand = 2;
+        uint32 vendor = 3;
+        bool isHostOff = 4;
+        uint32 channel = 5;
+        uint32 bssid = 6;
+        uint32 bi = 7;
+        uint32 dtim = 8;
+        google.protobuf.StringValue bssidHash = 9;
+    }
+
+    message RssiBucket {
+        uint32 index = 1;
+        uint32 count = 2;
+    }
+
+    message NetworkWiFiApDisconnectEvent {
+        uint64 time = 1;
+        uint32 reason = 2;
+        uint32 duration = 3;
+        bool isHostOff = 4;
+        uint32 channel = 5;
+        uint32 bssid = 6;
+        uint32 bi = 7;
+        uint32 dtim = 8;
+        int32 rssiMin = 9;
+        int32 rssiMax = 10;
+        uint32 forceAwakeCnt = 11;
+        uint32 bcnRcvPercent = 12;
+        google.protobuf.StringValue bssidHash = 13;
+        repeated RssiBucket rssiCounts = 14;
+    }
+
+    message NetworkWiFiSdioStatsEvent {
+        uint32 attachSdioFailCnt = 1;
+        uint32 firmwareHangCnt = 2;
+        uint32 busHangCnt = 3;
+        uint32 fwReloadPhyReinitCnt = 4;
+        uint32 fwReloadConnStuckCnt = 5;
+        uint32 fwReloadDhcpStuckCnt = 6;
+        uint32 emptyScanResultsCnt = 7;
+    }
+
+    message DhcpInfoEvent {
+        uint32 dhcpLeaseTime = 1;
+    }
+
+    message NetworkCheckInfoEvent {
+        google.protobuf.Timestamp checkTime = 1;
+        uint32 brand = 2;
+        uint32 status = 3;
+        uint32 triggerSource = 4;
+    }
+
+    message NetworkCheckWifiCommonHalEvent {
+        uint32 result = 1;
+    }
+
+    message NetworkConditionRequest {
+    }
+
+    message NetworkConditionRequestResponse {
+        NetworkConditionRequestResponseStatus status = 1;
+        NetworkCondition networkCondition = 2;
     }
 }
 
@@ -217,36 +554,6 @@ message RadioSignalStrengthTrait {
     }
 }
 
-message TelemetryNetworkWifiTrait {
-    message NetworkWiFiStatsEvent {
-        int32 rssi = 1;
-        uint32 bcnRecvd = 2;
-        uint32 bcnLost = 3;
-        uint32 pktMcastRx = 4;
-        uint32 pktUcastRx = 5;
-        uint32 currRxRate = 6;
-        uint32 currTxRate = 7;
-        uint32 sleepTimePercent = 8;
-        uint32 bssid = 9;
-        uint32 freq = 10;
-        uint32 numOfAp = 11;
-    }
-
-    message NetworkWiFiDeauthEvent {
-        uint32 reason = 1;
-    }
-
-    message NetworkWiFiInvalidKeyEvent {
-        uint32 reason = 1;
-    }
-
-    message NetworkWiFiConnectionStatusChangeEvent {
-        bool isConnected = 1;
-        google.protobuf.StringValue lnid = 2;
-        google.protobuf.StringValue lnidW = 3;
-    }
-}
-
 message ThreadInterfaceTrait {
     bool isOnline = 1;
     bytes macAddress = 2;
@@ -278,6 +585,37 @@ message ThreadInterfaceTrait {
         ThreadChannelDescriptor channel = 2;
         bytes panId = 3;
         bytes networkName = 4;
+    }
+}
+
+message WifiInterfaceTrait {
+    bool isOnline = 1;
+    bytes macAddress = 2;
+    repeated bytes ipAddresses = 3;
+    int32 rssi = 32;
+    string regulatoryDomain = 33;
+    string ssid = 34;
+
+    enum ConnectionStrength {
+        CONNECTION_STRENGTH_UNSPECIFIED = 0;
+        CONNECTION_STRENGTH_NO_SIGNAL = 1;
+        CONNECTION_STRENGTH_BAD = 2;
+        CONNECTION_STRENGTH_FAIR = 3;
+        CONNECTION_STRENGTH_GOOD = 4;
+        CONNECTION_STRENGTH_EXCELLENT = 5;
+    }
+
+    enum RequestStatusCode {
+        REQUEST_STATUS_CODE_UNSPECIFIED = 0;
+        REQUEST_STATUS_CODE_SUCCESS = 1;
+        REQUEST_STATUS_CODE_FAILED = 2;
+    }
+
+    message GetWiFiConnectionStrengthRequest {
+    }
+
+    message GetWiFiConnectionStrengthResponse {
+        ConnectionStrength connStrength = 1;
     }
 }
 
@@ -341,12 +679,4 @@ message WifiNetworkFaultTrait {
         bool asserted = 1;
         repeated NetworkFaultTrait.NetworkFaultType type = 32;
     }
-}
-
-message WifiInterfaceTrait {
-    bool isOnline = 1;
-    bytes macAddress = 2;
-    repeated bytes ipAddresses = 3;
-    int32 rssi = 32;
-    string regulatoryDomain = 33;
 }

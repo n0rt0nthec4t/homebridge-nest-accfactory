@@ -249,12 +249,21 @@ message TamperTrait {
         TAMPER_STATE_UNKNOWN = 3;
     }
 
+    enum TamperStateChangeReason {
+        TAMPER_STATE_CHANGE_REASON_UNSPECIFIED = 0;
+        TAMPER_STATE_CHANGE_REASON_CLEAR_SECURE = 1;
+        TAMPER_STATE_CHANGE_REASON_CLEAR_DISARM = 2;
+        TAMPER_STATE_CHANGE_REASON_CLEAR_SNOOZE = 3;
+    }
+
     message ResetTamperRequest {
     }
 
     message TamperStateChangeEvent {
         TamperState tamperState = 1;
         TamperState priorTamperState = 2;
+        TamperStateChangeReason reason = 3;
+        google.protobuf.Timestamp tamperStateChangeTime = 4;
     }
 }
 

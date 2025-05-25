@@ -3,15 +3,11 @@ syntax = "proto3";
 import "google/protobuf/any.proto";
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
+import "../../nest/messages.proto";
 import "../../weave/common.proto";
 import "../../wdl-event-importance.proto";
 
 package nestlabs.eventingapi.v1;
-
-message SchemaVersion {
-    uint32 currentVersion = 1;
-    uint32 minCompatVersion = 2;
-}
 
 message EventAgent {
     weave.common.ResourceId deviceId = 1;
@@ -32,16 +28,35 @@ message Subject {
     weave.common.ResourceId pairerId = 5;
     Device device = 6;
     string instanceId = 7;
+    string hgsStructureId = 8;
+    ResourceIdType resourceIdType = 9;
+    NamespaceId namespaceId = 10;
 
     enum ResourceCase {
         RESOURCE_NOT_SET = 0;
         DEVICE = 6;
     }
 
+    enum ResourceIdType {
+        UNKNOWN_ID_TYPE = 0;
+        CAMERA = 1;
+        CAST = 2;
+        GAIA = 3;
+        HGS = 4;
+        HGS_AGENT_DEVICE_ID = 5;
+        PHOENIX = 6;
+        RTS = 7;
+        WIFI = 8;
+    }
+
     message Device {
         uint32 vendorCode = 1;
         uint32 productVersion = 2;
         uint32 productId = 3;
+    }
+
+    message NamespaceId {
+        string id = 1;
     }
 }
 
@@ -62,7 +77,7 @@ message EventHeader {
     EventAgent producerAgent = 22;
     string producerEventKey = 23;
     map<string, string> tags = 24;
-    SchemaVersion schemaVersion = 25;
+    nest.messages.SchemaVersion schemaVersion = 25;
     map<string, google.protobuf.Timestamp> serviceTimestamps = 26;
     WdmEventFields wdmEventFields = 40;
 

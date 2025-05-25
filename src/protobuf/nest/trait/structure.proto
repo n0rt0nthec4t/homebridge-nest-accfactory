@@ -54,26 +54,12 @@ message HomeInfoSettingsTrait {
     }
 }
 
-message StructureLocationTrait {
-    google.protobuf.StringValue postalCode = 1;
-    google.protobuf.StringValue countryCode = 2;
-    repeated string addressLines = 3;
-    google.protobuf.StringValue city = 4;
-    google.protobuf.StringValue state = 5;
-    GeoCoordinate geoCoordinate = 6;
-
-    message GeoCoordinate {
-        float latitude = 1;
-        float longitude = 2;
-    }
-}
-
 message StructureInfoTrait {
     string rtsStructureId = 1;
     uint32 maxNestGuardCount = 2;
     uint32 maxNestSensorCount = 3;
     uint32 maxNestConnectCount = 4;
-    uint64 primaryFabricId = 5;
+    string primaryFabricId = 5;
     weave.common.ResourceId pairerId = 6;
     uint32 maxNestLockCount = 7;
     uint32 maxNestMoonstoneCount = 8;
@@ -82,4 +68,64 @@ message StructureInfoTrait {
     google.protobuf.Timestamp createdAt = 11;
     google.protobuf.StringValue hgId = 12;
     map<string, uint32> maxResourceCounts = 13;
+
+    enum StatusCode {
+        STATUS_CODE_UNSPECIFIED = 0;
+        STATUS_CODE_SUCCESS = 1;
+        STATUS_CODE_FAILURE = 2;
+        STATUS_CODE_UNAUTHORIZED = 3;
+        STATUS_CODE_RESOURCE_NOT_FOUND = 4;
+    }
+
+    message StructureDeletionEvent {
+        weave.common.ResourceId structureId = 1;
+    }
+
+    message SyncStructureMetadataRequest {
+        weave.common.ResourceId resourceId = 1;
+        string name = 2;
+    }
+
+    message SyncStructureMetadataResponse {
+        StatusCode status = 1;
+        weave.common.ResourceId resourceId = 2;
+    }
+}
+
+message StructureLocationTrait {
+    google.protobuf.StringValue postalCode = 1;
+    google.protobuf.StringValue countryCode = 2;
+    repeated string addressLines = 3;
+    google.protobuf.StringValue city = 4;
+    google.protobuf.StringValue state = 5;
+    GeoCoordinate geoCoordinate = 6;
+
+    enum StatusCode {
+        STATUS_CODE_UNSPECIFIED = 0;
+        STATUS_CODE_SUCCESS = 1;
+        STATUS_CODE_FAILURE = 2;
+        STATUS_CODE_UNAUTHORIZED = 3;
+        STATUS_CODE_RESOURCE_NOT_FOUND = 4;
+    }
+
+    message GeoCoordinate {
+        float latitude = 1;
+        float longitude = 2;
+    }
+
+    message UpdateAddressRequest {
+        weave.common.ResourceId resourceId = 1;
+        google.protobuf.StringValue postalCode = 2;
+        google.protobuf.StringValue countryCode = 3;
+        repeated string addressLines = 4;
+        google.protobuf.StringValue city = 5;
+        google.protobuf.StringValue state = 6;
+        GeoCoordinate geoCoordinate = 7;
+        google.protobuf.StringValue timezoneName = 8;
+    }
+
+    message UpdateAddressResponse {
+        StatusCode status = 1;
+        weave.common.ResourceId resourceId = 2;
+    }
 }
