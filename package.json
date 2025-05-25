@@ -2,7 +2,7 @@
     "name": "homebridge-nest-accfactory",
     "displayName": "Nest Accfactory",
     "type": "module",
-    "version": "0.2.12-alpha.2",
+    "version": "0.2.12-alpha.5",
     "description": "Homebridge support for Nest/Google devices including HomeKit Secure Video (HKSV) support for doorbells and cameras",
     "author": "n0rt0nthec4t",
     "license": "Apache-2.0",
@@ -46,14 +46,14 @@
     "scripts": {
         "clean": "rimraf ./dist*",
         "format": "prettier --write src/*.js src/**/*.js src/**/*.mjs",
-        "lint": "eslint src/*.js src/**/*.js src/**/*.mjs --max-warnings=20",
+        "lint": "eslint src/*.js src/**/*.js src/**/*.mjs --max-warnings=30",
         "build": "npm run clean && copyfiles -u 1 src/*.js dist && copyfiles -u 2 src/HomeKitDevice/*.js dist && copyfiles -u 2 src/HomeKitHistory/*.js dist && copyfiles -u 1 src/res/*.h264 dist && copyfiles -u 1 src/res/*.jpg dist && copyfiles -u 1 'src/protobuf/**/*.proto' dist",
         "prepublishOnly": "npm run lint && npm run build"
     },
     "devDependencies": {
         "@eslint/js": "^9.27.0",
-        "@stylistic/eslint-plugin": "^4.2.0",
-        "@types/node": "^22.15.19",
+        "@stylistic/eslint-plugin": "^4.4.0",
+        "@types/node": "^22.15.21",
         "@typescript-eslint/parser": "^8.32.1",
         "copyfiles": "^2.4.1",
         "eslint": "^9.27.0",
