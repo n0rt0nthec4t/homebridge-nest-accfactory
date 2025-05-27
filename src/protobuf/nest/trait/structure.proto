@@ -59,7 +59,7 @@ message StructureInfoTrait {
     uint32 maxNestGuardCount = 2;
     uint32 maxNestSensorCount = 3;
     uint32 maxNestConnectCount = 4;
-    string primaryFabricId = 5;
+    uint64 primaryFabricId = 5;
     weave.common.ResourceId pairerId = 6;
     uint32 maxNestLockCount = 7;
     uint32 maxNestMoonstoneCount = 8;
