@@ -2087,3 +2087,7 @@ message UtilitySettingsTrait {
 message WakeOnApproachSettingsTrait {
     bool enabled = 1;
 }
+
+message KryptoniteObservedBeaconTrait {
+    google.protobuf.Timestamp lastBeaconTime = 1;
+}

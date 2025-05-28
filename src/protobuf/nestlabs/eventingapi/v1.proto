@@ -3,11 +3,15 @@ syntax = "proto3";
 import "google/protobuf/any.proto";
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
-import "../../nest/messages.proto";
 import "../../weave/common.proto";
 import "../../wdl-event-importance.proto";
 
 package nestlabs.eventingapi.v1;
+
+message SchemaVersion {
+    uint32 currentVersion = 1;
+    uint32 minCompatVersion = 2;
+}
 
 message EventAgent {
     weave.common.ResourceId deviceId = 1;
@@ -77,7 +81,7 @@ message EventHeader {
     EventAgent producerAgent = 22;
     string producerEventKey = 23;
     map<string, string> tags = 24;
-    nest.messages.SchemaVersion schemaVersion = 25;
+    SchemaVersion schemaVersion = 25;
     map<string, google.protobuf.Timestamp> serviceTimestamps = 26;
     WdmEventFields wdmEventFields = 40;
 
