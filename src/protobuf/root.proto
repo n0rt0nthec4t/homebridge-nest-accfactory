@@ -3,6 +3,7 @@ syntax = "proto3";
 import "google/trait/product/camera.proto";
 import "nest/trait/audio.proto";
 import "nest/trait/detector.proto";
+import "nest/trait/diagnostics.proto";
 import "nest/trait/humanlibrary.proto";
 import "nest/trait/history.proto";
 import "nest/trait/hvac.proto";

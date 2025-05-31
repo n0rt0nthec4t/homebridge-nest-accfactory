@@ -111,6 +111,15 @@
                     },
                     "maxStreams": {
                         "type": "integer"
+                    },
+                    "exclude": {
+                        "type": "boolean"
+                    },
+                    "useNestAPI": {
+                        "type": "boolean"
+                    },
+                    "useGoogleAPI": {
+                        "type": "boolean"
                     }
                 }
             },

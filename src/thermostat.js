@@ -1,7 +1,7 @@
 // Nest Thermostat
 // Part of homebridge-nest-accfactory
 //
-// Code version 15/10/2024
+// Code version 2025/05/30
 // Mark Hulskamp
 'use strict';
 
@@ -19,8 +19,9 @@ export default class NestThermostat extends HomeKitDevice {
   batteryService = undefined;
   occupancyService = undefined;
   humidityService = undefined;
-  fanService = undefined;
-  dehumidifierService = undefined;
+  switchService = undefined; // Hotwater heating boost control
+  fanService = undefined; // Fan control
+  dehumidifierService = undefined; // dehumidifier (only) control
   externalCool = undefined; // External module function
   externalHeat = undefined; // External module function
   externalFan = undefined; // External module function
@@ -87,20 +88,60 @@ export default class NestThermostat extends HomeKitDevice {
     }
 
     // Limit prop ranges
+    this.thermostatService.getCharacteristic(this.hap.Characteristic.CurrentTemperature).setProps({
+      minStep: 0.5,
+    });
+
     if (this.deviceData?.can_cool === false && this.deviceData?.can_heat === true) {
       // Can heat only, so set values allowed for mode off/heat
+      this.thermostatService.updateCharacteristic(
+        this.hap.Characteristic.HeatingThresholdTemperature,
+        this.deviceData.target_temperature_low,
+      );
+      this.thermostatService.getCharacteristic(this.hap.Characteristic.HeatingThresholdTemperature).setProps({
+        minStep: 0.5,
+        minValue: MIN_TEMPERATURE,
+        maxValue: MAX_TEMPERATURE,
+      });
       this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).setProps({
         validValues: [this.hap.Characteristic.TargetHeatingCoolingState.OFF, this.hap.Characteristic.TargetHeatingCoolingState.HEAT],
       });
     }
     if (this.deviceData?.can_cool === true && this.deviceData?.can_heat === false) {
       // Can cool only
+      this.thermostatService.updateCharacteristic(
+        this.hap.Characteristic.CoolingThresholdTemperature,
+        this.deviceData.target_temperature_high,
+      );
+      this.thermostatService.getCharacteristic(this.hap.Characteristic.CoolingThresholdTemperature).setProps({
+        minStep: 0.5,
+        minValue: MIN_TEMPERATURE,
+        maxValue: MAX_TEMPERATURE,
+      });
       this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).setProps({
         validValues: [this.hap.Characteristic.TargetHeatingCoolingState.OFF, this.hap.Characteristic.TargetHeatingCoolingState.COOL],
       });
     }
     if (this.deviceData?.can_cool === true && this.deviceData?.can_heat === true) {
       // heat and cool
+      this.thermostatService.updateCharacteristic(
+        this.hap.Characteristic.CoolingThresholdTemperature,
+        this.deviceData.target_temperature_high,
+      );
+      this.thermostatService.getCharacteristic(this.hap.Characteristic.CoolingThresholdTemperature).setProps({
+        minStep: 0.5,
+        minValue: MIN_TEMPERATURE,
+        maxValue: MAX_TEMPERATURE,
+      });
+      this.thermostatService.updateCharacteristic(
+        this.hap.Characteristic.HeatingThresholdTemperature,
+        this.deviceData.target_temperature_low,
+      );
+      this.thermostatService.getCharacteristic(this.hap.Characteristic.HeatingThresholdTemperature).setProps({
+        minStep: 0.5,
+        minValue: MIN_TEMPERATURE,
+        maxValue: MAX_TEMPERATURE,
+      });
       this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).setProps({
         validValues: [
           this.hap.Characteristic.TargetHeatingCoolingState.OFF,
@@ -116,26 +157,6 @@ export default class NestThermostat extends HomeKitDevice {
         validValues: [this.hap.Characteristic.TargetHeatingCoolingState.OFF],
       });
     }
-
-    // Set default ranges - based on celsuis ranges to which the Nest Thermostat operates
-    this.thermostatService.getCharacteristic(this.hap.Characteristic.CurrentTemperature).setProps({
-      minStep: 0.5,
-    });
-    this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetTemperature).setProps({
-      minStep: 0.5,
-      minValue: MIN_TEMPERATURE,
-      maxValue: MAX_TEMPERATURE,
-    });
-    this.thermostatService.getCharacteristic(this.hap.Characteristic.CoolingThresholdTemperature).setProps({
-      minStep: 0.5,
-      minValue: MIN_TEMPERATURE,
-      maxValue: MAX_TEMPERATURE,
-    });
-    this.thermostatService.getCharacteristic(this.hap.Characteristic.HeatingThresholdTemperature).setProps({
-      minStep: 0.5,
-      minValue: MIN_TEMPERATURE,
-      maxValue: MAX_TEMPERATURE,
-    });
 
     // Setup callbacks for characteristics
     this.thermostatService.getCharacteristic(this.hap.Characteristic.TemperatureDisplayUnits).onSet((value) => {
@@ -265,11 +286,36 @@ export default class NestThermostat extends HomeKitDevice {
         this.humidityService = this.accessory.addService(this.hap.Service.HumiditySensor, '', 1);
       }
       this.thermostatService.addLinkedService(this.humidityService);
+
+      this.humidityService.getCharacteristic(this.hap.Characteristic.CurrentRelativeHumidity).onGet(() => {
+        return this.deviceData.current_humidity;
+      });
     }
     if (this.deviceData?.humiditySensor === false && this.humidityService !== undefined) {
       // No longer have a seperate humidity sensor configure and service present, so removed it
       this.accessory.removeService(this.humidityService);
       this.humidityService = undefined;
+    }
+
+    // Setup hotwater heating boost service if supported by the thermostat and not already present on the accessory
+    this.switchService = this.accessory.getService(this.hap.Service.Switch);
+    if (this.deviceData?.has_hot_water_control === true) {
+      if (this.switchService === undefined) {
+        this.switchService = this.accessory.addService(this.hap.Service.Switch, '', 1);
+      }
+      this.thermostatService.addLinkedService(this.switchService);
+
+      this.switchService.getCharacteristic(this.hap.Characteristic.On).onSet((value) => {
+        this.setHotwaterBoost(value);
+      });
+      this.switchService.getCharacteristic(this.hap.Characteristic.On).onGet(() => {
+        return this.deviceData.hot_water_boost_active === true;
+      });
+    }
+    if (this.deviceData?.has_hot_water_control === false && this.switchService !== undefined) {
+      // No longer have hotwater heating boost configured and service present, so removed it
+      this.accessory.removeService(this.switchService);
+      this.switchService = undefined;
     }
 
     // Setup linkage to EveHome app if configured todo so
@@ -295,7 +341,7 @@ export default class NestThermostat extends HomeKitDevice {
 
       let loadedModule = undefined;
       try {
-        let values = module.match(/('.*?'|[^' ]+)(?=\s* |\s*$)/g);
+        let values = module.match(/'[^']*'|[^\s]+/g)?.map((v) => v.replace(/^'(.*)'$/, '$1')) || [];
         let script = path.resolve(values[0]); // external library name
         let options = values.slice(1); // options to be passed into the external library
         let externalModule = await import(script);
@@ -304,6 +350,14 @@ export default class NestThermostat extends HomeKitDevice {
         }
         // eslint-disable-next-line no-unused-vars
       } catch (error) {
+        module =
+          typeof module === 'string'
+            ? module
+                .trim()
+                .match(/'[^']*'|[^\s]+/)?.[0]
+                .replace(/^'(.*)'$/, '$1')
+            : '';
+
         this?.log?.warn && this.log.warn('Failed to load specified external module for thermostat "%s"', module);
       }
 
@@ -351,7 +405,7 @@ export default class NestThermostat extends HomeKitDevice {
   setDehumidifier(dehumidiferState) {
     this.set({
       uuid: this.deviceData.nest_google_uuid,
-      dehumidifer_State: dehumidiferState === this.hap.Characteristic.Active.ACTIVE ? true : false,
+      dehumidifier_state: dehumidiferState === this.hap.Characteristic.Active.ACTIVE ? true : false,
     });
     this.dehumidifierService.updateCharacteristic(this.hap.Characteristic.Active, dehumidiferState);
 
@@ -362,6 +416,21 @@ export default class NestThermostat extends HomeKitDevice {
         dehumidiferState === this.hap.Characteristic.Active.ACTIVE
           ? 'On with target humidity level of ' + this.deviceData.target_humidity + '%'
           : 'Off',
+      );
+  }
+
+  setHotwaterBoost(hotwaterState) {
+    this.set({
+      uuid: this.deviceData.nest_google_uuid,
+      hot_water_boost_active: { state: hotwaterState === true, time: this.deviceData.hotWaterBoostTime },
+    });
+    this.switchService.updateCharacteristic(this.hap.Characteristic.On, hotwaterState);
+
+    this?.log?.info &&
+      this.log.info(
+        'Set hotwater boost heating on thermostat "%s" to "%s"',
+        this.deviceData.description,
+        hotwaterState === true ? 'On for ' + formatDuration(this.deviceData.hotWaterBoostTime) : 'Off',
       );
   }
 
@@ -728,24 +797,85 @@ export default class NestThermostat extends HomeKitDevice {
         );
     }
 
+    // Check for hotwater heating boost setup change on thermostat
+    if (deviceData.has_hot_water_control !== this.deviceData.has_hot_water_control) {
+      if (
+        deviceData.has_hot_water_control === true &&
+        this.deviceData.has_hot_water_control === false &&
+        this.switchService === undefined
+      ) {
+        // hotwater heating boost has been added
+        this.switchService = this.accessory.getService(this.hap.Service.Switch);
+        if (this.deviceData?.has_hot_water_control === true) {
+          if (this.switchService === undefined) {
+            this.switchService = this.accessory.addService(this.hap.Service.Switch, '', 1);
+          }
+          this.thermostatService.addLinkedService(this.switchService);
+
+          this.switchService.getCharacteristic(this.hap.Characteristic.On).onSet((value) => {
+            this.setHotwaterBoost(value);
+          });
+          this.switchService.getCharacteristic(this.hap.Characteristic.On).onGet(() => {
+            return this.deviceData.hot_water_boost_active === true;
+          });
+        }
+        if (
+          deviceData.has_hot_water_control === false &&
+          this.deviceData.has_hot_water_control === true &&
+          this.switchService !== undefined
+        ) {
+          // hotwater heating boost has been removed
+          this.accessory.removeService(this.switchService);
+          this.switchService = undefined;
+        }
+      }
+
+      this?.log?.info &&
+        this.log.info(
+          'hotwater heating boost setup on thermostat "%s" has changed. Hotwater heating boost was',
+          deviceData.description,
+          this.switchService === undefined ? 'removed' : 'added',
+        );
+    }
+
     if (deviceData.can_cool !== this.deviceData.can_cool || deviceData.can_heat !== this.deviceData.can_heat) {
       // Heating and/cooling setup has changed on thermostat
 
       // Limit prop ranges
       if (deviceData.can_cool === false && deviceData.can_heat === true) {
         // Can heat only, so set values allowed for mode off/heat
+        this.thermostatService.getCharacteristic(this.hap.Characteristic.HeatingThresholdTemperature).setProps({
+          minStep: 0.5,
+          minValue: MIN_TEMPERATURE,
+          maxValue: MAX_TEMPERATURE,
+        });
         this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).setProps({
           validValues: [this.hap.Characteristic.TargetHeatingCoolingState.OFF, this.hap.Characteristic.TargetHeatingCoolingState.HEAT],
         });
       }
       if (deviceData.can_cool === true && deviceData.can_heat === false) {
         // Can cool only
+        this.thermostatService.getCharacteristic(this.hap.Characteristic.CoolingThresholdTemperature).setProps({
+          minStep: 0.5,
+          minValue: MIN_TEMPERATURE,
+          maxValue: MAX_TEMPERATURE,
+        });
         this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).setProps({
           validValues: [this.hap.Characteristic.TargetHeatingCoolingState.OFF, this.hap.Characteristic.TargetHeatingCoolingState.COOL],
         });
       }
       if (deviceData.can_cool === true && deviceData.can_heat === true) {
         // heat and cool
+        this.thermostatService.getCharacteristic(this.hap.Characteristic.CoolingThresholdTemperature).setProps({
+          minStep: 0.5,
+          minValue: MIN_TEMPERATURE,
+          maxValue: MAX_TEMPERATURE,
+        });
+        this.thermostatService.getCharacteristic(this.hap.Characteristic.HeatingThresholdTemperature).setProps({
+          minStep: 0.5,
+          minValue: MIN_TEMPERATURE,
+          maxValue: MAX_TEMPERATURE,
+        });
         this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).setProps({
           validValues: [
             this.hap.Characteristic.TargetHeatingCoolingState.OFF,
@@ -808,7 +938,7 @@ export default class NestThermostat extends HomeKitDevice {
       historyEntry.target = { low: deviceData.target_temperature_low, high: deviceData.target_temperature_high };
     }
     if (deviceData.can_cool === false && deviceData.can_heat === false && deviceData.hvac_mode.toUpperCase() === 'OFF') {
-      // off mode.
+      // off mode
       this.thermostatService.updateCharacteristic(this.hap.Characteristic.TargetTemperature, deviceData.target_temperature);
       this.thermostatService.updateCharacteristic(
         this.hap.Characteristic.TargetHeatingCoolingState,
@@ -885,7 +1015,9 @@ export default class NestThermostat extends HomeKitDevice {
       );
       historyEntry.status = 0; // off
     }
+
     if (this.fanService !== undefined) {
+      // fan status on or off
       if (this.deviceData.fan_state === false && deviceData.fan_state === true && this.externalFan !== undefined) {
         // Fan mode was switched on and external fan external code is being used, so start fan via fan external code
         if (typeof this.externalFan.fan === 'function') {
@@ -907,10 +1039,12 @@ export default class NestThermostat extends HomeKitDevice {
       this.fanService.updateCharacteristic(
         this.hap.Characteristic.Active,
         deviceData.fan_state === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE,
-      ); // fan status on or off
+      );
       historyEntry.status = 1; // fan
     }
+
     if (this.dehumidifierService !== undefined) {
+      // dehumidifier status on or off
       if (
         this.deviceData.dehumidifier_state === false &&
         deviceData.dehumidifier_state === true &&
@@ -937,8 +1071,13 @@ export default class NestThermostat extends HomeKitDevice {
       this.dehumidifierService.updateCharacteristic(
         this.hap.Characteristic.Active,
         deviceData.dehumidifier_state === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE,
-      ); // dehumidifier status on or off
+      );
       historyEntry.status = 4; // dehumidifier
+    }
+
+    if (this.switchService !== undefined) {
+      // Hotwater boost status on or off
+      this.switchService.updateCharacteristic(this.hap.Characteristic.On, deviceData.hot_water_boost_active === true);
     }
 
     // Log thermostat metrics to history only if changed to previous recording
@@ -1056,4 +1195,10 @@ export default class NestThermostat extends HomeKitDevice {
       //});
     }
   }
+}
+
+function formatDuration(seconds) {
+  return `${
+    seconds >= 3600 ? `${Math.floor(seconds / 3600)} hr${Math.floor(seconds / 3600) > 1 ? 's' : ''} ` : ''
+  }${Math.floor((seconds % 3600) / 60)} min${Math.floor((seconds % 3600) / 60) !== 1 ? 's' : ''}`;
 }

@@ -52,7 +52,7 @@ export default class NestProtect extends HomeKitDevice {
     this.batteryService.setHiddenService(true);
 
     // Setup motion service if not already present on the accessory and Nest protect is a wired version
-    if (typeof this.deviceData?.wired_or_battery === 'number' && this.deviceData?.wired_or_battery === 0) {
+    if (this.deviceData?.wired_or_battery === 0) {
       this.motionService = this.accessory.getService(this.hap.Service.MotionSensor);
       if (this.motionService === undefined) {
         this.motionService = this.accessory.addService(this.hap.Service.MotionSensor, '', 1);

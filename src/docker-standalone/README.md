@@ -124,6 +124,7 @@ The following options are available in Nest_config.json options object. These ap
 | debug             | Detailed debugging                                                                            | false          |
 | elevation         | Height above sea level for the weather station                                                | 0              |
 | eveHistory        | Provide history in EveHome application where applicable                                       | true           |
+| exclude           | Exclude ALL devices                                                                           | false        
 | ffmegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                 | false          |
 | ffmegPath         | Path to an ffmpeg binary for us to use                                                        | /usr/local/bin |
 | hkPairingCode     | HomeKit pairing code in format of "xxx-xx-xxx" or "xxxx-xxxx"                                 | 031-45-154     |
@@ -145,10 +146,12 @@ The following options are available on a per-device level in the `Nest_config.js
 | ffmegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                 | false          |
 | hkPairingCode     | HomeKit pairing code in format of "xxx-xx-xxx" or "xxxx-xxxx"                                 | 031-45-154     |
 | hksv              | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                           | false          |
+| hotWaterBoostTime | Time in seconds for hotwater boost heating                                                    | 1800           |
 | humiditySensor    | Create a seperate humidity sensor for supported thermostat(s)                                 | false          |
 | localAccess       | Use direct access to supported camera(s) and doorbell(s) for video streaming and recording    | false          |    
 | motionCooldown    | Time in seconds between detected motion events                                                | 60             |
 | personCooldown    | Time in seconds between detected person events                                                | 120            |
+| serialNumber      | Device serial number to which these settings belong too                                       |                |
 
 ## HomeKit Pairing
 Once configured and running, any non-excluded devices can be paired in HomeKit using the default pairing code of **031-45-154**  This can be overidden via the configuration file as above

@@ -100,6 +100,7 @@ The following options are available in the config.json options object. These app
 |-------------------|-----------------------------------------------------------------------------------------------|----------------|
 | elevation         | Height above sea level for the weather station                                                | 0              |
 | eveHistory        | Provide history in EveHome application where applicable                                       | true           |
+| exclude           | Exclude ALL devices                                                                           | false          |
 | ffmegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                 | false          |
 | ffmegPath         | Path to an ffmpeg binary for us to use                                                        | /usr/local/bin |
 | hksv              | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                           | false          |
@@ -119,10 +120,12 @@ The following options are available on a per-device level in the `config.json` `
 | exclude           | Exclude the device                                                                            | false          |
 | ffmegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                 | false          |
 | hksv              | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                           | false          |
+| hotWaterBoostTime | Time in seconds for hotwater boost heating                                                    | 1800           |
 | humiditySensor    | Create a seperate humidity sensor for supported thermostat(s)                                 | false          |
 | localAccess       | Use direct access to supported camera(s) and doorbell(s) for video streaming and recording    | false          |    
 | motionCooldown    | Time in seconds between detected motion events                                                | 60             |
 | personCooldown    | Time in seconds between detected person events                                                | 120            |
+| serialNumber      | Device serial number to which these settings belong too                                       |                |
 
 ## ffmpeg
 

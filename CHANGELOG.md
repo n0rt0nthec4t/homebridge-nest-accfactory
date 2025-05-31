@@ -2,7 +2,7 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.2.12 (alpha)
+## v0.3.0 (alpha.1)
 
 - General code cleanup and bug fixes
 - Updated README.md to account for changes to "devices" section in configuration
@@ -10,6 +10,17 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 - Internal support for selecting active temperature sensor (not exposed yet to HomeKit)
 - Fix retaining custom "devices" section using plugin config GUI
 - Fix for motion services created when restored from Homebridge cache
+- Fix for missing devices when using a Nest FieldTest account
+- Hotwater heating boost (on/off) for supported Thermostats (EU/UK models)
+- Supported Nest Heatlink(s) as room temperature sensors
+
+### Known Issues
+
+- Audio from newer Nest/Google camera/doorbell devices is still blank
+- npm package [ip](https://github.com/advisories/GHSA-2p57-rm9w-gvfp) has severity issue. This is being used in external library (werift)
+
+### Thanks
+Special thanks to [@Daniel](https://github.com/no1knows) and [@Brad](https://github.com/bcullman) for testing and feedback on this release!
 
 ## v0.2.11 (2025/04/17)
 

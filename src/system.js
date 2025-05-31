@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/05/23
+// Code version 2025/05/31
 // Mark Hulskamp
 'use strict';
 
@@ -49,6 +49,7 @@ export default class NestAccfactory {
     DOORBELL: 'doorbell',
     FLOODLIGHT: 'floodlight',
     WEATHER: 'weather',
+    HEATLINK: 'heatlink',
     LOCK: 'lock', // yet to implement
     ALARM: 'alarm', // yet to implement
   };
@@ -125,17 +126,23 @@ export default class NestAccfactory {
     }
 
     this.config.options.eveHistory = this.config.options?.eveHistory === true;
-    this.config.options.elevation = isNaN(this.config.options?.elevation) === false ? Number(this.config.options.elevation) : 0;
+    this.config.options.elevation =
+      Number.isNaN(this.config.options?.elevation) === false &&
+      Number(this.config.options.elevation) >= 0 &&
+      Number(this.config.options.elevation) >= 8848
+        ? Number(this.config.options.elevation)
+        : 0;
     this.config.options.weather = this.config.options?.weather === true;
     this.config.options.hksv = this.config.options?.hksv === true;
+    this.config.options.exclude = this.config.options?.exclude === true;
 
     // Controls what APIs we use, default is to use both REST and protobuf APIs
-    this.config.options.restAPI = this.config.options?.restAPI === true || this.config.options?.restAPI === undefined;
-    this.config.options.protobufAPI = this.config.options?.protobufAPI === true || this.config.options?.protobufAPI === undefined;
+    this.config.options.useNestAPI = this.config.options?.useNestAPI === true || this.config.options?.useNestAPI === undefined;
+    this.config.options.useGoogleAPI = this.config.options?.useGoogleAPI === true || this.config.options?.useGoogleAPI === undefined;
 
     // Get configuration for max number of concurrent 'live view' streams. For HomeKit Secure Video, this will always be 1
     this.config.options.maxStreams =
-      isNaN(this.config.options?.maxStreams) === false && this.deviceData?.hksv === false
+      Number.isNaN(this.config.options?.maxStreams) === false && this.deviceData?.hksv === false
         ? Number(this.config.options.maxStreams)
         : this.deviceData?.hksv === true
           ? 1
@@ -322,6 +329,7 @@ export default class NestAccfactory {
     this.#eventEmitter.addListener(HomeKitDevice.SET, (uuid, values) => {
       this.#set(uuid, values);
     });
+
     this.#eventEmitter.addListener(HomeKitDevice.GET, async (uuid, values) => {
       let results = await this.#get(uuid, values);
       // Send the results back to the device via a special event (only if still active)
@@ -343,10 +351,10 @@ export default class NestAccfactory {
     Object.keys(this.#connections).forEach((uuid) => {
       if (this.#connections[uuid].authorised === false) {
         this.#connect(uuid).then(() => {
-          if (this.#connections[uuid].authorised === true && this.config.options?.restAPI === true) {
+          if (this.#connections[uuid].authorised === true && this.config.options?.useNestAPI === true) {
             this.#subscribeREST(uuid, true);
           }
-          if (this.#connections[uuid].authorised === true && this.config.options?.protobufAPI === true) {
+          if (this.#connections[uuid].authorised === true && this.config.options?.useGoogleAPI === true) {
             this.#subscribeProtobuf(uuid, true);
           }
         });
@@ -544,6 +552,7 @@ export default class NestAccfactory {
       'topaz',
       'widget_track',
       'quartz',
+      'occupancy',
     ];
 
     // By default, setup for a full data read from the REST API
@@ -616,12 +625,7 @@ export default class NestAccfactory {
               ) {
                 value.value.weather = this.#rawData[value.object_key].value.weather;
               }
-              value.value.weather = await this.#getWeatherData(
-                connectionUUID,
-                value.object_key,
-                value.value.latitude,
-                value.value.longitude,
-              );
+              value.value.weather = await this.#getWeather(connectionUUID, value.object_key, value.value.latitude, value.value.longitude);
 
               // Check for changes in the swarm property. This seems indicate changes in devices
               if (typeof this.#rawData[value.object_key] === 'object') {
@@ -1001,10 +1005,10 @@ export default class NestAccfactory {
                   if (
                     trait.traitId.resourceId.startsWith('STRUCTURE_') === true &&
                     trait.traitId.traitLabel === 'structure_location' &&
-                    isNaN(trait.patch.values?.geoCoordinate?.latitude) === false &&
-                    isNaN(trait.patch.values?.geoCoordinate?.longitude) === false
+                    Number.isNaN(trait.patch.values?.geoCoordinate?.latitude) === false &&
+                    Number.isNaN(trait.patch.values?.geoCoordinate?.longitude) === false
                   ) {
-                    this.#rawData[trait.traitId.resourceId].value.weather = await this.#getWeatherData(
+                    this.#rawData[trait.traitId.resourceId].value.weather = await this.#getWeather(
                       connectionUUID,
                       trait.traitId.resourceId,
                       Number(trait.patch.values.geoCoordinate.latitude),
@@ -1078,6 +1082,19 @@ export default class NestAccfactory {
           // Nest Temperature Sensor - Categories.SENSOR = 10;
           let tempDevice = new NestTemperatureSensor(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
           tempDevice.add('Nest Temperature Sensor', 10, true);
+
+          // Track this device once created
+          this.#trackedDevices[deviceData.serialNumber] = {
+            uuid: tempDevice.uuid,
+            rawDataUuid: deviceData.nest_google_uuid,
+            source: undefined,
+          };
+        }
+
+        if (deviceData.device_type === NestAccfactory.DeviceType.HEATLINK && typeof NestTemperatureSensor === 'function') {
+          // Nest Heatlink - Categories.SENSOR = 10;
+          let tempDevice = new NestTemperatureSensor(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
+          tempDevice.add('Nest Heatlink', 10, true);
 
           // Track this device once created
           this.#trackedDevices[deviceData.serialNumber] = {
@@ -1361,7 +1378,7 @@ export default class NestAccfactory {
           this.#trackedDevices[deviceData.serialNumber].timers.weather = setInterval(async () => {
             let nest_google_uuid = this.#trackedDevices?.[deviceData?.serialNumber]?.rawDataUuid;
             if (this.#rawData?.[nest_google_uuid] !== undefined) {
-              this.#rawData[nest_google_uuid].value.weather = await this.#getWeatherData(
+              this.#rawData[nest_google_uuid].value.weather = await this.#getWeather(
                 this.#rawData[nest_google_uuid].connection,
                 nest_google_uuid,
                 this.#rawData[nest_google_uuid].value.weather.latitude,
@@ -1446,6 +1463,41 @@ export default class NestAccfactory {
       return location;
     };
 
+    // Process software version strings and return as x.x.x
+    // handles things like:
+    // 1.0a17 -> 1.0.17
+    // 3.6rc8 -> 3.6.8
+    // rquartz-user 1 OPENMASTER 507800056 test-keys stable-channel stable-channel -> 507800056
+    // nq-user 1.73 OPENMASTER 422270 release-keys stable-channel stable-channel -> 422270
+    const process_software_version = (versionString) => {
+      let version = '0.0.0';
+      if (typeof versionString === 'string') {
+        let normalised = versionString.replace(/[-_]/g, '.');
+        let tokens = normalised.split(/\s+/);
+        let candidate = tokens[3] || normalised;
+        let match = candidate.match(/\d+(?:\.\d+)*[a-zA-Z]*\d*/) || normalised.match(/\d+(?:\.\d+)*[a-zA-Z]*\d*/);
+
+        if (Array.isArray(match)) {
+          let raw = match[0];
+          if (raw.includes('.') === false) {
+            return raw; // Return single-number version like "422270" as-is
+          }
+
+          let parts = raw.split('.').flatMap((part) => {
+            let [, n1, , n2] = part.match(/^(\d+)([a-zA-Z]+)?(\d+)?$/) || [];
+            return [n1, n2].filter(Boolean).map(Number);
+          });
+
+          while (parts.length < 3) {
+            parts.push(0);
+          }
+          version = parts.slice(0, 3).join('.');
+        }
+      }
+
+      return version;
+    };
+
     // Process common data for all devices
     const process_common_data = (object_key, data) => {
       let processed = {};
@@ -1453,15 +1505,20 @@ export default class NestAccfactory {
         // Fix up data we need to
         data.nest_google_uuid = object_key;
         data.serialNumber = data.serialNumber.toUpperCase(); // ensure serial numbers are in upper case
-        data.excluded = this?.config?.devices?.find((device) => device.serialNumber === data?.serialNumber)?.exclude === true; // Mark device as excluded or not
+        data.excluded =
+          this?.config?.options?.exclude === true
+            ? this?.config?.devices?.find((d) => d.serialNumber === data?.serialNumber)?.exclude !== false
+            : this?.config?.devices?.find((d) => d.serialNumber === data?.serialNumber)?.exclude === true;
         data.manufacturer = typeof data?.manufacturer === 'string' ? data.manufacturer : 'Nest';
-        data.softwareVersion =
-          typeof data?.softwareVersion === 'string' ? data.softwareVersion.replace(/([a-zA-Z]+)/g, '.').replace(/-/g, '.') : '0.0.0';
+        data.softwareVersion = process_software_version(data.softwareVersion);
         let description = typeof data?.description === 'string' ? data.description : '';
         let location = typeof data?.location === 'string' ? data.location : '';
-        if (description === '') {
+        if (description === '' && location !== '') {
           description = location;
           location = '';
+        }
+        if (description === '' && location === '') {
+          description = 'unknown description';
         }
         data.description = makeHomeKitName(location === '' ? description : description + ' - ' + location);
         delete data.location;
@@ -1516,6 +1573,10 @@ export default class NestAccfactory {
         data.backplate_temperature = adjustTemperature(data.backplate_temperature, 'C', 'C', true);
         data.current_temperature = adjustTemperature(data.current_temperature, 'C', 'C', true);
         data.battery_level = scaleValue(data.battery_level, 3.6, 3.9, 0, 100);
+
+        // If we have hot water control, it should be a 'UK/EU' model, so add that after the 'gen' tag in the model name
+        data.model = data.has_hot_water_control === true ? data.model.replace(/\bgen\)/, 'gen, EU)') : data.model;
+
         processed = data;
         // eslint-disable-next-line no-unused-vars
       } catch (error) {
@@ -1525,7 +1586,10 @@ export default class NestAccfactory {
     };
 
     const PROTOBUF_THERMOSTAT_RESOURCES = [
+      'nest.resource.NestAmber1DisplayResource',
       'nest.resource.NestAmber2DisplayResource',
+      'nest.resource.NestLearningThermostat1Resource',
+      'nest.resource.NestLearningThermostat2Resource',
       'nest.resource.NestLearningThermostat3Resource',
       'nest.resource.NestAgateDisplayResource',
       'nest.resource.NestOnyxResource',
@@ -1544,16 +1608,19 @@ export default class NestAccfactory {
         try {
           if (
             value?.source === NestAccfactory.DataSource.PROTOBUF &&
-            this.config.options?.protobufAPI === true &&
+            this.config.options?.useGoogleAPI === true &&
             value.value?.configuration_done?.deviceReady === true
           ) {
             let RESTTypeData = {};
             RESTTypeData.serialNumber = value.value.device_identity.serialNumber;
-            RESTTypeData.softwareVersion =
-              value.value.device_identity.softwareVersion.split(/\s+/)?.[3] !== undefined
-                ? value.value.device_identity.softwareVersion.split(/\s+/)?.[3]
-                : value.value.device_identity.softwareVersion;
-            RESTTypeData.model = 'Thermostat';
+            RESTTypeData.softwareVersion = value.value.device_identity.softwareVersion;
+            RESTTypeData.model = 'Thermostat (unknown)';
+            if (value.value.device_info.typeName === 'nest.resource.NestLearningThermostat1Resource') {
+              RESTTypeData.model = 'Learning Thermostat (1st gen)';
+            }
+            if (value.value.device_info.typeName === 'nest.resource.NestLearningThermostat2Resource') {
+              RESTTypeData.model = 'Learning Thermostat (2nd gen)';
+            }
             if (
               value.value.device_info.typeName === 'nest.resource.NestLearningThermostat3Resource' ||
               value.value.device_info.typeName === 'nest.resource.NestAmber2DisplayResource'
@@ -1570,19 +1637,15 @@ export default class NestAccfactory {
               RESTTypeData.model = 'Thermostat E (1st gen)';
             }
             if (value.value.device_info.typeName === 'google.resource.GoogleZirconium1Resource') {
-              RESTTypeData.model = 'Thermostat (Mirror)';
+              RESTTypeData.model = 'Thermostat (2020)';
             }
-            // If we have hot water control, it should be a 'Heat Link' model, so add that after the 'gen' tag in the model name
-            RESTTypeData.model =
-              value.value?.hvac_equipment_capabilities?.hasHotWaterControl === true
-                ? RESTTypeData.model.replace(/\bgen\)/, 'gen, Heat Link)')
-                : RESTTypeData.model;
             RESTTypeData.current_humidity =
-              isNaN(value.value.current_humidity.humidityValue.humidity.value) === false
+              Number.isNaN(value.value?.current_humidity?.humidityValue?.humidity?.value) === false
                 ? Number(value.value.current_humidity.humidityValue.humidity.value)
                 : 0.0;
-            RESTTypeData.temperature_scale = value.value.display_settings.temperatureScale === 'TEMPERATURE_SCALE_F' ? 'F' : 'C';
-            RESTTypeData.removed_from_base = value.value.display.thermostatState.includes('bpd') === true;
+            RESTTypeData.temperature_scale = value.value?.display_settings?.temperatureScale === 'TEMPERATURE_SCALE_F' ? 'F' : 'C';
+            RESTTypeData.removed_from_base =
+              Array.isArray(value.value?.display?.thermostatState) === true && value.value?.display.thermostatState.includes('bpd');
             RESTTypeData.backplate_temperature = parseFloat(value.value.backplate_temperature.temperatureValue.temperature.value);
             RESTTypeData.current_temperature = parseFloat(value.value.current_temperature.temperatureValue.temperature.value);
             RESTTypeData.battery_level = parseFloat(value.value.battery_voltage.batteryValue.batteryVoltage.value);
@@ -1590,12 +1653,9 @@ export default class NestAccfactory {
             RESTTypeData.leaf = value.value?.leaf?.active === true;
             RESTTypeData.has_humidifier = value.value?.hvac_equipment_capabilities?.hasHumidifier === true;
             RESTTypeData.has_dehumidifier = value.value?.hvac_equipment_capabilities?.hasDehumidifier === true;
-            RESTTypeData.has_hot_water_control = value.value?.hvac_equipment_capabilities?.hasHotWaterControl === true;
             RESTTypeData.has_fan =
               typeof value.value?.fan_control_capabilities?.maxAvailableSpeed === 'string' &&
-              value.value.fan_control_capabilities.maxAvailableSpeed !== 'FAN_SPEED_SETTING_OFF'
-                ? true
-                : false;
+              value.value.fan_control_capabilities.maxAvailableSpeed !== 'FAN_SPEED_SETTING_OFF';
             RESTTypeData.can_cool =
               value.value?.hvac_equipment_capabilities?.hasStage1Cool === true ||
               value.value?.hvac_equipment_capabilities?.hasStage2Cool === true ||
@@ -1624,23 +1684,23 @@ export default class NestAccfactory {
                 ? value.value.target_temperature_settings.targetTemperature.setpointType.split('SET_POINT_TYPE_')[1].toLowerCase()
                 : 'off';
             RESTTypeData.target_temperature_low =
-              isNaN(value.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value) === false
+              Number.isNaN(value.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value) === false
                 ? Number(value.value.target_temperature_settings.targetTemperature.heatingTarget.value)
                 : 0.0;
             RESTTypeData.target_temperature_high =
-              isNaN(value.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value) === false
+              Number.isNaN(value.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value) === false
                 ? Number(value.value.target_temperature_settings.targetTemperature.coolingTarget.value)
                 : 0.0;
             RESTTypeData.target_temperature =
               value.value?.target_temperature_settings?.targetTemperature?.setpointType === 'SET_POINT_TYPE_COOL' &&
-              isNaN(value.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value) === false
+              Number.isNaN(value.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value) === false
                 ? Number(value.value.target_temperature_settings.targetTemperature.coolingTarget.value)
                 : value.value?.target_temperature_settings?.targetTemperature?.setpointType === 'SET_POINT_TYPE_HEAT' &&
-                    isNaN(value.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value) === false
+                    Number.isNaN(value.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value) === false
                   ? Number(value.value.target_temperature_settings.targetTemperature.heatingTarget.value)
                   : value.value?.target_temperature_settings?.targetTemperature?.setpointType === 'SET_POINT_TYPE_RANGE' &&
-                      isNaN(value.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value) === false &&
-                      isNaN(value.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value) === false
+                      Number.isNaN(value.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value) === false &&
+                      Number.isNaN(value.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value) === false
                     ? (Number(value.value.target_temperature_settings.targetTemperature.coolingTarget.value) +
                         Number(value.value.target_temperature_settings.targetTemperature.heatingTarget.value)) *
                       0.5
@@ -1700,15 +1760,17 @@ export default class NestAccfactory {
             }
 
             // Update fan status, on or off and max number of speeds supported
-            RESTTypeData.fan_state = parseInt(value.value.fan_control_settings.timerEnd?.seconds) > 0 ? true : false;
+            RESTTypeData.fan_state =
+              Number.isNaN(value.value?.fan_control_settings?.timerEnd?.seconds) === false &&
+              Number(value.value.fan_control_settings.timerEnd.seconds) > 0;
             RESTTypeData.fan_timer_speed =
               value.value.fan_control_settings.timerSpeed.includes('FAN_SPEED_SETTING_STAGE') === true &&
-              isNaN(value.value.fan_control_settings.timerSpeed.split('FAN_SPEED_SETTING_STAGE')[1]) === false
+              Number.isNaN(value.value.fan_control_settings.timerSpeed.split('FAN_SPEED_SETTING_STAGE')[1]) === false
                 ? Number(value.value.fan_control_settings.timerSpeed.split('FAN_SPEED_SETTING_STAGE')[1])
                 : 0;
             RESTTypeData.fan_max_speed =
               value.value.fan_control_capabilities.maxAvailableSpeed.includes('FAN_SPEED_SETTING_STAGE') === true &&
-              isNaN(value.value.fan_control_capabilities.maxAvailableSpeed.split('FAN_SPEED_SETTING_STAGE')[1]) === false
+              Number.isNaN(value.value.fan_control_capabilities.maxAvailableSpeed.split('FAN_SPEED_SETTING_STAGE')[1]) === false
                 ? Number(value.value.fan_control_capabilities.maxAvailableSpeed.split('FAN_SPEED_SETTING_STAGE')[1])
                 : 0;
 
@@ -1721,6 +1783,13 @@ export default class NestAccfactory {
             RESTTypeData.has_air_filter = value.value.hvac_equipment_capabilities.hasAirFilter === true;
             RESTTypeData.filter_replacement_needed = value.value.filter_reminder.filterReplacementNeeded.value === true;
 
+            // Hotwater details
+            RESTTypeData.has_hot_water_control = value.value?.hvac_equipment_capabilities?.hasHotWaterControl === true;
+            RESTTypeData.hot_water_active = value.value?.hot_water?.boilerActive === true;
+            RESTTypeData.hot_water_boost_active =
+              Number.isNaN(value.value?.hot_water_settings?.boostTimerEnd?.seconds) === false &&
+              Number(value.value.hot_water_settings.boostTimerEnd.seconds) > 0;
+
             // Process any temperature sensors associated with this thermostat
             RESTTypeData.active_rcs_sensor =
               value.value.remote_comfort_sensing_settings?.activeRcsSelection?.activeRcsSensor !== undefined
@@ -1729,23 +1798,8 @@ export default class NestAccfactory {
             RESTTypeData.linked_rcs_sensors = [];
             if (value.value?.remote_comfort_sensing_settings?.associatedRcsSensors !== undefined) {
               value.value.remote_comfort_sensing_settings.associatedRcsSensors.forEach((sensor) => {
-                if (this.#rawData?.[sensor.deviceId.resourceId]?.value !== undefined) {
+                if (this.#rawData?.[sensor?.deviceId?.resourceId]?.value !== undefined) {
                   this.#rawData[sensor.deviceId.resourceId].value.associated_thermostat = object_key; // Sensor is linked to this thermostat
-
-                  // Get sensor online/offline status
-                  // 'liveness' property doesn't appear in Protobuf data for temp sensors, so we'll add that object here
-                  this.#rawData[sensor.deviceId.resourceId].value.liveness = {};
-                  this.#rawData[sensor.deviceId.resourceId].value.liveness.status = 'LIVENESS_DEVICE_STATUS_UNSPECIFIED';
-                  if (value.value?.remote_comfort_sensing_state?.rcsSensorStatuses !== undefined) {
-                    Object.values(value.value.remote_comfort_sensing_state.rcsSensorStatuses).forEach((sensorStatus) => {
-                      if (
-                        sensorStatus?.sensorId?.resourceId === sensor.deviceId.resourceId &&
-                        sensorStatus?.dataRecency?.includes('OK') === true
-                      ) {
-                        this.#rawData[sensor.deviceId.resourceId].value.liveness.status = 'LIVENESS_DEVICE_STATUS_ONLINE';
-                      }
-                    });
-                  }
                 }
 
                 RESTTypeData.linked_rcs_sensors.push(sensor.deviceId.resourceId);
@@ -1775,7 +1829,7 @@ export default class NestAccfactory {
                 RESTTypeData.schedules[dayofWeekIndex][Object.entries(RESTTypeData.schedules[dayofWeekIndex]).length] = {
                   'temp-min': adjustTemperature(schedule.heatingTarget.value, 'C', 'C', true),
                   'temp-max': adjustTemperature(schedule.coolingTarget.value, 'C', 'C', true),
-                  time: isNaN(schedule.secondsInDay) === false ? Number(schedule.secondsInDay) : 0,
+                  time: Number.isNaN(schedule?.secondsInDay) === false ? Number(schedule.secondsInDay) : 0,
                   type: RESTTypeData.schedule_mode.toUpperCase(),
                   entry_type: 'setpoint',
                 };
@@ -1787,28 +1841,25 @@ export default class NestAccfactory {
 
           if (
             value?.source === NestAccfactory.DataSource.REST &&
-            this.config.options?.restAPI === true &&
+            this.config.options?.useNestAPI === true &&
             value.value?.where_id !== undefined
           ) {
             let RESTTypeData = {};
             RESTTypeData.serialNumber = value.value.serial_number;
             RESTTypeData.softwareVersion = value.value.current_version;
-            RESTTypeData.model = 'Thermostat';
+            RESTTypeData.model = 'Thermostat (unknown)';
             if (value.value.serial_number.substring(0, 2) === '15') {
               RESTTypeData.model = 'Thermostat E (1st gen)'; // Nest Thermostat E
             }
             if (value.value.serial_number.substring(0, 2) === '09' || value.value.serial_number.substring(0, 2) === '10') {
-              RESTTypeData.model = 'Thermostat (3rd gen)'; // Nest Thermostat 3rd gen
+              RESTTypeData.model = 'Learning Thermostat (3rd gen)'; // Nest Thermostat 3rd gen
             }
             if (value.value.serial_number.substring(0, 2) === '02') {
-              RESTTypeData.model = 'Thermostat (2nd gen)'; // Nest Thermostat 2nd gen
+              RESTTypeData.model = 'Learning Thermostat (2nd gen)'; // Nest Thermostat 2nd gen
             }
             if (value.value.serial_number.substring(0, 2) === '01') {
-              RESTTypeData.model = 'Thermostat (1st gen)'; // Nest Thermostat 1st gen
+              RESTTypeData.model = 'Learning Thermostat (1st gen)'; // Nest Thermostat 1st gen
             }
-            // If we have hot water control, it should be a 'Heat Link' model, so add that after the 'gen' tag in the model name
-            RESTTypeData.model =
-              value.value.has_hot_water_control === true ? RESTTypeData.model.replace(/\bgen\)/, 'gen, Heat Link)') : RESTTypeData.model;
             RESTTypeData.current_humidity = value.value.current_humidity;
             RESTTypeData.temperature_scale = value.value.temperature_scale;
             RESTTypeData.removed_from_base = value.value.nlclient_state.toUpperCase() === 'BPD';
@@ -1819,7 +1870,6 @@ export default class NestAccfactory {
             RESTTypeData.leaf = value.value.leaf === true;
             RESTTypeData.has_humidifier = value.value.has_humidifier === true;
             RESTTypeData.has_dehumidifier = value.value.has_dehumidifier === true;
-            RESTTypeData.has_hot_water_control = value.value.has_hot_water_control === true;
             RESTTypeData.has_fan = value.value.has_fan === true;
             RESTTypeData.can_cool = this.#rawData?.['shared.' + value.value.serial_number]?.value?.can_cool === true;
             RESTTypeData.can_heat = this.#rawData?.['shared.' + value.value.serial_number]?.value?.can_heat === true;
@@ -1857,36 +1907,36 @@ export default class NestAccfactory {
                 ? this.#rawData?.['shared.' + value.value.serial_number].value.target_temperature_type
                 : 'off';
             RESTTypeData.target_temperature =
-              isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature) === false
+              Number.isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature) === false
                 ? Number(this.#rawData['shared.' + value.value.serial_number].value.target_temperature)
                 : 0.0;
             RESTTypeData.target_temperature_low =
-              isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_low) === false
+              Number.isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_low) === false
                 ? Number(this.#rawData['shared.' + value.value.serial_number].value.target_temperature_low)
                 : 0.0;
             RESTTypeData.target_temperature_high =
-              isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_high) === false
+              Number.isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_high) === false
                 ? Number(this.#rawData['shared.' + value.value.serial_number].value.target_temperature_high)
                 : 0.0;
             if (this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_type.toUpperCase() === 'COOL') {
               // Target temperature is the cooling point
               RESTTypeData.target_temperature =
-                isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_high) === false
+                Number.isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_high) === false
                   ? Number(this.#rawData['shared.' + value.value.serial_number].value.target_temperature_high)
                   : 0.0;
             }
             if (this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_type.toUpperCase() === 'HEAT') {
               // Target temperature is the heating point
               RESTTypeData.target_temperature =
-                isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_low) === false
+                Number.isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_low) === false
                   ? Number(this.#rawData['shared.' + value.value.serial_number].value.target_temperature_low)
                   : 0.0;
             }
             if (this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_type.toUpperCase() === 'RANGE') {
               // Target temperature is in between the heating and cooling point
               RESTTypeData.target_temperature =
-                isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_low) === false &&
-                isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_high) === false
+                Number.isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_low) === false &&
+                Number.isNaN(this.#rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_high) === false
                   ? (Number(this.#rawData['shared.' + value.value.serial_number].value.target_temperature_low) +
                       Number(this.#rawData['shared.' + value.value.serial_number].value.target_temperature_high)) *
                     0.5
@@ -1935,24 +1985,30 @@ export default class NestAccfactory {
             }
 
             // Update fan status, on or off
-            RESTTypeData.fan_state = value.value.fan_timer_timeout > 0 ? true : false;
+            RESTTypeData.fan_state = Number.isNaN(value.value.fan_timer_timeout) === false && Number(value.value.fan_timer_timeout) > 0;
             RESTTypeData.fan_timer_speed =
-              value.value.fan_timer_speed.includes('stage') === true && isNaN(value.value.fan_timer_speed.split('stage')[1]) === false
+              value.value.fan_timer_speed.includes('stage') === true && Number.isNaN(value.value.fan_timer_speed.split('stage')[1]) === false
                 ? Number(value.value.fan_timer_speed.split('stage')[1])
                 : 0;
             RESTTypeData.fan_max_speed =
-              value.value.fan_capabilities.includes('stage') === true && isNaN(value.value.fan_capabilities.split('stage')[1]) === false
+              value.value.fan_capabilities.includes('stage') === true && Number.isNaN(value.value.fan_capabilities.split('stage')[1]) === false
                 ? Number(value.value.fan_capabilities.split('stage')[1])
                 : 0;
 
             // Humidifier/dehumidifier details
-            RESTTypeData.target_humidity = isNaN(value.value.target_humidity) === false ? Number(value.value.target_humidity) : 0.0;
+            RESTTypeData.target_humidity = Number.isNaN(value.value.target_humidity) === false ? Number(value.value.target_humidity) : 0.0;
             RESTTypeData.humidifier_state = value.value.humidifier_state === true;
             RESTTypeData.dehumidifier_state = value.value.dehumidifier_state === true;
 
             // Air filter details
             RESTTypeData.has_air_filter = value.value.has_air_filter === true;
             RESTTypeData.filter_replacement_needed = value.value.filter_replacement_needed === true;
+
+            // Hotwater details
+            RESTTypeData.has_hot_water_control = value.value.has_hot_water_control === true;
+            RESTTypeData.hot_water_active = value.value?.hot_water_active === true;
+            RESTTypeData.hot_water_boost_active =
+              Number.isNaN(value.value?.hot_water_boost_time_to_end) === false && Number(value.value.hot_water_boost_time_to_end) > 0;
 
             // Process any temperature sensors associated with this thermostat
             RESTTypeData.active_rcs_sensor = '';
@@ -1980,13 +2036,13 @@ export default class NestAccfactory {
               Object.values(this.#rawData['schedule.' + value.value.serial_number].value.days).forEach((schedules) => {
                 Object.values(schedules).forEach((schedule) => {
                   // Fix up temperatures in the schedule
-                  if (isNaN(schedule['temp']) === false) {
+                  if (Number.isNaN(schedule['temp']) === false) {
                     schedule.temp = adjustTemperature(Number(schedule.temp), 'C', 'C', true);
                   }
-                  if (isNaN(schedule['temp-min']) === false) {
+                  if (Number.isNaN(schedule['temp-min']) === false) {
                     schedule['temp-min'] = adjustTemperature(Number(schedule['temp-min']), 'C', 'C', true);
                   }
-                  if (isNaN(schedule['temp-max']) === false) {
+                  if (Number.isNaN(schedule['temp-max']) === false) {
                     schedule['temp-max'] = adjustTemperature(Number(schedule['temp-max']), 'C', 'C', true);
                   }
                 });
@@ -2003,15 +2059,25 @@ export default class NestAccfactory {
         }
 
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
-          let deviceOptions = this.config?.devices?.find((d) => d.serialNumber === tempDevice?.serialNumber);
+          let deviceOptions = this.config?.devices?.find((device) => device.serialNumber === tempDevice?.serialNumber);
           // Insert any extra options we've read in from configuration file for this device
           tempDevice.eveHistory = this.config.options.eveHistory === true || deviceOptions?.eveHistory === true;
           tempDevice.humiditySensor = deviceOptions?.humiditySensor === true;
-          tempDevice.externalCool = typeof deviceOptions?.externalCool === 'string' ? deviceOptions.externalCool : undefined; // Config option for external cooling source
-          tempDevice.externalHeat = typeof deviceOptions?.externalHeat === 'string' ? deviceOptions.externalHeat : undefined; // Config option for external heating source
-          tempDevice.externalFan = typeof deviceOptions?.externalFan === 'string' ? deviceOptions.externalFan : undefined; // Config option for external fan source
+          tempDevice.externalCool =
+            typeof deviceOptions?.externalCool === 'string' && deviceOptions.externalCool !== '' ? deviceOptions.externalCool : undefined; // Config option for external cooling source
+          tempDevice.externalHeat =
+            typeof deviceOptions?.externalHeat === 'string' && deviceOptions.externalHeat !== '' ? deviceOptions.externalHeat : undefined; // Config option for external heating source
+          tempDevice.externalFan =
+            typeof deviceOptions?.externalFan === 'string' && deviceOptions.externalFan !== '' ? deviceOptions.externalFan : undefined; // Config option for external fan source
           tempDevice.externalDehumidifier =
-            typeof deviceOptions?.externalDehumidifier === 'string' ? deviceOptions.externalDehumidifier : undefined; // Config option for external dehumidifier source
+            typeof deviceOptions?.externalDehumidifier === 'string' && deviceOptions.externalDehumidifier !== ''
+              ? deviceOptions.externalDehumidifier
+              : undefined; // Config option for external dehumidifier source
+          tempDevice.hotWaterBoostTime = parseDurationToSeconds(deviceOptions?.hotWaterBoostTime, {
+            defaultValue: 30 * 60,  // 30mins
+            min: 60,  // 1min
+            max: 7200,  // 2hrs
+          });
           devices[tempDevice.serialNumber] = tempDevice; // Store processed device
         }
       });
@@ -2026,6 +2092,7 @@ export default class NestAccfactory {
         data = process_common_data(object_key, data);
         data.device_type = NestAccfactory.DeviceType.TEMPSENSOR; // Nest Temperature sensor
         data.model = 'Temperature Sensor';
+        data.softwareVersion = '1.0.0';
         data.current_temperature = adjustTemperature(data.current_temperature, 'C', 'C', true);
         processed = data;
         // eslint-disable-next-line no-unused-vars
@@ -2047,7 +2114,7 @@ export default class NestAccfactory {
         try {
           if (
             value?.source === NestAccfactory.DataSource.PROTOBUF &&
-            this.config.options?.protobufAPI === true &&
+            this.config.options?.useGoogleAPI === true &&
             value.value?.configuration_done?.deviceReady === true &&
             typeof value?.value?.associated_thermostat === 'string' &&
             value?.value?.associated_thermostat !== ''
@@ -2057,8 +2124,9 @@ export default class NestAccfactory {
             // Guessing battery minimum voltage is 2v??
             RESTTypeData.battery_level = scaleValue(Number(value.value.battery.assessedVoltage.value), 2.0, 3.0, 0, 100);
             RESTTypeData.current_temperature = value.value.current_temperature.temperatureValue.temperature.value;
-            // Online status we 'faked' when processing Thermostat Protobuf data
-            RESTTypeData.online = value.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE';
+            RESTTypeData.online =
+              Number.isNaN(value.value?.last_updated_beacon?.lastBeaconTime?.seconds) === false &&
+              Math.floor(Date.now() / 1000) - Number(value.value.last_updated_beacon.lastBeaconTime.seconds) < 3600 * 4;
             RESTTypeData.associated_thermostat = value.value.associated_thermostat;
             RESTTypeData.description = typeof value.value?.label?.label === 'string' ? value.value.label.label : '';
             RESTTypeData.location = get_location_name(
@@ -2072,7 +2140,7 @@ export default class NestAccfactory {
           }
           if (
             value?.source === NestAccfactory.DataSource.REST &&
-            this.config.options?.restAPI === true &&
+            this.config.options?.useNestAPI === true &&
             value.value?.where_id !== undefined &&
             value.value?.structure_id !== undefined &&
             typeof value?.value?.associated_thermostat === 'string' &&
@@ -2082,7 +2150,7 @@ export default class NestAccfactory {
             RESTTypeData.serialNumber = value.value.serial_number;
             RESTTypeData.battery_level = scaleValue(Number(value.value.battery_level), 0, 100, 0, 100);
             RESTTypeData.current_temperature = value.value.current_temperature;
-            RESTTypeData.online = Math.floor(Date.now() / 1000) - value.value.last_updated_at < 3600 * 4 ? true : false;
+            RESTTypeData.online = Math.floor(Date.now() / 1000) - value.value.last_updated_at < 3600 * 4;
             RESTTypeData.associated_thermostat = value.value.associated_thermostat;
             RESTTypeData.description = value.value.description;
             RESTTypeData.location = get_location_name(value.value.structure_id, value.value.where_id);
@@ -2096,7 +2164,68 @@ export default class NestAccfactory {
           this?.log?.debug && this.log.debug('Error processing data for temperature sensor(s)');
         }
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
-          let deviceOptions = this.config?.devices?.find((d) => d.serialNumber === tempDevice?.serialNumber);
+          let deviceOptions = this.config?.devices?.find((device) => device.serialNumber === tempDevice?.serialNumber);
+          // Insert any extra options we've read in from configuration file for this device
+          tempDevice.eveHistory = this.config.options.eveHistory === true || deviceOptions?.eveHistory === true;
+          devices[tempDevice.serialNumber] = tempDevice; // Store processed device
+        }
+      });
+
+    // Process data for any heatlink devices we have in the raw data
+    const process_heatlink_data = (object_key, data) => {
+      let processed = {};
+      try {
+        // Fix up data we need to
+        data = process_common_data(object_key, data);
+        data.device_type = NestAccfactory.DeviceType.HEATLINK;
+        data.current_temperature = adjustTemperature(data.current_temperature, 'C', 'C', true);
+        processed = data;
+        // eslint-disable-next-line no-unused-vars
+      } catch (error) {
+        // Empty
+      }
+      return processed;
+    };
+
+    Object.entries(this.#rawData)
+      .filter(
+        ([key, value]) =>
+          key.startsWith('DEVICE_') === true &&
+          value.value?.device_info?.typeName === 'nest.resource.NestAgateHeatlinkResource' &&
+          (deviceUUID === '' || deviceUUID === key),
+      )
+      .forEach(([object_key, value]) => {
+        let tempDevice = {};
+        try {
+          if (
+            value?.source === NestAccfactory.DataSource.PROTOBUF &&
+            this.config.options?.useGoogleAPI === true &&
+            value.value?.configuration_done?.deviceReady === true
+          ) {
+            let RESTTypeData = {};
+            RESTTypeData.serialNumber = value.value.device_identity.serialNumber;
+            RESTTypeData.softwareVersion = value.value.device_identity.softwareVersion;
+            RESTTypeData.model = 'Heatlink (unknown)';
+            if (value.value.device_info.typeName === 'nest.resource.NestAgateHeatlinkResource') {
+              RESTTypeData.model = 'Heatlink';
+            }
+            RESTTypeData.battery_level = 100; // Not sure what it is
+            RESTTypeData.current_temperature = value.value.temperature.temperatureValue.temperature.value;
+            RESTTypeData.online = value.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE';
+            RESTTypeData.description = typeof value.value?.label?.label === 'string' ? value.value.label.label : '';
+            RESTTypeData.location = get_location_name(
+              value.value?.device_info?.pairerId?.resourceId,
+              value.value?.device_located_settings?.whereAnnotationRid?.resourceId,
+            );
+            RESTTypeData.active_sensor = true; // This should be active always?
+            tempDevice = process_heatlink_data(object_key, RESTTypeData);
+          }
+          // eslint-disable-next-line no-unused-vars
+        } catch (error) {
+          this?.log?.debug && this.log.debug('Error processing data for heatlink(s)');
+        }
+        if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
+          let deviceOptions = this.config?.devices?.find((device) => device.serialNumber === tempDevice?.serialNumber);
           // Insert any extra options we've read in from configuration file for this device
           tempDevice.eveHistory = this.config.options.eveHistory === true || deviceOptions?.eveHistory === true;
           devices[tempDevice.serialNumber] = tempDevice; // Store processed device
@@ -2110,19 +2239,6 @@ export default class NestAccfactory {
         // Fix up data we need to
         data = process_common_data(object_key, data);
         data.device_type = NestAccfactory.DeviceType.SMOKESENSOR; // Nest Protect
-        data.model = 'Protect';
-        if (data.wired_or_battery === 0) {
-          data.model = data.model + ' (wired'; // Mains powered
-        }
-        if (data.wired_or_battery === 1) {
-          data.model = data.model + ' (battery'; // Battery powered
-        }
-        if (data.serialNumber.substring(0, 2) === '06') {
-          data.model = data.model + ', 2nd gen)'; // Nest Protect 2nd Gen
-        }
-        if (data.serialNumber.substring(0, 2) === '05') {
-          data.model = data.model + ', 1st gen)'; // Nest Protect 1st Gen
-        }
         processed = data;
         // eslint-disable-next-line no-unused-vars
       } catch (error) {
@@ -2131,11 +2247,18 @@ export default class NestAccfactory {
       return processed;
     };
 
+    const PROTOBUF_PROTECT_RESOURCES = [
+      'nest.resource.NestProtect1LinePoweredResource',
+      'nest.resource.NestProtect1BatteryPoweredResource',
+      'nest.resource.NestProtect2LinePoweredResource',
+      'nest.resource.NestProtect2BatteryPoweredResource',
+      'NestProtect2Resource',
+    ];
     Object.entries(this.#rawData)
       .filter(
         ([key, value]) =>
           (key.startsWith('topaz.') === true ||
-            (key.startsWith('DEVICE_') === true && value.value?.device_info?.className.startsWith('topaz') === true)) &&
+            (key.startsWith('DEVICE_') === true && PROTOBUF_PROTECT_RESOURCES.includes(value.value?.device_info?.typeName) === true)) &&
           (deviceUUID === '' || deviceUUID === key),
       )
       .forEach(([object_key, value]) => {
@@ -2143,20 +2266,30 @@ export default class NestAccfactory {
         try {
           if (
             value?.source === NestAccfactory.DataSource.PROTOBUF &&
-            this.config.options?.protobufAPI === true &&
+            this.config.options?.useGoogleAPI === true &&
             value.value?.configuration_done?.deviceReady === true
           ) {
             let RESTTypeData = {};
             RESTTypeData.serialNumber = value.value.device_identity.serialNumber;
-            RESTTypeData.softwareVersion =
-              value.value.device_identity.softwareVersion.split(/\s+/)?.[3] !== undefined
-                ? value.value.device_identity.softwareVersion.split(/\s+/)?.[3]
-                : value.value.device_identity.softwareVersion;
+            RESTTypeData.softwareVersion = value.value.device_identity.softwareVersion;
+            RESTTypeData.model = 'Protect (unknown)';
+            if (value.value.device_info.typeName === 'nest.resource.NestProtect1LinePoweredResource') {
+              RESTTypeData.model = 'Protect (1st gen, wired)';
+            }
+            if (value.value.device_info.typeName === 'nest.resource.NestProtect1BatteryPoweredResource') {
+              RESTTypeData.model = 'Protect (1st gen, battery)';
+            }
+            if (value.value.device_info.typeName === 'nest.resource.NestProtect2LinePoweredResource') {
+              RESTTypeData.model = 'Protect (2nd gen, wired)';
+            }
+            if (value.value.device_info.typeName === 'nest.resource.NestProtect2BatteryPoweredResource') {
+              RESTTypeData.model = 'Protect (2nd gen, battery)';
+            }
             RESTTypeData.online = value.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE';
             RESTTypeData.line_power_present = value.value?.wall_power?.status === 'POWER_SOURCE_STATUS_ACTIVE';
             RESTTypeData.wired_or_battery = typeof value.value?.wall_power?.status === 'string' ? 0 : 1;
             RESTTypeData.battery_level =
-              isNaN(value.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === false
+              Number.isNaN(value.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === false
                 ? scaleValue(Number(value.value.battery_voltage_bank1.batteryValue.batteryVoltage.value), 0, 5.4, 0, 100)
                 : 0;
             RESTTypeData.battery_health_state =
@@ -2166,7 +2299,7 @@ export default class NestAccfactory {
                 : 1;
             RESTTypeData.smoke_status = value.value?.safety_alarm_smoke?.alarmState === 'ALARM_STATE_ALARM';
             RESTTypeData.co_status = value.value?.safety_alarm_co?.alarmState === 'ALARM_STATE_ALARM';
-            RESTTypeData.heat_status = false; // To find in protobuf
+            RESTTypeData.heat_status = false; // TODO <- need to find in protobuf
             RESTTypeData.hushed_state =
               value.value?.safety_alarm_smoke?.silenceState === 'SILENCE_STATE_SILENCED' ||
               value.value?.safety_alarm_co?.silenceState === 'SILENCE_STATE_SILENCED';
@@ -2180,12 +2313,12 @@ export default class NestAccfactory {
                 ? value.value.safety_summary?.warningDevices?.failures.includes('FAILURE_TYPE_TEMP') === false
                 : true;
             RESTTypeData.latest_alarm_test =
-              isNaN(value.value.self_test?.lastMstEnd?.seconds) === false ? Number(value.value.self_test.lastMstEnd.seconds) : 0;
+              Number.isNaN(value.value?.self_test?.lastMstEnd?.seconds) === false ? Number(value.value.self_test.lastMstEnd.seconds) : 0;
             RESTTypeData.self_test_in_progress =
               value.value?.legacy_structure_self_test?.mstInProgress === true ||
               value.value?.legacy_structure_self_test?.astInProgress === true;
             RESTTypeData.replacement_date =
-              isNaN(value.value.legacy_protect_device_settings?.replaceByDate?.seconds) === false
+              Number.isNaN(value.value?.legacy_protect_device_settings?.replaceByDate?.seconds) === false
                 ? Number(value.value.legacy_protect_device_settings.replaceByDate.seconds)
                 : 0;
             RESTTypeData.topaz_hush_key =
@@ -2202,13 +2335,26 @@ export default class NestAccfactory {
           }
           if (
             value?.source === NestAccfactory.DataSource.REST &&
-            this.config.options?.restAPI === true &&
+            this.config.options?.useNestAPI === true &&
             value.value?.where_id !== undefined &&
             value.value?.structure_id !== undefined
           ) {
             let RESTTypeData = {};
             RESTTypeData.serialNumber = value.value.serial_number;
             RESTTypeData.softwareVersion = value.value.software_version;
+            RESTTypeData.model = 'Protect (unknown)';
+            if (RESTTypeData.serialNumber.substring(0, 2) === '06') {
+              RESTTypeData.model = 'Protect (2nd gen)'; // Nest Protect 2nd gen
+            }
+            if (RESTTypeData.serialNumber.substring(0, 2) === '05') {
+              RESTTypeData.model = 'Protect (1st gen)'; // Nest Protect 1st gen
+            }
+            RESTTypeData.model =
+              value.value.wired_or_battery === 1
+                ? RESTTypeData.model.replace(/\bgen\)/, 'gen, battery)')
+                : value.value.wired_or_battery === 0
+                  ? RESTTypeData.model.replace(/\bgen\)/, 'gen, wired)')
+                  : RESTTypeData.model;
             RESTTypeData.online =
               typeof value?.value?.thread_mac_address === 'string'
                 ? this.#rawData?.['widget_track.' + value?.value?.thread_mac_address.toUpperCase()]?.value?.online === true
@@ -2243,7 +2389,7 @@ export default class NestAccfactory {
         }
 
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
-          let deviceOptions = this.config?.devices?.find((d) => d.serialNumber === tempDevice?.serialNumber);
+          let deviceOptions = this.config?.devices?.find((device) => device.serialNumber === tempDevice?.serialNumber);
           // Insert any extra options we've read in from configuration file for this device
           tempDevice.eveHistory = this.config.options.eveHistory === true || deviceOptions?.eveHistory === true;
           devices[tempDevice.serialNumber] = tempDevice; // Store processed device
@@ -2295,7 +2441,7 @@ export default class NestAccfactory {
         try {
           if (
             value?.source === NestAccfactory.DataSource.PROTOBUF &&
-            this.config.options?.protobufAPI === true &&
+            this.config.options?.useGoogleAPI === true &&
             Array.isArray(value.value?.streaming_protocol?.supportedProtocols) === true &&
             value.value.streaming_protocol.supportedProtocols.includes('PROTOCOL_WEBRTC') === true &&
             (value.value?.configuration_done?.deviceReady === true ||
@@ -2303,15 +2449,8 @@ export default class NestAccfactory {
           ) {
             let RESTTypeData = {};
             RESTTypeData.serialNumber = value.value.device_identity.serialNumber;
-
-            // Protobuf camera firmware versions appear in alonger string. Seems the '4th' word in the string is the actual number version
-            // ie: rquartz-user 1 OPENMASTER 507800056 test-keys stable-channel stable-channel
-            // ie: nq-user 1.73 OPENMASTER 422270 release-keys stable-channel stable-channel
-            RESTTypeData.softwareVersion =
-              value.value.device_identity.softwareVersion.split(/\s+/)?.[3] !== undefined
-                ? value.value.device_identity.softwareVersion.split(/\s+/)?.[3]
-                : value.value.device_identity.softwareVersion;
-            RESTTypeData.model = 'Camera';
+            RESTTypeData.softwareVersion = value.value.device_identity.softwareVersion;
+            RESTTypeData.model = 'Camera (unknown)';
             if (
               value.value.device_info.typeName === 'google.resource.NeonQuartzResource' &&
               value.value?.floodlight_settings === undefined &&
@@ -2320,13 +2459,13 @@ export default class NestAccfactory {
               RESTTypeData.model = 'Cam (battery)';
             }
             if (value.value.device_info.typeName === 'google.resource.GreenQuartzResource') {
-              RESTTypeData.model = 'Doorbell (battery)';
+              RESTTypeData.model = 'Doorbell (2nd gen, battery)';
             }
             if (value.value.device_info.typeName === 'google.resource.SpencerResource') {
               RESTTypeData.model = 'Cam (wired)';
             }
             if (value.value.device_info.typeName === 'google.resource.VenusResource') {
-              RESTTypeData.model = 'Doorbell (wired, 2nd gen)';
+              RESTTypeData.model = 'Doorbell (2nd gen, wired)';
             }
             if (value.value.device_info.typeName === 'nest.resource.NestCamIndoorResource') {
               RESTTypeData.model = 'Cam Indoor (1st gen)';
@@ -2338,14 +2477,14 @@ export default class NestAccfactory {
               RESTTypeData.model = 'Cam Outdoor (1st gen)';
             }
             if (value.value.device_info.typeName === 'nest.resource.NestHelloResource') {
-              RESTTypeData.model = 'Doorbell (wired, 1st gen)';
+              RESTTypeData.model = 'Doorbell (1st gen, wired)';
             }
             if (
               value.value.device_info.typeName === 'google.resource.NeonQuartzResource' &&
               value.value?.floodlight_settings !== undefined &&
               value.value?.floodlight_state !== undefined
             ) {
-              RESTTypeData.model = 'Cam with Floodlight (wired)';
+              RESTTypeData.model = 'Cam with Floodlight';
             }
 
             RESTTypeData.online = value.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE';
@@ -2360,6 +2499,7 @@ export default class NestAccfactory {
               value.value?.doorbell_indoor_chime_settings?.chimeType === 'CHIME_TYPE_ELECTRONIC';
             RESTTypeData.indoor_chime_enabled = value.value?.doorbell_indoor_chime_settings?.chimeEnabled === true;
             RESTTypeData.streaming_enabled = value.value?.recording_toggle?.currentCameraState === 'CAMERA_ON';
+            // Still need to find below in protobuf
             //RESTTypeData.has_irled =
             //RESTTypeData.irled_enabled =
             //RESTTypeData.has_statusled =
@@ -2380,8 +2520,9 @@ export default class NestAccfactory {
             }
             RESTTypeData.alerts = typeof value.value?.alerts === 'object' ? value.value.alerts : [];
             RESTTypeData.quiet_time_enabled =
-              parseInt(value.value?.quiet_time_settings?.quietTimeEnds?.seconds) !== 0 &&
-              Math.floor(Date.now() / 1000) < parseInt(value.value?.quiet_time_settings?.quietTimeEnds?.second);
+              Number.isNaN(value.value?.quiet_time_settings?.quietTimeEnds?.seconds) === false &&
+              Number(value.value.quiet_time_settings.quietTimeEnds.seconds) !== 0 &&
+              Math.floor(Date.now() / 1000) < Number(value.value.quiet_time_settings.quietTimeEnds.second);
             RESTTypeData.camera_type = value.value.device_identity.vendorProductId;
             RESTTypeData.streaming_protocols =
               value.value?.streaming_protocol?.supportedProtocols !== undefined ? value.value.streaming_protocol.supportedProtocols : [];
@@ -2392,7 +2533,7 @@ export default class NestAccfactory {
             RESTTypeData.has_light = value.value?.floodlight_settings !== undefined && value.value?.floodlight_state !== undefined;
             RESTTypeData.light_enabled = value.value?.floodlight_state?.currentState === 'LIGHT_STATE_ON';
             RESTTypeData.light_brightness =
-              value.value?.floodlight_settings?.brightness !== undefined
+              Number.isNaN(value.value?.floodlight_settings?.brightness) === false
                 ? scaleValue(Number(value.value.floodlight_settings.brightness), 0, 10, 0, 100)
                 : 0;
 
@@ -2410,7 +2551,7 @@ export default class NestAccfactory {
 
           if (
             value?.source === NestAccfactory.DataSource.REST &&
-            this.config.options?.restAPI === true &&
+            this.config.options?.useNestAPI === true &&
             value.value?.where_id !== undefined &&
             value.value?.structure_id !== undefined &&
             value.value?.nexus_api_http_server_url !== undefined &&
@@ -2436,8 +2577,8 @@ export default class NestAccfactory {
             RESTTypeData.has_video_flip = value.value?.capabilities.includes('video.flip') === true;
             RESTTypeData.video_flipped = value.value?.properties['video.flipped'] === true;
             RESTTypeData.statusled_brightness =
-              isNaN(value.value?.properties?.['statusled.brightness']) === false
-                ? Number(value.value?.properties['statusled.brightness'])
+              Number.isNaN(value.value?.properties?.['statusled.brightness']) === false
+                ? Number(value.value.properties['statusled.brightness'])
                 : 0;
             RESTTypeData.has_microphone = value.value?.capabilities.includes('audio.microphone') === true;
             RESTTypeData.has_speaker = value.value?.capabilities.includes('audio.speaker') === true;
@@ -2465,13 +2606,13 @@ export default class NestAccfactory {
         }
 
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
-          let deviceOptions = this.config?.devices?.find((d) => d.serialNumber === tempDevice?.serialNumber);
+          let deviceOptions = this.config?.devices?.find((device) => device.serialNumber === tempDevice?.serialNumber);
           // Insert any extra options we've read in from configuration file for this device
           tempDevice.eveHistory = this.config.options.eveHistory === true || deviceOptions?.eveHistory === true;
           tempDevice.hksv = this.config.options.hksv === true || deviceOptions?.hksv === true;
-          tempDevice.doorbellCooldown = isNaN(deviceOptions?.doorbellCooldown) === false ? Number(deviceOptions.doorbellCooldown) : 60;
-          tempDevice.motionCooldown = isNaN(deviceOptions?.motionCooldown) === false ? Number(deviceOptions.motionCooldown) : 60;
-          tempDevice.personCooldown = isNaN(deviceOptions?.personCooldown) === false ? Number(deviceOptions.personCooldown) : 120;
+          tempDevice.doorbellCooldown = parseDurationToSeconds(deviceOptions?.doorbellCooldown, { defaultValue: 60, min: 0, max: 300 });
+          tempDevice.motionCooldown = parseDurationToSeconds(deviceOptions?.motionCooldown, { defaultValue: 60, min: 0, max: 300 });
+          tempDevice.personCooldown = parseDurationToSeconds(deviceOptions?.personCooldown, { defaultValue: 120, min: 0, max: 300 });
           tempDevice.chimeSwitch = deviceOptions?.chimeSwitch === true; // Control 'indoor' chime by switch
           tempDevice.localAccess = deviceOptions?.localAccess === true; // Local network video streaming rather than from cloud from camera/doorbells
           // eslint-disable-next-line no-undef
@@ -2481,7 +2622,7 @@ export default class NestAccfactory {
             tempDevice.ffmpeg.debug = deviceOptions?.ffmpegDebug === true;
           }
           tempDevice.maxStreams =
-            isNaN(this.config.options?.maxStreams) === false
+            Number.isNaN(this.config.options?.maxStreams) === false
               ? Number(this.config.options.maxStreams)
               : this.deviceData.hksv === true
                 ? 1
@@ -2500,7 +2641,8 @@ export default class NestAccfactory {
         data = process_common_data(object_key, data);
         data.device_type = NestAccfactory.DeviceType.WEATHER;
         data.model = 'Weather';
-        data.current_temperature = data.weather.current_temperature;
+        data.softwareVersion = '1.0.0';
+        data.current_temperature = adjustTemperature(data.weather.current_temperature, 'C', 'C', true);
         data.current_humidity = data.weather.current_humidity;
         data.condition = data.weather.condition;
         data.wind_direction = data.weather.wind_direction;
@@ -2509,12 +2651,6 @@ export default class NestAccfactory {
         data.sunset = data.weather.sunset;
         data.station = data.weather.station;
         data.forecast = data.weather.forecast;
-        data.elevation =
-          isNaN(this?.config?.devices?.find((device) => device.serialNumber === data?.serialNumber)?.elevation) === false
-            ? Number(this?.config?.devices?.find((device) => device.serialNumber === data?.serialNumber)?.elevation)
-            : isNaN(this.config?.options?.elevation) === false
-              ? Number(this.config.options.elevation)
-              : 0;
         processed = data;
         // eslint-disable-next-line no-unused-vars
       } catch (error) {
@@ -2535,7 +2671,7 @@ export default class NestAccfactory {
         try {
           if (
             value?.source === NestAccfactory.DataSource.PROTOBUF &&
-            this.config.options?.protobufAPI === true &&
+            this.config.options?.useGoogleAPI === true &&
             value.value?.structure_location?.geoCoordinate?.latitude !== undefined &&
             value.value?.structure_location?.geoCoordinate?.longitude !== undefined
           ) {
@@ -2560,7 +2696,7 @@ export default class NestAccfactory {
 
           if (
             value?.source === NestAccfactory.DataSource.REST &&
-            this.config.options?.restAPI === true &&
+            this.config.options?.useNestAPI === true &&
             value.value?.latitude !== undefined &&
             value.value?.longitude !== undefined
           ) {
@@ -2583,9 +2719,13 @@ export default class NestAccfactory {
         }
 
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
-          let deviceOptions = this.config?.devices?.find((d) => d.serialNumber === tempDevice?.serialNumber);
+          let deviceOptions = this.config?.devices?.find((device) => device.serialNumber === tempDevice?.serialNumber);
           // Insert any extra options we've read in from configuration file for this device
           tempDevice.eveHistory = this.config.options.eveHistory === true || deviceOptions?.eveHistory === true;
+          tempDevice.elevation =
+            Number.isNaN(deviceOptions?.elevation) === false && Number(deviceOptions?.elevation) >= 0 && Number(deviceOptions?.elevation) <= 8848
+              ? Number(deviceOptions?.elevation)
+              : this.config.options.elevation;
           devices[tempDevice.serialNumber] = tempDevice; // Store processed device
         }
       });
@@ -2640,13 +2780,13 @@ export default class NestAccfactory {
                   value.toUpperCase() === 'RANGE')) ||
               (key === 'target_temperature' &&
                 this.#rawData?.[nest_google_uuid]?.value?.eco_mode_state?.ecoMode === 'ECO_MODE_INACTIVE' &&
-                isNaN(value) === false) ||
+                Number.isNaN(value) === false) ||
               (key === 'target_temperature_low' &&
                 this.#rawData?.[nest_google_uuid]?.value?.eco_mode_state?.ecoMode === 'ECO_MODE_INACTIVE' &&
-                isNaN(value) === false) ||
+                Number.isNaN(value) === false) ||
               (key === 'target_temperature_high' &&
                 this.#rawData?.[nest_google_uuid]?.value?.eco_mode_state?.ecoMode === 'ECO_MODE_INACTIVE' &&
-                isNaN(value) === false)
+                Number.isNaN(value) === false)
             ) {
               // Set either the 'mode' and/or non-eco temperatures on the target thermostat
               protobufElement.traitRequest.traitLabel = 'target_temperature_settings';
@@ -2679,7 +2819,7 @@ export default class NestAccfactory {
                 protobufElement.state.value.enabled = { value: false };
               }
 
-              // Tag 'who is doing the temperature/mode change. We are :-)
+              // Tag 'who' is doing the temperature/mode change. We are :-)
               protobufElement.state.value.targetTemperature.currentActorInfo = {
                 method: 'HVAC_ACTOR_METHOD_IOS',
                 originator: this.#rawData[nest_google_uuid].value.target_temperature_settings.targetTemperature.currentActorInfo.originator,
@@ -2691,13 +2831,13 @@ export default class NestAccfactory {
             if (
               (key === 'target_temperature' &&
                 this.#rawData?.[nest_google_uuid]?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE' &&
-                isNaN(value) === false) ||
+                Number.isNaN(value) === false) ||
               (key === 'target_temperature_low' &&
                 this.#rawData?.[nest_google_uuid]?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE' &&
-                isNaN(value) === false) ||
+                Number.isNaN(value) === false) ||
               (key === 'target_temperature_high' &&
                 this.#rawData?.[nest_google_uuid]?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE' &&
-                isNaN(value) === false)
+                Number.isNaN(value) === false)
             ) {
               // Set eco mode temperatures on the target thermostat
               protobufElement.traitRequest.traitLabel = 'eco_mode_settings';
@@ -2752,8 +2892,10 @@ export default class NestAccfactory {
               protobufElement.state.value.timerEnd =
                 value === true
                   ? {
-                      seconds: Number(Math.floor(Date.now() / 1000 + Number(protobufElement.state.value.timerDuration.seconds))),
-                      nanos: (Math.floor(Date.now() / 1000 + Number(protobufElement.state.value.timerDuration.seconds)) % 1000) * 1e6,
+                      seconds: Number(Math.floor(Date.now() / 1000) + Number(protobufElement.state.value.timerDuration.seconds)),
+                      nanos: Number(
+                        ((Math.floor(Date.now() / 1000) + Number(protobufElement.state.value.timerDuration.seconds)) % 1000) * 1e6,
+                      ),
                     }
                   : { seconds: 0, nanos: 0 };
               if (values?.fan_timer_speed !== undefined) {
@@ -2765,7 +2907,7 @@ export default class NestAccfactory {
               }
             }
 
-            if (key === 'fan_timer_speed' && isNaN(value) === false && values?.fan_state === undefined) {
+            if (key === 'fan_timer_speed' && Number.isNaN(value) === false && values?.fan_state === undefined) {
               // Set fan speed on the target thermostat only if we're not changing fan on/off state also
               protobufElement.traitRequest.traitLabel = 'fan_control_settings';
               protobufElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.FanControlSettingsTrait';
@@ -2774,7 +2916,7 @@ export default class NestAccfactory {
                 value !== 0 ? 'FAN_SPEED_SETTING_STAGE' + value : this.#rawData[nest_google_uuid].value.fan_control_settings.timerSpeed;
             }
 
-            if (key === 'statusled_brightness' && isNaN(value) === false) {
+            if (key === 'statusled_brightness' && Number.isNaN(value) === false) {
               // 0
               // 1
             }
@@ -2791,7 +2933,10 @@ export default class NestAccfactory {
               protobufElement.state.value = this.#rawData[nest_google_uuid].value.recording_toggle_settings;
               protobufElement.state.value.targetCameraState = value === true ? 'CAMERA_ON' : 'CAMERA_OFF';
               protobufElement.state.value.changeModeReason = 2;
-              protobufElement.state.value.settingsUpdated = { seconds: Math.floor(Date.now() / 1000), nanos: (Date.now() % 1000) * 1e6 };
+              protobufElement.state.value.settingsUpdated = {
+                seconds: Math.floor(Date.now() / 1000),
+                nanos: (Date.now() % 1000) * 1e6,
+              };
             }
 
             if (key === 'audio_enabled' && typeof value === 'boolean') {
@@ -2849,7 +2994,7 @@ export default class NestAccfactory {
               }
             }
 
-            if (key === 'light_brightness' && isNaN(value) === false) {
+            if (key === 'light_brightness' && Number.isNaN(value) === false) {
               // Set light brightness on supported camera devices
               protobufElement.traitRequest.traitLabel = 'floodlight_settings';
               protobufElement.state.type_url = 'type.nestlabs.com/google.trait.product.camera.FloodlightSettingsTrait';
@@ -2873,6 +3018,22 @@ export default class NestAccfactory {
                 value === true
                   ? { rcsSourceType: 'RCS_SOURCE_TYPE_SINGLE_SENSOR', activeRcsSensor: { resourceId: nest_google_uuid } }
                   : { rcsSourceType: 'RCS_SOURCE_TYPE_BACKPLATE' };
+            }
+
+            if (key === 'hot_water_boost_active' && typeof value === 'object') {
+              // Turn hotwater boost heating on/off
+              protobufElement.traitRequest.traitLabel = 'hot_water_settings';
+              protobufElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.HotWaterSettingsTrait';
+              protobufElement.state.value = this.#rawData[nest_google_uuid].value.hot_water_settings;
+              protobufElement.state.value.boostTimerEnd =
+                value?.state === true
+                  ? {
+                      seconds: Number(Math.floor(Date.now() / 1000) + Number(Number.isNaN(value?.time) === false ? value?.time : 30 * 60)),
+                      nanos: Number(
+                        (Math.floor(Date.now() / 1000) + (Number(Number.isNaN(value?.time) === false ? value?.time : 30 * 60) % 1000)) * 1e6,
+                      ),
+                    }
+                  : { seconds: 0, nanos: 0 };
             }
 
             if (protobufElement.traitRequest.traitLabel === '' || protobufElement.state.type_url === '') {
@@ -2992,9 +3153,9 @@ export default class NestAccfactory {
                     value.toUpperCase() === 'COOL' ||
                     value.toUpperCase() === 'HEAT' ||
                     value.toUpperCase() === 'RANGE')) ||
-                (key === 'target_temperature' && isNaN(value) === false) ||
-                (key === 'target_temperature_low' && isNaN(value) === false) ||
-                (key === 'target_temperature_high' && isNaN(value) === false)
+                (key === 'target_temperature' && Number.isNaN(value) === false) ||
+                (key === 'target_temperature_low' && Number.isNaN(value) === false) ||
+                (key === 'target_temperature_high' && Number.isNaN(value) === false)
               ) {
                 RESTStructureUUID = 'shared.' + nest_google_uuid.split('.')[1];
                 subscribeJSONData.objects.push({ object_key: RESTStructureUUID, op: 'MERGE', value: { target_change_pending: true } });
@@ -3005,8 +3166,14 @@ export default class NestAccfactory {
                 value = value === true ? this.#rawData[nest_google_uuid].value.fan_duration + Math.floor(Date.now() / 1000) : 0;
               }
 
-              if (key === 'fan_timer_speed' && isNaN(value) === false) {
+              if (key === 'fan_timer_speed' && Number.isNaN(value) === false) {
                 value = value !== 0 ? 'stage' + value : 'stage1';
+              }
+
+              if (key === 'hot_water_boost_active' && typeof value === 'object') {
+                key = 'hot_water_boost_time_to_end';
+                value =
+                  value?.state === true ? Number(Number.isNaN(value?.time) === false ? value?.time : 30 * 60) + Math.floor(Date.now() / 1000) : 0;
               }
 
               subscribeJSONData.objects.push({ object_key: RESTStructureUUID, op: 'MERGE', value: { [key]: value } });
@@ -3165,10 +3332,10 @@ export default class NestAccfactory {
     return values;
   }
 
-  async #getWeatherData(connectionUUID, deviceUUID, latitude, longitude) {
-    let weatherData = {};
+  async #getWeather(connectionUUID, deviceUUID, latitude, longitude) {
+    let weather = {};
     if (typeof this.#rawData[deviceUUID]?.value?.weather === 'object') {
-      weatherData = this.#rawData?.[deviceUUID]?.value.weather;
+      weather = this.#rawData?.[deviceUUID]?.value.weather;
     }
 
     if (typeof this.#connections?.[connectionUUID].weather_url === 'string' && this.#connections[connectionUUID].weather_url !== '') {
@@ -3182,24 +3349,24 @@ export default class NestAccfactory {
         .then((response) => response.json())
         .then((data) => {
           // Store the lat/long details in the weather data object
-          weatherData.latitude = latitude;
-          weatherData.longitude = longitude;
+          weather.latitude = latitude;
+          weather.longitude = longitude;
 
           // Update weather data
           if (data?.[latitude + ',' + longitude]?.current !== undefined) {
-            weatherData.current_temperature = adjustTemperature(data[latitude + ',' + longitude].current.temp_c, 'C', 'C', false);
-            weatherData.current_humidity = data[latitude + ',' + longitude].current.humidity;
-            weatherData.condition = data[latitude + ',' + longitude].current.condition;
-            weatherData.wind_direction = data[latitude + ',' + longitude].current.wind_dir;
-            weatherData.wind_speed = data[latitude + ',' + longitude].current.wind_mph * 1.609344; // convert to km/h
-            weatherData.sunrise = data[latitude + ',' + longitude].current.sunrise;
-            weatherData.sunset = data[latitude + ',' + longitude].current.sunset;
+            weather.current_temperature = adjustTemperature(data[latitude + ',' + longitude].current.temp_c, 'C', 'C', false);
+            weather.current_humidity = data[latitude + ',' + longitude].current.humidity;
+            weather.condition = data[latitude + ',' + longitude].current.condition;
+            weather.wind_direction = data[latitude + ',' + longitude].current.wind_dir;
+            weather.wind_speed = data[latitude + ',' + longitude].current.wind_mph * 1.609344; // convert to km/h
+            weather.sunrise = data[latitude + ',' + longitude].current.sunrise;
+            weather.sunset = data[latitude + ',' + longitude].current.sunset;
           }
-          weatherData.station =
+          weather.station =
             data[latitude + ',' + longitude]?.location?.short_name !== undefined
               ? data[latitude + ',' + longitude].location.short_name
               : '';
-          weatherData.forecast =
+          weather.forecast =
             data[latitude + ',' + longitude]?.forecast?.daily?.[0]?.condition !== undefined
               ? data[latitude + ',' + longitude].forecast.daily[0].condition
               : '';
@@ -3211,7 +3378,7 @@ export default class NestAccfactory {
         });
     }
 
-    return weatherData;
+    return weather;
   }
 
   async #protobufCommand(connectionUUID, service, command, values) {
@@ -3369,7 +3536,7 @@ async function fetchWrapper(method, url, options, data, response) {
     return;
   }
 
-  if (isNaN(options?.timeout) === false && Number(options?.timeout) > 0) {
+  if (Number.isNaN(options?.timeout) === false && Number(options?.timeout) > 0) {
     // If a timeout is specified in the options, setup here
     // eslint-disable-next-line no-undef
     options.signal = AbortSignal.timeout(Number(options.timeout));
@@ -3407,4 +3574,45 @@ async function fetchWrapper(method, url, options, data, response) {
   }
 
   return response;
+}
+
+function parseDurationToSeconds(inputDuration, { defaultValue = null, min = 0, max = Infinity } = {}) {
+  let normalisedSeconds = defaultValue;
+
+  if (inputDuration !== undefined && inputDuration !== null && inputDuration !== '') {
+    inputDuration = String(inputDuration).trim().toLowerCase();
+
+    // Case: plain numeric seconds (e.g. "30")
+    if (/^\d+$/.test(inputDuration) === true) {
+      normalisedSeconds = Number(inputDuration);
+    } else {
+      // Process input into normalised units. We'll convert in standard h (hours), m (minutes), s (seconds)
+      inputDuration = inputDuration
+        .replace(/hrs?|hours?/g, 'h')
+        .replace(/mins?|minutes?/g, 'm')
+        .replace(/secs?|s\b/g, 's')
+        .replace(/ +/g, '');
+
+      // Match duration format like "1h30m15s"
+      let match = inputDuration.match(/^((\d+)h)?((\d+)m)?((\d+)s?)?$/);
+
+      if (Array.isArray(match) === true) {
+        let total = Number(match[2] || 0) * 3600 + Number(match[4] || 0) * 60 + Number(match[6] || 0);
+        normalisedSeconds = Math.floor(total / 3600) * 3600 + Math.floor((total % 3600) / 60) * 60 + (total % 60);
+      }
+    }
+
+    if (normalisedSeconds === null || Number.isNaN(normalisedSeconds) === true) {
+      normalisedSeconds = defaultValue;
+    }
+
+    if (Number.isNaN(min) === false && normalisedSeconds < min) {
+      normalisedSeconds = min;
+    }
+    if (Number.isNaN(max) === false && normalisedSeconds > max) {
+      normalisedSeconds = max;
+    }
+  }
+
+  return normalisedSeconds;
 }
