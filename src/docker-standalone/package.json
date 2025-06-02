@@ -62,7 +62,7 @@
     "dependencies": {
         "hap-nodejs": "^1.1.1",
         "chalk": "^5.4.1",
-        "protobufjs": "^7.5.2",
+        "protobufjs": "^7.5.3",
         "ws": "^8.18.2",
         "werift": "^0.22.1"
     }
