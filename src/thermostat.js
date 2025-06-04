@@ -1,7 +1,7 @@
 // Nest Thermostat
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/05/30
+// Code version 2025/06/04
 // Mark Hulskamp
 'use strict';
 
@@ -91,57 +91,31 @@ export default class NestThermostat extends HomeKitDevice {
     this.thermostatService.getCharacteristic(this.hap.Characteristic.CurrentTemperature).setProps({
       minStep: 0.5,
     });
+    this.thermostatService.getCharacteristic(this.hap.Characteristic.HeatingThresholdTemperature).setProps({
+      minStep: 0.5,
+      minValue: MIN_TEMPERATURE,
+      maxValue: MAX_TEMPERATURE,
+    });
+    this.thermostatService.getCharacteristic(this.hap.Characteristic.CoolingThresholdTemperature).setProps({
+      minStep: 0.5,
+      minValue: MIN_TEMPERATURE,
+      maxValue: MAX_TEMPERATURE,
+    });
 
     if (this.deviceData?.can_cool === false && this.deviceData?.can_heat === true) {
       // Can heat only, so set values allowed for mode off/heat
-      this.thermostatService.updateCharacteristic(
-        this.hap.Characteristic.HeatingThresholdTemperature,
-        this.deviceData.target_temperature_low,
-      );
-      this.thermostatService.getCharacteristic(this.hap.Characteristic.HeatingThresholdTemperature).setProps({
-        minStep: 0.5,
-        minValue: MIN_TEMPERATURE,
-        maxValue: MAX_TEMPERATURE,
-      });
       this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).setProps({
         validValues: [this.hap.Characteristic.TargetHeatingCoolingState.OFF, this.hap.Characteristic.TargetHeatingCoolingState.HEAT],
       });
     }
     if (this.deviceData?.can_cool === true && this.deviceData?.can_heat === false) {
       // Can cool only
-      this.thermostatService.updateCharacteristic(
-        this.hap.Characteristic.CoolingThresholdTemperature,
-        this.deviceData.target_temperature_high,
-      );
-      this.thermostatService.getCharacteristic(this.hap.Characteristic.CoolingThresholdTemperature).setProps({
-        minStep: 0.5,
-        minValue: MIN_TEMPERATURE,
-        maxValue: MAX_TEMPERATURE,
-      });
       this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).setProps({
         validValues: [this.hap.Characteristic.TargetHeatingCoolingState.OFF, this.hap.Characteristic.TargetHeatingCoolingState.COOL],
       });
     }
     if (this.deviceData?.can_cool === true && this.deviceData?.can_heat === true) {
       // heat and cool
-      this.thermostatService.updateCharacteristic(
-        this.hap.Characteristic.CoolingThresholdTemperature,
-        this.deviceData.target_temperature_high,
-      );
-      this.thermostatService.getCharacteristic(this.hap.Characteristic.CoolingThresholdTemperature).setProps({
-        minStep: 0.5,
-        minValue: MIN_TEMPERATURE,
-        maxValue: MAX_TEMPERATURE,
-      });
-      this.thermostatService.updateCharacteristic(
-        this.hap.Characteristic.HeatingThresholdTemperature,
-        this.deviceData.target_temperature_low,
-      );
-      this.thermostatService.getCharacteristic(this.hap.Characteristic.HeatingThresholdTemperature).setProps({
-        minStep: 0.5,
-        minValue: MIN_TEMPERATURE,
-        maxValue: MAX_TEMPERATURE,
-      });
       this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).setProps({
         validValues: [
           this.hap.Characteristic.TargetHeatingCoolingState.OFF,
@@ -844,38 +818,18 @@ export default class NestThermostat extends HomeKitDevice {
       // Limit prop ranges
       if (deviceData.can_cool === false && deviceData.can_heat === true) {
         // Can heat only, so set values allowed for mode off/heat
-        this.thermostatService.getCharacteristic(this.hap.Characteristic.HeatingThresholdTemperature).setProps({
-          minStep: 0.5,
-          minValue: MIN_TEMPERATURE,
-          maxValue: MAX_TEMPERATURE,
-        });
         this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).setProps({
           validValues: [this.hap.Characteristic.TargetHeatingCoolingState.OFF, this.hap.Characteristic.TargetHeatingCoolingState.HEAT],
         });
       }
       if (deviceData.can_cool === true && deviceData.can_heat === false) {
         // Can cool only
-        this.thermostatService.getCharacteristic(this.hap.Characteristic.CoolingThresholdTemperature).setProps({
-          minStep: 0.5,
-          minValue: MIN_TEMPERATURE,
-          maxValue: MAX_TEMPERATURE,
-        });
         this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).setProps({
           validValues: [this.hap.Characteristic.TargetHeatingCoolingState.OFF, this.hap.Characteristic.TargetHeatingCoolingState.COOL],
         });
       }
       if (deviceData.can_cool === true && deviceData.can_heat === true) {
         // heat and cool
-        this.thermostatService.getCharacteristic(this.hap.Characteristic.CoolingThresholdTemperature).setProps({
-          minStep: 0.5,
-          minValue: MIN_TEMPERATURE,
-          maxValue: MAX_TEMPERATURE,
-        });
-        this.thermostatService.getCharacteristic(this.hap.Characteristic.HeatingThresholdTemperature).setProps({
-          minStep: 0.5,
-          minValue: MIN_TEMPERATURE,
-          maxValue: MAX_TEMPERATURE,
-        });
         this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).setProps({
           validValues: [
             this.hap.Characteristic.TargetHeatingCoolingState.OFF,
