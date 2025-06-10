@@ -21,43 +21,25 @@ export default class NestProtect extends HomeKitDevice {
   }
 
   // Class functions
-  addServices() {
-    // Create extra details for output
-    let postSetupDetails = [];
-
+  setupDevice() {
     // Setup the smoke sensor service if not already present on the accessory
-    this.smokeService = this.accessory.getService(this.hap.Service.SmokeSensor);
-    if (this.smokeService === undefined) {
-      this.smokeService = this.accessory.addService(this.hap.Service.SmokeSensor, '', 1);
-    }
-    if (this.smokeService.testCharacteristic(this.hap.Characteristic.StatusActive) === false) {
-      this.smokeService.addCharacteristic(this.hap.Characteristic.StatusActive);
-    }
-    if (this.smokeService.testCharacteristic(this.hap.Characteristic.StatusFault) === false) {
-      this.smokeService.addCharacteristic(this.hap.Characteristic.StatusFault);
-    }
+    this.smokeService = this.setupService(this.hap.Service.SmokeSensor, '', 1);
     this.smokeService.setPrimaryService();
 
+    this.setupCharacteristic(this.smokeService, this.hap.Characteristic.StatusActive);
+    this.setupCharacteristic(this.smokeService, this.hap.Characteristic.StatusFault);
+
     // Setup the carbon monoxide service if not already present on the accessory
-    this.carbonMonoxideService = this.accessory.getService(this.hap.Service.CarbonMonoxideSensor);
-    if (this.carbonMonoxideService === undefined) {
-      this.carbonMonoxideService = this.accessory.addService(this.hap.Service.CarbonMonoxideSensor, '', 1);
-    }
+    this.carbonMonoxideService = this.setupService(this.hap.Service.CarbonMonoxideSensor, '', 1);
 
     // Setup battery service if not already present on the accessory
-    this.batteryService = this.accessory.getService(this.hap.Service.Battery);
-    if (this.batteryService === undefined) {
-      this.batteryService = this.accessory.addService(this.hap.Service.Battery, '', 1);
-    }
+    this.batteryService = this.setupService(this.hap.Service.Battery, '', 1);
     this.batteryService.setHiddenService(true);
 
     // Setup motion service if not already present on the accessory and Nest protect is a wired version
     if (this.deviceData?.wired_or_battery === 0) {
-      this.motionService = this.accessory.getService(this.hap.Service.MotionSensor);
-      if (this.motionService === undefined) {
-        this.motionService = this.accessory.addService(this.hap.Service.MotionSensor, '', 1);
-      }
-      postSetupDetails.push('With motion sensor');
+      this.motionService = this.setupService(this.hap.Service.MotionSensor, '', 1);
+      this.postSetupDetail('With motion sensor');
     }
 
     // Setup linkage to EveHome app if configured todo so
@@ -79,11 +61,9 @@ export default class NestProtect extends HomeKitDevice {
         EveSmoke_heattestpassed: this.deviceData.heat_test_passed,
       });
     }
-
-    return postSetupDetails;
   }
 
-  updateServices(deviceData) {
+  updateDevice(deviceData) {
     if (
       typeof deviceData !== 'object' ||
       this.smokeService === undefined ||
@@ -125,11 +105,11 @@ export default class NestProtect extends HomeKitDevice {
     );
 
     if (deviceData.smoke_status === true && this.deviceData.smoke_status === false) {
-      this?.log?.warn && this.log.warn('Smoke detected in "%s"', deviceData.description);
+      this?.log?.warn?.('Smoke detected in "%s"', deviceData.description);
     }
 
     if (deviceData.smoke_status === false && this.deviceData.smoke_status === true) {
-      this?.log?.info && this.log.info('Smoke is nolonger detected in "%s"', deviceData.description);
+      this?.log?.info?.('Smoke is nolonger detected in "%s"', deviceData.description);
     }
 
     // Update carbon monoxide details
@@ -141,20 +121,20 @@ export default class NestProtect extends HomeKitDevice {
     );
 
     if (deviceData.co_status === true && this.deviceData.co_status === false) {
-      this?.log?.warn && this.log.warn('Abnormal carbon monoxide levels detected in "%s"', deviceData.description);
+      this?.log?.warn?.('Abnormal carbon monoxide levels detected in "%s"', deviceData.description);
     }
 
     if (deviceData.co_status === false && this.deviceData.co_status === true) {
-      this?.log?.info && this.log.info('Carbon monoxide levels have returned to normal in "%s"', deviceData.description);
+      this?.log?.info?.('Carbon monoxide levels have returned to normal in "%s"', deviceData.description);
     }
 
     // Update self testing details
     if (deviceData.self_test_in_progress === true && this.deviceData.self_test_in_progress === false) {
-      this?.log?.warn && this.log.info('Smoke and Carbon monoxide sensor testing has started in "%s"', deviceData.description);
+      this?.log?.warn?.('Smoke and Carbon monoxide sensor testing has started in "%s"', deviceData.description);
     }
 
     if (deviceData.self_test_in_progress === false && this.deviceData.self_test_in_progress === true) {
-      this?.log?.info && this.log.info('Smoke and Carbon monoxide sensor testing completed in "%s"', deviceData.description);
+      this?.log?.info?.('Smoke and Carbon monoxide sensor testing completed in "%s"', deviceData.description);
     }
 
     // Update motion service if present
@@ -162,7 +142,7 @@ export default class NestProtect extends HomeKitDevice {
       this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, deviceData.detected_motion === true);
 
       if (deviceData.detected_motion === true && this.deviceData.detected_motion === false) {
-        this?.log?.info && this.log.info('Motion detected in "%s"', deviceData.description);
+        this?.log?.info?.('Motion detected in "%s"', deviceData.description);
       }
 
       // Log motion to history only if changed to previous recording
@@ -212,7 +192,7 @@ export default class NestProtect extends HomeKitDevice {
     }
 
     if (typeof EveHomeSetData?.alarmtest === 'boolean') {
-      //this.log.info('Eve Smoke Alarm test', (EveHomeSetData.alarmtest === true ? 'start' : 'stop'));
+      //this?.log?.info?.('Eve Smoke Alarm test', (EveHomeSetData.alarmtest === true ? 'start' : 'stop'));
     }
     if (typeof EveHomeSetData?.statusled === 'boolean') {
       this.set({ uuid: this.deviceData.nest_google_uuid, ntp_green_led_enable: EveHomeSetData.statusled });

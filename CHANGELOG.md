@@ -2,7 +2,7 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.3.0 (alpha.2)
+## v0.3.0 (alpha.4)
 
 - General code cleanup and bug fixes
 - Updated README.md to account for changes to "devices" section in configuration

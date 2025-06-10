@@ -11,13 +11,14 @@
 // Nest Temp Sensors (1st gen)
 // Nest Cameras (Cam Indoor, IQ Indoor, Outdoor, IQ Outdoor, Cam with Floodlight)
 // Nest Doorbells (wired 1st gen)
+// Nest HeatLink
 //
 // The accessory supports authentication to Nest/Google using either a Nest account OR Google (migrated Nest account) account.
 // "preliminary" support for using FieldTest account types also.
 //
 // Supports both Nest REST and Protobuf APIs for communication
 //
-// Code version 5/10/2024
+// Code version 2025/06/05
 // Mark Hulskamp
 'use strict';
 

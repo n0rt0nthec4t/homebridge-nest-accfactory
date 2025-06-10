@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/06/04
+// Code version 2025/06/10
 // Mark Hulskamp
 'use strict';
 
@@ -35,6 +35,8 @@ const WEATHERPOLLING = 300000; // Weather data polling timer
 const NESTAPITIMEOUT = 10000; // Nest API timeout
 const USERAGENT = 'Nest/5.78.0 (iOScom.nestlabs.jasper.release) os=18.0'; // User Agent string
 const FFMPEGVERSION = '6.0'; // Minimum version of ffmpeg we require
+const HK_PIN_3_2_3 = /^\d{3}-\d{2}-\d{3}$/;
+const HK_PIN_4_4 = /^([0-9]{4}-[0-9]{4})$/;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 
@@ -117,7 +119,7 @@ export default class NestAccfactory {
 
     // If we don't have either a Nest access_token and/or a Google issuetoken/cookie, return back.
     if (Object.keys(this.#connections).length === 0) {
-      this?.log?.error && this.log.error('No connections have been specified in the JSON configuration. Please review');
+      this?.log?.error?.('No connections have been specified in the JSON configuration. Please review');
       return;
     }
 
@@ -129,7 +131,7 @@ export default class NestAccfactory {
     this.config.options.elevation =
       isNaN(this.config.options?.elevation) === false &&
       Number(this.config.options.elevation) >= 0 &&
-      Number(this.config.options.elevation) >= 8848
+      Number(this.config.options.elevation) <= 8848
         ? Number(this.config.options.elevation)
         : 0;
     this.config.options.weather = this.config.options?.weather === true;
@@ -169,10 +171,8 @@ export default class NestAccfactory {
     this.config.options.ffmpeg.libfdk_aac = false;
 
     if (fs.existsSync(this.config.options.ffmpeg.binary) === false) {
-      if (this?.log?.warn) {
-        this.log.warn('Specified ffmpeg binary "%s" was not found', this.config.options.ffmpeg.binary);
-        this.log.warn('Stream video/recording from camera/doorbells will be unavailable');
-      }
+      this?.log?.warn?.('Specified ffmpeg binary "%s" was not found', this.config.options.ffmpeg.binary);
+      this?.log?.warn?.('Stream video/recording from camera/doorbells will be unavailable');
 
       // If we flag ffmpegPath as undefined, no video streaming/record support enabled for camers/doorbells
       this.config.options.ffmpeg.binary = undefined;
@@ -205,8 +205,7 @@ export default class NestAccfactory {
           this.config.options.ffmpeg.libx264 === false ||
           this.config.options.ffmpeg.libfdk_aac === false
         ) {
-          this?.log?.warn &&
-            this.log.warn('ffmpeg binary "%s" does not meet the minimum support requirements', this.config.options.ffmpeg.binary);
+          this?.log?.warn?.('ffmpeg binary "%s" does not meet the minimum support requirements', this.config.options.ffmpeg.binary);
           if (
             this.config.options.ffmpeg.version.localeCompare(FFMPEGVERSION, undefined, {
               numeric: true,
@@ -214,13 +213,12 @@ export default class NestAccfactory {
               caseFirst: 'upper',
             }) === -1
           ) {
-            this?.log?.warn &&
-              this.log.warn(
-                'Minimum binary version is "%s", however the installed version is "%s"',
-                FFMPEGVERSION,
-                this.config.options.ffmpeg.version,
-              );
-            this?.log?.warn && this.log.warn('Stream video/recording from camera/doorbells will be unavailable');
+            this?.log?.warn?.(
+              'Minimum binary version is "%s", however the installed version is "%s"',
+              FFMPEGVERSION,
+              this.config.options.ffmpeg.version,
+            );
+            this?.log?.warn?.('Stream video/recording from camera/doorbells will be unavailable');
 
             this.config.options.ffmpeg.binary = undefined; // No ffmpeg since below min version
           }
@@ -229,32 +227,29 @@ export default class NestAccfactory {
             this.config.options.ffmpeg.libx264 === true &&
             this.config.options.ffmpeg.libfdk_aac === true
           ) {
-            this?.log?.warn && this.log.warn('Missing libspeex in ffmpeg binary, talkback on certain camera/doorbells will be unavailable');
+            this?.log?.warn?.('Missing libspeex in ffmpeg binary, talkback on certain camera/doorbells will be unavailable');
           }
           if (
             this.config.options.ffmpeg.libx264 === true &&
             this.config.options.ffmpeg.libfdk_aac === false &&
             this.config.options.ffmpeg.libopus === false
           ) {
-            this?.log?.warn &&
-              this.log.warn('Missing libfdk_aac and libopus in ffmpeg binary, audio from camera/doorbells will be unavailable');
+            this?.log?.warn?.('Missing libfdk_aac and libopus in ffmpeg binary, audio from camera/doorbells will be unavailable');
           }
           if (this.config.options.ffmpeg.libx264 === true && this.config.options.ffmpeg.libfdk_aac === false) {
-            this?.log?.warn && this.log.warn('Missing libfdk_aac in ffmpeg binary, audio from camera/doorbells will be unavailable');
+            this?.log?.warn?.('Missing libfdk_aac in ffmpeg binary, audio from camera/doorbells will be unavailable');
           }
           if (
             this.config.options.ffmpeg.libx264 === true &&
             this.config.options.ffmpeg.libfdk_aac === true &&
             this.config.options.ffmpeg.libopus === false
           ) {
-            this?.log?.warn &&
-              this.log.warn(
-                'Missing libopus in ffmpeg binary, audio (including talkback) from certain camera/doorbells will be unavailable',
-              );
+            this?.log?.warn?.(
+              'Missing libopus in ffmpeg binary, audio (including talkback) from certain camera/doorbells will be unavailable',
+            );
           }
           if (this.config.options.ffmpeg.libx264 === false) {
-            this?.log?.warn &&
-              this.log.warn('Missing libx264 in ffmpeg binary, stream video/recording from camera/doorbells will be unavailable');
+            this?.log?.warn?.('Missing libx264 in ffmpeg binary, stream video/recording from camera/doorbells will be unavailable');
 
             this.config.options.ffmpeg.binary = undefined; // No ffmpeg since we do not have all the required libraries
           }
@@ -263,7 +258,7 @@ export default class NestAccfactory {
     }
 
     if (this.config.options.ffmpeg.binary !== undefined) {
-      this?.log?.success && this.log.success('Found valid ffmpeg binary in %s', this.config.options.ffmpeg.binary);
+      this?.log?.success?.('Found valid ffmpeg binary in %s', this.config.options.ffmpeg.binary);
     }
 
     // Process per device configuration(s)
@@ -283,16 +278,14 @@ export default class NestAccfactory {
       this.config.devices = newDeviceArray;
 
       // Alert user to changed configuration for them to update config
-      this?.log?.warn && this.log.warn('');
-      this?.log?.warn && this.log.warn('NOTICE');
-      this?.log?.warn &&
-        this.log.warn('> The per device configuration contains legacy options. Please review the readme at the link below');
-      this?.log?.warn &&
-        this.log.warn(
-          '> Consider updating your configuration file as the mapping from legacy to current per device configuration maybe removed',
-        );
-      this?.log?.warn && this.log.warn('> https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/blob/main/src/README.md');
-      this?.log?.warn && this.log.warn('');
+      this?.log?.warn?.('');
+      this?.log?.warn?.('NOTICE');
+      this?.log?.warn?.('> The per device configuration contains legacy options. Please review the readme at the link below');
+      this?.log?.warn?.(
+        '> Consider updating your configuration file as the mapping from legacy to current per device configuration maybe removed',
+      );
+      this?.log?.warn?.('> https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/blob/main/src/README.md');
+      this?.log?.warn?.('');
     }
 
     if (this.api instanceof EventEmitter === true) {
@@ -341,7 +334,7 @@ export default class NestAccfactory {
 
   configureAccessory(accessory) {
     // This gets called from Homebridge each time it restores an accessory from its cache
-    this?.log?.info && this.log.info('Loading accessory from cache:', accessory.displayName);
+    this?.log?.info?.('Loading accessory from cache:', accessory.displayName);
 
     // add the restored accessory to the accessories cache, so we can track if it has already been registered
     this.cachedAccessories.push(accessory);
@@ -367,11 +360,10 @@ export default class NestAccfactory {
       if (this.#connections[connectionUUID].type === NestAccfactory.GoogleAccount) {
         // Google cookie method as refresh token method no longer supported by Google since October 2022
         // Instructions from homebridge_nest or homebridge_nest_cam to obtain this
-        this?.log?.info &&
-          this.log.info(
-            'Performing Google account authorisation ' +
-              (this.#connections[connectionUUID].fieldTest === true ? 'using field test endpoints' : ''),
-          );
+        this?.log?.info?.(
+          'Performing Google account authorisation ' +
+            (this.#connections[connectionUUID].fieldTest === true ? 'using field test endpoints' : ''),
+        );
 
         await fetchWrapper('get', this.#connections[connectionUUID].issuetoken, {
           headers: {
@@ -433,13 +425,13 @@ export default class NestAccfactory {
                     clearTimeout(this.#connections[connectionUUID].timer);
                     this.#connections[connectionUUID].timer = setTimeout(
                       () => {
-                        this?.log?.info && this.log.info('Performing periodic token refresh for Google account');
+                        this?.log?.info?.('Performing periodic token refresh for Google account');
                         this.#connect(connectionUUID);
                       },
                       (tokenExpire - Math.floor(Date.now() / 1000) - 60) * 1000,
                     ); // Refresh just before token expiry
 
-                    this?.log?.success && this.log.success('Successfully authorised using Google account');
+                    this?.log?.success?.('Successfully authorised using Google account');
                   });
               });
           })
@@ -447,22 +439,20 @@ export default class NestAccfactory {
           .catch((error) => {
             // The token we used to obtained a Nest session failed, so overall authorisation failed
             this.#connections[connectionUUID].authorised = false;
-            this?.log?.debug &&
-              this.log.debug(
-                'Failed to connect to gateway using credential details for connection uuid "%s". A periodic retry event will be triggered',
-                connectionUUID,
-              );
-            this?.log?.error && this.log.error('Authorisation failed using Google account');
+            this?.log?.debug?.(
+              'Failed to connect to gateway using credential details for connection uuid "%s". A periodic retry event will be triggered',
+              connectionUUID,
+            );
+            this?.log?.error?.('Authorisation failed using Google account');
           });
       }
 
       if (this.#connections[connectionUUID].type === NestAccfactory.NestAccount) {
         // Nest access token method. Get WEBSITE2 cookie for use with camera API calls if needed later
-        this?.log?.info &&
-          this.log.info(
-            'Performing Nest account authorisation ' +
-              (this.#connections[connectionUUID].fieldTest === true ? 'using field test endpoints' : ''),
-          );
+        this?.log?.info?.(
+          'Performing Nest account authorisation ' +
+            (this.#connections[connectionUUID].fieldTest === true ? 'using field test endpoints' : ''),
+        );
 
         await fetchWrapper(
           'post',
@@ -511,21 +501,21 @@ export default class NestAccfactory {
                 clearTimeout(this.#connections[connectionUUID].timer);
                 this.#connections[connectionUUID].timer = setTimeout(
                   () => {
-                    this?.log?.info && this.log.info('Performing periodic token refresh for Nest account');
+                    this?.log?.info?.('Performing periodic token refresh for Nest account');
                     this.#connect(connectionUUID);
                   },
                   1000 * 3600 * 24,
                 ); // Refresh token every 24hrs
 
-                this?.log?.success && this.log.success('Successfully authorised using Nest account');
+                this?.log?.success?.('Successfully authorised using Nest account');
               });
           })
           // eslint-disable-next-line no-unused-vars
           .catch((error) => {
             // The token we used to obtained a Nest session failed, so overall authorisation failed
             this.#connections[connectionUUID].authorised = false;
-            this?.log?.debug && this.log.debug('Failed to connect using credential details for connection uuid "%s"', connectionUUID);
-            this?.log?.error && this.log.error('Authorisation failed using Nest account');
+            this?.log?.debug?.('Failed to connect using credential details for connection uuid "%s"', connectionUUID);
+            this?.log?.error?.('Authorisation failed using Nest account');
           });
       }
     }
@@ -582,7 +572,7 @@ export default class NestAccfactory {
     }
 
     if (fullRefresh === true) {
-      this?.log?.debug && this.log.debug('Starting REST API subscribe for connection uuid "%s"', connectionUUID);
+      this?.log?.debug?.('Starting REST API subscribe for connection uuid "%s"', connectionUUID);
     }
 
     fetchWrapper(
@@ -667,12 +657,11 @@ export default class NestAccfactory {
                   value.value.properties = data.items[0].properties;
                 })
                 .catch((error) => {
-                  if (
-                    error?.cause !== undefined &&
-                    JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false &&
-                    this?.log?.debug
-                  ) {
-                    this.log.debug('REST API had error retrieving camera/doorbell details during subscribe. Error was "%s"', error?.code);
+                  if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
+                    this?.log?.debug?.(
+                      'REST API had error retrieving camera/doorbell details during subscribe. Error was "%s"',
+                      error?.code,
+                    );
                   }
                 });
 
@@ -707,12 +696,8 @@ export default class NestAccfactory {
                   value.value.activity_zones = zones;
                 })
                 .catch((error) => {
-                  if (
-                    error?.cause !== undefined &&
-                    JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false &&
-                    this?.log?.debug
-                  ) {
-                    this.log.debug(
+                  if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
+                    this?.log?.debug?.(
                       'REST API had error retrieving camera/doorbell activity zones during subscribe. Error was "%s"',
                       error?.code,
                     );
@@ -794,13 +779,13 @@ export default class NestAccfactory {
         await this.#processPostSubscribe();
       })
       .catch((error) => {
-        if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false && this?.log?.debug) {
-          this.log.debug('REST API had an error performing subscription with connection uuid "%s"', connectionUUID);
-          this.log.debug('Error was "%s"', error);
+        if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
+          this?.log?.debug?.('REST API had an error performing subscription with connection uuid "%s"', connectionUUID);
+          this?.log?.debug?.('Error was "%s"', error);
         }
       })
       .finally(() => {
-        this?.log?.debug && this.log.debug('Restarting REST API subscribe for connection uuid "%s"', connectionUUID);
+        this?.log?.debug?.('Restarting REST API subscribe for connection uuid "%s"', connectionUUID);
         setTimeout(this.#subscribeREST.bind(this, connectionUUID, fullRefresh), 1000);
       });
   }
@@ -852,13 +837,12 @@ export default class NestAccfactory {
       protobuf.configure();
       this.#protobufRoot = protobuf.loadSync(path.resolve(__dirname + '/protobuf/root.proto'));
       if (this.#protobufRoot !== null) {
-        this?.log?.debug && this.log.debug('Loaded protobuf support files for Protobuf API');
+        this?.log?.debug?.('Loaded protobuf support files for Protobuf API');
       }
     }
 
     if (this.#protobufRoot === null) {
-      this?.log?.warn &&
-        this.log.warn('Failed to loaded Protobuf API support files. This will cause certain Nest/Google devices to be un-supported');
+      this?.log?.warn?.('Failed to loaded Protobuf API support files. This will cause certain Nest/Google devices to be un-supported');
       return;
     }
 
@@ -889,7 +873,7 @@ export default class NestAccfactory {
     }
 
     if (firstRun === true) {
-      this?.log?.debug && this.log.debug('Starting Protobuf API trait observe for connection uuid "%s"', connectionUUID);
+      this?.log?.debug?.('Starting Protobuf API trait observe for connection uuid "%s"', connectionUUID);
     }
 
     fetchWrapper(
@@ -1024,14 +1008,14 @@ export default class NestAccfactory {
         }
       })
       .catch((error) => {
-        if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false && this?.log?.debug) {
-          this.log.debug('Protobuf API had an error performing trait observe with connection uuid "%s"', connectionUUID);
-          this.log.debug('Error was "%s"', error);
+        if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
+          this?.log?.debug?.('Protobuf API had an error performing trait observe with connection uuid "%s"', connectionUUID);
+          this?.log?.debug?.('Error was "%s"', error);
         }
       })
 
       .finally(() => {
-        this?.log?.debug && this.log.debug('Restarting Protobuf API trait observe for connection uuid "%s"', connectionUUID);
+        this?.log?.debug?.('Restarting Protobuf API trait observe for connection uuid "%s"', connectionUUID);
         setTimeout(this.#subscribeProtobuf.bind(this, connectionUUID, false), 1000);
       });
   }
@@ -1040,7 +1024,7 @@ export default class NestAccfactory {
     Object.values(this.#processData('')).forEach((deviceData) => {
       if (this.#trackedDevices?.[deviceData?.serialNumber] === undefined && deviceData?.excluded === true) {
         // We haven't tracked this device before (ie: should be a new one) and but its excluded
-        this?.log?.warn && this.log.warn('Device "%s" is ignored due to it being marked as excluded', deviceData.description);
+        this?.log?.warn?.('Device "%s" is ignored due to it being marked as excluded', deviceData.description);
 
         // Track this device even though its excluded
         this.#trackedDevices[deviceData.serialNumber] = {
@@ -1200,12 +1184,8 @@ export default class NestAccfactory {
                 })
                 .catch((error) => {
                   // Log debug message if wasn't a timeout
-                  if (
-                    error?.cause !== undefined &&
-                    JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false &&
-                    this?.log?.debug
-                  ) {
-                    this.log.debug(
+                  if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
+                    this?.log?.debug?.(
                       'REST API had error retrieving camera/doorbell activity zones for "%s". Error was "%s"',
                       deviceData.description,
                       error?.code,
@@ -1332,12 +1312,8 @@ export default class NestAccfactory {
                 })
                 .catch((error) => {
                   // Log debug message if wasn't a timeout
-                  if (
-                    error?.cause !== undefined &&
-                    JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false &&
-                    this?.log?.debug
-                  ) {
-                    this.log.debug(
+                  if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
+                    this?.log?.debug?.(
                       'REST API had error retrieving camera/doorbell activity notifications for "%s". Error was "%s"',
                       deviceData.description,
                       error?.code,
@@ -1405,13 +1381,12 @@ export default class NestAccfactory {
           this.#rawData[deviceData.nest_google_uuid].source !== this.#trackedDevices[deviceData.serialNumber].source
         ) {
           // Data source for this device has been updated
-          this?.log?.debug &&
-            this.log.debug(
-              'Using %s API as data source for "%s" from connection uuid "%s"',
-              this.#rawData[deviceData.nest_google_uuid]?.source,
-              deviceData.description,
-              this.#rawData[deviceData.nest_google_uuid].connection,
-            );
+          this?.log?.debug?.(
+            'Using %s API as data source for "%s" from connection uuid "%s"',
+            this.#rawData[deviceData.nest_google_uuid]?.source,
+            deviceData.description,
+            this.#rawData[deviceData.nest_google_uuid].connection,
+          );
 
           this.#trackedDevices[deviceData.serialNumber].source = this.#rawData[deviceData.nest_google_uuid].source;
           this.#trackedDevices[deviceData.serialNumber].rawDataUuid = deviceData.nest_google_uuid;
@@ -1503,13 +1478,13 @@ export default class NestAccfactory {
       let processed = {};
       try {
         // Fix up data we need to
+        let deviceOptions = this.config?.devices?.find(
+          (device) => device?.serialNumber?.toUpperCase?.() === data?.serialNumber?.toUpperCase?.(),
+        );
         data.nest_google_uuid = object_key;
         data.serialNumber = data.serialNumber.toUpperCase(); // ensure serial numbers are in upper case
-        data.excluded =
-          this?.config?.options?.exclude === true
-            ? this?.config?.devices?.find((d) => d.serialNumber === data?.serialNumber)?.exclude !== false
-            : this?.config?.devices?.find((d) => d.serialNumber === data?.serialNumber)?.exclude === true;
-        data.manufacturer = typeof data?.manufacturer === 'string' ? data.manufacturer : 'Nest';
+        data.excluded = this?.config?.options?.exclude === true ? deviceOptions?.exclude !== false : deviceOptions?.exclude === true;
+        data.manufacturer = typeof data?.manufacturer === 'string' && data.manufacturer !== '' ? data.manufacturer : 'Nest';
         data.softwareVersion = process_software_version(data.softwareVersion);
         let description = typeof data?.description === 'string' ? data.description : '';
         let location = typeof data?.location === 'string' ? data.location : '';
@@ -1526,24 +1501,19 @@ export default class NestAccfactory {
         // Insert HomeKit pairing code for when using HAP-NodeJS library rather than Homebridge
         // Validate the pairing code is in the format of "xxx-xx-xxx" or "xxxx-xxxx"
         if (
-          new RegExp(/^([0-9]{3}-[0-9]{2}-[0-9]{3})$/).test(this.config?.options?.hkPairingCode) === true ||
-          new RegExp(/^([0-9]{4}-[0-9]{4})$/).test(this.config?.options?.hkPairingCode) === true
+          typeof this.config?.options?.hkPairingCode === 'string' &&
+          (HK_PIN_3_2_3.test(this.config.options.hkPairingCode) || HK_PIN_4_4.test(this.config.options.hkPairingCode))
         ) {
           data.hkPairingCode = this.config.options.hkPairingCode;
-        }
-        if (
-          new RegExp(/^([0-9]{3}-[0-9]{2}-[0-9]{3})$/).test(
-            this?.config?.devices?.find((device) => device.serialNumber === data?.serialNumber)?.hkPairingCode,
-          ) === true ||
-          new RegExp(/^([0-9]{4}-[0-9]{4})$/).test(
-            this?.config?.devices?.find((device) => device.serialNumber === data?.serialNumber)?.hkPairingCode,
-          ) === true
+        } else if (
+          typeof deviceOptions?.hkPairingCode === 'string' &&
+          (HK_PIN_3_2_3.test(deviceOptions.hkPairingCode) || HK_PIN_4_4.test(deviceOptions.hkPairingCode))
         ) {
-          data.hkPairingCode = this?.config?.devices?.find((device) => device.serialNumber === data?.serialNumber)?.hkPairingCode;
+          data.hkPairingCode = deviceOptions.hkPairingCode;
         }
 
         // If we have a hkPairingCode defined, we need to generate a hkUsername also
-        if (data.hkPairingCode !== undefined) {
+        if (data?.hkPairingCode !== undefined) {
           // Use a Nest Labs prefix for first 6 digits, followed by a CRC24 based off serial number for last 6 digits.
           data.hkUsername = ('18B430' + crc24(data.serialNumber.toUpperCase()))
             .toString('hex')
@@ -2056,11 +2026,13 @@ export default class NestAccfactory {
           }
           // eslint-disable-next-line no-unused-vars
         } catch (error) {
-          this?.log?.debug && this.log.debug('Error processing data for thermostat(s)');
+          this?.log?.debug?.('Error processing data for thermostat(s)');
         }
 
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
-          let deviceOptions = this.config?.devices?.find((device) => device.serialNumber === tempDevice?.serialNumber);
+          let deviceOptions = this.config?.devices?.find(
+            (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+          );
           // Insert any extra options we've read in from configuration file for this device
           tempDevice.eveHistory = this.config.options.eveHistory === true || deviceOptions?.eveHistory === true;
           tempDevice.humiditySensor = deviceOptions?.humiditySensor === true;
@@ -2162,10 +2134,12 @@ export default class NestAccfactory {
           }
           // eslint-disable-next-line no-unused-vars
         } catch (error) {
-          this?.log?.debug && this.log.debug('Error processing data for temperature sensor(s)');
+          this?.log?.debug?.('Error processing data for temperature sensor(s)');
         }
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
-          let deviceOptions = this.config?.devices?.find((device) => device.serialNumber === tempDevice?.serialNumber);
+          let deviceOptions = this.config?.devices?.find(
+            (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+          );
           // Insert any extra options we've read in from configuration file for this device
           tempDevice.eveHistory = this.config.options.eveHistory === true || deviceOptions?.eveHistory === true;
           devices[tempDevice.serialNumber] = tempDevice; // Store processed device
@@ -2223,10 +2197,12 @@ export default class NestAccfactory {
           }
           // eslint-disable-next-line no-unused-vars
         } catch (error) {
-          this?.log?.debug && this.log.debug('Error processing data for heatlink(s)');
+          this?.log?.debug?.('Error processing data for heatlink(s)');
         }
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
-          let deviceOptions = this.config?.devices?.find((device) => device.serialNumber === tempDevice?.serialNumber);
+          let deviceOptions = this.config?.devices?.find(
+            (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+          );
           // Insert any extra options we've read in from configuration file for this device
           tempDevice.eveHistory = this.config.options.eveHistory === true || deviceOptions?.eveHistory === true;
           devices[tempDevice.serialNumber] = tempDevice; // Store processed device
@@ -2386,11 +2362,13 @@ export default class NestAccfactory {
           }
           // eslint-disable-next-line no-unused-vars
         } catch (error) {
-          this?.log?.debug && this.log.debug('Error processing data for smoke sensor(s)');
+          this?.log?.debug?.('Error processing data for smoke sensor(s)');
         }
 
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
-          let deviceOptions = this.config?.devices?.find((device) => device.serialNumber === tempDevice?.serialNumber);
+          let deviceOptions = this.config?.devices?.find(
+            (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+          );
           // Insert any extra options we've read in from configuration file for this device
           tempDevice.eveHistory = this.config.options.eveHistory === true || deviceOptions?.eveHistory === true;
           devices[tempDevice.serialNumber] = tempDevice; // Store processed device
@@ -2603,11 +2581,13 @@ export default class NestAccfactory {
           }
           // eslint-disable-next-line no-unused-vars
         } catch (error) {
-          this?.log?.debug && this.log.debug('Error processing data for camera/doorbell(s)');
+          this?.log?.debug?.('Error processing data for camera/doorbell(s)');
         }
 
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
-          let deviceOptions = this.config?.devices?.find((device) => device.serialNumber === tempDevice?.serialNumber);
+          let deviceOptions = this.config?.devices?.find(
+            (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+          );
           // Insert any extra options we've read in from configuration file for this device
           tempDevice.eveHistory = this.config.options.eveHistory === true || deviceOptions?.eveHistory === true;
           tempDevice.hksv = this.config.options.hksv === true || deviceOptions?.hksv === true;
@@ -2716,11 +2696,13 @@ export default class NestAccfactory {
           }
           // eslint-disable-next-line no-unused-vars
         } catch (error) {
-          this?.log?.debug && this.log.debug('Error processing data for weather');
+          this?.log?.debug?.('Error processing data for weather');
         }
 
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
-          let deviceOptions = this.config?.devices?.find((device) => device.serialNumber === tempDevice?.serialNumber);
+          let deviceOptions = this.config?.devices?.find(
+            (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+          );
           // Insert any extra options we've read in from configuration file for this device
           tempDevice.eveHistory = this.config.options.eveHistory === true || deviceOptions?.eveHistory === true;
           tempDevice.elevation =
@@ -2989,7 +2971,7 @@ export default class NestAccfactory {
                   });
 
                   if (commandResponse.sendCommandResponse?.[0]?.traitOperations?.[0]?.progress !== 'COMPLETE') {
-                    this?.log?.debug && this.log.debug('Protobuf API had error setting light status on uuid "%s"', nest_google_uuid);
+                    this?.log?.debug?.('Protobuf API had error setting light status on uuid "%s"', nest_google_uuid);
                   }
                 }
               }
@@ -3038,7 +3020,7 @@ export default class NestAccfactory {
             }
 
             if (protobufElement.traitRequest.traitLabel === '' || protobufElement.state.type_url === '') {
-              this?.log?.debug && this.log.debug('Unknown Protobuf set key "%s" for device uuid "%s"', key, nest_google_uuid);
+              this?.log?.debug?.('Unknown Protobuf set key "%s" for device uuid "%s"', key, nest_google_uuid);
             }
 
             if (protobufElement.traitRequest.traitLabel !== '' && protobufElement.state.type_url !== '') {
@@ -3056,7 +3038,7 @@ export default class NestAccfactory {
           commandResponse === undefined ||
           commandResponse?.batchUpdateStateResponse?.[0]?.traitOperations?.[0]?.progress !== 'COMPLETE'
         ) {
-          this?.log?.debug && this.log.debug('Protobuf API had error updating device traits for uuid "%s"', nest_google_uuid);
+          this?.log?.debug?.('Protobuf API had error updating device traits for uuid "%s"', nest_google_uuid);
         }
       }
     }
@@ -3100,12 +3082,8 @@ export default class NestAccfactory {
                 }
               })
               .catch((error) => {
-                if (
-                  error?.cause !== undefined &&
-                  JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false &&
-                  this?.log?.debug
-                ) {
-                  this.log.debug(
+                if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
+                  this?.log?.debug?.(
                     'REST API camera update for failed with error for uuid "%s". Error was "%s"',
                     nest_google_uuid,
                     error?.code,
@@ -3198,12 +3176,11 @@ export default class NestAccfactory {
                 },
                 JSON.stringify(subscribeJSONData),
               ).catch((error) => {
-                this?.log?.debug &&
-                  this.log.debug(
-                    'REST API property update for failed with error for uuid "%s". Error was "%s"',
-                    nest_google_uuid,
-                    error?.code,
-                  );
+                this?.log?.debug?.(
+                  'REST API property update for failed with error for uuid "%s". Error was "%s"',
+                  nest_google_uuid,
+                  error?.code,
+                );
               });
             }
           }),
@@ -3260,12 +3237,12 @@ export default class NestAccfactory {
                 values[key] = Buffer.from(data);
               })
               .catch((error) => {
-                if (
-                  error?.cause !== undefined &&
-                  JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false &&
-                  this?.log?.debug
-                ) {
-                  this.log.debug('REST API camera snapshot failed with error for uuid "%s". Error was "%s"', nest_google_uuid, error?.code);
+                if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
+                  this?.log?.debug?.(
+                    'REST API camera snapshot failed with error for uuid "%s". Error was "%s"',
+                    nest_google_uuid,
+                    error?.code,
+                  );
                 }
               });
           }
@@ -3313,12 +3290,8 @@ export default class NestAccfactory {
                   values[key] = Buffer.from(data);
                 })
                 .catch((error) => {
-                  if (
-                    error?.cause !== undefined &&
-                    JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false &&
-                    this?.log?.debug
-                  ) {
-                    this.log.debug(
+                  if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
+                    this?.log?.debug?.(
                       'Protobuf API camera snapshot failed with error for uuid "%s". Error was "%s"',
                       nest_google_uuid,
                       error?.code,
@@ -3373,8 +3346,8 @@ export default class NestAccfactory {
               : '';
         })
         .catch((error) => {
-          if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false && this?.log?.debug) {
-            this.log.debug('REST API failed to retrieve weather details for uuid "%s". Error was "%s"', deviceUUID, error?.code);
+          if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
+            this?.log?.debug?.('REST API failed to retrieve weather details for uuid "%s". Error was "%s"', deviceUUID, error?.code);
           }
         });
     }
@@ -3442,7 +3415,7 @@ export default class NestAccfactory {
           commandResponse = TraitMapResponse.decode(Buffer.from(data)).toJSON();
         })
         .catch((error) => {
-          this?.log?.debug && this.log.debug('Protobuf gateway service command failed with error. Error was "%s"', error?.code);
+          this?.log?.debug?.('Protobuf gateway service command failed with error. Error was "%s"', error?.code);
         });
     }
     return commandResponse;
@@ -3451,28 +3424,22 @@ export default class NestAccfactory {
 
 // General helper functions which don't need to be part of an object class
 function adjustTemperature(temperature, currentTemperatureUnit, targetTemperatureUnit, round) {
-  // Converts temperatures between C/F and vice-versa
-  // Also rounds temperatures to 0.5 increments for C and 1.0 for F
-  if (targetTemperatureUnit.toUpperCase() === 'C') {
-    if (currentTemperatureUnit.toUpperCase() === 'F') {
-      // convert from F to C
-      temperature = ((temperature - 32) * 5) / 9;
-    }
-    if (round === true) {
-      // round to nearest 0.5C
-      temperature = Math.round(temperature * 2) * 0.5;
-    }
-  }
+  currentTemperatureUnit = currentTemperatureUnit?.toUpperCase?.();
+  targetTemperatureUnit = targetTemperatureUnit?.toUpperCase?.();
 
-  if (targetTemperatureUnit.toUpperCase() === 'F') {
-    if (currentTemperatureUnit.toUpperCase() === 'C') {
-      // convert from C to F
-      temperature = (temperature * 9) / 5 + 32;
-    }
+  if (currentTemperatureUnit === 'F' && targetTemperatureUnit === 'C') {
+    temperature = ((temperature - 32) * 5) / 9;
     if (round === true) {
-      // round to nearest 1F
-      temperature = Math.round(temperature);
+      temperature = Math.round(temperature * 2) / 2; // round to nearest 0.5°C
     }
+  } else if (currentTemperatureUnit === 'C' && targetTemperatureUnit === 'F') {
+    temperature = (temperature * 9) / 5 + 32;
+    if (round === true) {
+      temperature = Math.round(temperature); // round to nearest 1°F
+    }
+  } else if (round === true) {
+    // No conversion, just rounding
+    temperature = targetTemperatureUnit === 'C' ? Math.round(temperature * 2) / 2 : Math.round(temperature);
   }
 
   return temperature;
@@ -3482,12 +3449,14 @@ function makeHomeKitName(nameToMakeValid) {
   // Strip invalid characters to meet HomeKit naming requirements
   // Ensure only letters or numbers are at the beginning AND/OR end of string
   // Matches against uni-code characters
-  return typeof nameToMakeValid === 'string'
-    ? nameToMakeValid
-        .replace(/[^\p{L}\p{N}\p{Z}\u2019 '.,-]/gu, '')
-        .replace(/^[^\p{L}\p{N}]*/gu, '')
-        .replace(/[^\p{L}\p{N}]+$/gu, '')
-    : nameToMakeValid;
+  let validHomeKitName = nameToMakeValid;
+  if (typeof nameToMakeValid === 'string') {
+    validHomeKitName = nameToMakeValid
+      .replace(/[^\p{L}\p{N}\p{Z}\u2019 '.,-]/gu, '') // Remove disallowed characters
+      .replace(/^[^\p{L}\p{N}]*/gu, '') // Trim invalid prefix
+      .replace(/[^\p{L}\p{N}]+$/gu, ''); // Trim invalid suffix
+  }
+  return validHomeKitName;
 }
 
 function crc24(valueToHash) {
@@ -3514,22 +3483,26 @@ function crc24(valueToHash) {
     0x7c0401, 0x42fa2f, 0xc4b6d4, 0xc82f22, 0x4e63d9, 0xd11cce, 0x575035, 0x5bc9c3, 0xdd8538,
   ];
 
-  let crc24 = 0xb704ce; // init crc24 hash;
-  valueToHash = Buffer.from(valueToHash); // convert value into buffer for processing
-  for (let index = 0; index < valueToHash.length; index++) {
-    crc24 = (crc24HashTable[((crc24 >> 16) ^ valueToHash[index]) & 0xff] ^ (crc24 << 8)) & 0xffffff;
+  let crc = 0xb704ce;
+
+  const buffer = Buffer.from(valueToHash);
+
+  for (let i = 0; i < buffer.length; i++) {
+    const index = ((crc >> 16) ^ buffer[i]) & 0xff;
+    crc = (crc24HashTable[index] ^ (crc << 8)) & 0xffffff;
   }
-  return crc24.toString(16); // return crc24 as hex string
+
+  return crc.toString(16).padStart(6, '0'); // ensures 6-digit hex
 }
 
-function scaleValue(value, sourceRangeMin, sourceRangeMax, targetRangeMin, targetRangeMax) {
-  if (value < sourceRangeMin) {
-    value = sourceRangeMin;
+function scaleValue(value, sourceMin, sourceMax, targetMin, targetMax) {
+  if (sourceMax === sourceMin) {
+    return targetMin;
   }
-  if (value > sourceRangeMax) {
-    value = sourceRangeMax;
-  }
-  return ((value - sourceRangeMin) * (targetRangeMax - targetRangeMin)) / (sourceRangeMax - sourceRangeMin) + targetRangeMin;
+
+  value = Math.max(sourceMin, Math.min(sourceMax, value));
+
+  return ((value - sourceMin) * (targetMax - targetMin)) / (sourceMax - sourceMin) + targetMin;
 }
 
 async function fetchWrapper(method, url, options, data, response) {
@@ -3537,41 +3510,43 @@ async function fetchWrapper(method, url, options, data, response) {
     return;
   }
 
-  if (isNaN(options?.timeout) === false && Number(options?.timeout) > 0) {
-    // If a timeout is specified in the options, setup here
+  if (isNaN(options?.timeout) === false && Number(options.timeout) > 0) {
     // eslint-disable-next-line no-undef
     options.signal = AbortSignal.timeout(Number(options.timeout));
   }
 
-  if (options?.retry === undefined) {
-    // If not retry option specifed , we'll do just once
+  if (isNaN(options.retry) === true || options.retry < 1) {
     options.retry = 1;
   }
 
-  options.method = method; // Set the HTTP method to use
+  if (isNaN(options._retryCount) === true) {
+    options._retryCount = 0;
+  }
 
-  if (method === 'post' && typeof data !== undefined) {
-    // Doing a HTTP post, so include the data in the body
+  options.method = method;
+
+  if (method === 'post' && data !== undefined) {
     options.body = data;
   }
 
-  if (options.retry > 0) {
-    // eslint-disable-next-line no-undef
-    response = await fetch(url, options);
-    if (response.ok === false && options.retry > 1) {
-      options.retry--; // One less retry to go
+  // eslint-disable-next-line no-undef
+  response = await fetch(url, options);
 
-      // Try again after short delay (500ms)
-      // We pass back in this response also for when we reach zero retries and still not successful
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      // eslint-disable-next-line no-undef
-      response = await fetchWrapper(method, url, options, data, structuredClone(response));
-    }
-    if (response.ok === false && options.retry === 0) {
-      let error = new Error(response.statusText);
-      error.code = response.status;
-      throw error;
-    }
+  if (response.ok === false && options.retry > 1) {
+    options.retry--;
+    options._retryCount++;
+
+    let delay = 500 * 2 ** (options._retryCount - 1);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+
+    // eslint-disable-next-line no-undef
+    response = await fetchWrapper(method, url, options, data, structuredClone(response));
+  }
+
+  if (response.ok === false && options.retry === 0) {
+    const error = new Error(response.statusText);
+    error.code = response.status;
+    throw error;
   }
 
   return response;

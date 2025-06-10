@@ -1,7 +1,7 @@
 // Nest 'virtual' weather station
 // Part of homebridge-nest-accfactory
 //
-// Code version 28/8/2024
+// Code version 2025/06/10
 // Mark Hulskamp
 'use strict';
 
@@ -19,76 +19,43 @@ export default class NestWeather extends HomeKitDevice {
   }
 
   // Class functions
-  addServices() {
+  setupDevice() {
     // Setup temperature service if not already present on the accessory
-    this.temperatureService = this.accessory.getService(this.hap.Service.TemperatureSensor);
-    if (this.temperatureService === undefined) {
-      this.temperatureService = this.accessory.addService(this.hap.Service.TemperatureSensor, '', 1);
-    }
+    this.temperatureService = this.setupService(this.hap.Service.TemperatureSensor, '', 1);
     this.temperatureService.setPrimaryService();
 
     // Setup humidity service if not already present on the accessory
-    this.humidityService = this.accessory.getService(this.hap.Service.HumiditySensor);
-    if (this.humidityService === undefined) {
-      this.humidityService = this.accessory.addService(this.hap.Service.HumiditySensor, '', 1);
-    }
+    this.humidityService = this.setupService(this.hap.Service.HumiditySensor, '', 1);
 
     // Setup battery service if not already present on the accessory
-    this.batteryService = this.accessory.getService(this.hap.Service.Battery);
-    if (this.batteryService === undefined) {
-      this.batteryService = this.accessory.addService(this.hap.Service.Battery, '', 1);
-    }
+    this.batteryService = this.setupService(this.hap.Service.Battery, '', 1);
     this.batteryService.setHiddenService(true);
 
     // Add custom weather service and characteristics if they have been defined
     if (this.hap.Service?.EveAirPressureSensor !== undefined) {
-      this.airPressureService = this.accessory.getService(this.hap.Service.EveAirPressureSensor);
-      if (this.airPressureService === undefined) {
-        this.airPressureService = this.accessory.addService(this.hap.Service.EveAirPressureSensor, '', 1);
-      }
+      this.airPressureService = this.setupService(this.hap.Service.EveAirPressureSensor, '', 1);
     }
 
-    if (
-      this.hap.Characteristic?.ForecastDay !== undefined &&
-      this.temperatureService.testCharacteristic(this.hap.Characteristic.ForecastDay) === false
-    ) {
-      this.temperatureService.addCharacteristic(this.hap.Characteristic.ForecastDay);
+    if (this.hap.Characteristic?.ForecastDay !== undefined) {
+      this.setupCharacteristic(this.temperatureService, this.hap.Characteristic.ForecastDay);
     }
-    if (
-      this.hap.Characteristic?.ObservationStation !== undefined &&
-      this.temperatureService.testCharacteristic(this.hap.Characteristic.ObservationStation) === false
-    ) {
-      this.temperatureService.addCharacteristic(this.hap.Characteristic.ObservationStation);
+    if (this.hap.Characteristic?.ObservationStation !== undefined) {
+      this.setupCharacteristic(this.temperatureService, this.hap.Characteristic.ObservationStation);
     }
-    if (
-      this.hap.Characteristic?.Condition !== undefined &&
-      this.temperatureService.testCharacteristic(this.hap.Characteristic.Condition) === false
-    ) {
-      this.temperatureService.addCharacteristic(this.hap.Characteristic.Condition);
+    if (this.hap.Characteristic?.Condition !== undefined) {
+      this.setupCharacteristic(this.temperatureService, this.hap.Characteristic.Condition);
     }
-    if (
-      this.hap.Characteristic?.WindDirection !== undefined &&
-      this.temperatureService.testCharacteristic(this.hap.Characteristic.WindDirection) === false
-    ) {
-      this.temperatureService.addCharacteristic(this.hap.Characteristic.WindDirection);
+    if (this.hap.Characteristic?.WindDirection !== undefined) {
+      this.setupCharacteristic(this.temperatureService, this.hap.Characteristic.WindDirection);
     }
-    if (
-      this.hap.Characteristic?.WindSpeed !== undefined &&
-      this.temperatureService.testCharacteristic(this.hap.Characteristic.WindSpeed) === false
-    ) {
-      this.temperatureService.addCharacteristic(this.hap.Characteristic.WindSpeed);
+    if (this.hap.Characteristic?.WindSpeed !== undefined) {
+      this.setupCharacteristic(this.temperatureService, this.hap.Characteristic.WindSpeed);
     }
-    if (
-      this.hap.Characteristic?.SunriseTime !== undefined &&
-      this.temperatureService.testCharacteristic(this.hap.Characteristic.SunriseTime) === false
-    ) {
-      this.temperatureService.addCharacteristic(this.hap.Characteristic.SunriseTime);
+    if (this.hap.Characteristic?.SunriseTime !== undefined) {
+      this.setupCharacteristic(this.temperatureService, this.hap.Characteristic.SunriseTime);
     }
-    if (
-      this.hap.Characteristic?.SunsetTime !== undefined &&
-      this.temperatureService.testCharacteristic(this.hap.Characteristic.SunsetTime) === false
-    ) {
-      this.temperatureService.addCharacteristic(this.hap.Characteristic.SunsetTime);
+    if (this.hap.Characteristic?.SunsetTime !== undefined) {
+      this.setupCharacteristic(this.temperatureService, this.hap.Characteristic.SunsetTime);
     }
 
     // Setup linkage to EveHome app if configured todo so
@@ -102,14 +69,11 @@ export default class NestWeather extends HomeKitDevice {
       });
     }
 
-    // Create extra details for output
-    let postSetupDetails = [];
-    this.deviceData?.elevation !== undefined && postSetupDetails.push('Elevation of ' + this.deviceData.elevation + 'm');
-
-    return postSetupDetails;
+    // Extra setup details for output
+    this.deviceData?.elevation !== undefined && this.postSetupDetail('Elevation of ' + this.deviceData.elevation + 'm');
   }
 
-  updateServices(deviceData) {
+  updateDevice(deviceData) {
     if (
       typeof deviceData !== 'object' ||
       this.temperatureService === undefined ||

@@ -1,7 +1,7 @@
 // Nest Cam with Floodlight
 // Part of homebridge-nest-accfactory
 //
-// Code version 27/9/2024
+// Code version 2025/06/10
 // Mark Hulskamp
 'use strict';
 
@@ -16,63 +16,55 @@ export default class NestFloodlight extends NestCamera {
   }
 
   // Class functions
-  addServices() {
+  setupDevice() {
     // Call parent to setup the common camera things. Once we return, we can add in the specifics for our floodlight
-    let postSetupDetails = super.addServices();
+    super.setupDevice();
 
-    this.lightService = this.accessory.getService(this.hap.Service.Switch);
     if (this.deviceData.has_light === true) {
       // Add service to for a light, including brightness control
-      if (this.lightService === undefined) {
-        this.lightService = this.accessory.addService(this.hap.Service.Lightbulb, '', 1);
-      }
+      this.lightService = this.setupService(this.hap.Service.Lightbulb, '', 1);
+      this.setupCharacteristic(this.lightService, this.hap.Characteristic.Brightness, {
+        props: { minStep: 10 }, // Light only goes in 10% increments
+        onSet: (value) => {
+          if (value !== this.deviceData.light_brightness) {
+            this.set({ uuid: this.deviceData.nest_google_uuid, light_brightness: value });
 
-      if (this.lightService.testCharacteristic(this.hap.Characteristic.Brightness) === false) {
-        this.lightService.addCharacteristic(this.hap.Characteristic.Brightness);
-      }
-
-      this.lightService.getCharacteristic(this.hap.Characteristic.Brightness).setProps({
-        minStep: 10, // Light only goes in 10% increments
+            this?.log?.info?.('Floodlight brightness on "%s" was set to "%s %"', this.deviceData.description, value);
+          }
+        },
+        onGet: () => {
+          return this.deviceData.light_brightness;
+        },
       });
 
-      // Setup set callback for this light service
-      this.lightService.getCharacteristic(this.hap.Characteristic.On).onSet((value) => {
-        if (value !== this.deviceData.light_enabled) {
-          this.set({ uuid: this.deviceData.nest_google_uuid, light_enabled: value });
+      this.setupCharacteristic(this.lightService, this.hap.Characteristic.On, {
+        onSet: (value) => {
+          if (value !== this.deviceData.light_enabled) {
+            this.set({ uuid: this.deviceData.nest_google_uuid, light_enabled: value });
 
-          this?.log?.info && this.log.info('Floodlight on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
-        }
-      });
-
-      this.lightService.getCharacteristic(this.hap.Characteristic.Brightness).onSet((value) => {
-        if (value !== this.deviceData.light_brightness) {
-          this.set({ uuid: this.deviceData.nest_google_uuid, light_brightness: value });
-
-          this?.log?.info && this.log.info('Floodlight brightness on "%s" was set to "%s %"', this.deviceData.description, value);
-        }
-      });
-
-      this.lightService.getCharacteristic(this.hap.Characteristic.On).onGet(() => {
-        return this.deviceData.light_enabled === true;
-      });
-
-      this.lightService.getCharacteristic(this.hap.Characteristic.Brightness).onGet(() => {
-        return this.deviceData.light_brightness;
+            this?.log?.info?.('Floodlight on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
+          }
+        },
+        onGet: () => {
+          return this.deviceData.light_enabled === true;
+        },
       });
     }
-    if (this.lightService !== undefined && this.deviceData.has_light !== true) {
+    if (this.deviceData.has_light !== true) {
       // No longer required to have the light service
-      this.accessory.removeService(this.lightService);
+      this.lightService = this.accessory.getService(this.hap.Service.Lightbulb);
+      if (this.lightService !== undefined) {
+        this.accessory.removeService(this.lightService);
+      }
       this.lightService === undefined;
     }
 
-    // Create extra details for output
-    this.lightService !== undefined && postSetupDetails.push('Light support');
-    return postSetupDetails;
+    // Extra setup details for output
+    this.lightService !== undefined && this.postSetupDetails('Light support');
   }
 
-  removeServices() {
-    super.removeServices();
+  removeDevice() {
+    super.removeDevice();
 
     if (this.lightService !== undefined) {
       this.accessory.removeService(this.lightService);
@@ -80,13 +72,13 @@ export default class NestFloodlight extends NestCamera {
     this.lightService = undefined;
   }
 
-  updateServices(deviceData) {
+  updateDevice(deviceData) {
     if (typeof deviceData !== 'object' || this.controller === undefined) {
       return;
     }
 
     // Get the camera class todo all its updates first, then we'll handle the doorbell specific stuff
-    super.updateServices(deviceData);
+    super.updateDevice(deviceData);
 
     if (this.lightService !== undefined) {
       // Update status of light, including brightness

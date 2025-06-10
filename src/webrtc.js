@@ -4,7 +4,7 @@
 // Handles connection and data from Google WebRTC systems
 // Currently a "work in progress"
 //
-// Code version 2025/05/21
+// Code version 2025/06/10
 // Mark Hulskamp
 'use strict';
 
@@ -145,7 +145,7 @@ export default class WebRTC extends Streamer {
 
         if (homeFoyerResponse.status !== 0) {
           this.connected = undefined;
-          this?.log?.debug && this.log.debug('Request to start camera viewing was not accepted for uuid "%s"', this.uuid);
+          this?.log?.debug?.('Request to start camera viewing was not accepted for uuid "%s"', this.uuid);
         }
 
         if (homeFoyerResponse.status === 0) {
@@ -200,7 +200,7 @@ export default class WebRTC extends Streamer {
           let webRTCOffer = await this.#peerConnection.createOffer();
           await this.#peerConnection.setLocalDescription(webRTCOffer);
 
-          this?.log?.debug && this.log.debug('Sending WebRTC offer for uuid "%s"', this.uuid);
+          this?.log?.debug?.('Sending WebRTC offer for uuid "%s"', this.uuid);
 
           homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'JoinStream', {
             command: 'offer',
@@ -213,7 +213,7 @@ export default class WebRTC extends Streamer {
 
           if (homeFoyerResponse.status !== 0) {
             this.connected = undefined;
-            this?.log?.debug && this.log.debug('WebRTC offer was not agreed with remote for uuid "%s"', this.uuid);
+            this?.log?.debug?.('WebRTC offer was not agreed with remote for uuid "%s"', this.uuid);
           }
 
           if (
@@ -221,7 +221,7 @@ export default class WebRTC extends Streamer {
             homeFoyerResponse.data?.[0]?.responseType === 'answer' &&
             homeFoyerResponse.data?.[0]?.streamId !== undefined
           ) {
-            this?.log?.debug && this.log.debug('WebRTC offer agreed with remote for uuid "%s"', this.uuid);
+            this?.log?.debug?.('WebRTC offer agreed with remote for uuid "%s"', this.uuid);
 
             this.#audioTransceiver?.onTrack &&
               this.#audioTransceiver.onTrack.subscribe((track) => {
@@ -255,7 +255,7 @@ export default class WebRTC extends Streamer {
                 sdp: homeFoyerResponse.data[0].sdp,
               }));
 
-            this?.log?.debug && this.log.debug('Playback started from WebRTC for uuid "%s" with session ID "%s"', this.uuid, this.#id);
+            this?.log?.debug?.('Playback started from WebRTC for uuid "%s" with session ID "%s"', this.uuid, this.#id);
             this.connected = true;
 
             // Monitor connection status. If closed and there are still output streams, re-connect
@@ -263,7 +263,7 @@ export default class WebRTC extends Streamer {
             this.#peerConnection &&
               this.#peerConnection.connectionStateChange.subscribe((state) => {
                 if (state !== 'connected' && state !== 'connecting') {
-                  this?.log?.debug && this.log.debug('Connection closed to WebRTC for uuid "%s"', this.uuid);
+                  this?.log?.debug?.('Connection closed to WebRTC for uuid "%s"', this.uuid);
                   this.connected = undefined;
                   if (this.haveOutputs() === true) {
                     this.connect();
@@ -286,7 +286,7 @@ export default class WebRTC extends Streamer {
                 });
 
                 if (homeFoyerResponse?.data?.[0]?.streamExtensionStatus !== 'STATUS_STREAM_EXTENDED') {
-                  this?.log?.debug && this.log.debug('Error occurred while requested stream extension for uuid "%s"', this.uuid);
+                  this?.log?.debug?.('Error occurred while requested stream extension for uuid "%s"', this.uuid);
 
                   if (typeof this.#peerConnection?.close === 'function') {
                     await this.#peerConnection.close();
@@ -313,7 +313,7 @@ export default class WebRTC extends Streamer {
         });
       }
 
-      this?.log?.debug && this.log.debug('Notifying remote about closing connection for uuid "%s"', this.uuid);
+      this?.log?.debug?.('Notifying remote about closing connection for uuid "%s"', this.uuid);
       await this.#googleHomeFoyerCommand('CameraService', 'JoinStream', {
         command: 'end',
         deviceId: this.uuid,
@@ -381,11 +381,11 @@ export default class WebRTC extends Streamer {
 
         if (homeFoyerResponse?.status !== 0) {
           this.audio.talking = undefined;
-          this?.log?.debug && this.log.debug('Error occurred while requesting talkback to start for uuid "%s"', this.uuid);
+          this?.log?.debug?.('Error occurred while requesting talkback to start for uuid "%s"', this.uuid);
         }
         if (homeFoyerResponse?.status === 0) {
           this.audio.talking = true;
-          this?.log?.debug && this.log.debug('Talking start on uuid "%s"', this.uuid);
+          this?.log?.debug?.('Talking start on uuid "%s"', this.uuid);
         }
       }
 
@@ -413,10 +413,10 @@ export default class WebRTC extends Streamer {
         command: 'COMMAND_STOP',
       });
       if (homeFoyerResponse?.status !== 0) {
-        this?.log?.debug && this.log.debug('Error occurred while requesting talkback to stop for uuid "%s"', this.uuid);
+        this?.log?.debug?.('Error occurred while requesting talkback to stop for uuid "%s"', this.uuid);
       }
       if (homeFoyerResponse?.status === 0) {
-        this?.log?.debug && this.log.debug('Talking ended on uuid "%s"', this.uuid);
+        this?.log?.debug?.('Talking ended on uuid "%s"', this.uuid);
       }
       this.audio.talking = undefined;
     }
@@ -459,12 +459,11 @@ export default class WebRTC extends Streamer {
     // If its trigger, we'll attempt to restart the stream and/or connection
     clearTimeout(this.stalledTimer);
     this.stalledTimer = setTimeout(async () => {
-      this?.log?.debug &&
-        this.log.debug(
-          'We have not received any data from webrtc in the past "%s" seconds for uuid "%s". Attempting restart',
-          10,
-          this.uuid,
-        );
+      this?.log?.debug?.(
+        'We have not received any data from webrtc in the past "%s" seconds for uuid "%s". Attempting restart',
+        10,
+        this.uuid,
+      );
 
       if (typeof this.#peerConnection?.close === 'function') {
         await this.#peerConnection.close();
@@ -516,11 +515,11 @@ export default class WebRTC extends Streamer {
     if (TraitMapRequest !== null && TraitMapResponse !== null && this.token !== undefined) {
       if (this.#googleHomeFoyer === undefined || (this.#googleHomeFoyer?.connected === false && this.#googleHomeFoyer?.closed === true)) {
         // No current HTTP/2 connection or current session is closed
-        this?.log?.debug && this.log.debug('Connection started to Google Home Foyer "%s"', this.#googleHomeFoyerAPIHost);
+        this?.log?.debug?.('Connection started to Google Home Foyer "%s"', this.#googleHomeFoyerAPIHost);
         this.#googleHomeFoyer = http2.connect(this.#googleHomeFoyerAPIHost);
 
         this.#googleHomeFoyer.on('connect', () => {
-          this?.log?.debug && this.log.debug('Connection established to Google Home Foyer "%s"', this.#googleHomeFoyerAPIHost);
+          this?.log?.debug?.('Connection established to Google Home Foyer "%s"', this.#googleHomeFoyerAPIHost);
 
           clearInterval(this.pingTimer);
           this.pingTimer = setInterval(() => {
@@ -548,7 +547,7 @@ export default class WebRTC extends Streamer {
           clearInterval(this.pingTimer);
           this.pingTimer = undefined;
           this.#googleHomeFoyer = undefined;
-          this?.log?.debug && this.log.debug('Connection closed to Google Home Foyer "%s"', this.#googleHomeFoyerAPIHost);
+          this?.log?.debug?.('Connection closed to Google Home Foyer "%s"', this.#googleHomeFoyerAPIHost);
         });
       }
 

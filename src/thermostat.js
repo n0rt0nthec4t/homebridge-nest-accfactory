@@ -1,7 +1,7 @@
 // Nest Thermostat
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/06/04
+// Code version 2025/06/10
 // Mark Hulskamp
 'use strict';
 
@@ -32,263 +32,189 @@ export default class NestThermostat extends HomeKitDevice {
   }
 
   // Class functions
-  async addServices() {
+  async setupDevice() {
     // Setup the thermostat service if not already present on the accessory
-    this.thermostatService = this.accessory.getService(this.hap.Service.Thermostat);
-    if (this.thermostatService === undefined) {
-      this.thermostatService = this.accessory.addService(this.hap.Service.Thermostat, '', 1);
-    }
+    this.thermostatService = this.setupService(this.hap.Service.Thermostat, '', 1);
     this.thermostatService.setPrimaryService();
 
-    if (this.thermostatService.testCharacteristic(this.hap.Characteristic.StatusActive) === false) {
-      // Used to indicate active temperature if the thermostat is using its temperature sensor data
-      // or an external temperature sensor ie: Nest Temperature Sensor
-      this.thermostatService.addCharacteristic(this.hap.Characteristic.StatusActive);
+    // Setup set characteristics
+
+    // Used to indicate active temperature if the thermostat is using its temperature sensor data
+    // or an external temperature sensor ie: Nest Temperature Sensor
+    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.StatusActive);
+
+    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.StatusFault);
+
+    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.LockPhysicalControls, {
+      onSet: (value) => {
+        this.setChildlock('', value);
+      },
+      onGet: () => {
+        return this.deviceData.temperature_lock === true
+          ? this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED
+          : this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_DISABLED;
+      },
+    });
+
+    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.CurrentRelativeHumidity, {
+      onGet: () => {
+        return this.deviceData.current_humidity;
+      },
+    });
+
+    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.TemperatureDisplayUnits, {
+      onSet: (value) => {
+        this.setDisplayUnit(value);
+      },
+      onGet: () => {
+        return this.deviceData.temperature_scale === 'C'
+          ? this.hap.Characteristic.TemperatureDisplayUnits.CELSIUS
+          : this.hap.Characteristic.TemperatureDisplayUnits.FAHRENHEIT;
+      },
+    });
+
+    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.CurrentTemperature, {
+      props: { minStep: 0.5 },
+      onGet: () => {
+        return this.deviceData.current_temperature;
+      },
+    });
+
+    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.TargetTemperature, {
+      onSet: (value) => {
+        this.setTemperature(this.hap.Characteristic.TargetTemperature, value);
+      },
+      onGet: () => {
+        return this.getTemperature(this.hap.Characteristic.TargetTemperature);
+      },
+    });
+
+    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.CoolingThresholdTemperature, {
+      props: {
+        minStep: 0.5,
+        minValue: MIN_TEMPERATURE,
+        maxValue: MAX_TEMPERATURE,
+      },
+      onSet: (value) => {
+        this.setTemperature(this.hap.Characteristic.CoolingThresholdTemperature, value);
+      },
+      onGet: () => {
+        return this.getTemperature(this.hap.Characteristic.CoolingThresholdTemperature);
+      },
+    });
+
+    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.HeatingThresholdTemperature, {
+      props: {
+        minStep: 0.5,
+        minValue: MIN_TEMPERATURE,
+        maxValue: MAX_TEMPERATURE,
+      },
+      onSet: (value) => {
+        this.setTemperature(this.hap.Characteristic.HeatingThresholdTemperature, value);
+      },
+      onGet: () => {
+        return this.getTemperature(this.hap.Characteristic.HeatingThresholdTemperature);
+      },
+    });
+
+    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.TargetHeatingCoolingState, {
+      props: {
+        validValues:
+          this.deviceData?.can_cool === true && this.deviceData?.can_heat === true
+            ? [
+                this.hap.Characteristic.TargetHeatingCoolingState.OFF,
+                this.hap.Characteristic.TargetHeatingCoolingState.HEAT,
+                this.hap.Characteristic.TargetHeatingCoolingState.COOL,
+                this.hap.Characteristic.TargetHeatingCoolingState.AUTO,
+              ]
+            : this.deviceData?.can_heat === true
+              ? [this.hap.Characteristic.TargetHeatingCoolingState.OFF, this.hap.Characteristic.TargetHeatingCoolingState.HEAT]
+              : this.deviceData?.can_cool === true
+                ? [this.hap.Characteristic.TargetHeatingCoolingState.OFF, this.hap.Characteristic.TargetHeatingCoolingState.COOL]
+                : [this.hap.Characteristic.TargetHeatingCoolingState.OFF],
+      },
+      onSet: (value) => {
+        this.setMode(value);
+      },
+      onGet: () => {
+        return this.getMode();
+      },
+    });
+
+    if (this.deviceData?.has_air_filter === true) {
+      // We have the capability for an air filter, so setup filter change characterisitc
+      this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.FilterChangeIndication);
     }
-    if (this.thermostatService.testCharacteristic(this.hap.Characteristic.StatusFault) === false) {
-      this.thermostatService.addCharacteristic(this.hap.Characteristic.StatusFault);
-    }
-    if (this.thermostatService.testCharacteristic(this.hap.Characteristic.LockPhysicalControls) === false) {
-      // Setting can only be accessed via Eve App (or other 3rd party).
-      this.thermostatService.addCharacteristic(this.hap.Characteristic.LockPhysicalControls);
-    }
-    if (
-      this.deviceData?.has_air_filter === true &&
-      this.thermostatService.testCharacteristic(this.hap.Characteristic.FilterChangeIndication) === false
-    ) {
-      // Setup air filter change characteristic
-      this.thermostatService.addCharacteristic(this.hap.Characteristic.FilterChangeIndication);
-    }
-    if (
-      this.deviceData?.has_air_filter === false &&
-      this.thermostatService.testCharacteristic(this.hap.Characteristic.FilterChangeIndication) === true
-    ) {
+    if (this.deviceData?.has_air_filter === false) {
       // No longer configured to have an air filter, so remove characteristic from the accessory
       this.thermostatService.removeCharacteristic(this.hap.Characteristic.FilterChangeIndication);
     }
 
-    if (
-      this.deviceData?.has_humidifier === true &&
-      this.thermostatService.testCharacteristic(this.hap.Characteristic.TargetRelativeHumidity) === false
-    ) {
-      // We have the capability for a humidifier, so setup target humidity characterisitc
-      this.thermostatService.addCharacteristic(this.hap.Characteristic.TargetRelativeHumidity);
-    }
-
-    if (
-      this.deviceData?.has_humidifier === false &&
-      this.thermostatService.testCharacteristic(this.hap.Characteristic.TargetRelativeHumidity) === true
-    ) {
-      // No longer configured to use a humdifier, so remove characteristic from the accessory
-      this.thermostatService.removeCharacteristic(this.hap.Characteristic.TargetRelativeHumidity);
-    }
-
-    if (this.thermostatService.testCharacteristic(this.hap.Characteristic.CurrentRelativeHumidity) === false) {
-      this.thermostatService.addCharacteristic(this.hap.Characteristic.CurrentRelativeHumidity);
-    }
-
-    // Limit prop ranges
-    this.thermostatService.getCharacteristic(this.hap.Characteristic.CurrentTemperature).setProps({
-      minStep: 0.5,
-    });
-    this.thermostatService.getCharacteristic(this.hap.Characteristic.HeatingThresholdTemperature).setProps({
-      minStep: 0.5,
-      minValue: MIN_TEMPERATURE,
-      maxValue: MAX_TEMPERATURE,
-    });
-    this.thermostatService.getCharacteristic(this.hap.Characteristic.CoolingThresholdTemperature).setProps({
-      minStep: 0.5,
-      minValue: MIN_TEMPERATURE,
-      maxValue: MAX_TEMPERATURE,
-    });
-
-    if (this.deviceData?.can_cool === false && this.deviceData?.can_heat === true) {
-      // Can heat only, so set values allowed for mode off/heat
-      this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).setProps({
-        validValues: [this.hap.Characteristic.TargetHeatingCoolingState.OFF, this.hap.Characteristic.TargetHeatingCoolingState.HEAT],
-      });
-    }
-    if (this.deviceData?.can_cool === true && this.deviceData?.can_heat === false) {
-      // Can cool only
-      this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).setProps({
-        validValues: [this.hap.Characteristic.TargetHeatingCoolingState.OFF, this.hap.Characteristic.TargetHeatingCoolingState.COOL],
-      });
-    }
-    if (this.deviceData?.can_cool === true && this.deviceData?.can_heat === true) {
-      // heat and cool
-      this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).setProps({
-        validValues: [
-          this.hap.Characteristic.TargetHeatingCoolingState.OFF,
-          this.hap.Characteristic.TargetHeatingCoolingState.HEAT,
-          this.hap.Characteristic.TargetHeatingCoolingState.COOL,
-          this.hap.Characteristic.TargetHeatingCoolingState.AUTO,
-        ],
-      });
-    }
-    if (this.deviceData?.can_cool === false && this.deviceData?.can_heat === false) {
-      // only off mode
-      this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).setProps({
-        validValues: [this.hap.Characteristic.TargetHeatingCoolingState.OFF],
-      });
-    }
-
-    // Setup callbacks for characteristics
-    this.thermostatService.getCharacteristic(this.hap.Characteristic.TemperatureDisplayUnits).onSet((value) => {
-      this.setDisplayUnit(value);
-    });
-    this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).onSet((value) => {
-      this.setMode(value);
-    });
-    this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetTemperature).onSet((value) => {
-      this.setTemperature(this.hap.Characteristic.TargetTemperature, value);
-    });
-    this.thermostatService.getCharacteristic(this.hap.Characteristic.CoolingThresholdTemperature).onSet((value) => {
-      this.setTemperature(this.hap.Characteristic.CoolingThresholdTemperature, value);
-    });
-    this.thermostatService.getCharacteristic(this.hap.Characteristic.HeatingThresholdTemperature).onSet((value) => {
-      this.setTemperature(this.hap.Characteristic.HeatingThresholdTemperature, value);
-    });
-    this.thermostatService.getCharacteristic(this.hap.Characteristic.LockPhysicalControls).onSet((value) => {
-      this.setChildlock('', value);
-    });
-
-    this.thermostatService.getCharacteristic(this.hap.Characteristic.TemperatureDisplayUnits).onGet(() => {
-      return this.deviceData.temperature_scale === 'C'
-        ? this.hap.Characteristic.TemperatureDisplayUnits.CELSIUS
-        : this.hap.Characteristic.TemperatureDisplayUnits.FAHRENHEIT;
-    });
-    this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetTemperature).onGet(() => {
-      return this.getTemperature(this.hap.Characteristic.TargetTemperature);
-    });
-    this.thermostatService.getCharacteristic(this.hap.Characteristic.CoolingThresholdTemperature).onGet(() => {
-      return this.getTemperature(this.hap.Characteristic.CoolingThresholdTemperature);
-    });
-    this.thermostatService.getCharacteristic(this.hap.Characteristic.HeatingThresholdTemperature).onGet(() => {
-      return this.getTemperature(this.hap.Characteristic.HeatingThresholdTemperature);
-    });
-    this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).onGet(() => {
-      return this.getMode();
-    });
-    this.thermostatService.getCharacteristic(this.hap.Characteristic.LockPhysicalControls).onGet(() => {
-      return this.deviceData.temperature_lock === true
-        ? this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED
-        : this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_DISABLED;
-    });
-
     // Setup occupancy service if not already present on the accessory
-    this.occupancyService = this.accessory.getService(this.hap.Service.OccupancySensor);
-    if (this.occupancyService === undefined) {
-      this.occupancyService = this.accessory.addService(this.hap.Service.OccupancySensor, '', 1);
-    }
+    this.occupancyService = this.setupService(this.hap.Service.OccupancySensor, '', 1);
     this.thermostatService.addLinkedService(this.occupancyService);
 
     // Setup battery service if not already present on the accessory
-    this.batteryService = this.accessory.getService(this.hap.Service.Battery);
-    if (this.batteryService === undefined) {
-      this.batteryService = this.accessory.addService(this.hap.Service.Battery, '', 1);
-    }
+    this.batteryService = this.setupService(this.hap.Service.Battery, '', 1);
     this.batteryService.setHiddenService(true);
     this.thermostatService.addLinkedService(this.batteryService);
 
     // Setup fan service if supported by the thermostat and not already present on the accessory
-    this.fanService = this.accessory.getService(this.hap.Service.Fanv2);
     if (this.deviceData?.has_fan === true) {
-      if (this.fanService === undefined) {
-        this.fanService = this.accessory.addService(this.hap.Service.Fanv2, '', 1);
-      }
-      if (this.fanService.testCharacteristic(this.hap.Characteristic.RotationSpeed) === false) {
-        this.fanService.addCharacteristic(this.hap.Characteristic.RotationSpeed);
-      }
-      this.fanService.getCharacteristic(this.hap.Characteristic.RotationSpeed).setProps({
-        minStep: 100 / this.deviceData.fan_max_speed,
-      });
-
-      this.thermostatService.addLinkedService(this.fanService);
-
-      this.fanService.getCharacteristic(this.hap.Characteristic.Active).onSet((value) => {
-        this.setFan(
-          value,
-          value === this.hap.Characteristic.Active.ACTIVE ? (this.deviceData.fan_timer_speed / this.deviceData.fan_max_speed) * 100 : 0,
-        );
-      });
-      this.fanService.getCharacteristic(this.hap.Characteristic.RotationSpeed).onSet((value) => {
-        this.setFan(value !== 0 ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE, value);
-      });
-      this.fanService.getCharacteristic(this.hap.Characteristic.Active).onGet(() => {
-        return this.deviceData.fan_state === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE;
-      });
-      this.fanService.getCharacteristic(this.hap.Characteristic.RotationSpeed).onGet(() => {
-        return (this.deviceData.fan_timer_speed / this.deviceData.fan_max_speed) * 100;
-      });
+      this.#setupFan();
     }
-    if (this.deviceData?.has_fan === false && this.fanService !== undefined) {
+    if (this.deviceData?.has_fan === false) {
       // No longer have a Fan configured and service present, so removed it
-      this.accessory.removeService(this.fanService);
+      this.fanService = this.accessory.getService(this.hap.Service.Fanv2);
+      if (this.fanService !== undefined) {
+        this.accessory.removeService(this.fanService);
+      }
       this.fanService = undefined;
     }
 
     // Setup dehumifider service if supported by the thermostat and not already present on the accessory
-    this.dehumidifierService = this.accessory.getService(this.hap.Service.HumidifierDehumidifier);
     if (this.deviceData?.has_dehumidifier === true) {
-      if (this.dehumidifierService === undefined) {
-        this.dehumidifierService = this.accessory.addService(this.hap.Service.HumidifierDehumidifier, '', 1);
-      }
-      this.thermostatService.addLinkedService(this.dehumidifierService);
-
-      this.dehumidifierService.getCharacteristic(this.hap.Characteristic.TargetHumidifierDehumidifierState).setProps({
-        validValues: [this.hap.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER],
-      });
-      this.dehumidifierService.getCharacteristic(this.hap.Characteristic.Active).onSet((value) => {
-        this.setDehumidifier(value);
-      });
-      this.dehumidifierService.getCharacteristic(this.hap.Characteristic.Active).onGet(() => {
-        return this.deviceData.dehumidifier_state === true
-          ? this.hap.Characteristic.Active.ACTIVE
-          : this.hap.Characteristic.Active.INACTIVE;
-      });
+      this.#setupDehumidifier();
     }
-    if (this.deviceData?.has_dehumidifier === false && this.dehumidifierService !== undefined) {
+    if (this.deviceData?.has_dehumidifier === false) {
       // No longer have a dehumidifier configured and service present, so removed it
-      this.accessory.removeService(this.dehumidifierService);
+      this.dehumidifierService = this.accessory.getService(this.hap.Service.HumidifierDehumidifier);
+      if (this.dehumidifierService !== undefined) {
+        this.accessory.removeService(this.dehumidifierService);
+      }
       this.dehumidifierService = undefined;
     }
 
     // Setup humdity service if configured to be seperate and not already present on the accessory
-    this.humidityService = this.accessory.getService(this.hap.Service.HumiditySensor);
     if (this.deviceData?.humiditySensor === true) {
-      if (this.humidityService === undefined) {
-        this.humidityService = this.accessory.addService(this.hap.Service.HumiditySensor, '', 1);
-      }
+      this.humidityService = this.setupService(this.hap.Service.HumiditySensor, '', 1);
       this.thermostatService.addLinkedService(this.humidityService);
 
-      this.humidityService.getCharacteristic(this.hap.Characteristic.CurrentRelativeHumidity).onGet(() => {
-        return this.deviceData.current_humidity;
+      this.setupCharacteristic(this.humidityService, this.hap.Characteristic.CurrentRelativeHumidity, {
+        onGet: () => {
+          return this.deviceData.current_humidity;
+        },
       });
     }
-    if (this.deviceData?.humiditySensor === false && this.humidityService !== undefined) {
+    if (this.deviceData?.humiditySensor === false) {
       // No longer have a seperate humidity sensor configure and service present, so removed it
-      this.accessory.removeService(this.humidityService);
+      this.humidityService = this.accessory.getService(this.hap.Service.HumiditySensor);
+      if (this.humidityService !== undefined) {
+        this.accessory.removeService(this.humidityService);
+      }
       this.humidityService = undefined;
     }
 
     // Setup hotwater heating boost service if supported by the thermostat and not already present on the accessory
-    this.switchService = this.accessory.getService(this.hap.Service.Switch);
     if (this.deviceData?.has_hot_water_control === true) {
-      if (this.switchService === undefined) {
-        this.switchService = this.accessory.addService(this.hap.Service.Switch, '', 1);
-      }
-      this.thermostatService.addLinkedService(this.switchService);
-
-      this.switchService.getCharacteristic(this.hap.Characteristic.On).onSet((value) => {
-        this.setHotwaterBoost(value);
-      });
-      this.switchService.getCharacteristic(this.hap.Characteristic.On).onGet(() => {
-        return this.deviceData.hot_water_boost_active === true;
-      });
+      this.#setupHotwaterBoost();
     }
-    if (this.deviceData?.has_hot_water_control === false && this.switchService !== undefined) {
+    if (this.deviceData?.has_hot_water_control === false) {
       // No longer have hotwater heating boost configured and service present, so removed it
-      this.accessory.removeService(this.switchService);
+      this.switchService = this.accessory.getService(this.hap.Service.Switch);
+      if (this.switchService !== undefined) {
+        this.accessory.removeService(this.switchService);
+      }
       this.switchService = undefined;
     }
 
@@ -308,50 +234,17 @@ export default class NestThermostat extends HomeKitDevice {
     // Attempt to load any external modules for this thermostat
     // We support external cool/heat/fan/dehumidifier module functions
     // This is all undocumented on how to use, as its for my specific use case :-)
-    const loadExternalModule = async (module) => {
-      if (typeof module !== 'string' || module === '') {
-        return;
-      }
+    this.externalCool = await this.#loadExternalModule(this.deviceData?.externalCool);
+    this.externalHeat = await this.#loadExternalModule(this.deviceData?.externalHeat);
+    this.externalFan = await this.#loadExternalModule(this.deviceData?.externalFan);
+    this.externalDehumidifier = await this.#loadExternalModule(this.deviceData?.externalDehumidifier);
 
-      let loadedModule = undefined;
-      try {
-        let values = module.match(/'[^']*'|[^\s]+/g)?.map((v) => v.replace(/^'(.*)'$/, '$1')) || [];
-        let script = path.resolve(values[0]); // external library name
-        let options = values.slice(1); // options to be passed into the external library
-        let externalModule = await import(script);
-        if (typeof externalModule?.default === 'function') {
-          loadedModule = externalModule.default(this.log, options);
-        }
-        // eslint-disable-next-line no-unused-vars
-      } catch (error) {
-        module =
-          typeof module === 'string'
-            ? module
-                .trim()
-                .match(/'[^']*'|[^\s]+/)?.[0]
-                .replace(/^'(.*)'$/, '$1')
-            : '';
-
-        this?.log?.warn && this.log.warn('Failed to load specified external module for thermostat "%s"', module);
-      }
-
-      return loadedModule;
-    };
-
-    this.externalCool = await loadExternalModule(this.deviceData?.externalCool);
-    this.externalHeat = await loadExternalModule(this.deviceData?.externalHeat);
-    this.externalFan = await loadExternalModule(this.deviceData?.externalFan);
-    this.externalDehumidifier = await loadExternalModule(this.deviceData?.externalDehumidifier);
-
-    // Create extra details for output
-    let postSetupDetails = [];
-    this.humidityService !== undefined && postSetupDetails.push('Seperate humidity sensor');
-    this.externalCool !== undefined && postSetupDetails.push('Using external cooling module');
-    this.externalHeat !== undefined && postSetupDetails.push('Using external heating module');
-    this.externalFan !== undefined && postSetupDetails.push('Using external fan module');
-    this.externalDehumidifier !== undefined && postSetupDetails.push('Using external dehumidification module');
-
-    return postSetupDetails;
+    // Extra setup details for output
+    this.humidityService !== undefined && this.postSetupDetail('Seperate humidity sensor');
+    this.externalCool !== undefined && this.postSetupDetail('Using external cooling module');
+    this.externalHeat !== undefined && this.postSetupDetail('Using external heating module');
+    this.externalFan !== undefined && this.postSetupDetail('Using external fan module');
+    this.externalDehumidifier !== undefined && this.postSetupDetail('Using external dehumidification module');
   }
 
   setFan(fanState, speed) {
@@ -367,12 +260,11 @@ export default class NestThermostat extends HomeKitDevice {
       this.fanService.updateCharacteristic(this.hap.Characteristic.Active, fanState);
       this.fanService.updateCharacteristic(this.hap.Characteristic.RotationSpeed, speed);
 
-      this?.log?.info &&
-        this.log.info(
-          'Set fan on thermostat "%s" to "%s"',
-          this.deviceData.description,
-          fanState === this.hap.Characteristic.Active.ACTIVE ? 'On with fan speed of ' + speed + '%' : 'Off',
-        );
+      this?.log?.info?.(
+        'Set fan on thermostat "%s" to "%s"',
+        this.deviceData.description,
+        fanState === this.hap.Characteristic.Active.ACTIVE ? 'On with fan speed of ' + speed + '%' : 'Off',
+      );
     }
   }
 
@@ -383,14 +275,13 @@ export default class NestThermostat extends HomeKitDevice {
     });
     this.dehumidifierService.updateCharacteristic(this.hap.Characteristic.Active, dehumidiferState);
 
-    this?.log?.info &&
-      this.log.info(
-        'Set dehumidifer on thermostat "%s" to "%s"',
-        this.deviceData.description,
-        dehumidiferState === this.hap.Characteristic.Active.ACTIVE
-          ? 'On with target humidity level of ' + this.deviceData.target_humidity + '%'
-          : 'Off',
-      );
+    this?.log?.info?.(
+      'Set dehumidifer on thermostat "%s" to "%s"',
+      this.deviceData.description,
+      dehumidiferState === this.hap.Characteristic.Active.ACTIVE
+        ? 'On with target humidity level of ' + this.deviceData.target_humidity + '%'
+        : 'Off',
+    );
   }
 
   setHotwaterBoost(hotwaterState) {
@@ -400,12 +291,11 @@ export default class NestThermostat extends HomeKitDevice {
     });
     this.switchService.updateCharacteristic(this.hap.Characteristic.On, hotwaterState);
 
-    this?.log?.info &&
-      this.log.info(
-        'Set hotwater boost heating on thermostat "%s" to "%s"',
-        this.deviceData.description,
-        hotwaterState === true ? 'On for ' + formatDuration(this.deviceData.hotWaterBoostTime) : 'Off',
-      );
+    this?.log?.info?.(
+      'Set hotwater boost heating on thermostat "%s" to "%s"',
+      this.deviceData.description,
+      hotwaterState === true ? 'On for ' + formatDuration(this.deviceData.hotWaterBoostTime) : 'Off',
+    );
   }
 
   setDisplayUnit(temperatureUnit) {
@@ -415,12 +305,11 @@ export default class NestThermostat extends HomeKitDevice {
     });
     this.thermostatService.updateCharacteristic(this.hap.Characteristic.TemperatureDisplayUnits, temperatureUnit);
 
-    this?.log?.info &&
-      this.log.info(
-        'Set temperature units on thermostat "%s" to "%s"',
-        this.deviceData.description,
-        temperatureUnit === this.hap.Characteristic.TemperatureDisplayUnits.CELSIUS ? '°C' : '°F',
-      );
+    this?.log?.info?.(
+      'Set temperature units on thermostat "%s" to "%s"',
+      this.deviceData.description,
+      temperatureUnit === this.hap.Characteristic.TemperatureDisplayUnits.CELSIUS ? '°C' : '°F',
+    );
   }
 
   setMode(thermostatMode) {
@@ -486,7 +375,7 @@ export default class NestThermostat extends HomeKitDevice {
 
       this.set({ uuid: this.deviceData.nest_google_uuid, hvac_mode: mode });
 
-      this?.log?.info && this.log.info('Set mode on "%s" to "%s"', this.deviceData.description, mode);
+      this?.log?.info?.('Set mode on "%s" to "%s"', this.deviceData.description, mode);
     }
   }
 
@@ -522,17 +411,16 @@ export default class NestThermostat extends HomeKitDevice {
       ) {
         this.set({ uuid: this.deviceData.nest_google_uuid, target_temperature: temperature });
 
-        this?.log?.info &&
-          this.log.info(
-            'Set %s%s temperature on "%s" to "%s °C"',
-            this.deviceData.hvac_mode.toUpperCase().includes('ECO') ? 'eco mode ' : '',
-            this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).value ===
-              this.hap.Characteristic.TargetHeatingCoolingState.HEAT
-              ? 'heating'
-              : 'cooling',
-            this.deviceData.description,
-            temperature,
-          );
+        this?.log?.info?.(
+          'Set %s%s temperature on "%s" to "%s °C"',
+          this.deviceData.hvac_mode.toUpperCase().includes('ECO') ? 'eco mode ' : '',
+          this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).value ===
+            this.hap.Characteristic.TargetHeatingCoolingState.HEAT
+            ? 'heating'
+            : 'cooling',
+          this.deviceData.description,
+          temperature,
+        );
       }
       if (
         characteristic.UUID === this.hap.Characteristic.HeatingThresholdTemperature.UUID &&
@@ -541,13 +429,12 @@ export default class NestThermostat extends HomeKitDevice {
       ) {
         this.set({ uuid: this.deviceData.nest_google_uuid, target_temperature_low: temperature });
 
-        this?.log?.info &&
-          this.log.info(
-            'Set %sheating temperature on "%s" to "%s °C"',
-            this.deviceData.hvac_mode.toUpperCase().includes('ECO') ? 'eco mode ' : '',
-            this.deviceData.description,
-            temperature,
-          );
+        this?.log?.info?.(
+          'Set %sheating temperature on "%s" to "%s °C"',
+          this.deviceData.hvac_mode.toUpperCase().includes('ECO') ? 'eco mode ' : '',
+          this.deviceData.description,
+          temperature,
+        );
       }
       if (
         characteristic.UUID === this.hap.Characteristic.CoolingThresholdTemperature.UUID &&
@@ -556,13 +443,12 @@ export default class NestThermostat extends HomeKitDevice {
       ) {
         this.set({ uuid: this.deviceData.nest_google_uuid, target_temperature_high: temperature });
 
-        this?.log?.info &&
-          this.log.info(
-            'Set %scooling temperature on "%s" to "%s °C"',
-            this.deviceData.hvac_mode.toUpperCase().includes('ECO') ? 'eco mode ' : '',
-            this.deviceData.description,
-            temperature,
-          );
+        this?.log?.info?.(
+          'Set %scooling temperature on "%s" to "%s °C"',
+          this.deviceData.hvac_mode.toUpperCase().includes('ECO') ? 'eco mode ' : '',
+          this.deviceData.description,
+          temperature,
+        );
       }
 
       this.thermostatService.updateCharacteristic(characteristic, temperature); // Update HomeKit with value
@@ -610,15 +496,14 @@ export default class NestThermostat extends HomeKitDevice {
       temperature_lock: value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED ? true : false,
     });
 
-    this?.log?.info &&
-      this.log.info(
-        'Setting Childlock on "%s" to "%s"',
-        this.deviceData.description,
-        value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED ? 'Enabled' : 'Disabled',
-      );
+    this?.log?.info?.(
+      'Setting Childlock on "%s" to "%s"',
+      this.deviceData.description,
+      value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED ? 'Enabled' : 'Disabled',
+    );
   }
 
-  updateServices(deviceData) {
+  updateDevice(deviceData) {
     if (
       typeof deviceData !== 'object' ||
       this.thermostatService === undefined ||
@@ -704,23 +589,7 @@ export default class NestThermostat extends HomeKitDevice {
     if (deviceData.has_fan !== this.deviceData.has_fan) {
       if (deviceData.has_fan === true && this.deviceData.has_fan === false && this.fanService === undefined) {
         // Fan has been added
-        this.fanService = this.accessory.addService(this.hap.Service.Fanv2, '', 1);
-
-        if (this.fanService.testCharacteristic(this.hap.Characteristic.RotationSpeed) === false) {
-          this.fanService.addCharacteristic(this.hap.Characteristic.RotationSpeed);
-        }
-        this.fanService.getCharacteristic(this.hap.Characteristic.RotationSpeed).setProps({
-          minStep: 100 / this.deviceData.fan_max_speed,
-        });
-        this.thermostatService.addLinkedService(this.fanService);
-
-        this.fanService.getCharacteristic(this.hap.Characteristic.Active).onSet((value) => {
-          this.setFan(value);
-        });
-
-        this.fanService.getCharacteristic(this.hap.Characteristic.Active).onGet(() => {
-          return this.deviceData.fan_state === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE;
-        });
+        this.#setupFan();
       }
       if (deviceData.has_fan === false && this.deviceData.has_fan === true && this.fanService !== undefined) {
         // Fan has been removed
@@ -728,34 +597,18 @@ export default class NestThermostat extends HomeKitDevice {
         this.fanService = undefined;
       }
 
-      this?.log?.info &&
-        this.log.info(
-          'Fan setup on thermostat "%s" has changed. Fan was',
-          deviceData.description,
-          this.fanService === undefined ? 'removed' : 'added',
-        );
+      this?.log?.info?.(
+        'Fan setup on thermostat "%s" has changed. Fan was',
+        deviceData.description,
+        this.fanService === undefined ? 'removed' : 'added',
+      );
     }
 
     // Check for dehumidifer setup change on thermostat
     if (deviceData.has_dehumidifier !== this.deviceData.has_dehumidifier) {
       if (deviceData.has_dehumidifier === true && this.deviceData.has_dehumidifier === false && this.dehumidifierService === undefined) {
         // Dehumidifier has been added
-        this.dehumidifierService = this.accessory.addService(this.hap.Service.HumidifierDehumidifier, '', 1);
-        this.thermostatService.addLinkedService(this.dehumidifierService);
-
-        this.dehumidifierService.getCharacteristic(this.hap.Characteristic.TargetHumidifierDehumidifierState).setProps({
-          validValues: [this.hap.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER],
-        });
-
-        this.dehumidifierService.getCharacteristic(this.hap.Characteristic.Active).onSet((value) => {
-          this.setDehumidifier(value);
-        });
-
-        this.dehumidifierService.getCharacteristic(this.hap.Characteristic.Active).onGet(() => {
-          return this.deviceData.dehumidifier_state === true
-            ? this.hap.Characteristic.Active.ACTIVE
-            : this.hap.Characteristic.Active.INACTIVE;
-        });
+        this.#setupDehumidifier();
       }
       if (deviceData.has_dehumidifier === false && this.deviceData.has_dehumidifier === true && this.dehumidifierService !== undefined) {
         // Dehumidifer has been removed
@@ -763,12 +616,11 @@ export default class NestThermostat extends HomeKitDevice {
         this.dehumidifierService = undefined;
       }
 
-      this?.log?.info &&
-        this.log.info(
-          'Dehumidifier setup on thermostat "%s" has changed. Dehumidifier was',
-          deviceData.description,
-          this.dehumidifierService === undefined ? 'removed' : 'added',
-        );
+      this?.log?.info?.(
+        'Dehumidifier setup on thermostat "%s" has changed. Dehumidifier was',
+        deviceData.description,
+        this.dehumidifierService === undefined ? 'removed' : 'added',
+      );
     }
 
     // Check for hotwater heating boost setup change on thermostat
@@ -780,18 +632,8 @@ export default class NestThermostat extends HomeKitDevice {
       ) {
         // hotwater heating boost has been added
         this.switchService = this.accessory.getService(this.hap.Service.Switch);
-        if (this.deviceData?.has_hot_water_control === true) {
-          if (this.switchService === undefined) {
-            this.switchService = this.accessory.addService(this.hap.Service.Switch, '', 1);
-          }
-          this.thermostatService.addLinkedService(this.switchService);
-
-          this.switchService.getCharacteristic(this.hap.Characteristic.On).onSet((value) => {
-            this.setHotwaterBoost(value);
-          });
-          this.switchService.getCharacteristic(this.hap.Characteristic.On).onGet(() => {
-            return this.deviceData.hot_water_boost_active === true;
-          });
+        if (this.deviceData.has_hot_water_control === true) {
+          this.#setupHotwaterBoost();
         }
         if (
           deviceData.has_hot_water_control === false &&
@@ -804,12 +646,11 @@ export default class NestThermostat extends HomeKitDevice {
         }
       }
 
-      this?.log?.info &&
-        this.log.info(
-          'hotwater heating boost setup on thermostat "%s" has changed. Hotwater heating boost was',
-          deviceData.description,
-          this.switchService === undefined ? 'removed' : 'added',
-        );
+      this?.log?.info?.(
+        'hotwater heating boost setup on thermostat "%s" has changed. Hotwater heating boost was',
+        deviceData.description,
+        this.switchService === undefined ? 'removed' : 'added',
+      );
     }
 
     if (deviceData.can_cool !== this.deviceData.can_cool || deviceData.can_heat !== this.deviceData.can_heat) {
@@ -846,7 +687,7 @@ export default class NestThermostat extends HomeKitDevice {
         });
       }
 
-      this?.log?.info && this.log.info('Heating/cooling setup on thermostat on "%s" has changed', deviceData.description);
+      this?.log?.info?.('Heating/cooling setup on thermostat on "%s" has changed', deviceData.description);
     }
 
     // Update current mode temperatures
@@ -1148,6 +989,91 @@ export default class NestThermostat extends HomeKitDevice {
       //  this.set({ uuid: this.deviceData.nest_google_uuid, days: { 6: { temp: 17, time: 13400, touched_at: Date.now() } } });
       //});
     }
+  }
+
+  #setupFan() {
+    this.fanService = this.setupService(this.hap.Service.Fanv2, '', 1);
+    this.setupCharacteristic(this.hap.Service.Fanv2, this.hap.Characteristic.RotationSpeed);
+    this.thermostatService.addLinkedService(this.fanService);
+
+    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.Active, {
+      onSet: (value) =>
+        this.setFan(
+          value,
+          value === this.hap.Characteristic.Active.ACTIVE ? (this.deviceData.fan_timer_speed / this.deviceData.fan_max_speed) * 100 : 0,
+        ),
+      onGet: () => {
+        return this.deviceData.fan_state === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE;
+      },
+    });
+
+    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.RotationSpeed, {
+      props: { minStep: 100 / this.deviceData.fan_max_speed },
+      onSet: (value) => this.setFan(value !== 0 ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE, value),
+      onGet: () => {
+        return (this.deviceData.fan_timer_speed / this.deviceData.fan_max_speed) * 100;
+      },
+    });
+  }
+
+  #setupDehumidifier() {
+    this.dehumidifierService = this.setupService(this.hap.Service.HumidifierDehumidifier, '', 1);
+    this.thermostatService.addLinkedService(this.dehumidifierService);
+
+    this.setupCharacteristic(this.dehumidifierService, this.hap.Characteristic.TargetHumidifierDehumidifierState, {
+      props: { validValues: [this.hap.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER] },
+    });
+
+    this.setupCharacteristic(this.dehumidifierService, this.hap.Characteristic.Active, {
+      onSet: (value) => this.setDehumidifier(value),
+      onGet: () => {
+        return this.deviceData.dehumidifier_state === true
+          ? this.hap.Characteristic.Active.ACTIVE
+          : this.hap.Characteristic.Active.INACTIVE;
+      },
+    });
+  }
+
+  #setupHotwaterBoost() {
+    this.switchService = this.setupService(this.hap.Service.Switch, '', 1);
+    this.thermostatService.addLinkedService(this.switchService);
+
+    this.setupCharacteristic(this.switchService, this.hap.Characteristic.One, {
+      onSet: (value) => this.setHotwaterBoost(value),
+      onGet: () => {
+        return this.deviceData?.hot_water_boost_active === true;
+      },
+    });
+  }
+
+  async #loadExternalModule(module) {
+    if (typeof module !== 'string' || module === '') {
+      return;
+    }
+
+    let loadedModule = undefined;
+    try {
+      let values = module.match(/'[^']*'|[^\s]+/g)?.map((v) => v.replace(/^'(.*)'$/, '$1')) || [];
+      let script = path.resolve(values[0]); // external library name
+      let options = values.slice(1); // options to be passed into the external library
+      let externalModule = await import(script);
+      if (typeof externalModule?.default === 'function') {
+        loadedModule = externalModule.default(this.log, options);
+      }
+      // eslint-disable-next-line no-unused-vars
+    } catch (error) {
+      module =
+        typeof module === 'string'
+          ? module
+              .trim()
+              .match(/'[^']*'|[^\s]+/)?.[0]
+              .replace(/^'(.*)'$/, '$1')
+          : '';
+
+      this?.log?.warn?.('Failed to load external module "%s" for thermostat "%s"', module, this.deviceData.description);
+    }
+
+    return loadedModule;
   }
 }
 

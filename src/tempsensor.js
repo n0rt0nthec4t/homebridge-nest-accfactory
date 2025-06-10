@@ -1,7 +1,7 @@
 // Nest Temperature Sensor
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/05/08
+// Code version 2025/06/10
 // Mark Hulskamp
 'use strict';
 
@@ -19,19 +19,13 @@ export default class NestTemperatureSensor extends HomeKitDevice {
   }
 
   // Class functions
-  addServices() {
-    // Setup the temperature service if not already present on the accessory
-    this.temperatureService = this.accessory.getService(this.hap.Service.TemperatureSensor);
-    if (this.temperatureService === undefined) {
-      this.temperatureService = this.accessory.addService(this.hap.Service.TemperatureSensor, '', 1);
-    }
+  setupDevice() {
+    // Setup temperature service if not already present on the accessory
+    this.temperatureService = this.setupService(this.hap.Service.TemperatureSensor, '', 1);
     this.temperatureService.setPrimaryService();
 
-    // Setup the battery service if not already present on the accessory
-    this.batteryService = this.accessory.getService(this.hap.Service.Battery);
-    if (this.batteryService === undefined) {
-      this.batteryService = this.accessory.addService(this.hap.Service.Battery, '', 1);
-    }
+    // Setup battery service if not already present on the accessory
+    this.batteryService = this.setupService(this.hap.Service.Battery, '', 1);
     this.batteryService.setHiddenService(true);
 
     // Setup linkage to EveHome app if configured todo so
@@ -46,7 +40,7 @@ export default class NestTemperatureSensor extends HomeKitDevice {
     }
   }
 
-  updateServices(deviceData) {
+  updateDevice(deviceData) {
     if (typeof deviceData !== 'object' || this.temperatureService === undefined || this.batteryService === undefined) {
       return;
     }
@@ -59,7 +53,7 @@ export default class NestTemperatureSensor extends HomeKitDevice {
 
     this.temperatureService.updateCharacteristic(this.hap.Characteristic.StatusActive, deviceData.online === true);
     if (typeof deviceData?.associated_thermostat === 'string' && deviceData.associated_thermostat !== '') {
-      // This temperature sensor is assocated with a theromstat
+      // This temperature sensor is assocated with a thermostat
       // Update status if providing active temperature for the thermostats
       this.temperatureService.updateCharacteristic(
         this.hap.Characteristic.StatusActive,
