@@ -1,7 +1,6 @@
 // Nest Cam with Floodlight
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/06/10
 // Mark Hulskamp
 'use strict';
 
@@ -9,6 +8,9 @@
 import NestCamera from './camera.js';
 
 export default class NestFloodlight extends NestCamera {
+  static TYPE = 'FloodlightCamera';
+  static VERSION = '2025.06.11';
+
   lightService = undefined; // HomeKit light
 
   constructor(accessory, api, log, eventEmitter, deviceData) {
@@ -22,8 +24,8 @@ export default class NestFloodlight extends NestCamera {
 
     if (this.deviceData.has_light === true) {
       // Add service to for a light, including brightness control
-      this.lightService = this.setupService(this.hap.Service.Lightbulb, '', 1);
-      this.setupCharacteristic(this.lightService, this.hap.Characteristic.Brightness, {
+      this.lightService = this.addHKService(this.hap.Service.Lightbulb, '', 1);
+      this.addHKCharacteristic(this.lightService, this.hap.Characteristic.Brightness, {
         props: { minStep: 10 }, // Light only goes in 10% increments
         onSet: (value) => {
           if (value !== this.deviceData.light_brightness) {
@@ -37,7 +39,7 @@ export default class NestFloodlight extends NestCamera {
         },
       });
 
-      this.setupCharacteristic(this.lightService, this.hap.Characteristic.On, {
+      this.addHKCharacteristic(this.lightService, this.hap.Characteristic.On, {
         onSet: (value) => {
           if (value !== this.deviceData.light_enabled) {
             this.set({ uuid: this.deviceData.nest_google_uuid, light_enabled: value });

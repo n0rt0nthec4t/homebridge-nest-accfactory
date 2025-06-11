@@ -1,7 +1,6 @@
 // Nest Doorbell(s)
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/06/10
 // Mark Hulskamp
 'use strict';
 
@@ -12,6 +11,9 @@ import { setTimeout, clearTimeout } from 'node:timers';
 import NestCamera from './camera.js';
 
 export default class NestDoorbell extends NestCamera {
+  static TYPE = 'Doorbell';
+  static VERSION = '2025.06.11';
+
   doorbellTimer = undefined; // Cooldown timer for doorbell events
   switchService = undefined; // HomeKit switch for enabling/disabling chime
 
@@ -28,10 +30,10 @@ export default class NestDoorbell extends NestCamera {
     if (this.deviceData?.has_indoor_chime === true && this.deviceData?.chimeSwitch === true) {
       // Add service to allow automation and enabling/disabling indoor chiming.
       // This needs to be explically enabled via a configuration option for the device
-      this.switchService = this.setupService(this.hap.Service.Switch, '', 1);
+      this.switchService = this.addHKService(this.hap.Service.Switch, '', 1);
 
       // Setup set callback for this switch service
-      this.setupCharacteristic(this.switchService, this.hap.Characteristic.On, {
+      this.addHKCharacteristic(this.switchService, this.hap.Characteristic.On, {
         onSet: (value) => {
           if (value !== this.deviceData.indoor_chime_enabled) {
             // only change indoor chime status value if different than on-device

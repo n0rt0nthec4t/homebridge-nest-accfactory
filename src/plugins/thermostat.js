@@ -1,12 +1,11 @@
 // Nest Thermostat
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/06/10
 // Mark Hulskamp
 'use strict';
 
 // Define our modules
-import HomeKitDevice from './HomeKitDevice.js';
+import HomeKitDevice from '../HomeKitDevice.js';
 
 // Define nodejs module requirements
 import path from 'node:path';
@@ -16,6 +15,9 @@ const MIN_TEMPERATURE = 9; // Minimum temperature for Nest Thermostat
 const MAX_TEMPERATURE = 32; // Maximum temperature for Nest Thermostat
 
 export default class NestThermostat extends HomeKitDevice {
+  static TYPE = 'Thermostat';
+  static VERSION = '2025.06.11';
+
   batteryService = undefined;
   occupancyService = undefined;
   humidityService = undefined;
@@ -34,18 +36,18 @@ export default class NestThermostat extends HomeKitDevice {
   // Class functions
   async setupDevice() {
     // Setup the thermostat service if not already present on the accessory
-    this.thermostatService = this.setupService(this.hap.Service.Thermostat, '', 1);
+    this.thermostatService = this.addHKService(this.hap.Service.Thermostat, '', 1);
     this.thermostatService.setPrimaryService();
 
     // Setup set characteristics
 
     // Used to indicate active temperature if the thermostat is using its temperature sensor data
     // or an external temperature sensor ie: Nest Temperature Sensor
-    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.StatusActive);
+    this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.StatusActive);
 
-    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.StatusFault);
+    this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.StatusFault);
 
-    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.LockPhysicalControls, {
+    this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.LockPhysicalControls, {
       onSet: (value) => {
         this.setChildlock('', value);
       },
@@ -56,13 +58,13 @@ export default class NestThermostat extends HomeKitDevice {
       },
     });
 
-    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.CurrentRelativeHumidity, {
+    this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.CurrentRelativeHumidity, {
       onGet: () => {
         return this.deviceData.current_humidity;
       },
     });
 
-    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.TemperatureDisplayUnits, {
+    this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.TemperatureDisplayUnits, {
       onSet: (value) => {
         this.setDisplayUnit(value);
       },
@@ -73,14 +75,14 @@ export default class NestThermostat extends HomeKitDevice {
       },
     });
 
-    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.CurrentTemperature, {
+    this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.CurrentTemperature, {
       props: { minStep: 0.5 },
       onGet: () => {
         return this.deviceData.current_temperature;
       },
     });
 
-    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.TargetTemperature, {
+    this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.TargetTemperature, {
       onSet: (value) => {
         this.setTemperature(this.hap.Characteristic.TargetTemperature, value);
       },
@@ -89,7 +91,7 @@ export default class NestThermostat extends HomeKitDevice {
       },
     });
 
-    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.CoolingThresholdTemperature, {
+    this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.CoolingThresholdTemperature, {
       props: {
         minStep: 0.5,
         minValue: MIN_TEMPERATURE,
@@ -103,7 +105,7 @@ export default class NestThermostat extends HomeKitDevice {
       },
     });
 
-    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.HeatingThresholdTemperature, {
+    this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.HeatingThresholdTemperature, {
       props: {
         minStep: 0.5,
         minValue: MIN_TEMPERATURE,
@@ -117,7 +119,7 @@ export default class NestThermostat extends HomeKitDevice {
       },
     });
 
-    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.TargetHeatingCoolingState, {
+    this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.TargetHeatingCoolingState, {
       props: {
         validValues:
           this.deviceData?.can_cool === true && this.deviceData?.can_heat === true
@@ -143,7 +145,7 @@ export default class NestThermostat extends HomeKitDevice {
 
     if (this.deviceData?.has_air_filter === true) {
       // We have the capability for an air filter, so setup filter change characterisitc
-      this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.FilterChangeIndication);
+      this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.FilterChangeIndication);
     }
     if (this.deviceData?.has_air_filter === false) {
       // No longer configured to have an air filter, so remove characteristic from the accessory
@@ -151,11 +153,11 @@ export default class NestThermostat extends HomeKitDevice {
     }
 
     // Setup occupancy service if not already present on the accessory
-    this.occupancyService = this.setupService(this.hap.Service.OccupancySensor, '', 1);
+    this.occupancyService = this.addHKService(this.hap.Service.OccupancySensor, '', 1);
     this.thermostatService.addLinkedService(this.occupancyService);
 
     // Setup battery service if not already present on the accessory
-    this.batteryService = this.setupService(this.hap.Service.Battery, '', 1);
+    this.batteryService = this.addHKService(this.hap.Service.Battery, '', 1);
     this.batteryService.setHiddenService(true);
     this.thermostatService.addLinkedService(this.batteryService);
 
@@ -187,10 +189,10 @@ export default class NestThermostat extends HomeKitDevice {
 
     // Setup humdity service if configured to be seperate and not already present on the accessory
     if (this.deviceData?.humiditySensor === true) {
-      this.humidityService = this.setupService(this.hap.Service.HumiditySensor, '', 1);
+      this.humidityService = this.addHKService(this.hap.Service.HumiditySensor, '', 1);
       this.thermostatService.addLinkedService(this.humidityService);
 
-      this.setupCharacteristic(this.humidityService, this.hap.Characteristic.CurrentRelativeHumidity, {
+      this.addHKCharacteristic(this.humidityService, this.hap.Characteristic.CurrentRelativeHumidity, {
         onGet: () => {
           return this.deviceData.current_humidity;
         },
@@ -992,11 +994,11 @@ export default class NestThermostat extends HomeKitDevice {
   }
 
   #setupFan() {
-    this.fanService = this.setupService(this.hap.Service.Fanv2, '', 1);
-    this.setupCharacteristic(this.hap.Service.Fanv2, this.hap.Characteristic.RotationSpeed);
+    this.fanService = this.addHKService(this.hap.Service.Fanv2, '', 1);
+    this.addHKCharacteristic(this.hap.Service.Fanv2, this.hap.Characteristic.RotationSpeed);
     this.thermostatService.addLinkedService(this.fanService);
 
-    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.Active, {
+    this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.Active, {
       onSet: (value) =>
         this.setFan(
           value,
@@ -1007,7 +1009,7 @@ export default class NestThermostat extends HomeKitDevice {
       },
     });
 
-    this.setupCharacteristic(this.thermostatService, this.hap.Characteristic.RotationSpeed, {
+    this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.RotationSpeed, {
       props: { minStep: 100 / this.deviceData.fan_max_speed },
       onSet: (value) => this.setFan(value !== 0 ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE, value),
       onGet: () => {
@@ -1017,14 +1019,14 @@ export default class NestThermostat extends HomeKitDevice {
   }
 
   #setupDehumidifier() {
-    this.dehumidifierService = this.setupService(this.hap.Service.HumidifierDehumidifier, '', 1);
+    this.dehumidifierService = this.addHKService(this.hap.Service.HumidifierDehumidifier, '', 1);
     this.thermostatService.addLinkedService(this.dehumidifierService);
 
-    this.setupCharacteristic(this.dehumidifierService, this.hap.Characteristic.TargetHumidifierDehumidifierState, {
+    this.addHKCharacteristic(this.dehumidifierService, this.hap.Characteristic.TargetHumidifierDehumidifierState, {
       props: { validValues: [this.hap.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER] },
     });
 
-    this.setupCharacteristic(this.dehumidifierService, this.hap.Characteristic.Active, {
+    this.addHKCharacteristic(this.dehumidifierService, this.hap.Characteristic.Active, {
       onSet: (value) => this.setDehumidifier(value),
       onGet: () => {
         return this.deviceData.dehumidifier_state === true
@@ -1035,10 +1037,10 @@ export default class NestThermostat extends HomeKitDevice {
   }
 
   #setupHotwaterBoost() {
-    this.switchService = this.setupService(this.hap.Service.Switch, '', 1);
+    this.switchService = this.addHKService(this.hap.Service.Switch, '', 1);
     this.thermostatService.addLinkedService(this.switchService);
 
-    this.setupCharacteristic(this.switchService, this.hap.Characteristic.One, {
+    this.addHKCharacteristic(this.switchService, this.hap.Characteristic.One, {
       onSet: (value) => this.setHotwaterBoost(value),
       onGet: () => {
         return this.deviceData?.hot_water_boost_active === true;

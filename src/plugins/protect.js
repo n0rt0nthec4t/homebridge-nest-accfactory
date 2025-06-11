@@ -1,16 +1,18 @@
 // Nest Protect
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/05/26
 // Mark Hulskamp
 'use strict';
 
 // Define our modules
-import HomeKitDevice from './HomeKitDevice.js';
+import HomeKitDevice from '../HomeKitDevice.js';
 
 const LOWBATTERYLEVEL = 10; // Low battery level percentage
 
 export default class NestProtect extends HomeKitDevice {
+  static TYPE = 'Protect';
+  static VERSION = '2025.06.11';
+
   batteryService = undefined;
   smokeService = undefined;
   motionService = undefined;
@@ -23,22 +25,22 @@ export default class NestProtect extends HomeKitDevice {
   // Class functions
   setupDevice() {
     // Setup the smoke sensor service if not already present on the accessory
-    this.smokeService = this.setupService(this.hap.Service.SmokeSensor, '', 1);
+    this.smokeService = this.addHKService(this.hap.Service.SmokeSensor, '', 1);
     this.smokeService.setPrimaryService();
 
-    this.setupCharacteristic(this.smokeService, this.hap.Characteristic.StatusActive);
-    this.setupCharacteristic(this.smokeService, this.hap.Characteristic.StatusFault);
+    this.addHKCharacteristic(this.smokeService, this.hap.Characteristic.StatusActive);
+    this.addHKCharacteristic(this.smokeService, this.hap.Characteristic.StatusFault);
 
     // Setup the carbon monoxide service if not already present on the accessory
-    this.carbonMonoxideService = this.setupService(this.hap.Service.CarbonMonoxideSensor, '', 1);
+    this.carbonMonoxideService = this.addHKService(this.hap.Service.CarbonMonoxideSensor, '', 1);
 
     // Setup battery service if not already present on the accessory
-    this.batteryService = this.setupService(this.hap.Service.Battery, '', 1);
+    this.batteryService = this.addHKService(this.hap.Service.Battery, '', 1);
     this.batteryService.setHiddenService(true);
 
     // Setup motion service if not already present on the accessory and Nest protect is a wired version
     if (this.deviceData?.wired_or_battery === 0) {
-      this.motionService = this.setupService(this.hap.Service.MotionSensor, '', 1);
+      this.motionService = this.addHKService(this.hap.Service.MotionSensor, '', 1);
       this.postSetupDetail('With motion sensor');
     }
 

@@ -1,14 +1,16 @@
 // Nest 'virtual' weather station
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/06/10
 // Mark Hulskamp
 'use strict';
 
 // Define our modules
-import HomeKitDevice from './HomeKitDevice.js';
+import HomeKitDevice from '../HomeKitDevice.js';
 
 export default class NestWeather extends HomeKitDevice {
+  static TYPE = 'Weather';
+  static VERSION = '2025.06.11';
+
   batteryService = undefined;
   airPressureService = undefined;
   temperatureService = undefined;
@@ -21,41 +23,41 @@ export default class NestWeather extends HomeKitDevice {
   // Class functions
   setupDevice() {
     // Setup temperature service if not already present on the accessory
-    this.temperatureService = this.setupService(this.hap.Service.TemperatureSensor, '', 1);
+    this.temperatureService = this.addHKService(this.hap.Service.TemperatureSensor, '', 1);
     this.temperatureService.setPrimaryService();
 
     // Setup humidity service if not already present on the accessory
-    this.humidityService = this.setupService(this.hap.Service.HumiditySensor, '', 1);
+    this.humidityService = this.addHKService(this.hap.Service.HumiditySensor, '', 1);
 
     // Setup battery service if not already present on the accessory
-    this.batteryService = this.setupService(this.hap.Service.Battery, '', 1);
+    this.batteryService = this.addHKService(this.hap.Service.Battery, '', 1);
     this.batteryService.setHiddenService(true);
 
     // Add custom weather service and characteristics if they have been defined
     if (this.hap.Service?.EveAirPressureSensor !== undefined) {
-      this.airPressureService = this.setupService(this.hap.Service.EveAirPressureSensor, '', 1);
+      this.airPressureService = this.addHKService(this.hap.Service.EveAirPressureSensor, '', 1);
     }
 
     if (this.hap.Characteristic?.ForecastDay !== undefined) {
-      this.setupCharacteristic(this.temperatureService, this.hap.Characteristic.ForecastDay);
+      this.addHKCharacteristic(this.temperatureService, this.hap.Characteristic.ForecastDay);
     }
     if (this.hap.Characteristic?.ObservationStation !== undefined) {
-      this.setupCharacteristic(this.temperatureService, this.hap.Characteristic.ObservationStation);
+      this.addHKCharacteristic(this.temperatureService, this.hap.Characteristic.ObservationStation);
     }
     if (this.hap.Characteristic?.Condition !== undefined) {
-      this.setupCharacteristic(this.temperatureService, this.hap.Characteristic.Condition);
+      this.addHKCharacteristic(this.temperatureService, this.hap.Characteristic.Condition);
     }
     if (this.hap.Characteristic?.WindDirection !== undefined) {
-      this.setupCharacteristic(this.temperatureService, this.hap.Characteristic.WindDirection);
+      this.addHKCharacteristic(this.temperatureService, this.hap.Characteristic.WindDirection);
     }
     if (this.hap.Characteristic?.WindSpeed !== undefined) {
-      this.setupCharacteristic(this.temperatureService, this.hap.Characteristic.WindSpeed);
+      this.addHKCharacteristic(this.temperatureService, this.hap.Characteristic.WindSpeed);
     }
     if (this.hap.Characteristic?.SunriseTime !== undefined) {
-      this.setupCharacteristic(this.temperatureService, this.hap.Characteristic.SunriseTime);
+      this.addHKCharacteristic(this.temperatureService, this.hap.Characteristic.SunriseTime);
     }
     if (this.hap.Characteristic?.SunsetTime !== undefined) {
-      this.setupCharacteristic(this.temperatureService, this.hap.Characteristic.SunsetTime);
+      this.addHKCharacteristic(this.temperatureService, this.hap.Characteristic.SunsetTime);
     }
 
     // Setup linkage to EveHome app if configured todo so

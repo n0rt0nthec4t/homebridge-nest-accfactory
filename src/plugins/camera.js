@@ -1,7 +1,6 @@
 // Nest Cameras
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/06/10
 // Mark Hulskamp
 'use strict';
 
@@ -18,9 +17,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Define our modules
-import HomeKitDevice from './HomeKitDevice.js';
-import NexusTalk from './nexustalk.js';
-import WebRTC from './webrtc.js';
+import HomeKitDevice from '../HomeKitDevice.js';
+import NexusTalk from '../nexustalk.js';
+import WebRTC from '../webrtc.js';
 
 const CAMERAOFFLINEJPGFILE = 'Nest_camera_offline.jpg'; // Camera offline jpg image file
 const CAMERAOFFJPGFILE = 'Nest_camera_off.jpg'; // Camera video off jpg image file
@@ -32,6 +31,9 @@ const PROTOCOLNEXUSTALK = 'PROTOCOL_NEXUSTALK';
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 
 export default class NestCamera extends HomeKitDevice {
+  static TYPE = 'Camera';
+  static VERSION = '2025.06.11';
+
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
   motionServices = undefined; // Object of Camera/Doorbell motion sensor(s)
@@ -94,12 +96,12 @@ export default class NestCamera extends HomeKitDevice {
     if (this.operatingModeService === undefined) {
       // Add in operating mode service for a non-hksv camera/doorbell
       // Allow us to change things such as night vision, camera indicator etc within HomeKit for those also :-)
-      this.operatingModeService = this.setupService(this.hap.Service.CameraOperatingMode, '', 1);
+      this.operatingModeService = this.addHKService(this.hap.Service.CameraOperatingMode, '', 1);
     }
 
     // Setup set characteristics
     if (this.deviceData?.has_statusled === true) {
-      this.setupCharacteristic(this.operatingModeService, this.hap.Characteristic.CameraOperatingModeIndicator, {
+      this.addHKCharacteristic(this.operatingModeService, this.hap.Characteristic.CameraOperatingModeIndicator, {
         onSet: (value) => {
           // 0 = auto, 1 = low, 2 = high
           // We'll use auto mode for led on and low for led off
@@ -118,7 +120,7 @@ export default class NestCamera extends HomeKitDevice {
     }
 
     if (this.deviceData?.has_irled === true) {
-      this.setupCharacteristic(this.operatingModeService, this.hap.Characteristic.NightVision, {
+      this.addHKCharacteristic(this.operatingModeService, this.hap.Characteristic.NightVision, {
         onSet: (value) => {
           // only change IRLed status value if different than on-device
           if ((value === false && this.deviceData.irled_enabled === true) || (value === true && this.deviceData.irled_enabled === false)) {
@@ -133,7 +135,7 @@ export default class NestCamera extends HomeKitDevice {
       });
     }
 
-    this.setupCharacteristic(this.operatingModeService, this.hap.Characteristic.ManuallyDisabled, {
+    this.addHKCharacteristic(this.operatingModeService, this.hap.Characteristic.ManuallyDisabled, {
       onSet: (value) => {
         if (value !== this.operatingModeService.getCharacteristic(this.hap.Characteristic.ManuallyDisabled).value) {
           // Make sure only updating status if HomeKit value *actually changes*
@@ -155,7 +157,7 @@ export default class NestCamera extends HomeKitDevice {
     });
 
     if (this.deviceData?.has_video_flip === true) {
-      this.setupCharacteristic(this.operatingModeService, this.hap.Characteristic.ImageRotation, {
+      this.addHKCharacteristic(this.operatingModeService, this.hap.Characteristic.ImageRotation, {
         onGet: () => {
           return this.deviceData.video_flipped === true ? 180 : 0;
         },
@@ -163,7 +165,7 @@ export default class NestCamera extends HomeKitDevice {
     }
 
     if (this.controller?.recordingManagement?.recordingManagementService !== undefined && this.deviceData.has_microphone === true) {
-      this.setupCharacteristic(
+      this.addHKCharacteristic(
         this.controller.recordingManagement.recordingManagementService,
         this.hap.Characteristic.RecordingAudioActive,
         {
@@ -1039,8 +1041,8 @@ export default class NestCamera extends HomeKitDevice {
       ) {
         if (this.motionServices?.[zone.id]?.service === undefined) {
           // Zone doesn't have an associated motion sensor, so add one
-          let tempService = this.setupService(this.hap.Service.MotionSensor, zone.id === 1 ? '' : zone.name, zone.id);
-          this.setupCharacteristic(tempService, this.hap.Characteristic.Active);
+          let tempService = this.addHKService(this.hap.Service.MotionSensor, zone.id === 1 ? '' : zone.name, zone.id);
+          this.addHKCharacteristic(tempService, this.hap.Characteristic.Active);
           tempService.updateCharacteristic(this.hap.Characteristic.Name, zone.id === 1 ? '' : zone.name);
           tempService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
           this.motionServices[zone.id] = { service: tempService, timer: undefined };
@@ -1229,8 +1231,8 @@ export default class NestCamera extends HomeKitDevice {
       // A zone with the ID of 1 is treated as the main motion sensor
       this.deviceData.activity_zones.forEach((zone) => {
         if (this.deviceData.hksv === false || (this.deviceData.hksv === true && zone.id === 1)) {
-          let tempService = this.setupService(this.hap.Service.MotionSensor, zone.id === 1 ? '' : zone.name, zone.id);
-          this.setupCharacteristic(tempService, this.hap.Characteristic.Active);
+          let tempService = this.addHKService(this.hap.Service.MotionSensor, zone.id === 1 ? '' : zone.name, zone.id);
+          this.addHKCharacteristic(tempService, this.hap.Characteristic.Active);
           tempService.updateCharacteristic(this.hap.Characteristic.Name, zone.id === 1 ? '' : zone.name);
           tempService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
           this.motionServices[zone.id] = { service: tempService, timer: undefined };

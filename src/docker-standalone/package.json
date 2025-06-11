@@ -2,7 +2,7 @@
     "name": "nest-accfactory",
     "displayName": "Nest Accfactory",
     "type": "module",
-    "version": "0.3.0-alpha.1",
+    "version": "0.3.0-alpha.7",
     "description": "HomeKit integration for Nest devices using HAP-NodeJS library",
     "author": "n0rt0nthec4t",
     "license": "Apache-2.0",
@@ -45,14 +45,14 @@
         "format": "prettier --write src/*.js src/**/*.js",
         "lint": "eslint src/*.js src/**/*.js --max-warnings=20",
         "watch": "npm run build && npm link && nodemon",
-        "build": "npm run clean && copyfiles -u 1 src/*.js dist && copyfiles -u 2 src/HomeKitDevice/*.js dist && copyfiles -u 2 src/HomeKitHistory/*.js dist && copyfiles -u 1 src/res/*.h264 dist && copyfiles -u 1 src/res/*.jpg dist && copyfiles -u 1 'src/protobuf/**/*.proto' dist && copyfiles -u 2 src/docker-standalone/*.js dist",
+        "build": "npm run clean && copyfiles -u 1 src/*.js dist && copyfiles -u 2 src/HomeKitDevice/*.js dist && copyfiles -u 2 src/HomeKitHistory/*.js dist && copyfiles -u 1 src/res/*.h264 dist && copyfiles -u 1 src/res/*.jpg dist && copyfiles -u 1 src/plugins/*.js dist && copyfiles -u 1 'src/protobuf/**/*.proto' dist && copyfiles -u 2 src/docker-standalone/*.js dist",
         "prepublishOnly": "npm run lint && npm run build"
     },
     "devDependencies": {
         "@eslint/js": "^9.28.0",
-        "@stylistic/eslint-plugin": "^4.4.0",
-        "@types/node": "^22.15.29",
-        "@typescript-eslint/parser": "^8.32.1",
+        "@stylistic/eslint-plugin": "^4.4.1",
+        "@types/node": "^24.0.0",
+        "@typescript-eslint/parser": "^8.34.0",
         "copyfiles": "^2.4.1",
         "eslint": "^9.28.0",
         "prettier": "^3.5.3",
@@ -60,7 +60,7 @@
         "rimraf": "^6.0.1"
     },
     "dependencies": {
-        "hap-nodejs": "^1.1.1",
+        "hap-nodejs": "^1.2.0",
         "chalk": "^5.4.1",
         "protobufjs": "^7.5.3",
         "ws": "^8.18.2",

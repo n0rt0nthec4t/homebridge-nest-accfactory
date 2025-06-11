@@ -17,7 +17,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2025/06/10
+// Code version 2025.06.10
 // Mark Hulskamp
 'use strict';
 

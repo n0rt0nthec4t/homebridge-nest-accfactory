@@ -1,16 +1,18 @@
 // Nest Temperature Sensor
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025/06/10
 // Mark Hulskamp
 'use strict';
 
 // Define our modules
-import HomeKitDevice from './HomeKitDevice.js';
+import HomeKitDevice from '../HomeKitDevice.js';
 
 const LOWBATTERYLEVEL = 10; // Low battery level percentage
 
 export default class NestTemperatureSensor extends HomeKitDevice {
+  static TYPE = 'TemperatureSensor';
+  static VERSION = '2025.06.11';
+
   batteryService = undefined;
   temperatureService = undefined;
 
@@ -21,11 +23,11 @@ export default class NestTemperatureSensor extends HomeKitDevice {
   // Class functions
   setupDevice() {
     // Setup temperature service if not already present on the accessory
-    this.temperatureService = this.setupService(this.hap.Service.TemperatureSensor, '', 1);
+    this.temperatureService = this.addHKService(this.hap.Service.TemperatureSensor, '', 1);
     this.temperatureService.setPrimaryService();
 
     // Setup battery service if not already present on the accessory
-    this.batteryService = this.setupService(this.hap.Service.Battery, '', 1);
+    this.batteryService = this.addHKService(this.hap.Service.Battery, '', 1);
     this.batteryService.setHiddenService(true);
 
     // Setup linkage to EveHome app if configured todo so

@@ -2,9 +2,10 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.3.0 (alpha.4)
+## v0.3.0 (alpha.7)
 
 - General code cleanup and bug fixes
+- 'Plugin' type architecture for Nest/Google devices
 - Updated README.md to account for changes to "devices" section in configuration
 - Remove excluded devices from Homebridge cache
 - Internal support for selecting active temperature sensor (not exposed yet to HomeKit)

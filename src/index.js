@@ -17,7 +17,7 @@
 //
 // Supports both Nest REST and Protobuf APIs for communication
 //
-// Code version 2025/06/05
+// Code version 2025.06.05
 // Mark Hulskamp
 'use strict';
 
