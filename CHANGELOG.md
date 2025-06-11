@@ -2,23 +2,26 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.3.0 (alpha.7)
+## v0.3.0 (alpha.8)
 
-- General code cleanup and bug fixes
-- 'Plugin' type architecture for Nest/Google devices
-- Updated README.md to account for changes to "devices" section in configuration
-- Remove excluded devices from Homebridge cache
-- Internal support for selecting active temperature sensor (not exposed yet to HomeKit)
-- Fix retaining custom "devices" section using plugin config GUI
-- Fix for motion services created when restored from Homebridge cache
-- Fix for missing devices when using a Nest FieldTest account
-- Hotwater heating boost (on/off) for supported Thermostats (EU/UK models)
-- Supported Nest Heatlink(s) as room temperature sensors
+- General code cleanup and stability improvements
+- Introduced plugin-style architecture for Nest/Google devices
+- Updated README.md to reflect changes to the devices section in configuration
+- Prevent excluded devices from being restored from Homebridge cache
+- Added internal support for selecting active temperature sensor (not yet exposed to HomeKit)
+- Fixed loss of custom devices section when using the plugin config UI
+- Fixed motion services being recreated when restored from Homebridge cache
+- Fixed missing devices for Nest FieldTest accounts
+- Added hot water heating boost (on/off) support for compatible EU/UK Thermostats
+- Added support for Nest Heat Link devices as room temperature sensors
+
+### Deprecation Notice
+- Support for the standalone Docker version of this plugin is planned to be deprecated in an upcoming release. While it currently remains functional, future updates may no longer include Docker-specific build support. Users are encouraged to transition to standard Homebridge installations where possible.
 
 ### Known Issues
 
-- Audio from newer Nest/Google camera/doorbell devices is still blank
-- npm package [ip](https://github.com/advisories/GHSA-2p57-rm9w-gvfp) has severity issue. This is being used in external library (werift)
+- Audio from newer Nest/Google cameras and doorbells is currently silent (blank audio output)
+- The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
 
 ### Thanks
 Special thanks to [@Daniel](https://github.com/no1knows) and [@Brad](https://github.com/bcullman) for testing and feedback on this release!

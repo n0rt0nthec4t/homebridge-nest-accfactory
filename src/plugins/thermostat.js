@@ -4,19 +4,23 @@
 // Mark Hulskamp
 'use strict';
 
+// Define nodejs module requirements
+import path from 'node:path';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
 
-// Define nodejs module requirements
-import path from 'node:path';
-
+// Define constants
 const LOWBATTERYLEVEL = 10; // Low battery level percentage
 const MIN_TEMPERATURE = 9; // Minimum temperature for Nest Thermostat
 const MAX_TEMPERATURE = 32; // Maximum temperature for Nest Thermostat
+const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2025.06.11';
+  static VERSION = '2025.06.12';
 
   batteryService = undefined;
   occupancyService = undefined;
@@ -236,10 +240,10 @@ export default class NestThermostat extends HomeKitDevice {
     // Attempt to load any external modules for this thermostat
     // We support external cool/heat/fan/dehumidifier module functions
     // This is all undocumented on how to use, as its for my specific use case :-)
-    this.externalCool = await this.#loadExternalModule(this.deviceData?.externalCool);
-    this.externalHeat = await this.#loadExternalModule(this.deviceData?.externalHeat);
-    this.externalFan = await this.#loadExternalModule(this.deviceData?.externalFan);
-    this.externalDehumidifier = await this.#loadExternalModule(this.deviceData?.externalDehumidifier);
+    this.externalCool = await this.#loadExternalModule(this.deviceData?.externalCool, ['cool', 'off']);
+    this.externalHeat = await this.#loadExternalModule(this.deviceData?.externalHeat, ['heat', 'off']);
+    this.externalFan = await this.#loadExternalModule(this.deviceData?.externalFan, ['fan', 'off']);
+    this.externalDehumidifier = await this.#loadExternalModule(this.deviceData?.externalDehumidifier, ['dehumidifier', 'off']);
 
     // Extra setup details for output
     this.humidityService !== undefined && this.postSetupDetail('Seperate humidity sensor');
@@ -746,22 +750,18 @@ export default class NestThermostat extends HomeKitDevice {
 
     // Update current state
     if (deviceData.hvac_state.toUpperCase() === 'HEATING') {
-      if (this.deviceData.hvac_state.toUpperCase() === 'COOLING' && this.externalCool !== undefined) {
+      if (this.deviceData.hvac_state.toUpperCase() === 'COOLING' && typeof this.externalCool?.off === 'function') {
         // Switched to heating mode and external cooling external code was being used, so stop cooling via cooling external code
-        if (typeof this.externalCool.off === 'function') {
-          this.externalCool.off();
-        }
+        this.externalCool.off();
       }
       if (
         (this.deviceData.hvac_state.toUpperCase() !== 'HEATING' ||
           deviceData.target_temperature_low !== this.deviceData.target_temperature_low) &&
-        this.externalHeat !== undefined
+        typeof this.externalHeat?.heat === 'function'
       ) {
         // Switched to heating mode and external heating external code is being used
         // Start heating via heating external code OR adjust heating target temperature due to change
-        if (typeof this.externalHeat.heat === 'function') {
-          this.externalHeat.heat(deviceData.deviceData.target_temperature_low);
-        }
+        this.externalHeat.heat(deviceData.target_temperature_low);
       }
       this.thermostatService.updateCharacteristic(
         this.hap.Characteristic.CurrentHeatingCoolingState,
@@ -770,22 +770,18 @@ export default class NestThermostat extends HomeKitDevice {
       historyEntry.status = 2; // heating
     }
     if (deviceData.hvac_state.toUpperCase() === 'COOLING') {
-      if (this.deviceData.hvac_state.toUpperCase() === 'HEATING' && this.externalHeat !== undefined) {
+      if (this.deviceData.hvac_state.toUpperCase() === 'HEATING' && typeof this.externalHeat?.off === 'function') {
         // Switched to cooling mode and external heating external code was being used, so stop heating via heating external code
-        if (typeof this.externalHeat.off === 'function') {
-          this.externalHeat.off();
-        }
+        this.externalHeat.off();
       }
       if (
         (this.deviceData.hvac_state.toUpperCase() !== 'COOLING' ||
           deviceData.target_temperature_high !== this.deviceData.target_temperature_high) &&
-        this.externalCool !== undefined
+        typeof this.externalCool?.cool === 'function'
       ) {
         // Switched to cooling mode and external cooling external code is being used
         // Start cooling via cooling external code OR adjust cooling target temperature due to change
-        if (typeof this.externalCool.cool === 'function') {
-          this.externalCool.cool(deviceData.target_temperature_high);
-        }
+        this.externalCool.cool(deviceData.target_temperature_high);
       }
       this.thermostatService.updateCharacteristic(
         this.hap.Characteristic.CurrentHeatingCoolingState,
@@ -794,17 +790,13 @@ export default class NestThermostat extends HomeKitDevice {
       historyEntry.status = 3; // cooling
     }
     if (deviceData.hvac_state.toUpperCase() === 'OFF') {
-      if (this.deviceData.hvac_state.toUpperCase() === 'COOLING' && this.externalCool !== undefined) {
-        // Switched to off mode and external cooling external code was being used, so stop cooling via cooling external code
-        if (typeof this.externalCool.off === 'function') {
-          this.externalCool.off();
-        }
+      if (this.deviceData.hvac_state.toUpperCase() === 'COOLING' && typeof this.externalCool?.off === 'function') {
+        // Switched to off mode and external cooling external code was being used, so stop cooling via cooling external code{
+        this.externalCool.off();
       }
-      if (this.deviceData.hvac_state.toUpperCase() === 'HEATING' && this.externalHeat !== undefined) {
+      if (this.deviceData.hvac_state.toUpperCase() === 'HEATING' && typeof this.externalHeat?.off === 'function') {
         // Switched to off mode and external heating external code was being used, so stop heating via heating external code
-        if (typeof this.externalHeat.heat === 'function') {
-          this.externalHeat.off();
-        }
+        this.externalHeat.off();
       }
       this.thermostatService.updateCharacteristic(
         this.hap.Characteristic.CurrentHeatingCoolingState,
@@ -815,17 +807,13 @@ export default class NestThermostat extends HomeKitDevice {
 
     if (this.fanService !== undefined) {
       // fan status on or off
-      if (this.deviceData.fan_state === false && deviceData.fan_state === true && this.externalFan !== undefined) {
+      if (this.deviceData.fan_state === false && deviceData.fan_state === true && typeof this.externalFan?.fan === 'function') {
         // Fan mode was switched on and external fan external code is being used, so start fan via fan external code
-        if (typeof this.externalFan.fan === 'function') {
-          this.externalFan.fan(0); // Fan speed will be auto
-        }
+        this.externalFan.fan(0); // Fan speed will be auto
       }
-      if (this.deviceData.fan_state === true && deviceData.fan_state === false && this.externalFan !== undefined) {
+      if (this.deviceData.fan_state === true && deviceData.fan_state === false && typeof this.externalFan?.off === 'function') {
         // Fan mode was switched off and external fan external code was being used, so stop fan via fan external code
-        if (typeof this.externalFan.off === 'function') {
-          this.externalFan.off();
-        }
+        this.externalFan.off();
       }
 
       this.fanService.updateCharacteristic(
@@ -845,24 +833,20 @@ export default class NestThermostat extends HomeKitDevice {
       if (
         this.deviceData.dehumidifier_state === false &&
         deviceData.dehumidifier_state === true &&
-        this.externalDehumidifier !== undefined
+        typeof this.externalDehumidifier?.dehumidifier === 'function'
       ) {
         // Dehumidifier mode was switched on and external dehumidifier external code is being used
         // Start dehumidifier via dehumidifier external code
-        if (typeof this.externalDehumidifier.dehumififier === 'function') {
-          this.externalDehumidifier.dehumififier(0);
-        }
+        this.externalDehumidifier.dehumidifier(0);
       }
       if (
         this.deviceData.dehumidifier_state === true &&
         deviceData.dehumidifier_state === false &&
-        this.externalDehumidifier !== undefined
+        typeof this.externalDehumidifier?.off === 'function'
       ) {
         // Dehumidifier mode was switched off and external dehumidifier external code was being used
         // Stop dehumidifier via dehumidifier external code
-        if (typeof this.externalDehumidifier.off === 'function') {
-          this.externalDehumidifier.off();
-        }
+        this.externalDehumidifier.off();
       }
 
       this.dehumidifierService.updateCharacteristic(
@@ -1040,7 +1024,7 @@ export default class NestThermostat extends HomeKitDevice {
     this.switchService = this.addHKService(this.hap.Service.Switch, '', 1);
     this.thermostatService.addLinkedService(this.switchService);
 
-    this.addHKCharacteristic(this.switchService, this.hap.Characteristic.One, {
+    this.addHKCharacteristic(this.switchService, this.hap.Characteristic.On, {
       onSet: (value) => this.setHotwaterBoost(value),
       onGet: () => {
         return this.deviceData?.hot_water_boost_active === true;
@@ -1048,31 +1032,63 @@ export default class NestThermostat extends HomeKitDevice {
     });
   }
 
-  async #loadExternalModule(module) {
-    if (typeof module !== 'string' || module === '') {
-      return;
+  async #loadExternalModule(module, expectedFunctions = []) {
+    if (typeof module !== 'string' || module === '' || Array.isArray(expectedFunctions) === false) {
+      return undefined;
     }
 
+    // Helper to resolve a module path, defaulting to plugin dir and falling back from .mjs to .js
+    const resolveModulePath = async (basePath) => {
+      let hasExtension = path.extname(basePath) !== '';
+      let isRelative = basePath.startsWith('./') || basePath.startsWith('../');
+      let isAbsolute = path.isAbsolute(basePath);
+      let resolvedBase = isAbsolute ? basePath : isRelative ? path.resolve(basePath) : path.resolve(__dirname, basePath);
+      let finalPath = resolvedBase;
+
+      if (hasExtension === false) {
+        let mjsPath = `${resolvedBase}.mjs`;
+        let jsPath = `${resolvedBase}.js`;
+
+        try {
+          await fs.access(mjsPath);
+          finalPath = mjsPath;
+        } catch {
+          try {
+            await fs.access(jsPath);
+            finalPath = jsPath;
+          } catch {
+            finalPath = mjsPath; // fallback to mjs even if not found
+          }
+        }
+      }
+      return finalPath;
+    };
+
     let loadedModule = undefined;
+
     try {
       let values = module.match(/'[^']*'|[^\s]+/g)?.map((v) => v.replace(/^'(.*)'$/, '$1')) || [];
-      let script = path.resolve(values[0]); // external library name
-      let options = values.slice(1); // options to be passed into the external library
+      let script = await resolveModulePath(values[0]);
+      let options = values.slice(1);
       let externalModule = await import(script);
+
       if (typeof externalModule?.default === 'function') {
-        loadedModule = externalModule.default(this.log, options);
+        let moduleExports = externalModule.default(this.log, options);
+        let valid = Object.fromEntries(
+          expectedFunctions.filter((fn) => typeof moduleExports[fn] === 'function').map((fn) => [fn, moduleExports[fn]]),
+        );
+        loadedModule = Object.keys(valid).length > 0 ? valid : undefined;
       }
       // eslint-disable-next-line no-unused-vars
     } catch (error) {
-      module =
+      let shortName =
         typeof module === 'string'
           ? module
               .trim()
               .match(/'[^']*'|[^\s]+/)?.[0]
-              .replace(/^'(.*)'$/, '$1')
+              ?.replace(/^'(.*)'$/, '$1')
           : '';
-
-      this?.log?.warn?.('Failed to load external module "%s" for thermostat "%s"', module, this.deviceData.description);
+      this?.log?.warn?.('Failed to load external module "%s" for thermostat "%s"', shortName, this.deviceData.description);
     }
 
     return loadedModule;

@@ -1041,10 +1041,12 @@ export default class NestCamera extends HomeKitDevice {
       ) {
         if (this.motionServices?.[zone.id]?.service === undefined) {
           // Zone doesn't have an associated motion sensor, so add one
-          let tempService = this.addHKService(this.hap.Service.MotionSensor, zone.id === 1 ? '' : zone.name, zone.id);
+          let zoneName = zone.id === 1 ? '' : zone.name;
+          let tempService = this.addHKService(this.hap.Service.MotionSensor, zoneName, zone.id);
           this.addHKCharacteristic(tempService, this.hap.Characteristic.Active);
-          tempService.updateCharacteristic(this.hap.Characteristic.Name, zone.id === 1 ? '' : zone.name);
+          tempService.updateCharacteristic(this.hap.Characteristic.Name, zoneName);
           tempService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
+
           this.motionServices[zone.id] = { service: tempService, timer: undefined };
         }
       }
@@ -1059,12 +1061,15 @@ export default class NestCamera extends HomeKitDevice {
         deviceData.online === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE,
       );
 
-      if (JSON.stringify(deviceData.activity_zones) !== JSON.stringify(this.deviceData.activity_zones) && zoneID !== 1) {
-        if (deviceData.activity_zones.findIndex(({ id }) => id === zoneID) === -1) {
-          // Motion service we created doesn't appear in zone list anymore, so assume deleted
-          this.accessory.removeService(service.service);
-          delete this.motionServices[zoneID];
-        }
+      // Handle deleted zones (excluding zone ID 1 for HKSV)
+      if (
+        zoneID !== '1' &&
+        Array.isArray(deviceData.activity_zones) === true &&
+        deviceData.activity_zones.findIndex(({ id }) => id === Number(zoneID)) === -1
+      ) {
+        // Motion service we created doesn't appear in zone list anymore, so assume deleted
+        this.accessory.removeService(service.service);
+        delete this.motionServices[zoneID];
       }
     });
 
@@ -1219,25 +1224,29 @@ export default class NestCamera extends HomeKitDevice {
     // This will help with any 'restored' service Homebridge has done
     // And allow for zone changes on the camera/doorbell
     this.motionServices = {};
-    this.accessory.services.forEach((service) => {
-      if (service.UUID === this.hap.Service.MotionSensor.UUID) {
-        this.accessory.removeService(service);
-      }
-    });
+    this.accessory.services
+      .filter((service) => service.UUID === this.hap.Service.MotionSensor.UUID)
+      .forEach((service) => this.accessory.removeService(service));
 
-    if (this.deviceData.has_motion_detection === true && typeof this.deviceData.activity_zones === 'object') {
+    let zones = Array.isArray(this.deviceData.activity_zones) ? this.deviceData.activity_zones : [];
+
+    if (this.deviceData.has_motion_detection === true && zones.length > 0) {
       // We have the capability of motion sensing on device, so setup motion sensor(s)
       // If we have HKSV video enabled, we'll only create a single motion sensor
       // A zone with the ID of 1 is treated as the main motion sensor
-      this.deviceData.activity_zones.forEach((zone) => {
-        if (this.deviceData.hksv === false || (this.deviceData.hksv === true && zone.id === 1)) {
-          let tempService = this.addHKService(this.hap.Service.MotionSensor, zone.id === 1 ? '' : zone.name, zone.id);
-          this.addHKCharacteristic(tempService, this.hap.Characteristic.Active);
-          tempService.updateCharacteristic(this.hap.Characteristic.Name, zone.id === 1 ? '' : zone.name);
-          tempService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
-          this.motionServices[zone.id] = { service: tempService, timer: undefined };
+      for (let zone of zones) {
+        if (this.deviceData.hksv === true && zone.id !== 1) {
+          continue;
         }
-      });
+
+        let zoneName = zone.id === 1 ? '' : zone.name;
+        let service = this.addHKService(this.hap.Service.MotionSensor, zoneName, zone.id);
+        this.addHKCharacteristic(service, this.hap.Characteristic.Active);
+        service.updateCharacteristic(this.hap.Characteristic.Name, zoneName);
+        service.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
+
+        this.motionServices[zone.id] = { service, timer: undefined };
+      }
     }
   }
 

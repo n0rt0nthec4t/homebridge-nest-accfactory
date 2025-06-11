@@ -18,16 +18,17 @@ Building and maintaining this project takes time, effort, and resources. If you 
 
 The following Nest devices are known to be supported
 
-* Nest Thermostats (1st gen, 2nd gen, 3rd gen, E, 2020 mirror edition, 4th gen)**
+* Nest Thermostats (1st gen, 2nd gen, 3rd gen, E, 2020 mirror edition, 4th gen)
 * Nest Protects (1st and 2nd gen)
 * Nest Temp Sensors (1st gen)
 * Nest Cameras (Cam Indoor, IQ Indoor, Outdoor, IQ Outdoor, Cam with Floodlight)
 * Nest Doorbells (wired 1st gen)
 * Nest HeatLink
 
-** Google has anounced discontinued support for Nest Thermostats (1st gen and 2nd gen) from 25th October 2025. Based upon their stated language, I expect these to cease functioning post this date with this Homebridge plugin
+**Note:** Google has announced it will discontinue support for 1st and 2nd generation Nest Thermostats as of **October 25, 2025**.  
+Based on their stated intentions, these models are expected to stop functioning with this Homebridge plugin after that date.
 
-The accessory supports connection to Nest using a Nest account OR a Google (migrated Nest account) account.
+The accessory supports connection to Nest using a Nest account AND/OR a Google (migrated Nest account) account.
 
 ## Configuration
 

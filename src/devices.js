@@ -1,19 +1,34 @@
 // Device support loader
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.06.11
+// Code version 2025.06.12
 // Mark Hulskamp
 'use strict';
 
+// Define nodejs module requirements
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import url from 'node:url';
 
+// Import our modules
 import HomeKitDevice from './HomeKitDevice.js';
 
+// Define constants
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
+const DeviceType = Object.freeze({
+  THERMOSTAT: 'Thermostat',
+  TEMPSENSOR: 'TemperatureSensor',
+  SMOKESENSOR: 'Protect',
+  CAMERA: 'Camera',
+  DOORBELL: 'Doorbell',
+  FLOODLIGHT: 'FloodlightCamera',
+  WEATHER: 'Weather',
+  HEATLINK: 'Heatlink',
+  LOCK: 'Lock',
+  ALARM: 'Alarm',
+});
 
-export async function loadDeviceModules(log, pluginDir = '') {
+async function loadDeviceModules(log, pluginDir = '') {
   let baseDir = path.join(__dirname, pluginDir);
   let deviceMap = new Map();
   let files = (await fs.readdir(baseDir)).sort();
@@ -33,7 +48,7 @@ export async function loadDeviceModules(log, pluginDir = '') {
         }
 
         let proto = Object.getPrototypeOf(exported);
-        while (proto && proto.name !== '') {
+        while (proto !== undefined && proto.name !== '') {
           if (proto === HomeKitDevice) {
             if (
               typeof exported.TYPE !== 'string' ||
@@ -45,7 +60,7 @@ export async function loadDeviceModules(log, pluginDir = '') {
               break;
             }
 
-            if (!deviceMap.has(exported.TYPE)) {
+            if (deviceMap.has(exported.TYPE) === false) {
               deviceMap.set(exported.TYPE, exported);
               log?.info?.('Loaded device module "%s" (v%s)', exported.TYPE, exported.VERSION);
             }
@@ -64,23 +79,35 @@ export async function loadDeviceModules(log, pluginDir = '') {
   return deviceMap;
 }
 
-export function getDeviceHKCategory(type) {
+function getDeviceHKCategory(type) {
   let category = 1; // Categories.OTHER
-  if (type === 'Thermostat') {
+
+  if (type === DeviceType.LOCK) {
+    category = 6; // Categories.DOOR_LOCK
+  }
+
+  if (type === DeviceType.THERMOSTAT) {
     category = 9; // Categories.THERMOSTAT
   }
 
-  if (type === 'TemperatureSensor' || type === 'Heatlink' || type === 'Protect' || type === 'Weather') {
+  if (type === DeviceType.TEMPSENSOR || type === DeviceType.HEATLINK || type === DeviceType.SMOKESENSOR || type === DeviceType.WEATHER) {
     category = 10; // Categories.SENSOR
   }
 
-  if (type === 'Camera' || type === 'FloodlightCamera') {
+  if (type === DeviceType.ALARM) {
+    category = 11; // Categories.SECURITY_SYSTEM
+  }
+
+  if (type === DeviceType.CAMERA || type === DeviceType.FLOODLIGHT) {
     category = 17; // Categories.IP_CAMERA
   }
 
-  if (type === 'Doorbell') {
+  if (type === DeviceType.DOORBELL) {
     category = 18; // Categories.VIDEO_DOORBELL
   }
 
   return category;
 }
+
+// Define exports
+export { DeviceType, loadDeviceModules, getDeviceHKCategory };

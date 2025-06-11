@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.06.11
+// Code version 2025.06.12
 // Mark Hulskamp
 'use strict';
 
@@ -21,8 +21,9 @@ import { fileURLToPath } from 'node:url';
 
 // Import our modules
 import HomeKitDevice from './HomeKitDevice.js';
-import { loadDeviceModules, getDeviceHKCategory } from './devices.js';
+import { DeviceType, loadDeviceModules, getDeviceHKCategory } from './devices.js';
 
+// Define constants
 const CAMERAALERTPOLLING = 2000; // Camera alerts polling timer
 const CAMERAZONEPOLLING = 30000; // Camera zones changes polling timer
 const WEATHERPOLLING = 300000; // Weather data polling timer
@@ -34,19 +35,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a define
 // We handle the connections to Nest/Google
 // Perform device management (additions/removals/updates)
 export default class NestAccfactory {
-  static DeviceType = {
-    THERMOSTAT: 'Thermostat',
-    TEMPSENSOR: 'TemperatureSensor',
-    SMOKESENSOR: 'Protect',
-    CAMERA: 'Camera',
-    DOORBELL: 'Doorbell',
-    FLOODLIGHT: 'FloodlightCamera',
-    WEATHER: 'Weather',
-    HEATLINK: 'Heatlink',
-    LOCK: 'Lock', // yet to implement
-    ALARM: 'Alarm', // yet to implement
-  };
-
   static DataSource = {
     NESTAPI: 'Nest', // From the Nest API
     PROTOBUFAPI: 'Protobuf', // From the Protobuf API
@@ -1070,9 +1058,9 @@ export default class NestAccfactory {
 
           // Optional things for each device type
           if (
-            deviceClass.TYPE === NestAccfactory.DeviceType.CAMERA ||
-            deviceClass.TYPE === NestAccfactory.DeviceType.DOORBELL ||
-            deviceClass.TYPE === NestAccfactory.DeviceType.FLOODLIGHT
+            deviceClass.TYPE === DeviceType.CAMERA ||
+            deviceClass.TYPE === DeviceType.DOORBELL ||
+            deviceClass.TYPE === DeviceType.FLOODLIGHT
           ) {
             // Setup polling loop for camera/doorbell zone data
             // This is only required for Nest API data sources as these details are present in Protobuf API
@@ -1283,7 +1271,7 @@ export default class NestAccfactory {
             }, CAMERAALERTPOLLING);
           }
 
-          if (deviceClass.TYPE === NestAccfactory.DeviceType.WEATHER) {
+          if (deviceClass.TYPE === DeviceType.WEATHER) {
             // Setup polling loop for weather data
             this.#trackedDevices[deviceData.serialNumber].timers.weather = setInterval(async () => {
               let nest_google_uuid = this.#trackedDevices?.[deviceData?.serialNumber]?.rawDataUuid;
@@ -1471,7 +1459,7 @@ export default class NestAccfactory {
       let processed = {};
       try {
         // Fix up data we need to
-        data.device_type = NestAccfactory.DeviceType.THERMOSTAT; // Nest Thermostat
+        data.device_type = DeviceType.THERMOSTAT; // Nest Thermostat
 
         // If we have hot water control, it should be a 'UK/EU' model, so add that after the 'gen' tag in the model name
         data.model = data.has_hot_water_control === true ? data.model.replace(/\bgen\)/, 'gen, EU)') : data.model;
@@ -1998,7 +1986,7 @@ export default class NestAccfactory {
       let processed = {};
       try {
         // Fix up data we need to
-        data.device_type = NestAccfactory.DeviceType.TEMPSENSOR; // Nest Temperature sensor
+        data.device_type = DeviceType.TEMPSENSOR; // Nest Temperature sensor
         data.model = 'Temperature Sensor';
         data.softwareVersion = '1.0.0';
         data = process_common_data(object_key, data);
@@ -2087,7 +2075,7 @@ export default class NestAccfactory {
       let processed = {};
       try {
         // Fix up data we need to
-        data.device_type = NestAccfactory.DeviceType.HEATLINK;
+        data.device_type = DeviceType.HEATLINK;
         data = process_common_data(object_key, data);
         data.current_temperature = adjustTemperature(data.current_temperature, 'C', 'C', true);
         processed = data;
@@ -2150,7 +2138,7 @@ export default class NestAccfactory {
       let processed = {};
       try {
         // Fix up data we need to
-        data.device_type = NestAccfactory.DeviceType.SMOKESENSOR; // Nest Protect
+        data.device_type = DeviceType.SMOKESENSOR; // Nest Protect
         data = process_common_data(object_key, data);
         processed = data;
         // eslint-disable-next-line no-unused-vars
@@ -2316,12 +2304,12 @@ export default class NestAccfactory {
       let processed = {};
       try {
         // Fix up data we need to
-        data.device_type = NestAccfactory.DeviceType.CAMERA;
+        data.device_type = DeviceType.CAMERA;
         if (data.model.toUpperCase().includes('DOORBELL') === true) {
-          data.device_type = NestAccfactory.DeviceType.DOORBELL;
+          data.device_type = DeviceType.DOORBELL;
         }
         if (data.model.toUpperCase().includes('FLOODLIGHT') === true) {
-          data.device_type = NestAccfactory.DeviceType.FLOODLIGHT;
+          data.device_type = DeviceType.FLOODLIGHT;
         }
         data = process_common_data(object_key, data);
         processed = data;
@@ -2555,7 +2543,7 @@ export default class NestAccfactory {
       let processed = {};
       try {
         // Fix up data we need to
-        data.device_type = NestAccfactory.DeviceType.WEATHER;
+        data.device_type = DeviceType.WEATHER;
         data.model = 'Weather';
         data.softwareVersion = '1.0.0';
         data = process_common_data(object_key, data);
@@ -3447,7 +3435,7 @@ function scaleValue(value, sourceMin, sourceMax, targetMin, targetMax) {
   return ((value - sourceMin) * (targetMax - targetMin)) / (sourceMax - sourceMin) + targetMin;
 }
 
-async function fetchWrapper(method, url, options, data, response) {
+async function fetchWrapper(method, url, options, data) {
   if ((method !== 'get' && method !== 'post') || typeof url !== 'string' || url === '' || typeof options !== 'object') {
     return;
   }
@@ -3472,7 +3460,7 @@ async function fetchWrapper(method, url, options, data, response) {
   }
 
   // eslint-disable-next-line no-undef
-  response = await fetch(url, options);
+  let response = await fetch(url, options);
 
   if (response.ok === false && options.retry > 1) {
     options.retry--;
@@ -3481,8 +3469,7 @@ async function fetchWrapper(method, url, options, data, response) {
     let delay = 500 * 2 ** (options._retryCount - 1);
     await new Promise((resolve) => setTimeout(resolve, delay));
 
-    // eslint-disable-next-line no-undef
-    response = await fetchWrapper(method, url, options, data, structuredClone(response));
+    response = await fetchWrapper(method, url, options, data);
   }
 
   if (response.ok === false && options.retry === 0) {

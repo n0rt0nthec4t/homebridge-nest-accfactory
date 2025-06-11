@@ -1,7 +1,7 @@
 // Thermostat external control plugin for homebridge-nest-accfactory
 // Controls a daikin wifi connected a/c system via thermostat with no physical connection to it
 //
-// Code version 2024/12/17
+// Code version 2025.06.12
 // Mark Hulskamp
 'use strict';
 
@@ -10,6 +10,7 @@ import { setTimeout } from 'node:timers';
 import { URL } from 'node:url';
 
 // Define constants
+const LOGLEVELS = ['info', 'success', 'warn', 'error', 'debug'];
 const Power = {
   ON: 1,
   OFF: 0,
@@ -128,7 +129,7 @@ async function heat(temperature) {
   lastFanRate = FanRate.AUTO; // Auto fan mode
 }
 
-async function dehumififier(humidity) {
+async function dehumidifier(humidity) {
   // Power on, set to dehumidifier mode with appropriate target humidity, fan mode is Auto and fan is swing
   if (systemURL === undefined) {
     return;
@@ -171,29 +172,9 @@ async function fan(speed) {
     return;
   }
 
-  let steps = 100 / Object.keys(FanRate).length;
-  let rate = FanRate.AUTO;
-  if (speed >= 0 && speed <= steps * 1) {
-    rate = FanRate.AUTO;
-  }
-  if (speed > steps * 1 && speed <= steps * 2) {
-    rate = FanRate.QUIET;
-  }
-  if (speed > steps * 2 && speed <= steps * 3) {
-    rate = FanRate.LEVEL1;
-  }
-  if (speed > steps * 3 && speed <= steps * 4) {
-    rate = FanRate.LEVEL2;
-  }
-  if (speed > steps * 4 && speed <= steps * 5) {
-    rate = FanRate.LEVEL3;
-  }
-  if (speed > steps * 5 && speed <= steps * 6) {
-    rate = FanRate.LEVEL4;
-  }
-  if (speed > steps * 6 && speed <= 100) {
-    rate = FanRate.LEVEL5;
-  }
+  let fanRates = [FanRate.AUTO, FanRate.QUIET, FanRate.LEVEL1, FanRate.LEVEL2, FanRate.LEVEL3, FanRate.LEVEL4, FanRate.LEVEL5];
+  let index = Math.min(Math.floor((speed / 100) * fanRates.length), fanRates.length - 1);
+  let rate = fanRates[index];
 
   // Power on, set to fan mode, fan mode is Auto and fan is swing
   await fetchWrapper(
@@ -283,46 +264,47 @@ function setSystemURL(daikinSystemURL) {
   return validatedSystemURL;
 }
 
-async function fetchWrapper(method, url, options, data, response) {
+async function fetchWrapper(method, url, options, data) {
   if ((method !== 'get' && method !== 'post') || typeof url !== 'string' || url === '' || typeof options !== 'object') {
     return;
   }
 
-  if (isNaN(options?.timeout) === false && Number(options?.timeout) > 0) {
-    // If a timeout is specified in the options, setup here
+  if (isNaN(options?.timeout) === false && Number(options.timeout) > 0) {
     // eslint-disable-next-line no-undef
     options.signal = AbortSignal.timeout(Number(options.timeout));
   }
 
-  if (options?.retry === undefined) {
-    // If not retry option specifed , we'll do just once
+  if (isNaN(options.retry) === true || options.retry < 1) {
     options.retry = 1;
   }
 
-  options.method = method; // Set the HTTP method to use
+  if (isNaN(options._retryCount) === true) {
+    options._retryCount = 0;
+  }
 
-  if (method === 'post' && typeof data !== undefined) {
-    // Doing a HTTP post, so include the data in the body
+  options.method = method;
+
+  if (method === 'post' && data !== undefined) {
     options.body = data;
   }
 
-  if (options.retry > 0) {
-    // eslint-disable-next-line no-undef
-    response = await fetch(url, options);
-    if (response.ok === false && options.retry > 1) {
-      options.retry--; // One less retry to go
+  // eslint-disable-next-line no-undef
+  let response = await fetch(url, options);
 
-      // Try again after short delay (500ms)
-      // We pass back in this response also for when we reach zero retries and still not successful
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      // eslint-disable-next-line no-undef
-      response = await fetchWrapper('get', method, url, options, data, structuredClone(response));
-    }
-    if (response.ok === false && options.retry === 0) {
-      let error = new Error(response.statusText);
-      error.code = response.status;
-      throw error;
-    }
+  if (response.ok === false && options.retry > 1) {
+    options.retry--;
+    options._retryCount++;
+
+    let delay = 500 * 2 ** (options._retryCount - 1);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+
+    response = await fetchWrapper(method, url, options, data);
+  }
+
+  if (response.ok === false && options.retry === 0) {
+    const error = new Error(response.statusText);
+    error.code = response.status;
+    throw error;
   }
 
   return response;
@@ -330,27 +312,20 @@ async function fetchWrapper(method, url, options, data, response) {
 
 // Export functions for use in our dynamically loaded library
 //
-// let test = await import('./daikinsystem.js');
+// let test = await import('./daikinsystem.js', ['cool', 'off]);
 // returned = test.default(loggerFunctions, 'http://x.x.x.x');
 export default (logger, options) => {
   // Validate the passed in logging object. We are expecting certain functions to be present
-  if (
-    typeof logger?.info === 'function' &&
-    typeof logger?.success === 'function' &&
-    typeof logger?.warn === 'function' &&
-    typeof logger?.error === 'function' &&
-    typeof logger?.debug === 'function'
-  ) {
+  if (LOGLEVELS.every((fn) => typeof logger?.[fn] === 'function')) {
     log = logger;
   }
-
   // Validate the url
   systemURL = setSystemURL(options[0]);
 
   return {
     cool,
     heat,
-    dehumififier,
+    dehumidifier,
     fan,
     off,
   };

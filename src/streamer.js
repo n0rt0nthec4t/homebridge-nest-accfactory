@@ -17,7 +17,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2025.06.10
+// Code version 2025.06.12
 // Mark Hulskamp
 'use strict';
 
@@ -37,9 +37,11 @@ const H264NALSTARTCODE = Buffer.from([0x00, 0x00, 0x00, 0x01]);
 const MAXBUFFERAGE = 5000; // Keep last 5s of media in buffer
 const STREAMFRAMEINTERVAL = 1000 / 30; // 30fps approx
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
+const LOGLEVELS = ['info', 'success', 'warn', 'error', 'debug'];
 
 // Streamer object
 export default class Streamer {
+  log = undefined; // Logging function object
   videoEnabled = undefined; // Video stream on camera enabled or not
   audioEnabled = undefined; // Audio from camera enabled or not
   online = undefined; // Camera online or not
@@ -61,13 +63,7 @@ export default class Streamer {
 
   constructor(deviceData, options) {
     // Setup logger object if passed as option
-    if (
-      typeof options?.log?.info === 'function' &&
-      typeof options?.log?.success === 'function' &&
-      typeof options?.log?.warn === 'function' &&
-      typeof options?.log?.error === 'function' &&
-      typeof options?.log?.debug === 'function'
-    ) {
+    if (typeof options?.log === 'object' && LOGLEVELS.every((fn) => typeof options.log?.[fn] === 'function')) {
       this.log = options.log;
     }
 
