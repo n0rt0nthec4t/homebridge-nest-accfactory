@@ -25,7 +25,8 @@ The following Nest devices are known to be supported
 * Nest Doorbells (wired 1st gen)
 * Nest HeatLink
 
-** Google has anounced discontinued support for Nest Thermostats (1st gen and 2nd gen) from 25th October 2025. Based upon their stated language, I expect these to cease functioning post this date with this Homebridge plugin
+**Note:** Google has announced it will discontinue support for 1st and 2nd generation Nest Thermostats as of **October 25, 2025**.  
+Based on their stated intentions, these models are expected to stop functioning with this Homebridge plugin after that date.
 
 The accessory supports connection to Nest using a Nest account OR a Google (migrated Nest account) account.
 

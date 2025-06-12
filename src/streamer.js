@@ -29,15 +29,24 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Define constants
-const CAMERAOFFLINEH264FILE = 'Nest_camera_offline.h264'; // Camera offline H264 frame file
-const CAMERAOFFH264FILE = 'Nest_camera_off.h264'; // Camera off H264 frame file
-const CAMERATRANSFERJPGFILE = 'Nest_camera_transfer.jpg'; // Camera transferring H264 frame file
+const CAMERARESOURCE = {
+  offline: 'Nest_camera_offline.h264',
+  off: 'Nest_camera_off.h264',
+  transfer: 'Nest_camera_transfer.h264',
+};
 const TALKBACKAUDIOTIMEOUT = 1000;
 const H264NALSTARTCODE = Buffer.from([0x00, 0x00, 0x00, 0x01]);
 const MAXBUFFERAGE = 5000; // Keep last 5s of media in buffer
 const STREAMFRAMEINTERVAL = 1000 / 30; // 30fps approx
+const RESOURCEPATH = './res';
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
-const LOGLEVELS = ['info', 'success', 'warn', 'error', 'debug'];
+const LOGLEVELS = {
+  info: 'info',
+  success: 'success',
+  warn: 'warn',
+  error: 'error',
+  debug: 'debug',
+};
 
 // Streamer object
 export default class Streamer {
@@ -63,7 +72,7 @@ export default class Streamer {
 
   constructor(deviceData, options) {
     // Setup logger object if passed as option
-    if (typeof options?.log === 'object' && LOGLEVELS.every((fn) => typeof options.log?.[fn] === 'function')) {
+    if (Object.keys(LOGLEVELS).every((fn) => typeof options?.log?.[fn] === 'function')) {
       this.log = options.log;
     }
 
@@ -74,30 +83,21 @@ export default class Streamer {
     this.audioEnabled = deviceData?.audio_enabled === true;
     this.uuid = deviceData?.nest_google_uuid;
 
-    // Setup location for *.h264 frame files. This can be overriden by a passed in option
-    let resourcePath = path.resolve(__dirname + '/res'); // Default location for *.h264 files
-    if (
-      typeof options?.resourcePath === 'string' &&
-      options.resourcePath !== '' &&
-      fs.existsSync(path.resolve(options.resourcePath)) === true
-    ) {
-      resourcePath = path.resolve(options.resourcePath);
-    }
+    // Load support video frame files as required
+    const loadFrameIfExists = (filename, label) => {
+      let buffer = undefined;
+      let file = path.resolve(__dirname, RESOURCEPATH, filename);
+      if (fs.existsSync(file) === true) {
+        buffer = fs.readFileSync(file);
+      } else {
+        this.log?.warn?.('Failed to load %s video resource for "%s"', label, deviceData.description);
+      }
+      return buffer;
+    };
 
-    // load buffer for camera offline in .h264 frame
-    if (fs.existsSync(path.resolve(resourcePath + '/' + CAMERAOFFLINEH264FILE)) === true) {
-      this.#cameraOfflineFrame = fs.readFileSync(path.resolve(resourcePath + '/' + CAMERAOFFLINEH264FILE));
-    }
-
-    // load buffer for camera stream off in .h264 frame
-    if (fs.existsSync(path.resolve(resourcePath + '/' + CAMERAOFFH264FILE)) === true) {
-      this.#cameraVideoOffFrame = fs.readFileSync(path.resolve(resourcePath + '/' + CAMERAOFFH264FILE));
-    }
-
-    // load buffer for camera transferring in .h264 frame
-    if (fs.existsSync(path.resolve(resourcePath + '/' + CAMERATRANSFERJPGFILE)) === true) {
-      this.#cameraTransferringFrame = fs.readFileSync(path.resolve(resourcePath + '/' + CAMERATRANSFERJPGFILE));
-    }
+    this.#cameraOfflineFrame = loadFrameIfExists(CAMERARESOURCE.offline, 'offline');
+    this.#cameraVideoOffFrame = loadFrameIfExists(CAMERARESOURCE.off, 'video off');
+    this.#cameraTransferringFrame = loadFrameIfExists(CAMERARESOURCE.transfer, 'transferring');
 
     // Start a non-blocking loop for output to the various streams which connect to our streamer object
     // This process will also handle the rolling-buffer size we require

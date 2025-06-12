@@ -21,18 +21,21 @@ import HomeKitDevice from '../HomeKitDevice.js';
 import NexusTalk from '../nexustalk.js';
 import WebRTC from '../webrtc.js';
 
-const CAMERAOFFLINEJPGFILE = 'Nest_camera_offline.jpg'; // Camera offline jpg image file
-const CAMERAOFFJPGFILE = 'Nest_camera_off.jpg'; // Camera video off jpg image file
-const CAMERATRANSFERJPGFILE = 'Nest_camera_transfer.jpg'; // Camera transferring jpg image file
+const CAMERARESOURCE = {
+  offline: 'Nest_camera_offline.jpg',
+  off: 'Nest_camera_off.jpg',
+  transfer: 'Nest_camera_transfer.jpg',
+};
 const MP4BOX = 'mp4box'; // MP4 box fragement event for HKSV recording
 const SNAPSHOTCACHETIMEOUT = 30000; // Timeout for retaining snapshot image (in milliseconds)
 const PROTOCOLWEBRTC = 'PROTOCOL_WEBRTC';
 const PROTOCOLNEXUSTALK = 'PROTOCOL_NEXUSTALK';
+const RESOURCEPATH = '../res';
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2025.06.11';
+  static VERSION = '2025.06.12';
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -55,23 +58,21 @@ export default class NestCamera extends HomeKitDevice {
   constructor(accessory, api, log, eventEmitter, deviceData) {
     super(accessory, api, log, eventEmitter, deviceData);
 
-    // buffer for camera offline jpg image
-    let imageFile = path.resolve(__dirname + '/res/' + CAMERAOFFLINEJPGFILE);
-    if (fs.existsSync(imageFile) === true) {
-      this.#cameraOfflineImage = fs.readFileSync(imageFile);
-    }
+    // Load supporrt image files as required
+    const loadImageIfExists = (filename, label) => {
+      let buffer = undefined;
+      let file = path.resolve(__dirname, RESOURCEPATH, filename);
+      if (fs.existsSync(file) === true) {
+        buffer = fs.readFileSync(file);
+      } else {
+        this.log?.warn?.('Failed to load %s image resource for "%s"', label, this.deviceData.description);
+      }
+      return buffer;
+    };
 
-    // buffer for camera stream off jpg image
-    imageFile = path.resolve(__dirname + '/res/' + CAMERAOFFJPGFILE);
-    if (fs.existsSync(imageFile) === true) {
-      this.#cameraVideoOffImage = fs.readFileSync(imageFile);
-    }
-
-    // buffer for camera transferring jpg image
-    imageFile = path.resolve(__dirname + '/res/' + CAMERATRANSFERJPGFILE);
-    if (fs.existsSync(imageFile) === true) {
-      this.#cameraTransferringImage = fs.readFileSync(imageFile);
-    }
+    this.#cameraOfflineImage = loadImageIfExists(CAMERARESOURCE.offline, 'offline');
+    this.#cameraVideoOffImage = loadImageIfExists(CAMERARESOURCE.off, 'video off');
+    this.#cameraTransferringImage = loadImageIfExists(CAMERARESOURCE.transfer, 'transferring');
   }
 
   // Class functions

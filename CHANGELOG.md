@@ -2,7 +2,7 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.3.0 (alpha.8)
+## v0.3.0 (alpha.9)
 
 - General code cleanup and stability improvements
 - Introduced plugin-style architecture for Nest/Google devices

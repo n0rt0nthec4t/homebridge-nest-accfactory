@@ -10,7 +10,6 @@ import { setTimeout } from 'node:timers';
 import { URL } from 'node:url';
 
 // Define constants
-const LOGLEVELS = ['info', 'success', 'warn', 'error', 'debug'];
 const Power = {
   ON: 1,
   OFF: 0,
@@ -39,6 +38,14 @@ const FanDirection = {
   VERTICAL: 1,
   HORIZONTAL: 2,
   SWING: 3,
+};
+
+const LOGLEVELS = {
+  info: 'info',
+  success: 'success',
+  warn: 'warn',
+  error: 'error',
+  debug: 'debug',
 };
 
 let systemURL = undefined;
@@ -316,9 +323,10 @@ async function fetchWrapper(method, url, options, data) {
 // returned = test.default(loggerFunctions, 'http://x.x.x.x');
 export default (logger, options) => {
   // Validate the passed in logging object. We are expecting certain functions to be present
-  if (LOGLEVELS.every((fn) => typeof logger?.[fn] === 'function')) {
+  if (Object.keys(LOGLEVELS).every((fn) => typeof logger?.[fn] === 'function')) {
     log = logger;
   }
+
   // Validate the url
   systemURL = setSystemURL(options[0]);
 

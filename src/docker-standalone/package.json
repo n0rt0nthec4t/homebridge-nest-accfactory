@@ -2,7 +2,7 @@
     "name": "nest-accfactory",
     "displayName": "Nest Accfactory",
     "type": "module",
-    "version": "0.3.0-alpha.8",
+    "version": "0.3.0-alpha.9",
     "description": "HomeKit integration for Nest devices using HAP-NodeJS library",
     "author": "n0rt0nthec4t",
     "license": "Apache-2.0",
