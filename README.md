@@ -108,7 +108,6 @@ The following options are available in the config.json options object. These app
 | ffmegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                 | false          |
 | ffmegPath         | Path to an ffmpeg binary for us to use                                                        | /usr/local/bin |
 | hksv              | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                           | false          |
-| maxStreams        | Maximum number of concurrent video streams in HomeKit for supported camera(s) and doorbell(s) | 2              |
 | weather           | Virtual weather station for each Nest/Google home we discover                                 | false          |
 
 #### devices

@@ -1,7 +1,7 @@
 // Thermostat external control plugin for homebridge-nest-accfactory
 // Controls a daikin wifi connected a/c system via thermostat with no physical connection to it
 //
-// Code version 2025.06.12
+// Code version 2025.06.13
 // Mark Hulskamp
 'use strict';
 
@@ -295,21 +295,37 @@ async function fetchWrapper(method, url, options, data) {
     options.body = data;
   }
 
-  // eslint-disable-next-line no-undef
-  let response = await fetch(url, options);
+  let response;
+  try {
+    // eslint-disable-next-line no-undef
+    response = await fetch(url, options);
+  } catch (error) {
+    if (options.retry > 1) {
+      options.retry--;
+      options._retryCount++;
 
-  if (response.ok === false && options.retry > 1) {
-    options.retry--;
-    options._retryCount++;
+      const delay = 500 * 2 ** (options._retryCount - 1);
+      await new Promise((resolve) => setTimeout(resolve, delay));
 
-    let delay = 500 * 2 ** (options._retryCount - 1);
-    await new Promise((resolve) => setTimeout(resolve, delay));
+      return fetchWrapper(method, url, options, data);
+    }
 
-    response = await fetchWrapper(method, url, options, data);
+    error.message = `Fetch failed for ${method.toUpperCase()} ${url} after ${options._retryCount + 1} attempt(s): ${error.message}`;
+    throw error;
   }
 
-  if (response.ok === false && options.retry === 0) {
-    const error = new Error(response.statusText);
+  if (response?.ok === false) {
+    if (options.retry > 1) {
+      options.retry--;
+      options._retryCount++;
+
+      let delay = 500 * 2 ** (options._retryCount - 1);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+
+      return fetchWrapper(method, url, options, data);
+    }
+
+    let error = new Error(`HTTP ${response.status} on ${method.toUpperCase()} ${url}: ${response.statusText || 'Unknown error'}`);
     error.code = response.status;
     throw error;
   }

@@ -133,7 +133,6 @@ The following options are available in Nest_config.json options object. These ap
 | ffmegPath         | Path to an ffmpeg binary for us to use                                                        | /usr/local/bin |
 | hkPairingCode     | HomeKit pairing code in format of "xxx-xx-xxx" or "xxxx-xxxx"                                 | 031-45-154     |
 | hksv              | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                           | false          |
-| maxStreams        | Maximum number of concurrent video streams in HomeKit for supported camera(s) and doorbell(s) | 2              |
 | weather           | Virtual weather station for each Nest/Google home we discover                                 | false          |
 
 #### devices

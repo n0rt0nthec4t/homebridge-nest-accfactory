@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.06.12
+// Code version 2025.06.13
 // Mark Hulskamp
 'use strict';
 
@@ -15,13 +15,12 @@ import { setInterval, clearInterval, setTimeout, clearTimeout } from 'node:timer
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import process from 'node:process';
-import child_process from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 // Import our modules
 import HomeKitDevice from './HomeKitDevice.js';
 import { DeviceType, loadDeviceModules, getDeviceHKCategory } from './devices.js';
+import { AccountType, processConfig, buildConnections } from './config.js';
 
 // Define constants
 const CAMERAALERTPOLLING = 2000; // Camera alerts polling timer
@@ -29,24 +28,19 @@ const CAMERAZONEPOLLING = 30000; // Camera zones changes polling timer
 const WEATHERPOLLING = 300000; // Weather data polling timer
 const NESTAPITIMEOUT = 10000; // Nest API timeout
 const USERAGENT = 'Nest/5.78.0 (iOScom.nestlabs.jasper.release) os=18.0'; // User Agent string
-const FFMPEGVERSION = '6.0'; // Minimum version of ffmpeg we require
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
+const DATASOURCE = {
+  NestAPI: 'Nest', // From the Nest API
+  ProtobufAPI: 'Protobuf', // From the Protobuf API
+};
 
 // We handle the connections to Nest/Google
 // Perform device management (additions/removals/updates)
 export default class NestAccfactory {
-  static DataSource = {
-    NESTAPI: 'Nest', // From the Nest API
-    PROTOBUFAPI: 'Protobuf', // From the Protobuf API
-  };
-
-  static GoogleAccount = 'Google'; // Google account connection
-  static NestAccount = 'Nest'; // Nest account connection
-
   cachedAccessories = []; // Track restored cached accessories
 
   // Internal data only for this class
-  #connections = {}; // Object of confirmed connections
+  #connections = undefined; // Object of confirmed connections
   #rawData = {}; // Cached copy of data from both Nest and Protobuf APIs
   #eventEmitter = new EventEmitter(); // Used for object messaging from this platform
   #connectionTimer = undefined;
@@ -54,261 +48,88 @@ export default class NestAccfactory {
   #trackedDevices = {}; // Object of devices we've created. used to track data source type, comms uuid. key'd by serial #
   #deviceModules = undefined; // No loaded device support modules to start
 
-  constructor(log, config, api) {
-    this.config = config;
+  constructor(log, config, api, eventEmitter) {
+    // If no explicit event emitter was passed, and the api is an EventEmitter (e.g., in Homebridge),
+    // we'll treat it as the source for lifecycle messages like didFinishLaunching/shutdown
+    if (api instanceof EventEmitter && eventEmitter === undefined) {
+      eventEmitter = api;
+    }
+
     this.log = log;
     this.api = api;
 
     // Perform validation on the configuration passed into us and set defaults if not present
+    this.config = processConfig(config, this.log);
+    this.#connections = buildConnections(this.config);
 
-    // Build our accounts connection object. Allows us to have multiple diffent account connections under the one accessory
-    Object.keys(this.config).forEach((key) => {
-      if (typeof this.config[key]?.access_token === 'string' && this.config[key].access_token !== '') {
-        // Nest account connection, assign a random UUID for each connection
-        this.#connections[crypto.randomUUID()] = {
-          type: NestAccfactory.NestAccount,
-          authorised: false,
-          access_token: this.config[key].access_token,
-          fieldTest: this.config[key]?.fieldTest === true,
-          referer: this.config[key]?.fieldTest === true ? 'home.ft.nest.com' : 'home.nest.com',
-          restAPIHost: this.config[key]?.fieldTest === true ? 'home.ft.nest.com' : 'home.nest.com',
-          cameraAPIHost: this.config[key]?.fieldTest === true ? 'camera.home.ft.nest.com' : 'camera.home.nest.com',
-          protobufAPIHost: this.config[key]?.fieldTest === true ? 'grpc-web.ft.nest.com' : 'grpc-web.production.nest.com',
-        };
-      }
-      if (
-        typeof this.config[key]?.issuetoken === 'string' &&
-        this.config[key].issuetoken !== '' &&
-        typeof this.config[key]?.cookie === 'string' &&
-        this.config[key].cookie !== ''
-      ) {
-        // Google account connection, assign a random UUID for each connection
-        this.#connections[crypto.randomUUID()] = {
-          type: NestAccfactory.GoogleAccount,
-          authorised: false,
-          issuetoken: this.config[key].issuetoken,
-          cookie: this.config[key].cookie,
-          fieldTest: this.config[key]?.fieldTest === true,
-          referer: this.config[key]?.fieldTest === true ? 'home.ft.nest.com' : 'home.nest.com',
-          restAPIHost: this.config[key]?.fieldTest === true ? 'home.ft.nest.com' : 'home.nest.com',
-          cameraAPIHost: this.config[key]?.fieldTest === true ? 'camera.home.ft.nest.com' : 'camera.home.nest.com',
-          protobufAPIHost: this.config[key]?.fieldTest === true ? 'grpc-web.ft.nest.com' : 'grpc-web.production.nest.com',
-        };
-      }
-    });
-
-    // If we don't have either a Nest access_token and/or a Google issuetoken/cookie, return back.
+    // Check for valid connections, either a Nest and/or Google one specified. Otherwise, return back.
     if (Object.keys(this.#connections).length === 0) {
       this?.log?.error?.('No connections have been specified in the JSON configuration. Please review');
       return;
     }
 
-    if (typeof this.config?.options !== 'object') {
-      this.config.options = {};
-    }
+    eventEmitter?.on?.('didFinishLaunching', async () => {
+      // We got notified that Homebridge (or Docker) has finished loading
 
-    this.config.options.eveHistory = this.config.options?.eveHistory === true;
-    this.config.options.elevation =
-      isNaN(this.config.options?.elevation) === false &&
-      Number(this.config.options.elevation) >= 0 &&
-      Number(this.config.options.elevation) <= 8848
-        ? Number(this.config.options.elevation)
-        : 0;
-    this.config.options.weather = this.config.options?.weather === true;
-    this.config.options.hksv = this.config.options?.hksv === true;
-    this.config.options.exclude = this.config.options?.exclude === true;
+      // Load device support modules from the plugins folder if not already done
+      this.#deviceModules = await loadDeviceModules(this.log, 'plugins');
 
-    // Controls what APIs we use, default is to use both Nest and protobuf APIs
-    this.config.options.useNestAPI = this.config.options?.useNestAPI === true || this.config.options?.useNestAPI === undefined;
-    this.config.options.useGoogleAPI = this.config.options?.useGoogleAPI === true || this.config.options?.useGoogleAPI === undefined;
+      // Start reconnect loop per connection with backoff for failed tries
+      // This also initiates both Nest and Protobuf subscribes
+      for (const uuid of Object.keys(this.#connections)) {
+        let reconnectDelay = 15000;
 
-    // Get configuration for max number of concurrent 'live view' streams. For HomeKit Secure Video, this will always be 1
-    this.config.options.maxStreams =
-      isNaN(this.config.options?.maxStreams) === false && this.deviceData?.hksv === false
-        ? Number(this.config.options.maxStreams)
-        : this.deviceData?.hksv === true
-          ? 1
-          : 2;
+        const reconnectLoop = async () => {
+          if (this.#connections?.[uuid]?.authorised === false) {
+            try {
+              await this.#connect(uuid);
+              this.#subscribeNest(uuid, true);
+              this.#subscribeProtobuf(uuid, true);
+              // eslint-disable-next-line no-unused-vars
+            } catch (error) {
+              // Empty
+            }
 
-    // Check if a ffmpeg binary exist via a specific path in configuration OR /usr/local/bin
-    this.config.options.ffmpeg = {};
-    this.config.options.ffmpeg.debug = this.config.options?.ffmpegDebug === true;
-    this.config.options.ffmpeg.binary = path.resolve(
-      typeof this.config.options?.ffmpegPath === 'string' && this.config.options.ffmpegPath !== ''
-        ? this.config.options.ffmpegPath
-        : '/usr/local/bin',
-    );
-
-    // If the path doesn't include 'ffmpeg' on the end, we'll add it here
-    if (this.config.options.ffmpeg.binary.endsWith('/ffmpeg') === false) {
-      this.config.options.ffmpeg.binary = this.config.options.ffmpeg.binary + '/ffmpeg';
-    }
-
-    this.config.options.ffmpeg.version = undefined;
-    this.config.options.ffmpeg.libspeex = false;
-    this.config.options.ffmpeg.libopus = false;
-    this.config.options.ffmpeg.libx264 = false;
-    this.config.options.ffmpeg.libfdk_aac = false;
-
-    if (fs.existsSync(this.config.options.ffmpeg.binary) === false) {
-      this?.log?.warn?.('Specified ffmpeg binary "%s" was not found', this.config.options.ffmpeg.binary);
-      this?.log?.warn?.('Stream video/recording from camera/doorbells will be unavailable');
-
-      // If we flag ffmpegPath as undefined, no video streaming/record support enabled for camers/doorbells
-      this.config.options.ffmpeg.binary = undefined;
-    }
-
-    // Process ffmpeg binary to see if we can use it
-    if (fs.existsSync(this.config.options.ffmpeg.binary) === true) {
-      let ffmpegProcess = child_process.spawnSync(this.config.options.ffmpeg.binary, ['-version'], {
-        env: process.env,
-      });
-      if (ffmpegProcess.stdout !== null) {
-        // Determine ffmpeg version
-        this.config.options.ffmpeg.version = ffmpegProcess.stdout
-          .toString()
-          .match(/(?:ffmpeg version:(\d+)\.)?(?:(\d+)\.)?(?:(\d+)\.\d+)(.*?)/gim)[0];
-
-        // Determine what libraries ffmpeg is compiled with
-        this.config.options.ffmpeg.libspeex = ffmpegProcess.stdout.toString().includes('--enable-libspeex') === true;
-        this.config.options.ffmpeg.libopus = ffmpegProcess.stdout.toString().includes('--enable-libopus') === true;
-        this.config.options.ffmpeg.libx264 = ffmpegProcess.stdout.toString().includes('--enable-libx264') === true;
-        this.config.options.ffmpeg.libfdk_aac = ffmpegProcess.stdout.toString().includes('--enable-libfdk-aac') === true;
-        if (
-          this.config.options.ffmpeg.version.localeCompare(FFMPEGVERSION, undefined, {
-            numeric: true,
-            sensitivity: 'case',
-            caseFirst: 'upper',
-          }) === -1 ||
-          this.config.options.ffmpeg.libspeex === false ||
-          this.config.options.ffmpeg.libopus === false ||
-          this.config.options.ffmpeg.libx264 === false ||
-          this.config.options.ffmpeg.libfdk_aac === false
-        ) {
-          this?.log?.warn?.('ffmpeg binary "%s" does not meet the minimum support requirements', this.config.options.ffmpeg.binary);
-          if (
-            this.config.options.ffmpeg.version.localeCompare(FFMPEGVERSION, undefined, {
-              numeric: true,
-              sensitivity: 'case',
-              caseFirst: 'upper',
-            }) === -1
-          ) {
-            this?.log?.warn?.(
-              'Minimum binary version is "%s", however the installed version is "%s"',
-              FFMPEGVERSION,
-              this.config.options.ffmpeg.version,
-            );
-            this?.log?.warn?.('Stream video/recording from camera/doorbells will be unavailable');
-
-            this.config.options.ffmpeg.binary = undefined; // No ffmpeg since below min version
+            reconnectDelay = this.#connections?.[uuid]?.authorised === true ? 15000 : Math.min(reconnectDelay * 2, 60000);
+          } else {
+            reconnectDelay = 15000;
           }
-          if (
-            this.config.options.ffmpeg.libspeex === false &&
-            this.config.options.ffmpeg.libx264 === true &&
-            this.config.options.ffmpeg.libfdk_aac === true
-          ) {
-            this?.log?.warn?.('Missing libspeex in ffmpeg binary, talkback on certain camera/doorbells will be unavailable');
-          }
-          if (
-            this.config.options.ffmpeg.libx264 === true &&
-            this.config.options.ffmpeg.libfdk_aac === false &&
-            this.config.options.ffmpeg.libopus === false
-          ) {
-            this?.log?.warn?.('Missing libfdk_aac and libopus in ffmpeg binary, audio from camera/doorbells will be unavailable');
-          }
-          if (this.config.options.ffmpeg.libx264 === true && this.config.options.ffmpeg.libfdk_aac === false) {
-            this?.log?.warn?.('Missing libfdk_aac in ffmpeg binary, audio from camera/doorbells will be unavailable');
-          }
-          if (
-            this.config.options.ffmpeg.libx264 === true &&
-            this.config.options.ffmpeg.libfdk_aac === true &&
-            this.config.options.ffmpeg.libopus === false
-          ) {
-            this?.log?.warn?.(
-              'Missing libopus in ffmpeg binary, audio (including talkback) from certain camera/doorbells will be unavailable',
-            );
-          }
-          if (this.config.options.ffmpeg.libx264 === false) {
-            this?.log?.warn?.('Missing libx264 in ffmpeg binary, stream video/recording from camera/doorbells will be unavailable');
 
-            this.config.options.ffmpeg.binary = undefined; // No ffmpeg since we do not have all the required libraries
-          }
+          setTimeout(reconnectLoop, reconnectDelay);
+        };
+
+        reconnectLoop();
+      }
+    });
+
+    eventEmitter?.on?.('shutdown', async () => {
+      // We got notified that Homebridge is shutting down
+      // Perform cleanup some internal cleaning up
+      this.#eventEmitter?.removeAllListeners();
+      Object.values(this.#trackedDevices).forEach((value) => {
+        if (value?.timers !== undefined) {
+          Object.values(value?.timers).forEach((timers) => {
+            clearInterval(timers);
+          });
         }
-      }
-    }
-
-    if (this.config.options.ffmpeg.binary !== undefined) {
-      this?.log?.success?.('Found valid ffmpeg binary in %s', this.config.options.ffmpeg.binary);
-    }
-
-    // Process per device configuration(s)
-    if (this.config?.devices === undefined) {
-      this.config.devices = [];
-    }
-
-    if (this.config?.devices !== undefined && Array.isArray(this.config?.devices) === false) {
-      // If the devices section is a JSON oject keyed by the devices serial number, convert to devices array object
-      let newDeviceArray = [];
-      for (const [serialNumber, props] of Object.entries(this.config.devices)) {
-        newDeviceArray.push({
-          serialNumber,
-          ...props,
-        });
-      }
-      this.config.devices = newDeviceArray;
-
-      // Alert user to changed configuration for them to update config
-      this?.log?.warn?.('');
-      this?.log?.warn?.('NOTICE');
-      this?.log?.warn?.('> The per device configuration contains legacy options. Please review the readme at the link below');
-      this?.log?.warn?.(
-        '> Consider updating your configuration file as the mapping from legacy to current per device configuration maybe removed',
-      );
-      this?.log?.warn?.('> https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/blob/main/src/README.md');
-      this?.log?.warn?.('');
-    }
-
-    if (this.api instanceof EventEmitter === true) {
-      this.api.on('didFinishLaunching', async () => {
-        // We got notified that Homebridge has finished loading, so we are ready to process
-        this.discoverDevices();
-
-        // We'll check connection status every 15 seconds. We'll also handle token expiry/refresh this way
-        clearInterval(this.#connectionTimer);
-        this.#connectionTimer = setInterval(this.discoverDevices.bind(this), 15000);
       });
-
-      this.api.on('shutdown', async () => {
-        // We got notified that Homebridge is shutting down
-        // Perform cleanup some internal cleaning up
-        this.#eventEmitter.removeAllListeners();
-        Object.values(this.#trackedDevices).forEach((value) => {
-          if (value?.timers !== undefined) {
-            Object.values(value?.timers).forEach((timers) => {
-              clearInterval(timers);
-            });
-          }
-        });
-        this.#trackedDevices = {};
-        clearInterval(this.#connectionTimer);
-        this.#connectionTimer = undefined;
-        this.#rawData = {};
-        this.#protobufRoot = null;
-        this.#eventEmitter = undefined;
-      });
-    }
+      this.#trackedDevices = {};
+      clearInterval(this.#connectionTimer);
+      this.#connectionTimer = undefined;
+      this.#rawData = {};
+      this.#protobufRoot = null;
+      this.#eventEmitter = undefined;
+    });
 
     // Setup event listeners for set/get calls from devices if not already done so
     this.#eventEmitter.addListener(HomeKitDevice.SET, (uuid, values) => {
-      this.#set(uuid, values);
+      this.#set(values);
     });
 
     this.#eventEmitter.addListener(HomeKitDevice.GET, async (uuid, values) => {
-      let results = await this.#get(uuid, values);
+      let results = await this.#get(values);
       // Send the results back to the device via a special event (only if still active)
-      if (this.#eventEmitter !== undefined) {
-        this.#eventEmitter.emit(HomeKitDevice.GET + '->' + uuid, results);
-      }
+      this.#eventEmitter?.emit?.(HomeKitDevice.GET + '->' + uuid, results);
     });
   }
 
@@ -320,41 +141,23 @@ export default class NestAccfactory {
     this.cachedAccessories.push(accessory);
   }
 
-  async discoverDevices() {
-    // Load device support modules from the plugins folder if not already done
-    if (this.#deviceModules === undefined) {
-      this.#deviceModules = await loadDeviceModules(this.log, 'plugins');
-    }
-
-    Object.keys(this.#connections).forEach((uuid) => {
-      if (this.#connections[uuid].authorised === false) {
-        this.#connect(uuid).then(() => {
-          if (this.#connections[uuid].authorised === true && this.config.options?.useNestAPI === true) {
-            this.#subscribeNest(uuid, true);
-          }
-          if (this.#connections[uuid].authorised === true && this.config.options?.useGoogleAPI === true) {
-            this.#subscribeProtobuf(uuid, true);
-          }
-        });
-      }
-    });
-  }
-
-  async #connect(connectionUUID) {
-    if (typeof this.#connections?.[connectionUUID] === 'object') {
-      if (this.#connections[connectionUUID].type === NestAccfactory.GoogleAccount) {
+  async #connect(uuid) {
+    if (typeof this.#connections?.[uuid] === 'object') {
+      this?.log?.info?.(
+        'Performing authorisation for connection "%s" %s',
+        this.#connections[uuid].name,
+        this.#connections[uuid].fieldTest === true ? 'using field test endpoints' : '',
+      );
+      if (this.#connections[uuid].type === AccountType.Google) {
         // Google cookie method as refresh token method no longer supported by Google since October 2022
         // Instructions from homebridge_nest or homebridge_nest_cam to obtain this
-        this?.log?.info?.(
-          'Performing Google account authorisation ' +
-            (this.#connections[connectionUUID].fieldTest === true ? 'using field test endpoints' : ''),
-        );
+        this?.log?.debug?.('Performing authorisation using Google account for connection uuid "%s"', uuid);
 
-        await fetchWrapper('get', this.#connections[connectionUUID].issuetoken, {
+        await fetchWrapper('get', this.#connections[uuid].issuetoken, {
           headers: {
             referer: 'https://accounts.google.com/o/oauth2/iframe',
             'User-Agent': USERAGENT,
-            cookie: this.#connections[connectionUUID].cookie,
+            cookie: this.#connections[uuid].cookie,
             'Sec-Fetch-Mode': 'cors',
             'X-Requested-With': 'XmlHttpRequest',
           },
@@ -368,7 +171,7 @@ export default class NestAccfactory {
               'https://nestauthproxyservice-pa.googleapis.com/v1/issue_jwt',
               {
                 headers: {
-                  referer: 'https://' + this.#connections[connectionUUID].referer,
+                  referer: 'https://' + this.#connections[uuid].referer,
                   'User-Agent': USERAGENT,
                   Authorization: data.token_type + ' ' + data.access_token,
                   'Content-Type': 'application/x-www-form-urlencoded',
@@ -383,9 +186,9 @@ export default class NestAccfactory {
                 let googleToken = data.jwt;
                 let tokenExpire = Math.floor(new Date(data.claims.expirationTime).valueOf() / 1000); // Token expiry, should be 1hr
 
-                await fetchWrapper('get', 'https://' + this.#connections[connectionUUID].restAPIHost + '/session', {
+                await fetchWrapper('get', 'https://' + this.#connections[uuid].restAPIHost + '/session', {
                   headers: {
-                    referer: 'https://' + this.#connections[connectionUUID].referer,
+                    referer: 'https://' + this.#connections[uuid].referer,
                     'User-Agent': USERAGENT,
                     Authorization: 'Basic ' + googleToken,
                   },
@@ -393,64 +196,58 @@ export default class NestAccfactory {
                   .then((response) => response.json())
                   .then((data) => {
                     // Store successful connection details
-                    this.#connections[connectionUUID].authorised = true;
-                    this.#connections[connectionUUID].userID = data.userid;
-                    this.#connections[connectionUUID].transport_url = data.urls.transport_url;
-                    this.#connections[connectionUUID].weather_url = data.urls.weather_url;
-                    this.#connections[connectionUUID].token = googleToken;
-                    this.#connections[connectionUUID].cameraAPI = {
+                    this.#connections[uuid].authorised = true;
+                    this.#connections[uuid].userID = data.userid;
+                    this.#connections[uuid].transport_url = data.urls.transport_url;
+                    this.#connections[uuid].weather_url = data.urls.weather_url;
+                    this.#connections[uuid].token = googleToken;
+                    this.#connections[uuid].cameraAPI = {
                       key: 'Authorization',
                       value: 'Basic ', // NOTE: extra space required
                       token: googleToken,
                       oauth2: googleOAuth2Token,
-                      fieldTest: this.#connections[connectionUUID]?.fieldTest === true,
+                      fieldTest: this.#connections[uuid]?.fieldTest === true,
                     };
 
                     // Set timeout for token expiry refresh
-                    clearTimeout(this.#connections[connectionUUID].timer);
-                    this.#connections[connectionUUID].timer = setTimeout(
+                    clearTimeout(this.#connections[uuid].timer);
+                    this.#connections[uuid].timer = setTimeout(
                       () => {
-                        this?.log?.info?.('Performing periodic token refresh for Google account');
-                        this.#connect(connectionUUID);
+                        this?.log?.info?.('Performing periodic token refresh for connection "%s"', this.#connections[uuid].name);
+                        this.#connect(uuid);
                       },
                       (tokenExpire - Math.floor(Date.now() / 1000) - 60) * 1000,
                     ); // Refresh just before token expiry
 
-                    this?.log?.success?.('Successfully authorised using Google account');
+                    this?.log?.success?.('Successfully authorised connection "%s"', this.#connections[uuid].name);
                   });
               });
           })
           // eslint-disable-next-line no-unused-vars
           .catch((error) => {
             // The token we used to obtained a Nest session failed, so overall authorisation failed
-            this.#connections[connectionUUID].authorised = false;
-            this?.log?.debug?.(
-              'Failed to connect to gateway using credential details for connection uuid "%s". A periodic retry event will be triggered',
-              connectionUUID,
-            );
-            this?.log?.error?.('Authorisation failed using Google account');
+            this.#connections[uuid].authorised = false;
+            this?.log?.debug?.('Failed to connect using credential details for connection uuid "%s"', uuid);
+            this?.log?.error?.('Authorisation failed on connection "%s"', this.#connections[uuid].name);
           });
       }
 
-      if (this.#connections[connectionUUID].type === NestAccfactory.NestAccount) {
+      if (this.#connections[uuid].type === AccountType.Nest) {
         // Nest access token method. Get WEBSITE2 cookie for use with camera API calls if needed later
-        this?.log?.info?.(
-          'Performing Nest account authorisation ' +
-            (this.#connections[connectionUUID].fieldTest === true ? 'using field test endpoints' : ''),
-        );
+        this?.log?.debug?.('Performing authorisation using Nest account for connection uuid "%s"', uuid);
 
         await fetchWrapper(
           'post',
-          'https://webapi.' + this.#connections[connectionUUID].cameraAPIHost + '/api/v1/login.login_nest',
+          'https://webapi.' + this.#connections[uuid].cameraAPIHost + '/api/v1/login.login_nest',
           {
             withCredentials: true,
             headers: {
-              referer: 'https://' + this.#connections[connectionUUID].referer,
+              referer: 'https://' + this.#connections[uuid].referer,
               'User-Agent': USERAGENT,
               'Content-Type': 'application/x-www-form-urlencoded',
             },
           },
-          Buffer.from('access_token=' + this.#connections[connectionUUID].access_token, 'utf8'),
+          Buffer.from('access_token=' + this.#connections[uuid].access_token, 'utf8'),
         )
           .then((response) => response.json())
           .then(async (data) => {
@@ -460,54 +257,58 @@ export default class NestAccfactory {
 
             let nestToken = data.items[0].session_token;
 
-            await fetchWrapper('get', 'https://' + this.#connections[connectionUUID].restAPIHost + '/session', {
+            await fetchWrapper('get', 'https://' + this.#connections[uuid].restAPIHost + '/session', {
               headers: {
-                referer: 'https://' + this.#connections[connectionUUID].referer,
+                referer: 'https://' + this.#connections[uuid].referer,
                 'User-Agent': USERAGENT,
-                Authorization: 'Basic ' + this.#connections[connectionUUID].access_token,
+                Authorization: 'Basic ' + this.#connections[uuid].access_token,
               },
             })
               .then((response) => response.json())
               .then((data) => {
                 // Store successful connection details
-                this.#connections[connectionUUID].authorised = true;
-                this.#connections[connectionUUID].userID = data.userid;
-                this.#connections[connectionUUID].transport_url = data.urls.transport_url;
-                this.#connections[connectionUUID].weather_url = data.urls.weather_url;
-                this.#connections[connectionUUID].token = this.#connections[connectionUUID].access_token;
-                this.#connections[connectionUUID].cameraAPI = {
+                this.#connections[uuid].authorised = true;
+                this.#connections[uuid].userID = data.userid;
+                this.#connections[uuid].transport_url = data.urls.transport_url;
+                this.#connections[uuid].weather_url = data.urls.weather_url;
+                this.#connections[uuid].token = this.#connections[uuid].access_token;
+                this.#connections[uuid].cameraAPI = {
                   key: 'cookie',
-                  value: this.#connections[connectionUUID].fieldTest === true ? 'website_ft=' : 'website_2=',
+                  value: this.#connections[uuid].fieldTest === true ? 'website_ft=' : 'website_2=',
                   token: nestToken,
-                  fieldTest: this.#connections[connectionUUID]?.fieldTest === true,
+                  fieldTest: this.#connections[uuid]?.fieldTest === true,
                 };
 
                 // Set timeout for token expiry refresh
-                clearTimeout(this.#connections[connectionUUID].timer);
-                this.#connections[connectionUUID].timer = setTimeout(
+                clearTimeout(this.#connections[uuid].timer);
+                this.#connections[uuid].timer = setTimeout(
                   () => {
-                    this?.log?.info?.('Performing periodic token refresh for Nest account');
-                    this.#connect(connectionUUID);
+                    this?.log?.info?.('Performing periodic token refresh for connection "%s"', this.#connections[uuid].name);
+                    this.#connect(uuid);
                   },
                   1000 * 3600 * 24,
                 ); // Refresh token every 24hrs
 
-                this?.log?.success?.('Successfully authorised using Nest account');
+                this?.log?.success?.('Successfully authorised connection "%s"', this.#connections[uuid].name);
               });
           })
           // eslint-disable-next-line no-unused-vars
           .catch((error) => {
             // The token we used to obtained a Nest session failed, so overall authorisation failed
-            this.#connections[connectionUUID].authorised = false;
-            this?.log?.debug?.('Failed to connect using credential details for connection uuid "%s"', connectionUUID);
-            this?.log?.error?.('Authorisation failed using Nest account');
+            this.#connections[uuid].authorised = false;
+            this?.log?.debug?.('Failed to connect using credential details for connection uuid "%s"', uuid);
+            this?.log?.error?.('Authorisation failed on connection "%s"', this.#connections[uuid].name);
           });
       }
     }
   }
 
-  async #subscribeNest(connectionUUID, fullRefresh) {
-    if (typeof this.#connections?.[connectionUUID] !== 'object' || this.#connections?.[connectionUUID]?.authorised !== true) {
+  async #subscribeNest(uuid, fullRefresh) {
+    if (
+      typeof this.#connections?.[uuid] !== 'object' ||
+      this.#connections?.[uuid]?.authorised === false ||
+      this.config?.options?.useNestAPI === false
+    ) {
       // Not a valid connection object and/or we're not authorised
       return;
     }
@@ -531,21 +332,16 @@ export default class NestAccfactory {
     ];
 
     // By default, setup for a full data read from the Nest API
-    let subscribeURL =
-      'https://' +
-      this.#connections[connectionUUID].restAPIHost +
-      '/api/0.1/user/' +
-      this.#connections[connectionUUID].userID +
-      '/app_launch';
+    let subscribeURL = 'https://' + this.#connections[uuid].restAPIHost + '/api/0.1/user/' + this.#connections[uuid].userID + '/app_launch';
     let subscribeJSONData = { known_bucket_types: REQUIREDBUCKETS, known_bucket_versions: [] };
 
     if (fullRefresh === false) {
       // We have data stored from this Nest API, so setup read using known object
-      subscribeURL = this.#connections[connectionUUID].transport_url + '/v6/subscribe';
+      subscribeURL = this.#connections[uuid].transport_url + '/v6/subscribe';
       subscribeJSONData = { objects: [] };
       Object.entries(this.#rawData)
         // eslint-disable-next-line no-unused-vars
-        .filter(([object_key, object]) => object.source === NestAccfactory.DataSource.NESTAPI && object.connection === connectionUUID)
+        .filter(([object_key, object]) => object.source === DATASOURCE.NestAPI && object.connection === uuid)
         .forEach(([object_key, object]) => {
           subscribeJSONData.objects.push({
             object_key: object_key,
@@ -556,7 +352,7 @@ export default class NestAccfactory {
     }
 
     if (fullRefresh === true) {
-      this?.log?.debug?.('Starting Nest API subscribe for connection uuid "%s"', connectionUUID);
+      this?.log?.debug?.('Starting Nest API subscribe for connection uuid "%s"', uuid);
     }
 
     fetchWrapper(
@@ -564,9 +360,9 @@ export default class NestAccfactory {
       subscribeURL,
       {
         headers: {
-          referer: 'https://' + this.#connections[connectionUUID].referer,
+          referer: 'https://' + this.#connections[uuid].referer,
           'User-Agent': USERAGENT,
-          Authorization: 'Basic ' + this.#connections[connectionUUID].token,
+          Authorization: 'Basic ' + this.#connections[uuid].token,
         },
         keepalive: true,
         //timeout: (5 * 60000),
@@ -599,7 +395,7 @@ export default class NestAccfactory {
               ) {
                 value.value.weather = this.#rawData[value.object_key].value.weather;
               }
-              value.value.weather = await this.#getWeather(connectionUUID, value.object_key, value.value.latitude, value.value.longitude);
+              value.value.weather = await this.#getWeather(uuid, value.object_key, value.value.latitude, value.value.longitude);
 
               // Check for changes in the swarm property. This seems indicate changes in devices
               if (typeof this.#rawData[value.object_key] === 'object') {
@@ -623,15 +419,15 @@ export default class NestAccfactory {
               await fetchWrapper(
                 'get',
                 'https://webapi.' +
-                  this.#connections[connectionUUID].cameraAPIHost +
+                  this.#connections[uuid].cameraAPIHost +
                   '/api/cameras.get_with_properties?uuid=' +
                   value.object_key.split('.')[1],
                 {
                   headers: {
-                    referer: 'https://' + this.#connections[connectionUUID].referer,
+                    referer: 'https://' + this.#connections[uuid].referer,
                     'User-Agent': USERAGENT,
-                    [this.#connections[connectionUUID].cameraAPI.key]:
-                      this.#connections[connectionUUID].cameraAPI.value + this.#connections[connectionUUID].cameraAPI.token,
+                    [this.#connections[uuid].cameraAPI.key]:
+                      this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
                   },
                   timeout: NESTAPITIMEOUT,
                 },
@@ -656,10 +452,10 @@ export default class NestAccfactory {
 
               await fetchWrapper('get', value.value.nexus_api_http_server_url + '/cuepoint_category/' + value.object_key.split('.')[1], {
                 headers: {
-                  referer: 'https://' + this.#connections[connectionUUID].referer,
+                  referer: 'https://' + this.#connections[uuid].referer,
                   'User-Agent': USERAGENT,
-                  [this.#connections[connectionUUID].cameraAPI.key]:
-                    this.#connections[connectionUUID].cameraAPI.value + this.#connections[connectionUUID].cameraAPI.token,
+                  [this.#connections[uuid].cameraAPI.key]:
+                    this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
                 },
                 timeout: NESTAPITIMEOUT,
               })
@@ -723,13 +519,11 @@ export default class NestAccfactory {
                         });
 
                         // Send removed notice onto HomeKit device for it to process
-                        if (this.#eventEmitter !== undefined) {
-                          this.#eventEmitter.emit(
-                            this.#trackedDevices[this.#rawData[object_key].value.serial_number].uuid,
-                            HomeKitDevice.REMOVE,
-                            {},
-                          );
-                        }
+                        this.#eventEmitter?.emit?.(
+                          this.#trackedDevices[this.#rawData[object_key].value.serial_number].uuid,
+                          HomeKitDevice.REMOVE,
+                          {},
+                        );
 
                         // Finally, remove from tracked devices
                         delete this.#trackedDevices[this.#rawData[object_key].value.serial_number];
@@ -746,8 +540,8 @@ export default class NestAccfactory {
               this.#rawData[value.object_key] = {};
               this.#rawData[value.object_key].object_revision = value.object_revision;
               this.#rawData[value.object_key].object_timestamp = value.object_timestamp;
-              this.#rawData[value.object_key].connection = connectionUUID;
-              this.#rawData[value.object_key].source = NestAccfactory.DataSource.NESTAPI;
+              this.#rawData[value.object_key].connection = uuid;
+              this.#rawData[value.object_key].source = DATASOURCE.NestAPI;
               this.#rawData[value.object_key].value = {};
             }
 
@@ -764,18 +558,22 @@ export default class NestAccfactory {
       })
       .catch((error) => {
         if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
-          this?.log?.debug?.('Nest API had an error performing subscription with connection uuid "%s"', connectionUUID);
+          this?.log?.debug?.('Nest API had an error performing subscription with connection uuid "%s"', uuid);
           this?.log?.debug?.('Error was "%s"', error);
         }
       })
       .finally(() => {
-        this?.log?.debug?.('Restarting Nest API subscribe for connection uuid "%s"', connectionUUID);
-        setTimeout(this.#subscribeNest.bind(this, connectionUUID, fullRefresh), 1000);
+        this?.log?.debug?.('Restarting Nest API subscribe for connection uuid "%s"', uuid);
+        setTimeout(this.#subscribeNest.bind(this, uuid, fullRefresh), 1000);
       });
   }
 
-  async #subscribeProtobuf(connectionUUID, firstRun) {
-    if (typeof this.#connections?.[connectionUUID] !== 'object' || this.#connections?.[connectionUUID]?.authorised !== true) {
+  async #subscribeProtobuf(uuid, firstRun) {
+    if (
+      typeof this.#connections?.[uuid] !== 'object' ||
+      this.#connections?.[uuid]?.authorised === false ||
+      this.config?.options?.useGoogleAPI === false
+    ) {
       // Not a valid connection object and/or we're not authorised
       return;
     }
@@ -841,11 +639,11 @@ export default class NestAccfactory {
         // This also depends on the account type we connected with
         // Nest accounts cannot observe camera/doorbell product traits
         if (
-          (this.#connections[connectionUUID].type === NestAccfactory.NestAccount &&
+          (this.#connections[uuid].type === AccountType.Nest &&
             type.fullName.startsWith('.nest.trait.product.camera') === false &&
             type.fullName.startsWith('.nest.trait.product.doorbell') === false &&
             (type.fullName.startsWith('.nest.trait') === true || type.fullName.startsWith('.weave.') === true)) ||
-          (this.#connections[connectionUUID].type === NestAccfactory.GoogleAccount &&
+          (this.#connections[uuid].type === AccountType.Google &&
             (type.fullName.startsWith('.nest.trait') === true ||
               type.fullName.startsWith('.weave.') === true ||
               type.fullName.startsWith('.google.trait.product.camera') === true))
@@ -857,17 +655,17 @@ export default class NestAccfactory {
     }
 
     if (firstRun === true) {
-      this?.log?.debug?.('Starting Protobuf API trait observe for connection uuid "%s"', connectionUUID);
+      this?.log?.debug?.('Starting Protobuf API trait observe for connection uuid "%s"', uuid);
     }
 
     fetchWrapper(
       'post',
-      'https://' + this.#connections[connectionUUID].protobufAPIHost + '/nestlabs.gateway.v2.GatewayService/Observe',
+      'https://' + this.#connections[uuid].protobufAPIHost + '/nestlabs.gateway.v2.GatewayService/Observe',
       {
         headers: {
-          referer: 'https://' + this.#connections[connectionUUID].referer,
+          referer: 'https://' + this.#connections[uuid].referer,
           'User-Agent': USERAGENT,
-          Authorization: 'Basic ' + this.#connections[connectionUUID].token,
+          Authorization: 'Basic ' + this.#connections[uuid].token,
           'Content-Type': 'application/x-protobuf',
           'X-Accept-Content-Transfer-Encoding': 'binary',
           'X-Accept-Response-Streaming': 'true',
@@ -932,13 +730,11 @@ export default class NestAccfactory {
                       }
 
                       // Send removed notice onto HomeKit device for it to process
-                      if (this.#eventEmitter !== undefined) {
-                        this.#eventEmitter.emit(
-                          this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber].uuid,
-                          HomeKitDevice.REMOVE,
-                          {},
-                        );
-                      }
+                      this.#eventEmitter?.emit?.(
+                        this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber].uuid,
+                        HomeKitDevice.REMOVE,
+                        {},
+                      );
 
                       // Finally, remove from tracked devices
                       delete this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber];
@@ -958,8 +754,8 @@ export default class NestAccfactory {
                 decodedMessage.observeResponse[0].traitStates.map(async (trait) => {
                   if (typeof this.#rawData[trait.traitId.resourceId] === 'undefined') {
                     this.#rawData[trait.traitId.resourceId] = {};
-                    this.#rawData[trait.traitId.resourceId].connection = connectionUUID;
-                    this.#rawData[trait.traitId.resourceId].source = NestAccfactory.DataSource.PROTOBUFAPI;
+                    this.#rawData[trait.traitId.resourceId].connection = uuid;
+                    this.#rawData[trait.traitId.resourceId].source = DATASOURCE.ProtobufAPI;
                     this.#rawData[trait.traitId.resourceId].value = {};
                   }
                   this.#rawData[trait.traitId.resourceId]['value'][trait.traitId.traitLabel] =
@@ -977,7 +773,7 @@ export default class NestAccfactory {
                     isNaN(trait.patch.values?.geoCoordinate?.longitude) === false
                   ) {
                     this.#rawData[trait.traitId.resourceId].value.weather = await this.#getWeather(
-                      connectionUUID,
+                      uuid,
                       trait.traitId.resourceId,
                       Number(trait.patch.values.geoCoordinate.latitude),
                       Number(trait.patch.values.geoCoordinate.longitude),
@@ -993,14 +789,14 @@ export default class NestAccfactory {
       })
       .catch((error) => {
         if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
-          this?.log?.debug?.('Protobuf API had an error performing trait observe with connection uuid "%s"', connectionUUID);
+          this?.log?.debug?.('Protobuf API had an error performing trait observe with connection uuid "%s"', uuid);
           this?.log?.debug?.('Error was "%s"', error);
         }
       })
 
       .finally(() => {
-        this?.log?.debug?.('Restarting Protobuf API trait observe for connection uuid "%s"', connectionUUID);
-        setTimeout(this.#subscribeProtobuf.bind(this, connectionUUID, false), 1000);
+        this?.log?.debug?.('Restarting Protobuf API trait observe for connection uuid "%s"', uuid);
+        setTimeout(this.#subscribeProtobuf.bind(this, uuid, false), 1000);
       });
   }
 
@@ -1068,7 +864,7 @@ export default class NestAccfactory {
               let nest_google_uuid = this.#trackedDevices?.[deviceData?.serialNumber]?.rawDataUuid;
               if (
                 this.#rawData?.[nest_google_uuid]?.value !== undefined &&
-                this.#trackedDevices?.[deviceData?.serialNumber]?.source === NestAccfactory.DataSource.NESTAPI
+                this.#trackedDevices?.[deviceData?.serialNumber]?.source === DATASOURCE.NestAPI
               ) {
                 await fetchWrapper(
                   'get',
@@ -1104,11 +900,10 @@ export default class NestAccfactory {
                       this.#rawData[nest_google_uuid].value.activity_zones = zones;
 
                       // Send updated data onto HomeKit device for it to process
-                      if (this.#eventEmitter !== undefined && this.#trackedDevices?.[deviceData?.serialNumber]?.uuid !== undefined) {
-                        this.#eventEmitter.emit(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, {
+                      this.#trackedDevices?.[deviceData?.serialNumber]?.uuid &&
+                        this.#eventEmitter?.emit?.(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, {
                           activity_zones: zones,
                         });
-                      }
                     }
                   })
                   .catch((error) => {
@@ -1130,7 +925,7 @@ export default class NestAccfactory {
               let nest_google_uuid = this.#trackedDevices?.[deviceData?.serialNumber]?.rawDataUuid;
               if (
                 this.#rawData?.[nest_google_uuid]?.value !== undefined &&
-                this.#trackedDevices?.[deviceData?.serialNumber]?.source === NestAccfactory.DataSource.PROTOBUFAPI
+                this.#trackedDevices?.[deviceData?.serialNumber]?.source === DATASOURCE.ProtobufAPI
               ) {
                 let commandResponse = await this.#protobufCommand(
                   this.#rawData[nest_google_uuid].connection,
@@ -1197,7 +992,7 @@ export default class NestAccfactory {
 
               if (
                 this.#rawData?.[nest_google_uuid]?.value !== undefined &&
-                this.#trackedDevices?.[deviceData?.serialNumber]?.source === NestAccfactory.DataSource.NESTAPI
+                this.#trackedDevices?.[deviceData?.serialNumber]?.source === DATASOURCE.NestAPI
               ) {
                 await fetchWrapper(
                   'get',
@@ -1262,11 +1057,8 @@ export default class NestAccfactory {
                 this.#rawData[nest_google_uuid].value.alerts = alerts;
 
                 // Send updated alerts onto HomeKit device for it to process
-                if (this.#eventEmitter !== undefined && this.#trackedDevices?.[deviceData?.serialNumber]?.uuid !== undefined) {
-                  this.#eventEmitter.emit(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, {
-                    alerts: alerts,
-                  });
-                }
+                this.#trackedDevices?.[deviceData?.serialNumber]?.uuid &&
+                  this.#eventEmitter?.emit?.(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, { alerts: alerts });
               }
             }, CAMERAALERTPOLLING);
           }
@@ -1284,13 +1076,12 @@ export default class NestAccfactory {
                 );
 
                 // Send updated weather data onto HomeKit device for it to process
-                if (this.#eventEmitter !== undefined && this.#trackedDevices?.[deviceData?.serialNumber]?.uuid !== undefined) {
-                  this.#eventEmitter.emit(
+                this.#trackedDevices?.[deviceData?.serialNumber]?.uuid &&
+                  this.#eventEmitter?.emit?.(
                     this.#trackedDevices[deviceData.serialNumber].uuid,
                     HomeKitDevice.UPDATE,
-                    this.#processData(nest_google_uuid)[deviceData.serialNumber],
+                    this.#processData(nest_google_uuid)?.[deviceData?.serialNumber],
                   );
-                }
               }
             }, WEATHERPOLLING);
           }
@@ -1315,9 +1106,8 @@ export default class NestAccfactory {
           this.#trackedDevices[deviceData.serialNumber].rawDataUuid = deviceData.nest_google_uuid;
         }
 
-        if (this.#eventEmitter !== undefined) {
-          this.#eventEmitter.emit(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, deviceData);
-        }
+        this.#trackedDevices?.[deviceData?.serialNumber]?.uuid &&
+          this.#eventEmitter?.emit?.(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, deviceData);
       }
     });
   }
@@ -1502,7 +1292,7 @@ export default class NestAccfactory {
         let tempDevice = {};
         try {
           if (
-            value?.source === NestAccfactory.DataSource.PROTOBUFAPI &&
+            value?.source === DATASOURCE.ProtobufAPI &&
             this.config.options?.useGoogleAPI === true &&
             value.value?.configuration_done?.deviceReady === true
           ) {
@@ -1734,11 +1524,7 @@ export default class NestAccfactory {
             tempDevice = process_thermostat_data(object_key, RESTTypeData);
           }
 
-          if (
-            value?.source === NestAccfactory.DataSource.NESTAPI &&
-            this.config.options?.useNestAPI === true &&
-            value.value?.where_id !== undefined
-          ) {
+          if (value?.source === DATASOURCE.NestAPI && this.config.options?.useNestAPI === true && value.value?.where_id !== undefined) {
             let RESTTypeData = {};
             RESTTypeData.serialNumber = value.value.serial_number;
             RESTTypeData.softwareVersion = value.value.current_version;
@@ -2010,7 +1796,7 @@ export default class NestAccfactory {
         let tempDevice = {};
         try {
           if (
-            value?.source === NestAccfactory.DataSource.PROTOBUFAPI &&
+            value?.source === DATASOURCE.ProtobufAPI &&
             this.config.options?.useGoogleAPI === true &&
             value.value?.configuration_done?.deviceReady === true &&
             typeof value?.value?.associated_thermostat === 'string' &&
@@ -2036,7 +1822,7 @@ export default class NestAccfactory {
             tempDevice = process_kryptonite_data(object_key, RESTTypeData);
           }
           if (
-            value?.source === NestAccfactory.DataSource.NESTAPI &&
+            value?.source === DATASOURCE.NestAPI &&
             this.config.options?.useNestAPI === true &&
             value.value?.where_id !== undefined &&
             value.value?.structure_id !== undefined &&
@@ -2097,7 +1883,7 @@ export default class NestAccfactory {
         let tempDevice = {};
         try {
           if (
-            value?.source === NestAccfactory.DataSource.PROTOBUFAPI &&
+            value?.source === DATASOURCE.ProtobufAPI &&
             this.config.options?.useGoogleAPI === true &&
             value.value?.configuration_done?.deviceReady === true
           ) {
@@ -2166,7 +1952,7 @@ export default class NestAccfactory {
         let tempDevice = {};
         try {
           if (
-            value?.source === NestAccfactory.DataSource.PROTOBUFAPI &&
+            value?.source === DATASOURCE.ProtobufAPI &&
             this.config.options?.useGoogleAPI === true &&
             value.value?.configuration_done?.deviceReady === true
           ) {
@@ -2235,7 +2021,7 @@ export default class NestAccfactory {
             tempDevice = process_protect_data(object_key, RESTTypeData);
           }
           if (
-            value?.source === NestAccfactory.DataSource.NESTAPI &&
+            value?.source === DATASOURCE.NestAPI &&
             this.config.options?.useNestAPI === true &&
             value.value?.where_id !== undefined &&
             value.value?.structure_id !== undefined
@@ -2343,7 +2129,7 @@ export default class NestAccfactory {
         let tempDevice = {};
         try {
           if (
-            value?.source === NestAccfactory.DataSource.PROTOBUFAPI &&
+            value?.source === DATASOURCE.ProtobufAPI &&
             this.config.options?.useGoogleAPI === true &&
             Array.isArray(value.value?.streaming_protocol?.supportedProtocols) === true &&
             value.value.streaming_protocol.supportedProtocols.includes('PROTOCOL_WEBRTC') === true &&
@@ -2453,7 +2239,7 @@ export default class NestAccfactory {
           }
 
           if (
-            value?.source === NestAccfactory.DataSource.NESTAPI &&
+            value?.source === DATASOURCE.NestAPI &&
             this.config.options?.useNestAPI === true &&
             value.value?.where_id !== undefined &&
             value.value?.structure_id !== undefined &&
@@ -2526,13 +2312,7 @@ export default class NestAccfactory {
             // Device specific ffmpeg debugging
             tempDevice.ffmpeg.debug = deviceOptions?.ffmpegDebug === true;
           }
-          tempDevice.maxStreams =
-            isNaN(this.config.options?.maxStreams) === false
-              ? Number(this.config.options.maxStreams)
-              : this.deviceData.hksv === true
-                ? 1
-                : 2;
-
+          tempDevice.maxStreams = this.config.options.hksv === true || deviceOptions?.hksv === true ? 1 : 2;
           devices[tempDevice.serialNumber] = tempDevice; // Store processed device
         }
       });
@@ -2575,7 +2355,7 @@ export default class NestAccfactory {
         let tempDevice = {};
         try {
           if (
-            value?.source === NestAccfactory.DataSource.PROTOBUFAPI &&
+            value?.source === DATASOURCE.ProtobufAPI &&
             this.config.options?.useGoogleAPI === true &&
             value.value?.structure_location?.geoCoordinate?.latitude !== undefined &&
             value.value?.structure_location?.geoCoordinate?.longitude !== undefined
@@ -2600,7 +2380,7 @@ export default class NestAccfactory {
           }
 
           if (
-            value?.source === NestAccfactory.DataSource.NESTAPI &&
+            value?.source === DATASOURCE.NestAPI &&
             this.config.options?.useNestAPI === true &&
             value.value?.latitude !== undefined &&
             value.value?.longitude !== undefined
@@ -2640,10 +2420,8 @@ export default class NestAccfactory {
     return devices; // Return our processed data
   }
 
-  async #set(uuid, values) {
+  async #set(values) {
     if (
-      typeof uuid !== 'string' ||
-      uuid === '' ||
       typeof values !== 'object' ||
       values?.uuid === undefined ||
       typeof this.#rawData?.[values?.uuid] !== 'object' ||
@@ -2653,9 +2431,9 @@ export default class NestAccfactory {
     }
 
     let nest_google_uuid = values.uuid; // Nest/Google structure uuid for this get request
-    let connectionUuid = this.#rawData[values.uuid].connection; // Associated connection uuid for the device
+    let uuid = this.#rawData[values.uuid].connection; // Connection uuid for this device
 
-    if (this.#protobufRoot !== null && this.#rawData?.[nest_google_uuid]?.source === NestAccfactory.DataSource.PROTOBUFAPI) {
+    if (this.#protobufRoot !== null && this.#rawData?.[nest_google_uuid]?.source === DATASOURCE.ProtobufAPI) {
       let updatedTraits = [];
       let protobufElement = {
         traitRequest: {
@@ -2876,7 +2654,7 @@ export default class NestAccfactory {
                 });
 
                 if (serviceUUID !== undefined) {
-                  let commandResponse = await this.#protobufCommand(connectionUuid, 'ResourceApi', 'SendCommand', {
+                  let commandResponse = await this.#protobufCommand(uuid, 'ResourceApi', 'SendCommand', {
                     resourceRequest: {
                       resourceId: serviceUUID,
                       requestId: crypto.randomUUID(),
@@ -2955,7 +2733,7 @@ export default class NestAccfactory {
       );
 
       if (updatedTraits.length !== 0) {
-        let commandResponse = await this.#protobufCommand(connectionUuid, 'TraitBatchApi', 'BatchUpdateState', {
+        let commandResponse = await this.#protobufCommand(uuid, 'TraitBatchApi', 'BatchUpdateState', {
           batchUpdateStateRequest: updatedTraits,
         });
         if (
@@ -2967,10 +2745,7 @@ export default class NestAccfactory {
       }
     }
 
-    if (
-      this.#rawData?.[nest_google_uuid]?.source === NestAccfactory.DataSource.NESTAPI &&
-      nest_google_uuid.startsWith('quartz.') === true
-    ) {
+    if (this.#rawData?.[nest_google_uuid]?.source === DATASOURCE.NestAPI && nest_google_uuid.startsWith('quartz.') === true) {
       // Set value on Nest Camera/Doorbell
       await Promise.all(
         Object.entries(values)
@@ -2989,14 +2764,14 @@ export default class NestAccfactory {
 
             await fetchWrapper(
               'post',
-              'https://webapi.' + this.#connections[connectionUuid].cameraAPIHost + '/api/dropcams.set_properties',
+              'https://webapi.' + this.#connections[uuid].cameraAPIHost + '/api/dropcams.set_properties',
               {
                 headers: {
-                  referer: 'https://' + this.#connections[connectionUuid].referer,
+                  referer: 'https://' + this.#connections[uuid].referer,
                   'User-Agent': USERAGENT,
                   'Content-Type': 'application/x-www-form-urlencoded',
-                  [this.#connections[connectionUuid].cameraAPI.key]:
-                    this.#connections[connectionUuid].cameraAPI.value + this.#connections[connectionUuid].cameraAPI.token,
+                  [this.#connections[uuid].cameraAPI.key]:
+                    this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
                 },
                 timeout: NESTAPITIMEOUT,
               },
@@ -3021,10 +2796,7 @@ export default class NestAccfactory {
       );
     }
 
-    if (
-      this.#rawData?.[nest_google_uuid]?.source === NestAccfactory.DataSource.NESTAPI &&
-      nest_google_uuid.startsWith('quartz.') === false
-    ) {
+    if (this.#rawData?.[nest_google_uuid]?.source === DATASOURCE.NestAPI && nest_google_uuid.startsWith('quartz.') === false) {
       // set values on other Nest devices besides cameras/doorbells
       await Promise.all(
         Object.entries(values)
@@ -3096,12 +2868,12 @@ export default class NestAccfactory {
             if (subscribeJSONData.objects.length !== 0) {
               await fetchWrapper(
                 'post',
-                this.#connections[connectionUuid].transport_url + '/v5/put',
+                this.#connections[uuid].transport_url + '/v5/put',
                 {
-                  referer: 'https://' + this.#connections[connectionUuid].referer,
+                  referer: 'https://' + this.#connections[uuid].referer,
                   headers: {
                     'User-Agent': USERAGENT,
-                    Authorization: 'Basic ' + this.#connections[connectionUuid].token,
+                    Authorization: 'Basic ' + this.#connections[uuid].token,
                   },
                 },
                 JSON.stringify(subscribeJSONData),
@@ -3118,10 +2890,8 @@ export default class NestAccfactory {
     }
   }
 
-  async #get(uuid, values) {
+  async #get(values) {
     if (
-      typeof uuid !== 'string' ||
-      uuid === '' ||
       typeof values !== 'object' ||
       values?.uuid === undefined ||
       typeof this.#rawData?.[values?.uuid] !== 'object' ||
@@ -3131,7 +2901,7 @@ export default class NestAccfactory {
     }
 
     let nest_google_uuid = values.uuid; // Nest/Google structure uuid for this get request
-    let connectionUuid = this.#rawData[values.uuid].connection; // Associated connection uuid for the uuid
+    let uuid = this.#rawData[values.uuid].connection; // Connection uuid for this device
 
     await Promise.all(
       Object.entries(values)
@@ -3142,7 +2912,7 @@ export default class NestAccfactory {
           values[key] = undefined;
 
           if (
-            this.#rawData?.[nest_google_uuid]?.source === NestAccfactory.DataSource.NESTAPI &&
+            this.#rawData?.[nest_google_uuid]?.source === DATASOURCE.NestAPI &&
             key === 'camera_snapshot' &&
             nest_google_uuid.startsWith('quartz.') === true &&
             typeof this.#rawData?.[nest_google_uuid]?.value?.nexus_api_http_server_url === 'string' &&
@@ -3154,10 +2924,10 @@ export default class NestAccfactory {
               this.#rawData[nest_google_uuid].value.nexus_api_http_server_url + '/get_image?uuid=' + nest_google_uuid.split('.')[1],
               {
                 headers: {
-                  referer: 'https://' + this.#connections[connectionUuid].referer,
+                  referer: 'https://' + this.#connections[uuid].referer,
                   'User-Agent': USERAGENT,
-                  [this.#connections[connectionUuid].cameraAPI.key]:
-                    this.#connections[connectionUuid].cameraAPI.value + this.#connections[connectionUuid].cameraAPI.token,
+                  [this.#connections[uuid].cameraAPI.key]:
+                    this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
                 },
                 timeout: 3000,
               },
@@ -3178,14 +2948,14 @@ export default class NestAccfactory {
           }
 
           if (
-            this.#rawData?.[nest_google_uuid]?.source === NestAccfactory.DataSource.PROTOBUFAPI &&
+            this.#rawData?.[nest_google_uuid]?.source === DATASOURCE.ProtobufAPI &&
             this.#protobufRoot !== null &&
             this.#rawData[nest_google_uuid]?.value?.device_identity?.vendorProductId !== undefined &&
             key === 'camera_snapshot'
           ) {
             // Attempt to retrieve snapshot from camera via Protobuf API
             // First, request to get snapshot url image updated
-            let commandResponse = await this.#protobufCommand(connectionUuid, 'ResourceApi', 'SendCommand', {
+            let commandResponse = await this.#protobufCommand(uuid, 'ResourceApi', 'SendCommand', {
               resourceRequest: {
                 resourceId: nest_google_uuid,
                 requestId: crypto.randomUUID(),
@@ -3208,10 +2978,10 @@ export default class NestAccfactory {
             ) {
               // Snapshot url image has beeen updated, so no retrieve it
               await fetchWrapper('get', this.#rawData[nest_google_uuid].value.upload_live_image.liveImageUrl, {
-                referer: 'https://' + this.#connections[connectionUuid].referer,
+                referer: 'https://' + this.#connections[uuid].referer,
                 headers: {
                   'User-Agent': USERAGENT,
-                  Authorization: 'Basic ' + this.#connections[connectionUuid].token,
+                  Authorization: 'Basic ' + this.#connections[uuid].token,
                 },
                 timeout: 3000,
               })
@@ -3236,79 +3006,83 @@ export default class NestAccfactory {
     return values;
   }
 
-  async #getWeather(connectionUUID, deviceUUID, latitude, longitude) {
-    let weather = {};
-    if (typeof this.#rawData[deviceUUID]?.value?.weather === 'object') {
-      weather = this.#rawData?.[deviceUUID]?.value.weather;
-    }
+  async #getWeather(uuid, deviceUUID, latitude, longitude) {
+    let weather = typeof this.#rawData?.[deviceUUID]?.value?.weather === 'object' ? this.#rawData[deviceUUID].value.weather : {};
 
-    if (typeof this.#connections?.[connectionUUID].weather_url === 'string' && this.#connections[connectionUUID].weather_url !== '') {
-      await fetchWrapper('get', this.#connections[connectionUUID].weather_url + latitude + ',' + longitude, {
-        referer: 'https://' + this.#connections[connectionUUID].referer,
-        headers: {
-          'User-Agent': USERAGENT,
-        },
-        timeout: NESTAPITIMEOUT,
-      })
-        .then((response) => response.json())
-        .then((data) => {
-          // Store the lat/long details in the weather data object
-          weather.latitude = latitude;
-          weather.longitude = longitude;
+    let location = latitude + ',' + longitude;
 
-          // Update weather data
-          if (data?.[latitude + ',' + longitude]?.current !== undefined) {
-            weather.current_temperature = adjustTemperature(data[latitude + ',' + longitude].current.temp_c, 'C', 'C', false);
-            weather.current_humidity = data[latitude + ',' + longitude].current.humidity;
-            weather.condition = data[latitude + ',' + longitude].current.condition;
-            weather.wind_direction = data[latitude + ',' + longitude].current.wind_dir;
-            weather.wind_speed = data[latitude + ',' + longitude].current.wind_mph * 1.609344; // convert to km/h
-            weather.sunrise = data[latitude + ',' + longitude].current.sunrise;
-            weather.sunset = data[latitude + ',' + longitude].current.sunset;
-          }
-          weather.station =
-            data[latitude + ',' + longitude]?.location?.short_name !== undefined
-              ? data[latitude + ',' + longitude].location.short_name
-              : '';
-          weather.forecast =
-            data[latitude + ',' + longitude]?.forecast?.daily?.[0]?.condition !== undefined
-              ? data[latitude + ',' + longitude].forecast.daily[0].condition
-              : '';
-        })
-        .catch((error) => {
-          if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
-            this?.log?.debug?.('Nest API failed to retrieve weather details for uuid "%s". Error was "%s"', deviceUUID, error?.code);
-          }
+    if (typeof this.#connections?.[uuid]?.weather_url === 'string' && this.#connections[uuid].weather_url !== '') {
+      try {
+        let response = await fetchWrapper('get', this.#connections[uuid].weather_url + location, {
+          referer: 'https://' + this.#connections[uuid].referer,
+          headers: {
+            'User-Agent': USERAGENT,
+          },
+          timeout: NESTAPITIMEOUT,
         });
+
+        let data = await response.json();
+        let locationData = data?.[location];
+
+        // Store the lat/long details in the weather data object
+        weather.latitude = latitude;
+        weather.longitude = longitude;
+
+        // Update weather data
+        if (locationData?.current !== undefined) {
+          weather.current_temperature = adjustTemperature(locationData.current.temp_c, 'C', 'C', false);
+          weather.current_humidity = locationData.current.humidity;
+          weather.condition = locationData.current.condition;
+          weather.wind_direction = locationData.current.wind_dir;
+          weather.wind_speed = locationData.current.wind_mph * 1.609344; // convert to km/h
+          weather.sunrise = locationData.current.sunrise;
+          weather.sunset = locationData.current.sunset;
+        }
+
+        weather.station = typeof locationData?.location?.short_name === 'string' ? locationData.location.short_name : '';
+        weather.forecast = locationData?.forecast?.daily?.[0]?.condition !== undefined ? locationData.forecast.daily[0].condition : '';
+      } catch (error) {
+        if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
+          this?.log?.debug?.('Nest API failed to retrieve weather details for uuid "%s". Error was "%s"', deviceUUID, error?.code);
+        }
+      }
     }
 
     return weather;
   }
 
-  async #protobufCommand(connectionUUID, service, command, values) {
+  async #protobufCommand(uuid, service, command, values) {
     if (
       this.#protobufRoot === null ||
+      typeof uuid !== 'string' ||
+      !uuid ||
       typeof service !== 'string' ||
-      service === '' ||
+      !service ||
       typeof command !== 'string' ||
-      command === '' ||
-      typeof values !== 'object'
+      !command ||
+      typeof values !== 'object' ||
+      values === null ||
+      this.#connections?.[uuid] === undefined ||
+      typeof this.#connections?.[uuid].protobufAPIHost !== 'string' ||
+      typeof this.#connections?.[uuid].referer !== 'string' ||
+      typeof this.#connections?.[uuid].token !== 'string'
     ) {
       return;
     }
 
     const encodeValues = (object) => {
       if (typeof object === 'object' && object !== null) {
-        if ('type_url' in object && 'value' in object) {
-          // We have a type_url and value object at this same level, we'll treat this a trait requiring encoding
-          let TraitMap = this.#protobufRoot.lookup(object.type_url.split('/')[1]);
+        // We have a type_url and value object at this same level, we'll treat this a trait requiring encoding
+        if (typeof object.type_url === 'string' && object.value !== undefined) {
+          let typeName = object.type_url.split('/')[1];
+          let TraitMap = this.#protobufRoot.lookup(typeName);
           if (TraitMap !== null) {
             object.value = TraitMap.encode(TraitMap.fromObject(object.value)).finish();
           }
         }
 
-        for (let key in object) {
-          if (object?.[key] !== undefined) {
+        for (const key in object) {
+          if (object[key] !== undefined) {
             encodeValues(object[key]);
           }
         }
@@ -3325,28 +3099,27 @@ export default class NestAccfactory {
       encodeValues(values);
 
       let encodedData = TraitMapRequest.encode(TraitMapRequest.fromObject(values)).finish();
-      await fetchWrapper(
-        'post',
-        'https://' + this.#connections[connectionUUID].protobufAPIHost + '/nestlabs.gateway.v1.' + service + '/' + command,
-        {
-          headers: {
-            referer: 'https://' + this.#connections[connectionUUID].referer,
-            'User-Agent': USERAGENT,
-            Authorization: 'Basic ' + this.#connections[connectionUUID].token,
-            'Content-Type': 'application/x-protobuf',
-            'X-Accept-Content-Transfer-Encoding': 'binary',
-            'X-Accept-Response-Streaming': 'true',
+      try {
+        let response = await fetchWrapper(
+          'post',
+          'https://' + this.#connections[uuid].protobufAPIHost + '/nestlabs.gateway.v1.' + service + '/' + command,
+          {
+            headers: {
+              referer: 'https://' + this.#connections[uuid].referer,
+              'User-Agent': USERAGENT,
+              Authorization: 'Basic ' + this.#connections[uuid].token,
+              'Content-Type': 'application/x-protobuf',
+              'X-Accept-Content-Transfer-Encoding': 'binary',
+              'X-Accept-Response-Streaming': 'true',
+            },
           },
-        },
-        encodedData,
-      )
-        .then((response) => response.arrayBuffer())
-        .then((data) => {
-          commandResponse = TraitMapResponse.decode(Buffer.from(data)).toJSON();
-        })
-        .catch((error) => {
-          this?.log?.debug?.('Protobuf gateway service command failed with error. Error was "%s"', error?.code);
-        });
+          encodedData,
+        );
+        let buffer = await response.arrayBuffer();
+        commandResponse = TraitMapResponse.decode(Buffer.from(buffer)).toJSON();
+      } catch (error) {
+        this?.log?.debug?.('Protobuf gateway service command failed with error. Error was "%s"', error?.code);
+      }
     }
     return commandResponse;
   }
@@ -3459,21 +3232,37 @@ async function fetchWrapper(method, url, options, data) {
     options.body = data;
   }
 
-  // eslint-disable-next-line no-undef
-  let response = await fetch(url, options);
+  let response;
+  try {
+    // eslint-disable-next-line no-undef
+    response = await fetch(url, options);
+  } catch (error) {
+    if (options.retry > 1) {
+      options.retry--;
+      options._retryCount++;
 
-  if (response.ok === false && options.retry > 1) {
-    options.retry--;
-    options._retryCount++;
+      const delay = 500 * 2 ** (options._retryCount - 1);
+      await new Promise((resolve) => setTimeout(resolve, delay));
 
-    let delay = 500 * 2 ** (options._retryCount - 1);
-    await new Promise((resolve) => setTimeout(resolve, delay));
+      return fetchWrapper(method, url, options, data);
+    }
 
-    response = await fetchWrapper(method, url, options, data);
+    error.message = `Fetch failed for ${method.toUpperCase()} ${url} after ${options._retryCount + 1} attempt(s): ${error.message}`;
+    throw error;
   }
 
-  if (response.ok === false && options.retry === 0) {
-    const error = new Error(response.statusText);
+  if (response?.ok === false) {
+    if (options.retry > 1) {
+      options.retry--;
+      options._retryCount++;
+
+      let delay = 500 * 2 ** (options._retryCount - 1);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+
+      return fetchWrapper(method, url, options, data);
+    }
+
+    let error = new Error(`HTTP ${response.status} on ${method.toUpperCase()} ${url}: ${response.statusText || 'Unknown error'}`);
     error.code = response.status;
     throw error;
   }

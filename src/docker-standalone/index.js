@@ -18,7 +18,7 @@
 //
 // Supports both Nest REST and Protobuf APIs for communication
 //
-// Code version 2025.06.05
+// Code version 2025.06.13
 // Mark Hulskamp
 'use strict';
 
@@ -26,11 +26,11 @@
 import HAP from 'hap-nodejs';
 
 // Define nodejs module requirements
+import EventEmitter from 'node:events';
 import process from 'node:process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { setInterval } from 'node:timers';
 import { createRequire } from 'node:module';
 
 // Import our modules
@@ -328,6 +328,13 @@ if (config?.options?.debug === true) {
   log.warn('Debugging has been enabled');
 }
 
-let nest = new NestAccfactory(log, config, HAP);
-nest.discoverDevices(); // Kick things off :-)
-setInterval(nest.discoverDevices.bind(nest), 15000);
+let eventEmitter = new EventEmitter();
+// eslint-disable-next-line no-unused-vars
+let nest = new NestAccfactory(log, config, HAP, eventEmitter);
+eventEmitter?.emit?.('didFinishLaunching');
+
+process.on('SIGINT', () => {
+  // Trigger shutdown cleanup (streamers, sockets, etc.)
+  eventEmitter?.emit?.('shutdown');
+  process.exit(0);
+});
