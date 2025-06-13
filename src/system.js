@@ -43,14 +43,13 @@ export default class NestAccfactory {
   #connections = undefined; // Object of confirmed connections
   #rawData = {}; // Cached copy of data from both Nest and Protobuf APIs
   #eventEmitter = new EventEmitter(); // Used for object messaging from this platform
-  #connectionTimer = undefined;
   #protobufRoot = null; // Protobuf loaded protos
   #trackedDevices = {}; // Object of devices we've created. used to track data source type, comms uuid. key'd by serial #
   #deviceModules = undefined; // No loaded device support modules to start
 
   constructor(log, config, api, eventEmitter) {
     // If no explicit event emitter was passed, and the api is an EventEmitter (e.g., in Homebridge),
-    // we'll treat it as the source for lifecycle messages like didFinishLaunching/shutdown
+    // we'll treat it as the source for lifecycle messages like didFinishLaunching/shutdown in this constructor
     if (api instanceof EventEmitter && eventEmitter === undefined) {
       eventEmitter = api;
     }
@@ -104,18 +103,14 @@ export default class NestAccfactory {
 
     eventEmitter?.on?.('shutdown', async () => {
       // We got notified that Homebridge is shutting down
-      // Perform cleanup some internal cleaning up
+      // Perform cleanup of internal state
       this.#eventEmitter?.removeAllListeners();
-      Object.values(this.#trackedDevices).forEach((value) => {
-        if (value?.timers !== undefined) {
-          Object.values(value?.timers).forEach((timers) => {
-            clearInterval(timers);
-          });
-        }
+
+      Object.values(this.#trackedDevices).forEach((device) => {
+        Object.values(device?.timers || {}).forEach((timer) => clearInterval(timer));
       });
+
       this.#trackedDevices = {};
-      clearInterval(this.#connectionTimer);
-      this.#connectionTimer = undefined;
       this.#rawData = {};
       this.#protobufRoot = null;
       this.#eventEmitter = undefined;
@@ -416,73 +411,70 @@ export default class NestAccfactory {
                   ? this.#rawData[value.object_key].value.properties
                   : [];
 
-              await fetchWrapper(
-                'get',
-                'https://webapi.' +
-                  this.#connections[uuid].cameraAPIHost +
-                  '/api/cameras.get_with_properties?uuid=' +
-                  value.object_key.split('.')[1],
-                {
-                  headers: {
-                    referer: 'https://' + this.#connections[uuid].referer,
-                    'User-Agent': USERAGENT,
-                    [this.#connections[uuid].cameraAPI.key]:
-                      this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
+              try {
+                let response = await fetchWrapper(
+                  'get',
+                  'https://webapi.' +
+                    this.#connections[uuid].cameraAPIHost +
+                    '/api/cameras.get_with_properties?uuid=' +
+                    value.object_key.split('.')[1],
+                  {
+                    headers: {
+                      referer: 'https://' + this.#connections[uuid].referer,
+                      'User-Agent': USERAGENT,
+                      [this.#connections[uuid].cameraAPI.key]:
+                        this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
+                    },
+                    timeout: NESTAPITIMEOUT,
                   },
-                  timeout: NESTAPITIMEOUT,
-                },
-              )
-                .then((response) => response.json())
-                .then((data) => {
-                  value.value.properties = data.items[0].properties;
-                })
-                .catch((error) => {
-                  if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
-                    this?.log?.debug?.(
-                      'Nest API had error retrieving camera/doorbell details during subscribe. Error was "%s"',
-                      error?.code,
-                    );
-                  }
-                });
+                );
+                let data = await response.json();
+                value.value.properties = data.items[0].properties;
+              } catch (error) {
+                if (error?.cause !== undefined && String(error.cause).toUpperCase().includes('TIMEOUT') === false) {
+                  this?.log?.debug?.(
+                    'Nest API had error retrieving camera/doorbell details during subscribe. Error was "%s"',
+                    error?.code ?? String(error),
+                  );
+                }
+              }
 
               value.value.activity_zones =
                 typeof this.#rawData[value.object_key]?.value?.activity_zones === 'object'
                   ? this.#rawData[value.object_key].value.activity_zones
                   : [];
 
-              await fetchWrapper('get', value.value.nexus_api_http_server_url + '/cuepoint_category/' + value.object_key.split('.')[1], {
-                headers: {
-                  referer: 'https://' + this.#connections[uuid].referer,
-                  'User-Agent': USERAGENT,
-                  [this.#connections[uuid].cameraAPI.key]:
-                    this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
-                },
-                timeout: NESTAPITIMEOUT,
-              })
-                .then((response) => response.json())
-                .then((data) => {
-                  let zones = [];
-                  data.forEach((zone) => {
-                    if (zone.type.toUpperCase() === 'ACTIVITY' || zone.type.toUpperCase() === 'REGION') {
-                      zones.push({
-                        id: zone.id === 0 ? 1 : zone.id,
-                        name: makeHomeKitName(zone.label),
-                        hidden: zone.hidden === true,
-                        uri: zone.nexusapi_image_uri,
-                      });
-                    }
-                  });
-
-                  value.value.activity_zones = zones;
-                })
-                .catch((error) => {
-                  if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
-                    this?.log?.debug?.(
-                      'Nest API had error retrieving camera/doorbell activity zones during subscribe. Error was "%s"',
-                      error?.code,
-                    );
-                  }
-                });
+              try {
+                let response = await fetchWrapper(
+                  'get',
+                  value.value.nexus_api_http_server_url + '/cuepoint_category/' + value.object_key.split('.')[1],
+                  {
+                    headers: {
+                      referer: 'https://' + this.#connections[uuid].referer,
+                      'User-Agent': USERAGENT,
+                      [this.#connections[uuid].cameraAPI.key]:
+                        this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
+                    },
+                    timeout: NESTAPITIMEOUT,
+                  },
+                );
+                let data = await response.json();
+                value.value.activity_zones = data
+                  .filter((zone) => zone?.type?.toUpperCase() === 'ACTIVITY' || zone?.type?.toUpperCase() === 'REGION')
+                  .map((zone) => ({
+                    id: zone.id === 0 ? 1 : zone.id,
+                    name: makeHomeKitName(zone.label),
+                    hidden: zone.hidden === true,
+                    uri: zone.nexusapi_image_uri,
+                  }));
+              } catch (error) {
+                if (error?.cause !== undefined && String(error.cause).toUpperCase().includes('TIMEOUT') === false) {
+                  this?.log?.debug?.(
+                    'Nest API had error retrieving camera/doorbell activity zones during subscribe. Error was "%s"',
+                    error?.code ?? String(error),
+                  );
+                }
+              }
             }
 
             if (value.object_key.startsWith('buckets.') === true) {
@@ -557,14 +549,20 @@ export default class NestAccfactory {
         await this.#processPostSubscribe();
       })
       .catch((error) => {
-        if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
-          this?.log?.debug?.('Nest API had an error performing subscription with connection uuid "%s"', uuid);
-          this?.log?.debug?.('Error was "%s"', error);
+        if (
+          error?.cause === undefined ||
+          (typeof error.cause === 'object' && String(error.cause).toUpperCase().includes('TIMEOUT') === false)
+        ) {
+          this?.log?.debug?.(
+            'Nest API had an error performing subscription with connection uuid "%s"',
+            uuid,
+            error?.message ?? String(error),
+          );
+          this?.log?.debug?.('Restarting Nest API subscription for connection uuid "%s"', uuid);
         }
       })
       .finally(() => {
-        this?.log?.debug?.('Restarting Nest API subscribe for connection uuid "%s"', uuid);
-        setTimeout(this.#subscribeNest.bind(this, uuid, fullRefresh), 1000);
+        setTimeout(() => this.#subscribeNest(uuid, fullRefresh), 1000);
       });
   }
 
@@ -579,37 +577,29 @@ export default class NestAccfactory {
     }
 
     const calculate_message_size = (inputBuffer) => {
-      // First byte in the is a tag type??
-      // Following is a varint type
-      // After varint size, is the buffer content
       let varint = 0;
-      let bufferPos = 0;
-      let currentByte;
+      let shift = 0;
 
-      for (;;) {
-        currentByte = inputBuffer[bufferPos + 1]; // Offset in buffer + 1 to skip over starting tag
-        varint |= (currentByte & 0x7f) << (bufferPos * 7);
-        bufferPos += 1;
-        if (bufferPos > 5) {
-          throw new Error('VarInt exceeds allowed bounds.');
+      for (let i = 1; i <= 5; i++) {
+        // Start at index 1 (skip tag byte)
+        let byte = inputBuffer[i];
+        varint |= (byte & 0x7f) << shift;
+        if ((byte & 0x80) === 0) {
+          return varint + i + 1; // +1 to include initial tag byte
         }
-        if ((currentByte & 0x80) !== 0x80) {
-          break;
-        }
+        shift += 7;
       }
 
-      // Return length of message in buffer
-      return varint + bufferPos + 1;
+      throw new Error('VarInt exceeds allowed bounds.');
     };
 
-    const traverseTypes = (currentTrait, callback) => {
-      if (currentTrait instanceof protobuf.Type) {
-        callback(currentTrait);
+    const traverseTypes = (trait, callback) => {
+      if (trait instanceof protobuf.Type === true) {
+        callback(trait);
       }
-      if (currentTrait.nestedArray) {
-        currentTrait.nestedArray.map((trait) => {
-          traverseTypes(trait, callback);
-        });
+
+      for (const nested of trait && trait.nestedArray ? trait.nestedArray : []) {
+        traverseTypes(nested, callback);
       }
     };
 
@@ -788,15 +778,20 @@ export default class NestAccfactory {
         }
       })
       .catch((error) => {
-        if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
-          this?.log?.debug?.('Protobuf API had an error performing trait observe with connection uuid "%s"', uuid);
-          this?.log?.debug?.('Error was "%s"', error);
+        if (
+          error?.cause === undefined ||
+          (typeof error.cause === 'object' && String(error.cause).toUpperCase().includes('TIMEOUT') === false)
+        ) {
+          this?.log?.debug?.(
+            'Protobuf API had an error performing trait observe with connection uuid "%s". Error: "%s"',
+            uuid,
+            error?.message ?? String(error),
+          );
+          this?.log?.debug?.('Restarting Protobuf API trait observe for connection uuid "%s"', uuid);
         }
       })
-
       .finally(() => {
-        this?.log?.debug?.('Restarting Protobuf API trait observe for connection uuid "%s"', uuid);
-        setTimeout(this.#subscribeProtobuf.bind(this, uuid, false), 1000);
+        setTimeout(() => this.#subscribeProtobuf(uuid, false), 1000);
       });
   }
 
@@ -817,7 +812,7 @@ export default class NestAccfactory {
 
         // If we're running under Homebridge, and the device is now marked as excluded and present in accessory cache
         // Then we'll unregister it from the Homebridge platform
-        if (this.api instanceof EventEmitter === true) {
+        if (typeof this?.api?.unregisterPlatformAccessories === 'function') {
           let accessory = this.cachedAccessories.find(
             (accessory) => accessory?.UUID === this.#trackedDevices[deviceData.serialNumber].uuid,
           );
@@ -860,66 +855,71 @@ export default class NestAccfactory {
           ) {
             // Setup polling loop for camera/doorbell zone data
             // This is only required for Nest API data sources as these details are present in Protobuf API
+            clearInterval(this.#trackedDevices?.[deviceData.serialNumber]?.timers?.zones);
             this.#trackedDevices[deviceData.serialNumber].timers.zones = setInterval(async () => {
               let nest_google_uuid = this.#trackedDevices?.[deviceData?.serialNumber]?.rawDataUuid;
               if (
                 this.#rawData?.[nest_google_uuid]?.value !== undefined &&
                 this.#trackedDevices?.[deviceData?.serialNumber]?.source === DATASOURCE.NestAPI
               ) {
-                await fetchWrapper(
-                  'get',
-                  this.#rawData[nest_google_uuid].value.nexus_api_http_server_url + '/cuepoint_category/' + nest_google_uuid.split('.')[1],
-                  {
-                    headers: {
-                      referer: 'https://' + this.#connections[this.#rawData[nest_google_uuid].connection].referer,
-                      'User-Agent': USERAGENT,
-                      [this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.key]:
-                        this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.value +
-                        this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.token,
+                try {
+                  let response = await fetchWrapper(
+                    'get',
+                    this.#rawData[nest_google_uuid].value.nexus_api_http_server_url +
+                      '/cuepoint_category/' +
+                      nest_google_uuid.split('.')[1],
+                    {
+                      headers: {
+                        referer: 'https://' + this.#connections[this.#rawData[nest_google_uuid].connection].referer,
+                        'User-Agent': USERAGENT,
+                        [this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.key]:
+                          this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.value +
+                          this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.token,
+                      },
+                      timeout: CAMERAZONEPOLLING,
                     },
-                    timeout: CAMERAZONEPOLLING,
-                  },
-                )
-                  .then((response) => response.json())
-                  .then((data) => {
-                    let zones = [];
-                    data.forEach((zone) => {
-                      if (zone.type.toUpperCase() === 'ACTIVITY' || zone.type.toUpperCase() === 'REGION') {
-                        zones.push({
-                          id: zone.id === 0 ? 1 : zone.id,
-                          name: makeHomeKitName(zone.label),
-                          hidden: zone.hidden === true,
-                          uri: zone.nexusapi_image_uri,
-                        });
-                      }
-                    });
+                  );
+                  let data = await response.json();
 
-                    // Update internal structure with new zone details.
-                    // We do a test to see if its still present not interval loop not finished or device removed
-                    if (this.#rawData?.[nest_google_uuid]?.value !== undefined) {
-                      this.#rawData[nest_google_uuid].value.activity_zones = zones;
+                  // Transform activity zones if present
+                  let zones =
+                    Array.isArray(data) === true
+                      ? data
+                          .filter((zone) => zone.type.toUpperCase() === 'ACTIVITY' || zone.type.toUpperCase() === 'REGION')
+                          .map((zone) => ({
+                            id: zone.id === 0 ? 1 : zone.id,
+                            name: makeHomeKitName(zone.label),
+                            hidden: zone.hidden === true,
+                            uri: zone.nexusapi_image_uri,
+                          }))
+                      : [];
 
-                      // Send updated data onto HomeKit device for it to process
-                      this.#trackedDevices?.[deviceData?.serialNumber]?.uuid &&
-                        this.#eventEmitter?.emit?.(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, {
-                          activity_zones: zones,
-                        });
-                    }
-                  })
-                  .catch((error) => {
-                    // Log debug message if wasn't a timeout
-                    if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
-                      this?.log?.debug?.(
-                        'Nest API had error retrieving camera/doorbell activity zones for "%s". Error was "%s"',
-                        deviceData.description,
-                        error?.code,
-                      );
-                    }
-                  });
+                  // Update internal structure with new zone details.
+                  // We do a test to see if it's still present, not interval loop not finished or device removed
+                  if (this.#rawData?.[nest_google_uuid]?.value !== undefined) {
+                    this.#rawData[nest_google_uuid].value.activity_zones = zones;
+
+                    // Send updated data onto HomeKit device for it to process
+                    this.#trackedDevices?.[deviceData?.serialNumber]?.uuid &&
+                      this.#eventEmitter?.emit?.(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, {
+                        activity_zones: zones,
+                      });
+                  }
+                } catch (error) {
+                  // Log debug message if it wasn't a timeout
+                  if (error?.cause !== undefined && String(error.cause).toUpperCase().includes('TIMEOUT') === false) {
+                    this?.log?.debug?.(
+                      'Nest API had error retrieving camera/doorbell activity zones for "%s". Error was "%s"',
+                      deviceData.description,
+                      error?.code,
+                    );
+                  }
+                }
               }
             }, CAMERAZONEPOLLING);
 
-            // Setup polling loop for camera/doorbell alert data
+            // Setup polling loop for camera/doorbell alert data, clearing any existing polling loop
+            clearInterval(this.#trackedDevices?.[deviceData.serialNumber]?.timers?.alerts);
             this.#trackedDevices[deviceData.serialNumber].timers.alerts = setInterval(async () => {
               let alerts = []; // No alerts to processed yet
               let nest_google_uuid = this.#trackedDevices?.[deviceData?.serialNumber]?.rawDataUuid;
@@ -956,11 +956,12 @@ export default class NestAccfactory {
                 );
 
                 if (
-                  typeof commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.event?.event?.cameraEventWindow?.cameraEvent ===
-                  'object'
+                  Array.isArray(
+                    commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.event?.event?.cameraEventWindow?.cameraEvent,
+                  ) === true
                 ) {
-                  commandResponse.sendCommandResponse[0].traitOperations[0].event.event.cameraEventWindow.cameraEvent.forEach((event) => {
-                    alerts.push({
+                  alerts = commandResponse.sendCommandResponse[0].traitOperations[0].event.event.cameraEventWindow.cameraEvent
+                    .map((event) => ({
                       playback_time: parseInt(event.startTime.seconds) * 1000 + parseInt(event.startTime.nanos) / 1000000,
                       start_time: parseInt(event.startTime.seconds) * 1000 + parseInt(event.startTime.nanos) / 1000000,
                       end_time: parseInt(event.endTime.seconds) * 1000 + parseInt(event.endTime.nanos) / 1000000,
@@ -970,23 +971,21 @@ export default class NestAccfactory {
                           ? event.activityZone.map((zone) => (zone?.zoneIndex !== undefined ? zone.zoneIndex : zone.internalIndex))
                           : [],
                       types: event.eventType
-                        .map((event) => (event.startsWith('EVENT_') === true ? event.split('EVENT_')[1].toLowerCase() : ''))
+                        .map((event) => {
+                          if (event === 'EVENT_UNFAMILIAR_FACE') {
+                            return 'unfamiliar-face';
+                          }
+                          if (event === 'EVENT_PERSON_TALKING') {
+                            return 'personHeard';
+                          }
+                          if (event === 'EVENT_DOG_BARKING') {
+                            return 'dogBarking';
+                          }
+                          return event.startsWith('EVENT_') ? event.split('EVENT_')[1].toLowerCase() : '';
+                        })
                         .filter((event) => event),
-                    });
-
-                    // Fix up event types to match Nest API
-                    // 'EVENT_UNFAMILIAR_FACE' = 'unfamiliar-face'
-                    // 'EVENT_PERSON_TALKING' = 'personHeard'
-                    // 'EVENT_DOG_BARKING' = 'dogBarking'
-                    // <---- TODO (as the ones we use match from Protobuf)
-                  });
-
-                  // Sort alerts to be most recent first
-                  alerts = alerts.sort((a, b) => {
-                    if (a.start_time > b.start_time) {
-                      return -1;
-                    }
-                  });
+                    }))
+                    .sort((a, b) => b.start_time - a.start_time);
                 }
               }
 
@@ -994,61 +993,57 @@ export default class NestAccfactory {
                 this.#rawData?.[nest_google_uuid]?.value !== undefined &&
                 this.#trackedDevices?.[deviceData?.serialNumber]?.source === DATASOURCE.NestAPI
               ) {
-                await fetchWrapper(
-                  'get',
-                  this.#rawData[nest_google_uuid].value.nexus_api_http_server_url +
-                    '/cuepoint/' +
-                    nest_google_uuid.split('.')[1] +
-                    '/2?start_time=' +
-                    Math.floor(Date.now() / 1000 - 30),
-                  {
-                    headers: {
-                      referer: 'https://' + this.#connections[this.#rawData[nest_google_uuid].connection].referer,
-                      'User-Agent': USERAGENT,
-                      [this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.key]:
-                        this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.value +
-                        this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.token,
+                try {
+                  let response = await fetchWrapper(
+                    'get',
+                    this.#rawData[nest_google_uuid].value.nexus_api_http_server_url +
+                      '/cuepoint/' +
+                      nest_google_uuid.split('.')[1] +
+                      '/2?start_time=' +
+                      Math.floor(Date.now() / 1000 - 30),
+                    {
+                      headers: {
+                        referer: 'https://' + this.#connections[this.#rawData[nest_google_uuid].connection].referer,
+                        'User-Agent': USERAGENT,
+                        [this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.key]:
+                          this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.value +
+                          this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.token,
+                      },
+                      timeout: CAMERAALERTPOLLING,
+                      retry: 3,
                     },
-                    timeout: CAMERAALERTPOLLING,
-                    retry: 3,
-                  },
-                )
-                  .then((response) => response.json())
-                  .then((data) => {
-                    data.forEach((alert) => {
-                      // Fix up alert zone IDs. If there is an ID of 0, we'll transform to 1. ie: main zone
-                      // If there are NO zone IDs, we'll put a 1 in there ie: main zone
-                      alert.zone_ids = alert.zone_ids.map((id) => (id !== 0 ? id : 1));
-                      if (alert.zone_ids.length === 0) {
-                        alert.zone_ids.push(1);
-                      }
-                      alerts.push({
-                        playback_time: alert.playback_time,
-                        start_time: alert.start_time,
-                        end_time: alert.end_time,
-                        id: alert.id,
-                        zone_ids: alert.zone_ids,
-                        types: alert.types,
-                      });
-                    });
+                  );
 
-                    // Sort alerts to be most recent first
-                    alerts = alerts.sort((a, b) => {
-                      if (a.start_time > b.start_time) {
-                        return -1;
-                      }
-                    });
-                  })
-                  .catch((error) => {
-                    // Log debug message if wasn't a timeout
-                    if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
-                      this?.log?.debug?.(
-                        'Nest API had error retrieving camera/doorbell activity notifications for "%s". Error was "%s"',
-                        deviceData.description,
-                        error?.code,
-                      );
-                    }
-                  });
+                  let data = await response.json();
+
+                  alerts =
+                    Array.isArray(data) === true
+                      ? data
+                          .map((alert) => {
+                            alert.zone_ids = alert.zone_ids.map((id) => (id !== 0 ? id : 1));
+                            if (alert.zone_ids.length === 0) {
+                              alert.zone_ids.push(1);
+                            }
+                            return {
+                              playback_time: alert.playback_time,
+                              start_time: alert.start_time,
+                              end_time: alert.end_time,
+                              id: alert.id,
+                              zone_ids: alert.zone_ids,
+                              types: alert.types,
+                            };
+                          })
+                          .sort((a, b) => b.start_time - a.start_time)
+                      : [];
+                } catch (error) {
+                  if (error?.cause !== undefined && String(error.cause).toUpperCase().includes('TIMEOUT') === false) {
+                    this?.log?.debug?.(
+                      'Nest API had error retrieving camera/doorbell activity notifications for "%s". Error was "%s"',
+                      deviceData.description,
+                      error?.code,
+                    );
+                  }
+                }
               }
 
               // Update internal structure with new alerts.
@@ -1064,23 +1059,22 @@ export default class NestAccfactory {
           }
 
           if (deviceClass.TYPE === DeviceType.WEATHER) {
-            // Setup polling loop for weather data
+            // Setup polling loop for weather data, clearing any existing polling loop
+            clearInterval(this.#trackedDevices?.[deviceData.serialNumber]?.timers?.weather);
             this.#trackedDevices[deviceData.serialNumber].timers.weather = setInterval(async () => {
-              let nest_google_uuid = this.#trackedDevices?.[deviceData?.serialNumber]?.rawDataUuid;
-              if (this.#rawData?.[nest_google_uuid] !== undefined) {
-                this.#rawData[nest_google_uuid].value.weather = await this.#getWeather(
-                  this.#rawData[nest_google_uuid].connection,
-                  nest_google_uuid,
-                  this.#rawData[nest_google_uuid].value.weather.latitude,
-                  this.#rawData[nest_google_uuid].value.weather.longitude,
+              if (this.#rawData?.[this.#trackedDevices?.[deviceData.serialNumber]?.rawDataUuid] !== undefined) {
+                this.#rawData[this.#trackedDevices[deviceData.serialNumber].rawDataUuid].value.weather = await this.#getWeather(
+                  this.#rawData[this.#trackedDevices[deviceData.serialNumber].rawDataUuid].connection,
+                  this.#trackedDevices[deviceData.serialNumber].rawDataUuid,
+                  this.#rawData[this.#trackedDevices[deviceData.serialNumber].rawDataUuid].value.weather.latitude,
+                  this.#rawData[this.#trackedDevices[deviceData.serialNumber].rawDataUuid].value.weather.longitude,
                 );
 
-                // Send updated weather data onto HomeKit device for it to process
-                this.#trackedDevices?.[deviceData?.serialNumber]?.uuid &&
+                this.#trackedDevices?.[deviceData.serialNumber]?.uuid &&
                   this.#eventEmitter?.emit?.(
                     this.#trackedDevices[deviceData.serialNumber].uuid,
                     HomeKitDevice.UPDATE,
-                    this.#processData(nest_google_uuid)?.[deviceData?.serialNumber],
+                    this.#processData(this.#trackedDevices[deviceData.serialNumber].rawDataUuid)?.[deviceData.serialNumber],
                   );
               }
             }, WEATHERPOLLING);
@@ -1118,36 +1112,33 @@ export default class NestAccfactory {
     }
     let devices = {};
 
-    // Get the device(s) location from stucture
+    // Get the device(s) location from structure
     // We'll test in both Nest and Protobuf API data
     const get_location_name = (structure_id, where_id) => {
       let location = '';
 
-      // Check Nest data
-      if (typeof this.#rawData?.['where.' + structure_id]?.value === 'object') {
-        this.#rawData['where.' + structure_id].value.wheres.forEach((value) => {
-          if (where_id === value.where_id) {
-            location = value.name;
-          }
-        });
-      }
+      if (typeof structure_id === 'string' && typeof where_id === 'string') {
+        // Check Nest data
+        if (typeof this.#rawData?.['where.' + structure_id]?.value === 'object') {
+          this.#rawData['where.' + structure_id].value.wheres.forEach((value) => {
+            if (where_id === value.where_id) {
+              location = value.name;
+            }
+          });
+        }
 
-      // Check Protobuf data
-      if (typeof this.#rawData[structure_id]?.value?.located_annotations?.predefinedWheres === 'object') {
-        Object.values(this.#rawData[structure_id].value.located_annotations.predefinedWheres).forEach((value) => {
-          if (value.whereId.resourceId === where_id) {
-            location = value.label.literal;
-          }
-        });
-      }
-      if (typeof this.#rawData[structure_id]?.value?.located_annotations?.customWheres === 'object') {
-        Object.values(this.#rawData[structure_id].value.located_annotations.customWheres).forEach((value) => {
-          if (value.whereId.resourceId === where_id) {
-            location = value.label.literal;
-          }
-        });
-      }
+        // Check Protobuf data (combined predefined and custom)
+        let protobufWheres = [
+          ...Object.values(this.#rawData?.[structure_id]?.value?.located_annotations?.predefinedWheres || {}),
+          ...Object.values(this.#rawData?.[structure_id]?.value?.located_annotations?.customWheres || {}),
+        ];
 
+        protobufWheres.forEach((value) => {
+          if (value?.whereId?.resourceId === where_id) {
+            location = value.label?.literal;
+          }
+        });
+      }
       return location;
     };
 
@@ -2751,47 +2742,41 @@ export default class NestAccfactory {
         Object.entries(values)
           .filter(([key]) => key !== 'uuid')
           .map(async ([key, value]) => {
-            const SETPROPERTIES = {
-              indoor_chime_enabled: 'doorbell.indoor_chime.enabled',
-              statusled_brightness: 'statusled.brightness',
-              irled_enabled: 'irled.state',
-              streaming_enabled: 'streaming.enabled',
-              audio_enabled: 'audio.enabled',
-            };
-
-            // Transform key to correct set camera properties key
-            key = SETPROPERTIES[key] !== undefined ? SETPROPERTIES[key] : key;
-
-            await fetchWrapper(
-              'post',
-              'https://webapi.' + this.#connections[uuid].cameraAPIHost + '/api/dropcams.set_properties',
+            let mappedKey =
               {
-                headers: {
-                  referer: 'https://' + this.#connections[uuid].referer,
-                  'User-Agent': USERAGENT,
-                  'Content-Type': 'application/x-www-form-urlencoded',
-                  [this.#connections[uuid].cameraAPI.key]:
-                    this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
+                indoor_chime_enabled: 'doorbell.indoor_chime.enabled',
+                statusled_brightness: 'statusled.brightness',
+                irled_enabled: 'irled.state',
+                streaming_enabled: 'streaming.enabled',
+                audio_enabled: 'audio.enabled',
+              }[key] ?? key;
+
+            try {
+              let response = await fetchWrapper(
+                'post',
+                'https://webapi.' + this.#connections[uuid].cameraAPIHost + '/api/dropcams.set_properties',
+                {
+                  headers: {
+                    referer: 'https://' + this.#connections[uuid].referer,
+                    'User-Agent': USERAGENT,
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    [this.#connections[uuid].cameraAPI.key]:
+                      this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
+                  },
+                  timeout: NESTAPITIMEOUT,
                 },
-                timeout: NESTAPITIMEOUT,
-              },
-              [key] + '=' + value + '&uuid=' + nest_google_uuid.split('.')[1],
-            )
-              .then((response) => response.json())
-              .then((data) => {
-                if (data?.status !== 0) {
-                  throw new Error('Nest API camera update for failed with error');
-                }
-              })
-              .catch((error) => {
-                if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
-                  this?.log?.debug?.(
-                    'Nest API camera update for failed with error for uuid "%s". Error was "%s"',
-                    nest_google_uuid,
-                    error?.code,
-                  );
-                }
-              });
+                mappedKey + '=' + value + '&uuid=' + nest_google_uuid.split('.')[1],
+              );
+
+              let data = await response.json();
+              if (data?.status !== 0) {
+                throw new Error('Nest API camera update failed');
+              }
+            } catch (error) {
+              if (error?.cause !== undefined && String(error.cause).toUpperCase().includes('TIMEOUT') === false) {
+                this?.log?.debug?.('Nest API camera update failed for uuid "%s". Error was "%s"', nest_google_uuid, error?.code);
+              }
+            }
           }),
       );
     }
@@ -2866,24 +2851,24 @@ export default class NestAccfactory {
             }
 
             if (subscribeJSONData.objects.length !== 0) {
-              await fetchWrapper(
-                'post',
-                this.#connections[uuid].transport_url + '/v5/put',
-                {
-                  referer: 'https://' + this.#connections[uuid].referer,
-                  headers: {
-                    'User-Agent': USERAGENT,
-                    Authorization: 'Basic ' + this.#connections[uuid].token,
+              try {
+                await fetchWrapper(
+                  'post',
+                  this.#connections[uuid].transport_url + '/v5/put',
+                  {
+                    referer: 'https://' + this.#connections[uuid].referer,
+                    headers: {
+                      'User-Agent': USERAGENT,
+                      Authorization: 'Basic ' + this.#connections[uuid].token,
+                    },
                   },
-                },
-                JSON.stringify(subscribeJSONData),
-              ).catch((error) => {
-                this?.log?.debug?.(
-                  'Nest API property update for failed with error for uuid "%s". Error was "%s"',
-                  nest_google_uuid,
-                  error?.code,
+                  JSON.stringify(subscribeJSONData),
                 );
-              });
+              } catch (error) {
+                if (error?.cause !== undefined && String(error.cause).toUpperCase().includes('TIMEOUT') === false) {
+                  this?.log?.debug?.('Nest API property update failed for uuid "%s". Error was "%s"', nest_google_uuid, error?.code);
+                }
+              }
             }
           }),
       );
@@ -2919,32 +2904,30 @@ export default class NestAccfactory {
             this.#rawData[nest_google_uuid].value.nexus_api_http_server_url !== ''
           ) {
             // Attempt to retrieve snapshot from camera via Nest API
-            await fetchWrapper(
-              'get',
-              this.#rawData[nest_google_uuid].value.nexus_api_http_server_url + '/get_image?uuid=' + nest_google_uuid.split('.')[1],
-              {
-                headers: {
-                  referer: 'https://' + this.#connections[uuid].referer,
-                  'User-Agent': USERAGENT,
-                  [this.#connections[uuid].cameraAPI.key]:
-                    this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
+            try {
+              let response = await fetchWrapper(
+                'get',
+                this.#rawData[nest_google_uuid].value.nexus_api_http_server_url + '/get_image?uuid=' + nest_google_uuid.split('.')[1],
+                {
+                  headers: {
+                    referer: 'https://' + this.#connections[uuid].referer,
+                    'User-Agent': USERAGENT,
+                    [this.#connections[uuid].cameraAPI.key]:
+                      this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
+                  },
+                  timeout: 3000,
                 },
-                timeout: 3000,
-              },
-            )
-              .then((response) => response.arrayBuffer())
-              .then((data) => {
-                values[key] = Buffer.from(data);
-              })
-              .catch((error) => {
-                if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
-                  this?.log?.debug?.(
-                    'Nest API camera snapshot failed with error for uuid "%s". Error was "%s"',
-                    nest_google_uuid,
-                    error?.code,
-                  );
-                }
-              });
+              );
+              values[key] = Buffer.from(await response.arrayBuffer());
+            } catch (error) {
+              if (error?.cause !== undefined && String(error.cause).toUpperCase().includes('TIMEOUT') === false) {
+                this?.log?.debug?.(
+                  'Nest API camera snapshot failed with error for uuid "%s". Error was "%s"',
+                  nest_google_uuid,
+                  error?.code,
+                );
+              }
+            }
           }
 
           if (
@@ -2976,28 +2959,26 @@ export default class NestAccfactory {
               typeof this.#rawData?.[nest_google_uuid]?.value?.upload_live_image?.liveImageUrl === 'string' &&
               this.#rawData[nest_google_uuid].value.upload_live_image.liveImageUrl !== ''
             ) {
-              // Snapshot url image has beeen updated, so no retrieve it
-              await fetchWrapper('get', this.#rawData[nest_google_uuid].value.upload_live_image.liveImageUrl, {
-                referer: 'https://' + this.#connections[uuid].referer,
-                headers: {
-                  'User-Agent': USERAGENT,
-                  Authorization: 'Basic ' + this.#connections[uuid].token,
-                },
-                timeout: 3000,
-              })
-                .then((response) => response.arrayBuffer())
-                .then((data) => {
-                  values[key] = Buffer.from(data);
-                })
-                .catch((error) => {
-                  if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
-                    this?.log?.debug?.(
-                      'Protobuf API camera snapshot failed with error for uuid "%s". Error was "%s"',
-                      nest_google_uuid,
-                      error?.code,
-                    );
-                  }
+              // Snapshot url image has been updated, so now retrieve it
+              try {
+                let response = await fetchWrapper('get', this.#rawData[nest_google_uuid].value.upload_live_image.liveImageUrl, {
+                  referer: 'https://' + this.#connections[uuid].referer,
+                  headers: {
+                    'User-Agent': USERAGENT,
+                    Authorization: 'Basic ' + this.#connections[uuid].token,
+                  },
+                  timeout: 3000,
                 });
+                values[key] = Buffer.from(await response.arrayBuffer());
+              } catch (error) {
+                if (error?.cause !== undefined && String(error.cause).toUpperCase().includes('TIMEOUT') === false) {
+                  this?.log?.debug?.(
+                    'Protobuf API camera snapshot failed with error for uuid "%s". Error was "%s"',
+                    nest_google_uuid,
+                    error?.code,
+                  );
+                }
+              }
             }
           }
         }),
@@ -3042,7 +3023,7 @@ export default class NestAccfactory {
         weather.station = typeof locationData?.location?.short_name === 'string' ? locationData.location.short_name : '';
         weather.forecast = locationData?.forecast?.daily?.[0]?.condition !== undefined ? locationData.forecast.daily[0].condition : '';
       } catch (error) {
-        if (error?.cause !== undefined && JSON.stringify(error.cause).toUpperCase().includes('TIMEOUT') === false) {
+        if (error?.cause !== undefined && String(error.cause).toUpperCase().includes('TIMEOUT') === false) {
           this?.log?.debug?.('Nest API failed to retrieve weather details for uuid "%s". Error was "%s"', deviceUUID, error?.code);
         }
       }
