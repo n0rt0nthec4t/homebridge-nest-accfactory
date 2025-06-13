@@ -128,11 +128,11 @@ export default class NestThermostat extends HomeKitDevice {
         validValues:
           this.deviceData?.can_cool === true && this.deviceData?.can_heat === true
             ? [
-                this.hap.Characteristic.TargetHeatingCoolingState.OFF,
-                this.hap.Characteristic.TargetHeatingCoolingState.HEAT,
-                this.hap.Characteristic.TargetHeatingCoolingState.COOL,
-                this.hap.Characteristic.TargetHeatingCoolingState.AUTO,
-              ]
+              this.hap.Characteristic.TargetHeatingCoolingState.OFF,
+              this.hap.Characteristic.TargetHeatingCoolingState.HEAT,
+              this.hap.Characteristic.TargetHeatingCoolingState.COOL,
+              this.hap.Characteristic.TargetHeatingCoolingState.AUTO,
+            ]
             : this.deviceData?.can_heat === true
               ? [this.hap.Characteristic.TargetHeatingCoolingState.OFF, this.hap.Characteristic.TargetHeatingCoolingState.HEAT]
               : this.deviceData?.can_cool === true
@@ -1084,9 +1084,9 @@ export default class NestThermostat extends HomeKitDevice {
       let shortName =
         typeof module === 'string'
           ? module
-              .trim()
-              .match(/'[^']*'|[^\s]+/)?.[0]
-              ?.replace(/^'(.*)'$/, '$1')
+            .trim()
+            .match(/'[^']*'|[^\s]+/)?.[0]
+            ?.replace(/^'(.*)'$/, '$1')
           : '';
       this?.log?.warn?.('Failed to load external module "%s" for thermostat "%s"', shortName, this.deviceData.description);
     }

@@ -885,13 +885,13 @@ export default class NestAccfactory {
                   let zones =
                     Array.isArray(data) === true
                       ? data
-                          .filter((zone) => zone.type.toUpperCase() === 'ACTIVITY' || zone.type.toUpperCase() === 'REGION')
-                          .map((zone) => ({
-                            id: zone.id === 0 ? 1 : zone.id,
-                            name: makeHomeKitName(zone.label),
-                            hidden: zone.hidden === true,
-                            uri: zone.nexusapi_image_uri,
-                          }))
+                        .filter((zone) => zone.type.toUpperCase() === 'ACTIVITY' || zone.type.toUpperCase() === 'REGION')
+                        .map((zone) => ({
+                          id: zone.id === 0 ? 1 : zone.id,
+                          name: makeHomeKitName(zone.label),
+                          hidden: zone.hidden === true,
+                          uri: zone.nexusapi_image_uri,
+                        }))
                       : [];
 
                   // Update internal structure with new zone details.
@@ -1019,21 +1019,21 @@ export default class NestAccfactory {
                   alerts =
                     Array.isArray(data) === true
                       ? data
-                          .map((alert) => {
-                            alert.zone_ids = alert.zone_ids.map((id) => (id !== 0 ? id : 1));
-                            if (alert.zone_ids.length === 0) {
-                              alert.zone_ids.push(1);
-                            }
-                            return {
-                              playback_time: alert.playback_time,
-                              start_time: alert.start_time,
-                              end_time: alert.end_time,
-                              id: alert.id,
-                              zone_ids: alert.zone_ids,
-                              types: alert.types,
-                            };
-                          })
-                          .sort((a, b) => b.start_time - a.start_time)
+                        .map((alert) => {
+                          alert.zone_ids = alert.zone_ids.map((id) => (id !== 0 ? id : 1));
+                          if (alert.zone_ids.length === 0) {
+                            alert.zone_ids.push(1);
+                          }
+                          return {
+                            playback_time: alert.playback_time,
+                            start_time: alert.start_time,
+                            end_time: alert.end_time,
+                            id: alert.id,
+                            zone_ids: alert.zone_ids,
+                            types: alert.types,
+                          };
+                        })
+                        .sort((a, b) => b.start_time - a.start_time)
                       : [];
                 } catch (error) {
                   if (error?.cause !== undefined && String(error.cause).toUpperCase().includes('TIMEOUT') === false) {
@@ -2568,11 +2568,11 @@ export default class NestAccfactory {
               protobufElement.state.value.timerEnd =
                 value === true
                   ? {
-                      seconds: Number(Math.floor(Date.now() / 1000) + Number(protobufElement.state.value.timerDuration.seconds)),
-                      nanos: Number(
-                        ((Math.floor(Date.now() / 1000) + Number(protobufElement.state.value.timerDuration.seconds)) % 1000) * 1e6,
-                      ),
-                    }
+                    seconds: Number(Math.floor(Date.now() / 1000) + Number(protobufElement.state.value.timerDuration.seconds)),
+                    nanos: Number(
+                      ((Math.floor(Date.now() / 1000) + Number(protobufElement.state.value.timerDuration.seconds)) % 1000) * 1e6,
+                    ),
+                  }
                   : { seconds: 0, nanos: 0 };
               if (values?.fan_timer_speed !== undefined) {
                 // We have a value to set fan speed also, so handle here as combined setting
@@ -2704,11 +2704,11 @@ export default class NestAccfactory {
               protobufElement.state.value.boostTimerEnd =
                 value?.state === true
                   ? {
-                      seconds: Number(Math.floor(Date.now() / 1000) + Number(isNaN(value?.time) === false ? value?.time : 30 * 60)),
-                      nanos: Number(
-                        (Math.floor(Date.now() / 1000) + (Number(isNaN(value?.time) === false ? value?.time : 30 * 60) % 1000)) * 1e6,
-                      ),
-                    }
+                    seconds: Number(Math.floor(Date.now() / 1000) + Number(isNaN(value?.time) === false ? value?.time : 30 * 60)),
+                    nanos: Number(
+                      (Math.floor(Date.now() / 1000) + (Number(isNaN(value?.time) === false ? value?.time : 30 * 60) % 1000)) * 1e6,
+                    ),
+                  }
                   : { seconds: 0, nanos: 0 };
             }
 
