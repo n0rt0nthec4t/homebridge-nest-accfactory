@@ -1,7 +1,7 @@
 // Configuration validation and processing
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.06.12
+// Code version 2025.06.15
 // Mark Hulskamp
 'use strict';
 
@@ -13,10 +13,10 @@ import process from 'node:process';
 import child_process from 'node:child_process';
 
 // Define constants
-const FFMPEGVERSION = '6.0.0';
-const AccountType = {
-  Nest: 'Nest',
-  Google: 'Google',
+const FFMPEG_VERSION = '6.0.0';
+const ACCOUNT_TYPE = {
+  NEST: 'Nest',
+  GOOGLE: 'Google',
 };
 
 function processConfig(config, log) {
@@ -80,7 +80,7 @@ function processConfig(config, log) {
       options.ffmpeg.libfdk_aac = stdout.includes('--enable-libfdk-aac') === true;
 
       let versionTooOld =
-        options.ffmpeg.version?.localeCompare(FFMPEGVERSION, undefined, {
+        options.ffmpeg.version?.localeCompare(FFMPEG_VERSION, undefined, {
           numeric: true,
           sensitivity: 'case',
           caseFirst: 'upper',
@@ -96,7 +96,7 @@ function processConfig(config, log) {
         log?.warn?.('ffmpeg binary "%s" does not meet the minimum support requirements', options.ffmpeg.binary);
 
         if (versionTooOld) {
-          log?.warn?.('Minimum binary version is "%s", however the installed version is "%s"', FFMPEGVERSION, options.ffmpeg.version);
+          log?.warn?.('Minimum binary version is "%s", however the installed version is "%s"', FFMPEG_VERSION, options.ffmpeg.version);
           log?.warn?.('Stream video/recording from camera/doorbells will be unavailable');
           options.ffmpeg.binary = undefined; // No ffmpeg since below min version
         }
@@ -167,7 +167,7 @@ function buildConnections(config) {
       let fieldTest = section?.fieldTest === true;
       connections[crypto.randomUUID()] = {
         name: key,
-        type: AccountType.Nest,
+        type: ACCOUNT_TYPE.NEST,
         authorised: false,
         access_token: section.access_token,
         fieldTest,
@@ -187,7 +187,7 @@ function buildConnections(config) {
       let fieldTest = section?.fieldTest === true;
       connections[crypto.randomUUID()] = {
         name: key,
-        type: AccountType.Google,
+        type: ACCOUNT_TYPE.GOOGLE,
         authorised: false,
         issuetoken: section.issuetoken,
         cookie: section.cookie,
@@ -204,4 +204,4 @@ function buildConnections(config) {
 }
 
 // Define exports
-export { AccountType, processConfig, buildConnections };
+export { ACCOUNT_TYPE, processConfig, buildConnections };

@@ -7,11 +7,11 @@
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
 
-const LOWBATTERYLEVEL = 10; // Low battery level percentage
+const LOW_BATTERY_LEVEL = 10; // Low battery level percentage
 
 export default class NestTemperatureSensor extends HomeKitDevice {
   static TYPE = 'TemperatureSensor';
-  static VERSION = '2025.06.11';
+  static VERSION = '2025.06.15';
 
   batteryService = undefined;
   temperatureService = undefined;
@@ -70,7 +70,7 @@ export default class NestTemperatureSensor extends HomeKitDevice {
     this.batteryService.updateCharacteristic(this.hap.Characteristic.BatteryLevel, deviceData.battery_level);
     this.batteryService.updateCharacteristic(
       this.hap.Characteristic.StatusLowBattery,
-      deviceData.battery_level > LOWBATTERYLEVEL
+      deviceData.battery_level > LOW_BATTERY_LEVEL
         ? this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
         : this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW,
     );

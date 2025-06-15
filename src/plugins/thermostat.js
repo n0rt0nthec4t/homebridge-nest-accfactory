@@ -13,14 +13,14 @@ import { fileURLToPath } from 'node:url';
 import HomeKitDevice from '../HomeKitDevice.js';
 
 // Define constants
-const LOWBATTERYLEVEL = 10; // Low battery level percentage
+const LOW_BATTERY_LEVEL = 10; // Low battery level percentage
 const MIN_TEMPERATURE = 9; // Minimum temperature for Nest Thermostat
 const MAX_TEMPERATURE = 32; // Maximum temperature for Nest Thermostat
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2025.06.12';
+  static VERSION = '2025.06.15';
 
   batteryService = undefined;
   occupancyService = undefined;
@@ -564,7 +564,7 @@ export default class NestThermostat extends HomeKitDevice {
     this.batteryService.updateCharacteristic(this.hap.Characteristic.BatteryLevel, deviceData.battery_level);
     this.batteryService.updateCharacteristic(
       this.hap.Characteristic.StatusLowBattery,
-      deviceData.battery_level > LOWBATTERYLEVEL
+      deviceData.battery_level > LOW_BATTERY_LEVEL
         ? this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
         : this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW,
     );

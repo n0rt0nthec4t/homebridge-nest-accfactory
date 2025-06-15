@@ -17,7 +17,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2025.06.12
+// Code version 2025.06.15
 // Mark Hulskamp
 'use strict';
 
@@ -29,18 +29,18 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Define constants
-const CAMERARESOURCE = {
-  offline: 'Nest_camera_offline.h264',
-  off: 'Nest_camera_off.h264',
-  transfer: 'Nest_camera_transfer.h264',
+const CAMERA_RESOURCE = {
+  OFFLINE: 'Nest_camera_offline.h264',
+  OFF: 'Nest_camera_off.h264',
+  TRANSFER: 'Nest_camera_transfer.h264',
 };
-const TALKBACKAUDIOTIMEOUT = 1000;
-const H264NALSTARTCODE = Buffer.from([0x00, 0x00, 0x00, 0x01]);
-const MAXBUFFERAGE = 5000; // Keep last 5s of media in buffer
-const STREAMFRAMEINTERVAL = 1000 / 30; // 30fps approx
-const RESOURCEPATH = './res';
+const TALKBACK_AUDIO_TIMEOUT = 1000;
+const H264_NAL_START_CODE = Buffer.from([0x00, 0x00, 0x00, 0x01]);
+const MAX_BUFFER_AGE = 5000; // Keep last 5s of media in buffer
+const STREAM_FRAME_INTERVAL = 1000 / 30; // 30fps approx
+const RESOURCE_PATH = './res';
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
-const LOGLEVELS = {
+const LOG_LEVELS = {
   info: 'info',
   success: 'success',
   warn: 'warn',
@@ -72,7 +72,7 @@ export default class Streamer {
 
   constructor(deviceData, options) {
     // Setup logger object if passed as option
-    if (Object.keys(LOGLEVELS).every((fn) => typeof options?.log?.[fn] === 'function')) {
+    if (Object.keys(LOG_LEVELS).every((fn) => typeof options?.log?.[fn] === 'function')) {
       this.log = options.log;
     }
 
@@ -86,7 +86,7 @@ export default class Streamer {
     // Load support video frame files as required
     const loadFrameIfExists = (filename, label) => {
       let buffer = undefined;
-      let file = path.resolve(__dirname, RESOURCEPATH, filename);
+      let file = path.resolve(__dirname, RESOURCE_PATH, filename);
       if (fs.existsSync(file) === true) {
         buffer = fs.readFileSync(file);
       } else {
@@ -95,9 +95,9 @@ export default class Streamer {
       return buffer;
     };
 
-    this.#cameraOfflineFrame = loadFrameIfExists(CAMERARESOURCE.offline, 'offline');
-    this.#cameraVideoOffFrame = loadFrameIfExists(CAMERARESOURCE.off, 'video off');
-    this.#cameraTransferringFrame = loadFrameIfExists(CAMERARESOURCE.transfer, 'transferring');
+    this.#cameraOfflineFrame = loadFrameIfExists(CAMERA_RESOURCE.OFFLINE, 'offline');
+    this.#cameraVideoOffFrame = loadFrameIfExists(CAMERA_RESOURCE.OFF, 'video off');
+    this.#cameraTransferringFrame = loadFrameIfExists(CAMERA_RESOURCE.TRANSFER, 'transferring');
 
     // Start a non-blocking loop for output to the various streams which connect to our streamer object
     // This process will also handle the rolling-buffer size we require
@@ -106,7 +106,7 @@ export default class Streamer {
     let lastVideoFrameTime = Date.now();
     this.#outputTimer = setInterval(() => {
       let dateNow = Date.now();
-      let outputVideoFrame = dateNow - lastVideoFrameTime >= STREAMFRAMEINTERVAL;
+      let outputVideoFrame = dateNow - lastVideoFrameTime >= STREAM_FRAME_INTERVAL;
       Object.values(this.#outputs).forEach((output) => {
         // Monitor for camera going offline, video enabled/disabled or being transferred between Nest/Google Home
         // We'll insert the appropriate video frame into the stream
@@ -132,7 +132,7 @@ export default class Streamer {
         // Keep our 'main' rolling buffer under a certain size
         // Live/record buffers will always reduce in length in the next section
         if (output.type === 'buffer') {
-          let cutoffTime = dateNow - MAXBUFFERAGE;
+          let cutoffTime = dateNow - MAX_BUFFER_AGE;
           while (output.buffer.length > 0 && output.buffer[0].time < cutoffTime) {
             output.buffer.shift();
           }
@@ -142,7 +142,7 @@ export default class Streamer {
         if (output.type === 'live' || output.type === 'record') {
           let packet = output.buffer.shift();
           if (packet?.type === 'video' && typeof output?.video?.write === 'function') {
-            packet.data = Buffer.concat([H264NALSTARTCODE, packet.data]);
+            packet.data = Buffer.concat([H264_NAL_START_CODE, packet.data]);
             output.video.write(packet.data);
           }
           if (packet?.type === 'audio' && typeof output?.audio?.write === 'function') {
@@ -203,7 +203,7 @@ export default class Streamer {
           talkbackTimeout = setTimeout(() => {
             // no audio received in 1000ms, so mark end of stream
             this.talkingAudio(Buffer.alloc(0));
-          }, TALKBACKAUDIOTIMEOUT);
+          }, TALKBACK_AUDIO_TIMEOUT);
         }
       });
     }
@@ -351,9 +351,9 @@ export default class Streamer {
       return;
     }
 
-    if (data.indexOf(H264NALSTARTCODE) === 0) {
+    if (data.indexOf(H264_NAL_START_CODE) === 0) {
       // Strip H264 start code from input buffer. We'll handle this later
-      data = data.subarray(H264NALSTARTCODE.length);
+      data = data.subarray(H264_NAL_START_CODE.length);
     }
 
     Object.values(this.#outputs).forEach((output) => {

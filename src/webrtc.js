@@ -4,7 +4,7 @@
 // Handles connection and data from Google WebRTC systems
 // Currently a "work in progress"
 //
-// Code version 2025.06.10
+// Code version 2025.06.15
 // Mark Hulskamp
 'use strict';
 
@@ -26,17 +26,17 @@ import { fileURLToPath } from 'node:url';
 import Streamer from './streamer.js';
 
 // Define constants
-const EXTENDINTERVAL = 120000; // Send extend command to Google Home Foyer every this period for active streams
+const EXTEND_INTERVAL = 120000; // Send extend command to Google Home Foyer every this period for active streams
 const RTP_PACKET_HEADER_SIZE = 12;
 const RTP_VIDEO_PAYLOAD_TYPE = 102;
 const RTP_AUDIO_PAYLOAD_TYPE = 111;
 //const RTP_TALKBACK_PAYLOAD_TYPE = 110;
-const USERAGENT = 'Nest/5.78.0 (iOScom.nestlabs.jasper.release) os=18.0'; // User Agent string
-const GOOGLEHOMEFOYERPREFIX = 'google.internal.home.foyer.v1.';
+const USER_AGENT = 'Nest/5.78.0 (iOScom.nestlabs.jasper.release) os=18.0'; // User Agent string
+const GOOGLE_HOME_FOYER_PREFIX = 'google.internal.home.foyer.v1.';
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 
 // Blank audio in AAC format, mono channel @48000
-const AACMONO48000BLANK = Buffer.from([
+const AAC_MONO_48000_BLANK = Buffer.from([
   0xff, 0xf1, 0x4c, 0x40, 0x03, 0x9f, 0xfc, 0xde, 0x02, 0x00, 0x4c, 0x61, 0x76, 0x63, 0x35, 0x39, 0x2e, 0x31, 0x38, 0x2e, 0x31, 0x30, 0x30,
   0x00, 0x02, 0x30, 0x40, 0x0e,
 ]);
@@ -51,7 +51,7 @@ export default class WebRTC extends Streamer {
   extendTimer = undefined; // Stream extend timer
   stalledTimer = undefined; // Timer object for no received data
   pingTimer = undefined; // Google Hopme Foyer periodic ping
-  blankAudio = AACMONO48000BLANK;
+  blankAudio = AAC_MONO_48000_BLANK;
   video = {}; // Video stream details once connected
   audio = {}; // Audio stream details once connected
 
@@ -293,7 +293,7 @@ export default class WebRTC extends Streamer {
                   }
                 }
               }
-            }, EXTENDINTERVAL);
+            }, EXTEND_INTERVAL);
           }
         }
       }
@@ -486,7 +486,7 @@ export default class WebRTC extends Streamer {
       this.audio.opus = werift.OpusRtpPayload.deSerialize(weriftRtpPacket.payload);
       if (this.audio.opus?.payload !== undefined) {
         // Until work out audio, send blank aac
-        this.addToOutput('audio', AACMONO48000BLANK);
+        this.addToOutput('audio', AAC_MONO_48000_BLANK);
 
         // Decode payload to opus??
         //this.addToOutput('audio', this.audio.opus.payload);
@@ -503,8 +503,8 @@ export default class WebRTC extends Streamer {
     }
 
     // Attempt to retrieve both 'Request' and 'Reponse' traits for the associated service and command
-    let TraitMapRequest = this.#protobufFoyer.lookup(GOOGLEHOMEFOYERPREFIX + command + 'Request');
-    let TraitMapResponse = this.#protobufFoyer.lookup(GOOGLEHOMEFOYERPREFIX + command + 'Response');
+    let TraitMapRequest = this.#protobufFoyer.lookup(GOOGLE_HOME_FOYER_PREFIX + command + 'Request');
+    let TraitMapResponse = this.#protobufFoyer.lookup(GOOGLE_HOME_FOYER_PREFIX + command + 'Response');
     let buffer = Buffer.alloc(0);
     let commandResponse = {
       status: undefined,
@@ -553,10 +553,10 @@ export default class WebRTC extends Streamer {
 
       let request = this.#googleHomeFoyer.request({
         ':method': 'post',
-        ':path': '/' + GOOGLEHOMEFOYERPREFIX + service + '/' + command,
+        ':path': '/' + GOOGLE_HOME_FOYER_PREFIX + service + '/' + command,
         authorization: 'Bearer ' + this.token,
         'content-type': 'application/grpc',
-        'user-agent': USERAGENT,
+        'user-agent': USER_AGENT,
         te: 'trailers',
         'request-id': crypto.randomUUID(),
         'grpc-timeout': '10S',

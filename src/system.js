@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.06.13
+// Code version 2025.06.15
 // Mark Hulskamp
 'use strict';
 
@@ -19,19 +19,19 @@ import { fileURLToPath } from 'node:url';
 
 // Import our modules
 import HomeKitDevice from './HomeKitDevice.js';
-import { DeviceType, loadDeviceModules, getDeviceHKCategory } from './devices.js';
-import { AccountType, processConfig, buildConnections } from './config.js';
+import { DEVICE_TYPE, loadDeviceModules, getDeviceHKCategory } from './devices.js';
+import { ACCOUNT_TYPE, processConfig, buildConnections } from './config.js';
 
 // Define constants
-const CAMERAALERTPOLLING = 2000; // Camera alerts polling timer
-const CAMERAZONEPOLLING = 30000; // Camera zones changes polling timer
-const WEATHERPOLLING = 300000; // Weather data polling timer
-const NESTAPITIMEOUT = 10000; // Nest API timeout
-const USERAGENT = 'Nest/5.78.0 (iOScom.nestlabs.jasper.release) os=18.0'; // User Agent string
+const CAMERA_ALERT_POLLING = 2000; // Camera alerts polling timer
+const CAMERA_ZONE_POLLING = 30000; // Camera zones changes polling timer
+const WEATHER_POLLING = 300000; // Weather data polling timer
+const NEST_API_TIMEOUT = 10000; // Nest API timeout
+const USER_AGENT = 'Nest/5.78.0 (iOScom.nestlabs.jasper.release) os=18.0'; // User Agent string
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 const DATASOURCE = {
-  NestAPI: 'Nest', // From the Nest API
-  ProtobufAPI: 'Protobuf', // From the Protobuf API
+  NEST_API: 'Nest', // From the Nest API
+  PROTOBUF_API: 'Protobuf', // From the Protobuf API
 };
 
 // We handle the connections to Nest/Google
@@ -143,7 +143,7 @@ export default class NestAccfactory {
         this.#connections[uuid].name,
         this.#connections[uuid].fieldTest === true ? 'using field test endpoints' : '',
       );
-      if (this.#connections[uuid].type === AccountType.Google) {
+      if (this.#connections[uuid].type === ACCOUNT_TYPE.GOOGLE) {
         // Google cookie method as refresh token method no longer supported by Google since October 2022
         // Instructions from homebridge_nest or homebridge_nest_cam to obtain this
         this?.log?.debug?.('Performing authorisation using Google account for connection uuid "%s"', uuid);
@@ -151,7 +151,7 @@ export default class NestAccfactory {
         await fetchWrapper('get', this.#connections[uuid].issuetoken, {
           headers: {
             referer: 'https://accounts.google.com/o/oauth2/iframe',
-            'User-Agent': USERAGENT,
+            'User-Agent': USER_AGENT,
             cookie: this.#connections[uuid].cookie,
             'Sec-Fetch-Mode': 'cors',
             'X-Requested-With': 'XmlHttpRequest',
@@ -167,7 +167,7 @@ export default class NestAccfactory {
               {
                 headers: {
                   referer: 'https://' + this.#connections[uuid].referer,
-                  'User-Agent': USERAGENT,
+                  'User-Agent': USER_AGENT,
                   Authorization: data.token_type + ' ' + data.access_token,
                   'Content-Type': 'application/x-www-form-urlencoded',
                 },
@@ -184,7 +184,7 @@ export default class NestAccfactory {
                 await fetchWrapper('get', 'https://' + this.#connections[uuid].restAPIHost + '/session', {
                   headers: {
                     referer: 'https://' + this.#connections[uuid].referer,
-                    'User-Agent': USERAGENT,
+                    'User-Agent': USER_AGENT,
                     Authorization: 'Basic ' + googleToken,
                   },
                 })
@@ -227,7 +227,7 @@ export default class NestAccfactory {
           });
       }
 
-      if (this.#connections[uuid].type === AccountType.Nest) {
+      if (this.#connections[uuid].type === ACCOUNT_TYPE.NEST) {
         // Nest access token method. Get WEBSITE2 cookie for use with camera API calls if needed later
         this?.log?.debug?.('Performing authorisation using Nest account for connection uuid "%s"', uuid);
 
@@ -238,7 +238,7 @@ export default class NestAccfactory {
             withCredentials: true,
             headers: {
               referer: 'https://' + this.#connections[uuid].referer,
-              'User-Agent': USERAGENT,
+              'User-Agent': USER_AGENT,
               'Content-Type': 'application/x-www-form-urlencoded',
             },
           },
@@ -255,7 +255,7 @@ export default class NestAccfactory {
             await fetchWrapper('get', 'https://' + this.#connections[uuid].restAPIHost + '/session', {
               headers: {
                 referer: 'https://' + this.#connections[uuid].referer,
-                'User-Agent': USERAGENT,
+                'User-Agent': USER_AGENT,
                 Authorization: 'Basic ' + this.#connections[uuid].access_token,
               },
             })
@@ -336,7 +336,7 @@ export default class NestAccfactory {
       subscribeJSONData = { objects: [] };
       Object.entries(this.#rawData)
         // eslint-disable-next-line no-unused-vars
-        .filter(([object_key, object]) => object.source === DATASOURCE.NestAPI && object.connection === uuid)
+        .filter(([object_key, object]) => object.source === DATASOURCE.NEST_API && object.connection === uuid)
         .forEach(([object_key, object]) => {
           subscribeJSONData.objects.push({
             object_key: object_key,
@@ -356,7 +356,7 @@ export default class NestAccfactory {
       {
         headers: {
           referer: 'https://' + this.#connections[uuid].referer,
-          'User-Agent': USERAGENT,
+          'User-Agent': USER_AGENT,
           Authorization: 'Basic ' + this.#connections[uuid].token,
         },
         keepalive: true,
@@ -421,11 +421,11 @@ export default class NestAccfactory {
                   {
                     headers: {
                       referer: 'https://' + this.#connections[uuid].referer,
-                      'User-Agent': USERAGENT,
+                      'User-Agent': USER_AGENT,
                       [this.#connections[uuid].cameraAPI.key]:
                         this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
                     },
-                    timeout: NESTAPITIMEOUT,
+                    timeout: NEST_API_TIMEOUT,
                   },
                 );
                 let data = await response.json();
@@ -451,11 +451,11 @@ export default class NestAccfactory {
                   {
                     headers: {
                       referer: 'https://' + this.#connections[uuid].referer,
-                      'User-Agent': USERAGENT,
+                      'User-Agent': USER_AGENT,
                       [this.#connections[uuid].cameraAPI.key]:
                         this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
                     },
-                    timeout: NESTAPITIMEOUT,
+                    timeout: NEST_API_TIMEOUT,
                   },
                 );
                 let data = await response.json();
@@ -463,7 +463,7 @@ export default class NestAccfactory {
                   .filter((zone) => zone?.type?.toUpperCase() === 'ACTIVITY' || zone?.type?.toUpperCase() === 'REGION')
                   .map((zone) => ({
                     id: zone.id === 0 ? 1 : zone.id,
-                    name: makeHomeKitName(zone.label),
+                    name: HomeKitDevice.makeHomeKitName(zone.label),
                     hidden: zone.hidden === true,
                     uri: zone.nexusapi_image_uri,
                   }));
@@ -533,7 +533,7 @@ export default class NestAccfactory {
               this.#rawData[value.object_key].object_revision = value.object_revision;
               this.#rawData[value.object_key].object_timestamp = value.object_timestamp;
               this.#rawData[value.object_key].connection = uuid;
-              this.#rawData[value.object_key].source = DATASOURCE.NestAPI;
+              this.#rawData[value.object_key].source = DATASOURCE.NEST_API;
               this.#rawData[value.object_key].value = {};
             }
 
@@ -629,11 +629,11 @@ export default class NestAccfactory {
         // This also depends on the account type we connected with
         // Nest accounts cannot observe camera/doorbell product traits
         if (
-          (this.#connections[uuid].type === AccountType.Nest &&
+          (this.#connections[uuid].type === ACCOUNT_TYPE.NEST &&
             type.fullName.startsWith('.nest.trait.product.camera') === false &&
             type.fullName.startsWith('.nest.trait.product.doorbell') === false &&
             (type.fullName.startsWith('.nest.trait') === true || type.fullName.startsWith('.weave.') === true)) ||
-          (this.#connections[uuid].type === AccountType.Google &&
+          (this.#connections[uuid].type === ACCOUNT_TYPE.GOOGLE &&
             (type.fullName.startsWith('.nest.trait') === true ||
               type.fullName.startsWith('.weave.') === true ||
               type.fullName.startsWith('.google.trait.product.camera') === true))
@@ -654,7 +654,7 @@ export default class NestAccfactory {
       {
         headers: {
           referer: 'https://' + this.#connections[uuid].referer,
-          'User-Agent': USERAGENT,
+          'User-Agent': USER_AGENT,
           Authorization: 'Basic ' + this.#connections[uuid].token,
           'Content-Type': 'application/x-protobuf',
           'X-Accept-Content-Transfer-Encoding': 'binary',
@@ -745,7 +745,7 @@ export default class NestAccfactory {
                   if (typeof this.#rawData[trait.traitId.resourceId] === 'undefined') {
                     this.#rawData[trait.traitId.resourceId] = {};
                     this.#rawData[trait.traitId.resourceId].connection = uuid;
-                    this.#rawData[trait.traitId.resourceId].source = DATASOURCE.ProtobufAPI;
+                    this.#rawData[trait.traitId.resourceId].source = DATASOURCE.PROTOBUF_API;
                     this.#rawData[trait.traitId.resourceId].value = {};
                   }
                   this.#rawData[trait.traitId.resourceId]['value'][trait.traitId.traitLabel] =
@@ -849,9 +849,9 @@ export default class NestAccfactory {
 
           // Optional things for each device type
           if (
-            deviceClass.TYPE === DeviceType.CAMERA ||
-            deviceClass.TYPE === DeviceType.DOORBELL ||
-            deviceClass.TYPE === DeviceType.FLOODLIGHT
+            deviceClass.TYPE === DEVICE_TYPE.CAMERA ||
+            deviceClass.TYPE === DEVICE_TYPE.DOORBELL ||
+            deviceClass.TYPE === DEVICE_TYPE.FLOODLIGHT
           ) {
             // Setup polling loop for camera/doorbell zone data
             // This is only required for Nest API data sources as these details are present in Protobuf API
@@ -860,7 +860,7 @@ export default class NestAccfactory {
               let nest_google_uuid = this.#trackedDevices?.[deviceData?.serialNumber]?.rawDataUuid;
               if (
                 this.#rawData?.[nest_google_uuid]?.value !== undefined &&
-                this.#trackedDevices?.[deviceData?.serialNumber]?.source === DATASOURCE.NestAPI
+                this.#trackedDevices?.[deviceData?.serialNumber]?.source === DATASOURCE.NEST_API
               ) {
                 try {
                   let response = await fetchWrapper(
@@ -871,12 +871,12 @@ export default class NestAccfactory {
                     {
                       headers: {
                         referer: 'https://' + this.#connections[this.#rawData[nest_google_uuid].connection].referer,
-                        'User-Agent': USERAGENT,
+                        'User-Agent': USER_AGENT,
                         [this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.key]:
                           this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.value +
                           this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.token,
                       },
-                      timeout: CAMERAZONEPOLLING,
+                      timeout: CAMERA_ZONE_POLLING,
                     },
                   );
                   let data = await response.json();
@@ -888,7 +888,7 @@ export default class NestAccfactory {
                         .filter((zone) => zone.type.toUpperCase() === 'ACTIVITY' || zone.type.toUpperCase() === 'REGION')
                         .map((zone) => ({
                           id: zone.id === 0 ? 1 : zone.id,
-                          name: makeHomeKitName(zone.label),
+                          name: HomeKitDevice.makeHomeKitName(zone.label),
                           hidden: zone.hidden === true,
                           uri: zone.nexusapi_image_uri,
                         }))
@@ -916,7 +916,7 @@ export default class NestAccfactory {
                   }
                 }
               }
-            }, CAMERAZONEPOLLING);
+            }, CAMERA_ZONE_POLLING);
 
             // Setup polling loop for camera/doorbell alert data, clearing any existing polling loop
             clearInterval(this.#trackedDevices?.[deviceData.serialNumber]?.timers?.alerts);
@@ -925,7 +925,7 @@ export default class NestAccfactory {
               let nest_google_uuid = this.#trackedDevices?.[deviceData?.serialNumber]?.rawDataUuid;
               if (
                 this.#rawData?.[nest_google_uuid]?.value !== undefined &&
-                this.#trackedDevices?.[deviceData?.serialNumber]?.source === DATASOURCE.ProtobufAPI
+                this.#trackedDevices?.[deviceData?.serialNumber]?.source === DATASOURCE.PROTOBUF_API
               ) {
                 let commandResponse = await this.#protobufCommand(
                   this.#rawData[nest_google_uuid].connection,
@@ -991,7 +991,7 @@ export default class NestAccfactory {
 
               if (
                 this.#rawData?.[nest_google_uuid]?.value !== undefined &&
-                this.#trackedDevices?.[deviceData?.serialNumber]?.source === DATASOURCE.NestAPI
+                this.#trackedDevices?.[deviceData?.serialNumber]?.source === DATASOURCE.NEST_API
               ) {
                 try {
                   let response = await fetchWrapper(
@@ -1004,12 +1004,12 @@ export default class NestAccfactory {
                     {
                       headers: {
                         referer: 'https://' + this.#connections[this.#rawData[nest_google_uuid].connection].referer,
-                        'User-Agent': USERAGENT,
+                        'User-Agent': USER_AGENT,
                         [this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.key]:
                           this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.value +
                           this.#connections[this.#rawData[nest_google_uuid].connection].cameraAPI.token,
                       },
-                      timeout: CAMERAALERTPOLLING,
+                      timeout: CAMERA_ALERT_POLLING,
                       retry: 3,
                     },
                   );
@@ -1055,10 +1055,10 @@ export default class NestAccfactory {
                 this.#trackedDevices?.[deviceData?.serialNumber]?.uuid &&
                   this.#eventEmitter?.emit?.(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, { alerts: alerts });
               }
-            }, CAMERAALERTPOLLING);
+            }, CAMERA_ALERT_POLLING);
           }
 
-          if (deviceClass.TYPE === DeviceType.WEATHER) {
+          if (deviceClass.TYPE === DEVICE_TYPE.WEATHER) {
             // Setup polling loop for weather data, clearing any existing polling loop
             clearInterval(this.#trackedDevices?.[deviceData.serialNumber]?.timers?.weather);
             this.#trackedDevices[deviceData.serialNumber].timers.weather = setInterval(async () => {
@@ -1077,7 +1077,7 @@ export default class NestAccfactory {
                     this.#processData(this.#trackedDevices[deviceData.serialNumber].rawDataUuid)?.[deviceData.serialNumber],
                   );
               }
-            }, WEATHERPOLLING);
+            }, WEATHER_POLLING);
           }
         }
       }
@@ -1199,7 +1199,7 @@ export default class NestAccfactory {
         if (description === '' && location === '') {
           description = 'unknown description';
         }
-        data.description = makeHomeKitName(location === '' ? description : description + ' - ' + location);
+        data.description = HomeKitDevice.makeHomeKitName(location === '' ? description : description + ' - ' + location);
         delete data.location;
 
         // Insert HomeKit pairing code for when using HAP-NodeJS library rather than Homebridge
@@ -1240,7 +1240,7 @@ export default class NestAccfactory {
       let processed = {};
       try {
         // Fix up data we need to
-        data.device_type = DeviceType.THERMOSTAT; // Nest Thermostat
+        data.device_type = DEVICE_TYPE.THERMOSTAT; // Nest Thermostat
 
         // If we have hot water control, it should be a 'UK/EU' model, so add that after the 'gen' tag in the model name
         data.model = data.has_hot_water_control === true ? data.model.replace(/\bgen\)/, 'gen, EU)') : data.model;
@@ -1283,7 +1283,7 @@ export default class NestAccfactory {
         let tempDevice = {};
         try {
           if (
-            value?.source === DATASOURCE.ProtobufAPI &&
+            value?.source === DATASOURCE.PROTOBUF_API &&
             this.config.options?.useGoogleAPI === true &&
             value.value?.configuration_done?.deviceReady === true
           ) {
@@ -1515,7 +1515,7 @@ export default class NestAccfactory {
             tempDevice = process_thermostat_data(object_key, RESTTypeData);
           }
 
-          if (value?.source === DATASOURCE.NestAPI && this.config.options?.useNestAPI === true && value.value?.where_id !== undefined) {
+          if (value?.source === DATASOURCE.NEST_API && this.config.options?.useNestAPI === true && value.value?.where_id !== undefined) {
             let RESTTypeData = {};
             RESTTypeData.serialNumber = value.value.serial_number;
             RESTTypeData.softwareVersion = value.value.current_version;
@@ -1566,7 +1566,7 @@ export default class NestAccfactory {
 
             RESTTypeData.description =
               this.#rawData?.['shared.' + value.value.serial_number]?.value?.name !== undefined
-                ? makeHomeKitName(this.#rawData['shared.' + value.value.serial_number].value.name)
+                ? HomeKitDevice.makeHomeKitName(this.#rawData['shared.' + value.value.serial_number].value.name)
                 : '';
             RESTTypeData.location = get_location_name(
               this.#rawData?.['link.' + value.value.serial_number].value.structure.split('.')[1],
@@ -1763,7 +1763,7 @@ export default class NestAccfactory {
       let processed = {};
       try {
         // Fix up data we need to
-        data.device_type = DeviceType.TEMPSENSOR; // Nest Temperature sensor
+        data.device_type = DEVICE_TYPE.TEMPSENSOR; // Nest Temperature sensor
         data.model = 'Temperature Sensor';
         data.softwareVersion = '1.0.0';
         data = process_common_data(object_key, data);
@@ -1787,7 +1787,7 @@ export default class NestAccfactory {
         let tempDevice = {};
         try {
           if (
-            value?.source === DATASOURCE.ProtobufAPI &&
+            value?.source === DATASOURCE.PROTOBUF_API &&
             this.config.options?.useGoogleAPI === true &&
             value.value?.configuration_done?.deviceReady === true &&
             typeof value?.value?.associated_thermostat === 'string' &&
@@ -1813,7 +1813,7 @@ export default class NestAccfactory {
             tempDevice = process_kryptonite_data(object_key, RESTTypeData);
           }
           if (
-            value?.source === DATASOURCE.NestAPI &&
+            value?.source === DATASOURCE.NEST_API &&
             this.config.options?.useNestAPI === true &&
             value.value?.where_id !== undefined &&
             value.value?.structure_id !== undefined &&
@@ -1852,7 +1852,7 @@ export default class NestAccfactory {
       let processed = {};
       try {
         // Fix up data we need to
-        data.device_type = DeviceType.HEATLINK;
+        data.device_type = DEVICE_TYPE.HEATLINK;
         data = process_common_data(object_key, data);
         data.current_temperature = adjustTemperature(data.current_temperature, 'C', 'C', true);
         processed = data;
@@ -1874,7 +1874,7 @@ export default class NestAccfactory {
         let tempDevice = {};
         try {
           if (
-            value?.source === DATASOURCE.ProtobufAPI &&
+            value?.source === DATASOURCE.PROTOBUF_API &&
             this.config.options?.useGoogleAPI === true &&
             value.value?.configuration_done?.deviceReady === true
           ) {
@@ -1915,7 +1915,7 @@ export default class NestAccfactory {
       let processed = {};
       try {
         // Fix up data we need to
-        data.device_type = DeviceType.SMOKESENSOR; // Nest Protect
+        data.device_type = DEVICE_TYPE.SMOKESENSOR; // Nest Protect
         data = process_common_data(object_key, data);
         processed = data;
         // eslint-disable-next-line no-unused-vars
@@ -1943,7 +1943,7 @@ export default class NestAccfactory {
         let tempDevice = {};
         try {
           if (
-            value?.source === DATASOURCE.ProtobufAPI &&
+            value?.source === DATASOURCE.PROTOBUF_API &&
             this.config.options?.useGoogleAPI === true &&
             value.value?.configuration_done?.deviceReady === true
           ) {
@@ -2012,7 +2012,7 @@ export default class NestAccfactory {
             tempDevice = process_protect_data(object_key, RESTTypeData);
           }
           if (
-            value?.source === DATASOURCE.NestAPI &&
+            value?.source === DATASOURCE.NEST_API &&
             this.config.options?.useNestAPI === true &&
             value.value?.where_id !== undefined &&
             value.value?.structure_id !== undefined
@@ -2081,12 +2081,12 @@ export default class NestAccfactory {
       let processed = {};
       try {
         // Fix up data we need to
-        data.device_type = DeviceType.CAMERA;
+        data.device_type = DEVICE_TYPE.CAMERA;
         if (data.model.toUpperCase().includes('DOORBELL') === true) {
-          data.device_type = DeviceType.DOORBELL;
+          data.device_type = DEVICE_TYPE.DOORBELL;
         }
         if (data.model.toUpperCase().includes('FLOODLIGHT') === true) {
-          data.device_type = DeviceType.FLOODLIGHT;
+          data.device_type = DEVICE_TYPE.FLOODLIGHT;
         }
         data = process_common_data(object_key, data);
         processed = data;
@@ -2120,7 +2120,7 @@ export default class NestAccfactory {
         let tempDevice = {};
         try {
           if (
-            value?.source === DATASOURCE.ProtobufAPI &&
+            value?.source === DATASOURCE.PROTOBUF_API &&
             this.config.options?.useGoogleAPI === true &&
             Array.isArray(value.value?.streaming_protocol?.supportedProtocols) === true &&
             value.value.streaming_protocol.supportedProtocols.includes('PROTOCOL_WEBRTC') === true &&
@@ -2192,7 +2192,7 @@ export default class NestAccfactory {
               value.value.activity_zone_settings.activityZones.forEach((zone) => {
                 RESTTypeData.activity_zones.push({
                   id: zone.zoneProperties?.zoneId !== undefined ? zone.zoneProperties.zoneId : zone.zoneProperties.internalIndex,
-                  name: makeHomeKitName(zone.zoneProperties?.name !== undefined ? zone.zoneProperties.name : ''),
+                  name: HomeKitDevice.makeHomeKitName(zone.zoneProperties?.name !== undefined ? zone.zoneProperties.name : ''),
                   hidden: false,
                   uri: '',
                 });
@@ -2230,7 +2230,7 @@ export default class NestAccfactory {
           }
 
           if (
-            value?.source === DATASOURCE.NestAPI &&
+            value?.source === DATASOURCE.NEST_API &&
             this.config.options?.useNestAPI === true &&
             value.value?.where_id !== undefined &&
             value.value?.structure_id !== undefined &&
@@ -2314,7 +2314,7 @@ export default class NestAccfactory {
       let processed = {};
       try {
         // Fix up data we need to
-        data.device_type = DeviceType.WEATHER;
+        data.device_type = DEVICE_TYPE.WEATHER;
         data.model = 'Weather';
         data.softwareVersion = '1.0.0';
         data = process_common_data(object_key, data);
@@ -2346,7 +2346,7 @@ export default class NestAccfactory {
         let tempDevice = {};
         try {
           if (
-            value?.source === DATASOURCE.ProtobufAPI &&
+            value?.source === DATASOURCE.PROTOBUF_API &&
             this.config.options?.useGoogleAPI === true &&
             value.value?.structure_location?.geoCoordinate?.latitude !== undefined &&
             value.value?.structure_location?.geoCoordinate?.longitude !== undefined
@@ -2371,7 +2371,7 @@ export default class NestAccfactory {
           }
 
           if (
-            value?.source === DATASOURCE.NestAPI &&
+            value?.source === DATASOURCE.NEST_API &&
             this.config.options?.useNestAPI === true &&
             value.value?.latitude !== undefined &&
             value.value?.longitude !== undefined
@@ -2424,7 +2424,7 @@ export default class NestAccfactory {
     let nest_google_uuid = values.uuid; // Nest/Google structure uuid for this get request
     let uuid = this.#rawData[values.uuid].connection; // Connection uuid for this device
 
-    if (this.#protobufRoot !== null && this.#rawData?.[nest_google_uuid]?.source === DATASOURCE.ProtobufAPI) {
+    if (this.#protobufRoot !== null && this.#rawData?.[nest_google_uuid]?.source === DATASOURCE.PROTOBUF_API) {
       let updatedTraits = [];
       let protobufElement = {
         traitRequest: {
@@ -2736,7 +2736,7 @@ export default class NestAccfactory {
       }
     }
 
-    if (this.#rawData?.[nest_google_uuid]?.source === DATASOURCE.NestAPI && nest_google_uuid.startsWith('quartz.') === true) {
+    if (this.#rawData?.[nest_google_uuid]?.source === DATASOURCE.NEST_API && nest_google_uuid.startsWith('quartz.') === true) {
       // Set value on Nest Camera/Doorbell
       await Promise.all(
         Object.entries(values)
@@ -2758,12 +2758,12 @@ export default class NestAccfactory {
                 {
                   headers: {
                     referer: 'https://' + this.#connections[uuid].referer,
-                    'User-Agent': USERAGENT,
+                    'User-Agent': USER_AGENT,
                     'Content-Type': 'application/x-www-form-urlencoded',
                     [this.#connections[uuid].cameraAPI.key]:
                       this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
                   },
-                  timeout: NESTAPITIMEOUT,
+                  timeout: NEST_API_TIMEOUT,
                 },
                 mappedKey + '=' + value + '&uuid=' + nest_google_uuid.split('.')[1],
               );
@@ -2781,7 +2781,7 @@ export default class NestAccfactory {
       );
     }
 
-    if (this.#rawData?.[nest_google_uuid]?.source === DATASOURCE.NestAPI && nest_google_uuid.startsWith('quartz.') === false) {
+    if (this.#rawData?.[nest_google_uuid]?.source === DATASOURCE.NEST_API && nest_google_uuid.startsWith('quartz.') === false) {
       // set values on other Nest devices besides cameras/doorbells
       await Promise.all(
         Object.entries(values)
@@ -2858,7 +2858,7 @@ export default class NestAccfactory {
                   {
                     referer: 'https://' + this.#connections[uuid].referer,
                     headers: {
-                      'User-Agent': USERAGENT,
+                      'User-Agent': USER_AGENT,
                       Authorization: 'Basic ' + this.#connections[uuid].token,
                     },
                   },
@@ -2897,7 +2897,7 @@ export default class NestAccfactory {
           values[key] = undefined;
 
           if (
-            this.#rawData?.[nest_google_uuid]?.source === DATASOURCE.NestAPI &&
+            this.#rawData?.[nest_google_uuid]?.source === DATASOURCE.NEST_API &&
             key === 'camera_snapshot' &&
             nest_google_uuid.startsWith('quartz.') === true &&
             typeof this.#rawData?.[nest_google_uuid]?.value?.nexus_api_http_server_url === 'string' &&
@@ -2911,7 +2911,7 @@ export default class NestAccfactory {
                 {
                   headers: {
                     referer: 'https://' + this.#connections[uuid].referer,
-                    'User-Agent': USERAGENT,
+                    'User-Agent': USER_AGENT,
                     [this.#connections[uuid].cameraAPI.key]:
                       this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
                   },
@@ -2931,7 +2931,7 @@ export default class NestAccfactory {
           }
 
           if (
-            this.#rawData?.[nest_google_uuid]?.source === DATASOURCE.ProtobufAPI &&
+            this.#rawData?.[nest_google_uuid]?.source === DATASOURCE.PROTOBUF_API &&
             this.#protobufRoot !== null &&
             this.#rawData[nest_google_uuid]?.value?.device_identity?.vendorProductId !== undefined &&
             key === 'camera_snapshot'
@@ -2964,7 +2964,7 @@ export default class NestAccfactory {
                 let response = await fetchWrapper('get', this.#rawData[nest_google_uuid].value.upload_live_image.liveImageUrl, {
                   referer: 'https://' + this.#connections[uuid].referer,
                   headers: {
-                    'User-Agent': USERAGENT,
+                    'User-Agent': USER_AGENT,
                     Authorization: 'Basic ' + this.#connections[uuid].token,
                   },
                   timeout: 3000,
@@ -2997,9 +2997,9 @@ export default class NestAccfactory {
         let response = await fetchWrapper('get', this.#connections[uuid].weather_url + location, {
           referer: 'https://' + this.#connections[uuid].referer,
           headers: {
-            'User-Agent': USERAGENT,
+            'User-Agent': USER_AGENT,
           },
-          timeout: NESTAPITIMEOUT,
+          timeout: NEST_API_TIMEOUT,
         });
 
         let data = await response.json();
@@ -3087,7 +3087,7 @@ export default class NestAccfactory {
           {
             headers: {
               referer: 'https://' + this.#connections[uuid].referer,
-              'User-Agent': USERAGENT,
+              'User-Agent': USER_AGENT,
               Authorization: 'Basic ' + this.#connections[uuid].token,
               'Content-Type': 'application/x-protobuf',
               'X-Accept-Content-Transfer-Encoding': 'binary',
@@ -3127,20 +3127,6 @@ function adjustTemperature(temperature, currentTemperatureUnit, targetTemperatur
   }
 
   return temperature;
-}
-
-function makeHomeKitName(nameToMakeValid) {
-  // Strip invalid characters to meet HomeKit naming requirements
-  // Ensure only letters or numbers are at the beginning AND/OR end of string
-  // Matches against uni-code characters
-  let validHomeKitName = nameToMakeValid;
-  if (typeof nameToMakeValid === 'string') {
-    validHomeKitName = nameToMakeValid
-      .replace(/[^\p{L}\p{N}\p{Z}\u2019 '.,-]/gu, '') // Remove disallowed characters
-      .replace(/^[^\p{L}\p{N}]*/gu, '') // Trim invalid prefix
-      .replace(/[^\p{L}\p{N}]+$/gu, ''); // Trim invalid suffix
-  }
-  return validHomeKitName;
 }
 
 function crc24(valueToHash) {

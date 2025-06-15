@@ -50,7 +50,7 @@ const log = Logger.withPrefix(HomeKitDevice.PLATFORM_NAME);
 const { version } = createRequire(import.meta.url)('../package.json');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
-const ACCESSORYPINCODE = '031-45-154'; // Default HomeKit pairing code
+const ACCESSORY_PINCODE = '031-45-154'; // Default HomeKit pairing code
 const CONFIGURATIONFILE = 'Nest_config.json'; // Default configuration file name
 
 // General helper functions which don't need to be part of an object class
@@ -270,7 +270,7 @@ function loadConfiguration(filename) {
 
     // If we do not have a default HomeKit pairing code, add one in
     if (config?.options?.hkPairingCode === undefined) {
-      config.options.hkPairingCode = ACCESSORYPINCODE;
+      config.options.hkPairingCode = ACCESSORY_PINCODE;
     }
 
     // See if we flagged any legacy format options, if so, put warning to user to check and upgrade format/options
@@ -297,14 +297,12 @@ function loadConfiguration(filename) {
 log.success(HomeKitDevice.PLUGIN_NAME + ' v' + version + ' (HAP v' + HAP.HAPLibraryVersion() + ') (Node v' + process.versions.node + ')');
 
 // Check to see if a configuration file was passed into use and validate if present
-let configurationFile = path.resolve(__dirname + '/' + CONFIGURATIONFILE);
-if (process.argv.slice(2).length === 1) {
-  // We only support/process one argument
-  configurationFile = process.argv.slice(2)[0]; // Extract the file name from the argument passed in
-  if (configurationFile.indexOf('/') === -1) {
-    configurationFile = path.resolve(__dirname + '/' + configurationFile);
-  }
+let configurationFile = path.resolve(__dirname, CONFIGURATIONFILE);
+let argFile = process.argv[2];
+if (typeof argFile === 'string') {
+  configurationFile = path.isAbsolute(argFile) ? argFile : path.resolve(process.cwd(), argFile);
 }
+
 if (fs.existsSync(configurationFile) === false) {
   // Configuration file, either by default name or specified on commandline is missing
   log.error('Specified configuration "%s" cannot be found', configurationFile);

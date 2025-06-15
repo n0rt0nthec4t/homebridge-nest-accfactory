@@ -21,21 +21,23 @@ import HomeKitDevice from '../HomeKitDevice.js';
 import NexusTalk from '../nexustalk.js';
 import WebRTC from '../webrtc.js';
 
-const CAMERARESOURCE = {
-  offline: 'Nest_camera_offline.jpg',
-  off: 'Nest_camera_off.jpg',
-  transfer: 'Nest_camera_transfer.jpg',
+const CAMERA_RESOURCE = {
+  OFFLINE: 'Nest_camera_offline.jpg',
+  OFF: 'Nest_camera_off.jpg',
+  TRANSFER: 'Nest_camera_transfer.jpg',
 };
 const MP4BOX = 'mp4box'; // MP4 box fragement event for HKSV recording
-const SNAPSHOTCACHETIMEOUT = 30000; // Timeout for retaining snapshot image (in milliseconds)
-const PROTOCOLWEBRTC = 'PROTOCOL_WEBRTC';
-const PROTOCOLNEXUSTALK = 'PROTOCOL_NEXUSTALK';
-const RESOURCEPATH = '../res';
+const SNAPSHOT_CACHE_TIMEOUT = 30000; // Timeout for retaining snapshot image (in milliseconds)
+const STREAMING_PROTOCOL = {
+  WEBRTC: 'PROTOCOL_WEBRTC',
+  NEXUSTALK: 'PROTOCOL_NEXUSTALK',
+};
+const RESOURCE_PATH = '../res';
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2025.06.12';
+  static VERSION = '2025.06.15';
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -61,7 +63,7 @@ export default class NestCamera extends HomeKitDevice {
     // Load supporrt image files as required
     const loadImageIfExists = (filename, label) => {
       let buffer = undefined;
-      let file = path.resolve(__dirname, RESOURCEPATH, filename);
+      let file = path.resolve(__dirname, RESOURCE_PATH, filename);
       if (fs.existsSync(file) === true) {
         buffer = fs.readFileSync(file);
       } else {
@@ -70,9 +72,9 @@ export default class NestCamera extends HomeKitDevice {
       return buffer;
     };
 
-    this.#cameraOfflineImage = loadImageIfExists(CAMERARESOURCE.offline, 'offline');
-    this.#cameraVideoOffImage = loadImageIfExists(CAMERARESOURCE.off, 'video off');
-    this.#cameraTransferringImage = loadImageIfExists(CAMERARESOURCE.transfer, 'transferring');
+    this.#cameraOfflineImage = loadImageIfExists(CAMERA_RESOURCE.OFFLINE, 'offline');
+    this.#cameraVideoOffImage = loadImageIfExists(CAMERA_RESOURCE.OFF, 'video off');
+    this.#cameraTransferringImage = loadImageIfExists(CAMERA_RESOURCE.TRANSFER, 'transferring');
   }
 
   // Class functions
@@ -201,10 +203,10 @@ export default class NestCamera extends HomeKitDevice {
     }
 
     if (
-      (this.deviceData.streaming_protocols.includes(PROTOCOLWEBRTC) === false &&
-        this.deviceData.streaming_protocols.includes(PROTOCOLNEXUSTALK) === false) ||
-      (this.deviceData.streaming_protocols.includes(PROTOCOLWEBRTC) === true && WebRTC === undefined) ||
-      (this.deviceData.streaming_protocols.includes(PROTOCOLNEXUSTALK) === true && NexusTalk === undefined)
+      (this.deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.WEBRTC) === false &&
+        this.deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.NEXUSTALK) === false) ||
+      (this.deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.WEBRTC) === true && WebRTC === undefined) ||
+      (this.deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.NEXUSTALK) === true && NexusTalk === undefined)
     ) {
       this?.log?.error?.(
         'No suitable streaming protocol is present for "%s". Streaming and recording will be unavailable',
@@ -556,7 +558,7 @@ export default class NestCamera extends HomeKitDevice {
         clearTimeout(this.snapshotTimer);
         this.snapshotTimer = setTimeout(() => {
           this.lastSnapshotImage = undefined;
-        }, SNAPSHOTCACHETIMEOUT);
+        }, SNAPSHOT_CACHE_TIMEOUT);
       }
     }
 
@@ -1009,7 +1011,7 @@ export default class NestCamera extends HomeKitDevice {
         this.streamer !== undefined && this.streamer.stopEverything();
         this.streamer = undefined;
       }
-      if (deviceData.streaming_protocols.includes(PROTOCOLWEBRTC) === true && WebRTC !== undefined) {
+      if (deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.WEBRTC) === true && WebRTC !== undefined) {
         this?.log?.debug?.('Using WebRTC streamer for "%s"', deviceData.description);
         this.streamer = new WebRTC(deviceData, {
           log: this.log,
@@ -1021,7 +1023,7 @@ export default class NestCamera extends HomeKitDevice {
         });
       }
 
-      if (deviceData.streaming_protocols.includes(PROTOCOLNEXUSTALK) === true && NexusTalk !== undefined) {
+      if (deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.NEXUSTALK) === true && NexusTalk !== undefined) {
         this?.log?.debug?.('Using NexusTalk streamer for "%s"', deviceData.description);
         this.streamer = new NexusTalk(deviceData, {
           log: this.log,

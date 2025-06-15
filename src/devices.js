@@ -1,7 +1,7 @@
 // Device support loader
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.06.12
+// Code version 2025.06.15
 // Mark Hulskamp
 'use strict';
 
@@ -15,7 +15,7 @@ import HomeKitDevice from './HomeKitDevice.js';
 
 // Define constants
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
-const DeviceType = Object.freeze({
+const DEVICE_TYPE = Object.freeze({
   THERMOSTAT: 'Thermostat',
   TEMPSENSOR: 'TemperatureSensor',
   SMOKESENSOR: 'Protect',
@@ -82,27 +82,32 @@ async function loadDeviceModules(log, pluginDir = '') {
 function getDeviceHKCategory(type) {
   let category = 1; // Categories.OTHER
 
-  if (type === DeviceType.LOCK) {
+  if (type === DEVICE_TYPE.LOCK) {
     category = 6; // Categories.DOOR_LOCK
   }
 
-  if (type === DeviceType.THERMOSTAT) {
+  if (type === DEVICE_TYPE.THERMOSTAT) {
     category = 9; // Categories.THERMOSTAT
   }
 
-  if (type === DeviceType.TEMPSENSOR || type === DeviceType.HEATLINK || type === DeviceType.SMOKESENSOR || type === DeviceType.WEATHER) {
+  if (
+    type === DEVICE_TYPE.TEMPSENSOR ||
+    type === DEVICE_TYPE.HEATLINK ||
+    type === DEVICE_TYPE.SMOKESENSOR ||
+    type === DEVICE_TYPE.WEATHER
+  ) {
     category = 10; // Categories.SENSOR
   }
 
-  if (type === DeviceType.ALARM) {
+  if (type === DEVICE_TYPE.ALARM) {
     category = 11; // Categories.SECURITY_SYSTEM
   }
 
-  if (type === DeviceType.CAMERA || type === DeviceType.FLOODLIGHT) {
+  if (type === DEVICE_TYPE.CAMERA || type === DEVICE_TYPE.FLOODLIGHT) {
     category = 17; // Categories.IP_CAMERA
   }
 
-  if (type === DeviceType.DOORBELL) {
+  if (type === DEVICE_TYPE.DOORBELL) {
     category = 18; // Categories.VIDEO_DOORBELL
   }
 
@@ -110,4 +115,4 @@ function getDeviceHKCategory(type) {
 }
 
 // Define exports
-export { DeviceType, loadDeviceModules, getDeviceHKCategory };
+export { DEVICE_TYPE, loadDeviceModules, getDeviceHKCategory };

@@ -5,7 +5,7 @@
 //
 // Credit to https://github.com/Brandawg93/homebridge-nest-cam for the work on the Nest Camera comms code on which this is based
 //
-// Code version 2025.06.10
+// Code version 2025.06.15
 // Mark Hulskamp
 'use strict';
 
@@ -25,11 +25,11 @@ import { fileURLToPath } from 'node:url';
 import Streamer from './streamer.js';
 
 // Define constants
-const PINGINTERVAL = 15000; // Ping interval to nexus server while stream active
-const USERAGENT = 'Nest/5.78.0 (iOScom.nestlabs.jasper.release) os=18.0'; // User Agent string
+const PING_INTERVAL = 15000; // Ping interval to nexus server while stream active
+const USER_AGENT = 'Nest/5.78.0 (iOScom.nestlabs.jasper.release) os=18.0'; // User Agent string
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 
-const PacketType = {
+const PACKET_TYPE = {
   PING: 1,
   HELLO: 100,
   PING_CAMERA: 101,
@@ -56,7 +56,7 @@ const PacketType = {
 };
 
 // Blank audio in AAC format, mono channel @48000
-const AACMONO48000BLANK = Buffer.from([
+const AAC_MONO_48000_BLANK = Buffer.from([
   0xff, 0xf1, 0x4c, 0x40, 0x03, 0x9f, 0xfc, 0xde, 0x02, 0x00, 0x4c, 0x61, 0x76, 0x63, 0x35, 0x39, 0x2e, 0x31, 0x38, 0x2e, 0x31, 0x30, 0x30,
   0x00, 0x02, 0x30, 0x40, 0x0e,
 ]);
@@ -68,7 +68,7 @@ export default class NexusTalk extends Streamer {
   pingTimer = undefined; // Timer object for ping interval
   stalledTimer = undefined; // Timer object for no received data
   host = ''; // Host to connect to or connected too
-  blankAudio = AACMONO48000BLANK;
+  blankAudio = AAC_MONO_48000_BLANK;
   video = {}; // Video stream details once connected
   audio = {}; // Audio stream details once connected
 
@@ -219,7 +219,7 @@ export default class NexusTalk extends Streamer {
             sampleRate: 16000,
           }),
         ).finish();
-        this.#sendMessage(PacketType.AUDIO_PAYLOAD, encodedData);
+        this.#sendMessage(PACKET_TYPE.AUDIO_PAYLOAD, encodedData);
       }
     }
   }
@@ -248,7 +248,7 @@ export default class NexusTalk extends Streamer {
           profileNotFoundAction: 'REDIRECT',
         }),
       ).finish();
-      this.#sendMessage(PacketType.START_PLAYBACK, encodedData);
+      this.#sendMessage(PACKET_TYPE.START_PLAYBACK, encodedData);
     }
   }
 
@@ -261,13 +261,13 @@ export default class NexusTalk extends Streamer {
             sessionId: this.#id,
           }),
         ).finish();
-        this.#sendMessage(PacketType.STOP_PLAYBACK, encodedData);
+        this.#sendMessage(PACKET_TYPE.STOP_PLAYBACK, encodedData);
       }
     }
   }
 
   #sendMessage(type, data) {
-    if (this.#socket?.readyState !== 'open' || (type !== PacketType.HELLO && this.#authorised === false)) {
+    if (this.#socket?.readyState !== 'open' || (type !== PACKET_TYPE.HELLO && this.#authorised === false)) {
       // We're not connect and/or authorised yet, so 'cache' message for processing once this occurs
       this.#messages.push({ type: type, data: data });
       return;
@@ -275,11 +275,11 @@ export default class NexusTalk extends Streamer {
 
     // Create nexusTalk message header
     let header = Buffer.alloc(3);
-    if (type !== PacketType.LONG_PLAYBACK_PACKET) {
+    if (type !== PACKET_TYPE.LONG_PLAYBACK_PACKET) {
       header.writeUInt8(type, 0);
       header.writeUInt16BE(data.length, 1);
     }
-    if (type === PacketType.LONG_PLAYBACK_PACKET) {
+    if (type === PACKET_TYPE.LONG_PLAYBACK_PACKET) {
       header = Buffer.alloc(5);
       header.writeUInt8(type, 0);
       header.writeUInt32BE(data.length, 1);
@@ -309,7 +309,7 @@ export default class NexusTalk extends Streamer {
       if (reauthorise === true && authoriseRequest !== null) {
         // Request to re-authorise only
         this?.log?.debug?.('Re-authentication requested to "%s"', this.host);
-        this.#sendMessage(PacketType.AUTHORIZE_REQUEST, authoriseRequest);
+        this.#sendMessage(PACKET_TYPE.AUTHORIZE_REQUEST, authoriseRequest);
       }
 
       if (reauthorise === false && authoriseRequest !== null) {
@@ -323,13 +323,13 @@ export default class NexusTalk extends Streamer {
               protocolVersion: 'VERSION_3',
               uuid: this.uuid.split(/[._]+/)[1],
               requireConnectedCamera: false,
-              userAgent: USERAGENT,
+              USER_AGENT: USER_AGENT,
               deviceId: crypto.randomUUID(),
               clientType: 'IOS',
               authoriseRequest: authoriseRequest,
             }),
           ).finish();
-          this.#sendMessage(PacketType.HELLO, encodedData);
+          this.#sendMessage(PACKET_TYPE.HELLO, encodedData);
         }
       }
     }
@@ -494,7 +494,7 @@ export default class NexusTalk extends Streamer {
       let packetType = this.#packets.readUInt8(0);
       let packetSize = this.#packets.readUInt16BE(1);
 
-      if (packetType === PacketType.LONG_PLAYBACK_PACKET) {
+      if (packetType === PACKET_TYPE.LONG_PLAYBACK_PACKET) {
         headerSize = 5;
         packetSize = this.#packets.readUInt32BE(1);
       }
@@ -509,11 +509,11 @@ export default class NexusTalk extends Streamer {
       this.#packets = this.#packets.subarray(headerSize + packetSize);
 
       switch (packetType) {
-        case PacketType.PING: {
+        case PACKET_TYPE.PING: {
           break;
         }
 
-        case PacketType.OK: {
+        case PACKET_TYPE.OK: {
           // process any pending messages we have stored
           this.#authorised = true; // OK message, means we're connected and authorised to Nexus
           for (let message = this.#messages.shift(); message; message = this.#messages.shift()) {
@@ -523,46 +523,46 @@ export default class NexusTalk extends Streamer {
           // Periodically send PING message to keep stream alive
           clearInterval(this.pingTimer);
           this.pingTimer = setInterval(() => {
-            this.#sendMessage(PacketType.PING, Buffer.alloc(0));
-          }, PINGINTERVAL);
+            this.#sendMessage(PACKET_TYPE.PING, Buffer.alloc(0));
+          }, PING_INTERVAL);
 
           // Start processing data
           this.#startNexusData();
           break;
         }
 
-        case PacketType.ERROR: {
+        case PACKET_TYPE.ERROR: {
           this.#handleNexusError(protoBufPayload);
           break;
         }
 
-        case PacketType.PLAYBACK_BEGIN: {
+        case PACKET_TYPE.PLAYBACK_BEGIN: {
           this.#handlePlaybackBegin(protoBufPayload);
           break;
         }
 
-        case PacketType.PLAYBACK_END: {
+        case PACKET_TYPE.PLAYBACK_END: {
           this.#handlePlaybackEnd(protoBufPayload);
           break;
         }
 
-        case PacketType.PLAYBACK_PACKET:
-        case PacketType.LONG_PLAYBACK_PACKET: {
+        case PACKET_TYPE.PLAYBACK_PACKET:
+        case PACKET_TYPE.LONG_PLAYBACK_PACKET: {
           this.#handlePlaybackPacket(protoBufPayload);
           break;
         }
 
-        case PacketType.REDIRECT: {
+        case PACKET_TYPE.REDIRECT: {
           this.#handleRedirect(protoBufPayload);
           break;
         }
 
-        case PacketType.TALKBACK_BEGIN: {
+        case PACKET_TYPE.TALKBACK_BEGIN: {
           this.#handleTalkbackBegin(protoBufPayload);
           break;
         }
 
-        case PacketType.TALKBACK_END: {
+        case PACKET_TYPE.TALKBACK_END: {
           this.#handleTalkbackEnd(protoBufPayload);
           break;
         }

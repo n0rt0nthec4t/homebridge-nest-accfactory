@@ -1,7 +1,7 @@
 // Thermostat external control plugin for homebridge-nest-accfactory
 // Controls a daikin wifi connected a/c system via thermostat with no physical connection to it
 //
-// Code version 2025.06.13
+// Code version 2025.06.15
 // Mark Hulskamp
 'use strict';
 
@@ -10,12 +10,12 @@ import { setTimeout } from 'node:timers';
 import { URL } from 'node:url';
 
 // Define constants
-const Power = {
+const POWER = {
   ON: 1,
   OFF: 0,
 };
 
-const Mode = {
+const MODE = {
   AUTO: 7,
   DEHUMIDIFIER: 2,
   COOL: 3,
@@ -23,7 +23,7 @@ const Mode = {
   FAN: 6,
 };
 
-const FanRate = {
+const FAN_RATE = {
   AUTO: 'A',
   QUIET: 'B',
   LEVEL1: '3',
@@ -33,14 +33,14 @@ const FanRate = {
   LEVEL5: '7',
 };
 
-const FanDirection = {
+const FAN_DIRECTION = {
   STOP: 0,
   VERTICAL: 1,
   HORIZONTAL: 2,
   SWING: 3,
 };
 
-const LOGLEVELS = {
+const LOG_LEVELS = {
   info: 'info',
   success: 'success',
   warn: 'warn',
@@ -50,12 +50,12 @@ const LOGLEVELS = {
 
 let systemURL = undefined;
 let log = undefined;
-let lastMode = Mode.AUTO;
+let lastMode = MODE.AUTO;
 let lastTemperature = 0;
 // eslint-disable-next-line no-unused-vars
 let lastHumidity = 0;
-let lastFanRate = FanRate.AUTO;
-let lastFanMode = FanDirection.SWING;
+let lastFanRate = FAN_RATE.AUTO;
+let lastFanMode = FAN_DIRECTION.SWING;
 
 // Define functions
 async function cool(temperature) {
@@ -68,15 +68,15 @@ async function cool(temperature) {
     'get',
     systemURL +
       '/aircon/set_control_info?pow=' +
-      Power.ON +
+      POWER.ON +
       '&mode=' +
-      Mode.COOL +
+      MODE.COOL +
       '&stemp=' +
       temperature +
       '&shum=0&f_rate=' +
-      FanRate.AUTO +
+      FAN_RATE.AUTO +
       '&f_dir=' +
-      FanDirection.SWING,
+      FAN_DIRECTION.SWING,
     {},
   )
     .then((response) => response.text())
@@ -91,10 +91,10 @@ async function cool(temperature) {
     .catch((error) => {
       log?.error && log.error('[External Daikin] Failed to set cool mode on "%s"', systemURL);
     });
-  lastMode = Mode.COOL;
+  lastMode = MODE.COOL;
   lastTemperature = temperature;
-  lastFanMode = FanDirection.SWING;
-  lastFanRate = FanRate.AUTO; // Auto fan mode
+  lastFanMode = FAN_DIRECTION.SWING;
+  lastFanRate = FAN_RATE.AUTO; // Auto fan mode
 }
 
 async function heat(temperature) {
@@ -107,15 +107,15 @@ async function heat(temperature) {
     'get',
     systemURL +
       '/aircon/set_control_info?pow=' +
-      Power.ON +
+      POWER.ON +
       '&mode=' +
-      Mode.HEAT +
+      MODE.HEAT +
       '&stemp=' +
       temperature +
       '&shum=0&f_rate=' +
-      FanRate.AUTO +
+      FAN_RATE.AUTO +
       '&f_dir=' +
-      FanDirection.SWING,
+      FAN_DIRECTION.SWING,
     {},
   )
     .then((response) => response.text())
@@ -130,10 +130,10 @@ async function heat(temperature) {
     .catch((error) => {
       log?.error && log.error('[External Daikin] Failed to set heat mode on "%s"', systemURL);
     });
-  lastMode = Mode.HEAT;
+  lastMode = MODE.HEAT;
   lastTemperature = temperature;
-  lastFanMode = FanDirection.SWING;
-  lastFanRate = FanRate.AUTO; // Auto fan mode
+  lastFanMode = FAN_DIRECTION.SWING;
+  lastFanRate = FAN_RATE.AUTO; // Auto fan mode
 }
 
 async function dehumidifier(humidity) {
@@ -146,15 +146,15 @@ async function dehumidifier(humidity) {
     'get',
     systemURL +
       '/aircon/set_control_info?pow=' +
-      Power.ON +
+      POWER.ON +
       '&mode=' +
-      Mode.DEHUMIDIFIER +
+      MODE.DEHUMIDIFIER +
       '&stemp=M&shum=' +
       humidity +
       '&f_rate=' +
-      FanRate.AUTO +
+      FAN_RATE.AUTO +
       '&f_dir=' +
-      FanDirection.SWING,
+      FAN_DIRECTION.SWING,
     {},
   )
     .then((response) => response.text())
@@ -169,7 +169,7 @@ async function dehumidifier(humidity) {
     .catch((error) => {
       log?.error && log.error('[External Daikin] Failed to set dehumidifier mode on "%s"', systemURL);
     });
-  lastMode = Mode.DEHUMIDIFIER;
+  lastMode = MODE.DEHUMIDIFIER;
   lastHumidity = humidity;
 }
 
@@ -179,7 +179,7 @@ async function fan(speed) {
     return;
   }
 
-  let fanRates = [FanRate.AUTO, FanRate.QUIET, FanRate.LEVEL1, FanRate.LEVEL2, FanRate.LEVEL3, FanRate.LEVEL4, FanRate.LEVEL5];
+  let fanRates = [FAN_RATE.AUTO, FAN_RATE.QUIET, FAN_RATE.LEVEL1, FAN_RATE.LEVEL2, FAN_RATE.LEVEL3, FAN_RATE.LEVEL4, FAN_RATE.LEVEL5];
   let index = Math.min(Math.floor((speed / 100) * fanRates.length), fanRates.length - 1);
   let rate = fanRates[index];
 
@@ -188,13 +188,13 @@ async function fan(speed) {
     'get',
     systemURL +
       '/aircon/set_control_info?pow=' +
-      Power.ON +
+      POWER.ON +
       '&mode=' +
-      Mode.FAN +
+      MODE.FAN +
       '&stemp=--&shum=--&f_rate=' +
       rate +
       '&f_dir=' +
-      FanDirection.SWING,
+      FAN_DIRECTION.SWING,
     {},
   )
     .then((response) => response.text())
@@ -209,9 +209,9 @@ async function fan(speed) {
     .catch((error) => {
       log?.error && log.error('[External Daikin] Failed to set fan mode on "%s"', systemURL);
     });
-  lastMode = Mode.FAN;
-  lastFanMode = FanDirection.SWING;
-  lastFanRate = FanRate.AUTO; // Auto fan mode
+  lastMode = MODE.FAN;
+  lastFanMode = FAN_DIRECTION.SWING;
+  lastFanRate = FAN_RATE.AUTO; // Auto fan mode
 }
 
 async function off() {
@@ -224,7 +224,7 @@ async function off() {
     'get',
     systemURL +
       '/aircon/set_control_info?pow=' +
-      Power.OFF +
+      POWER.OFF +
       '&mode=' +
       lastMode +
       '&stemp=' +
@@ -247,7 +247,7 @@ async function off() {
     .catch((error) => {
       log?.error && log.error('[External Daikin] Failed to turn off "%s"', systemURL);
     });
-  lastMode = Mode.OFF;
+  lastMode = MODE.OFF;
 }
 
 function setSystemURL(daikinSystemURL) {
@@ -339,7 +339,7 @@ async function fetchWrapper(method, url, options, data) {
 // returned = test.default(loggerFunctions, 'http://x.x.x.x');
 export default (logger, options) => {
   // Validate the passed in logging object. We are expecting certain functions to be present
-  if (Object.keys(LOGLEVELS).every((fn) => typeof logger?.[fn] === 'function')) {
+  if (Object.keys(LOG_LEVELS).every((fn) => typeof logger?.[fn] === 'function')) {
     log = logger;
   }
 
