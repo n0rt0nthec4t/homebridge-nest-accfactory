@@ -41,11 +41,11 @@ const FAN_DIRECTION = {
 };
 
 const LOG_LEVELS = {
-  info: 'info',
-  success: 'success',
-  warn: 'warn',
-  error: 'error',
-  debug: 'debug',
+  INFO: 'info',
+  SUCCESS: 'success',
+  WARN: 'warn',
+  ERROR: 'error',
+  DEBUG: 'debug',
 };
 
 let systemURL = undefined;
@@ -85,11 +85,11 @@ async function cool(temperature) {
         throw new Error('Daikin A/C system get failed with error');
       }
 
-      log?.info && log.info('[External Daikin] Cool mode on "%s" with target temperature of "%s °C"', systemURL, temperature);
+      log?.info?.('[External Daikin] Cool mode on "%s" with target temperature of "%s °C"', systemURL, temperature);
     })
     // eslint-disable-next-line no-unused-vars
     .catch((error) => {
-      log?.error && log.error('[External Daikin] Failed to set cool mode on "%s"', systemURL);
+      log?.error?.('[External Daikin] Failed to set cool mode on "%s"', systemURL);
     });
   lastMode = MODE.COOL;
   lastTemperature = temperature;
@@ -124,11 +124,11 @@ async function heat(temperature) {
         throw new Error('Daikin A/C system get failed with error');
       }
 
-      log?.info && log.info('[External Daikin] Heat mode on "%s" with target temperature of "%s °C"', systemURL, temperature);
+      log?.info?.('[External Daikin] Heat mode on "%s" with target temperature of "%s °C"', systemURL, temperature);
     })
     // eslint-disable-next-line no-unused-vars
     .catch((error) => {
-      log?.error && log.error('[External Daikin] Failed to set heat mode on "%s"', systemURL);
+      log?.error?.('[External Daikin] Failed to set heat mode on "%s"', systemURL);
     });
   lastMode = MODE.HEAT;
   lastTemperature = temperature;
@@ -163,7 +163,7 @@ async function dehumidifier(humidity) {
         throw new Error('Daikin A/C system get failed with error');
       }
 
-      log?.info && log.info('[External Daikin] Dehumidifier mode on "%s" with target humidity of "%s"', systemURL, humidity);
+      log?.info?.('[External Daikin] Dehumidifier mode on "%s" with target humidity of "%s"', systemURL, humidity);
     })
     // eslint-disable-next-line no-unused-vars
     .catch((error) => {
@@ -203,11 +203,11 @@ async function fan(speed) {
         throw new Error('Daikin A/C system get failed with error');
       }
 
-      log?.info && log.info('[External Daikin] Fan mode on "%s" with speed of "%s"', systemURL, rate);
+      log?.info?.('[External Daikin] Fan mode on "%s" with speed of "%s"', systemURL, rate);
     })
     // eslint-disable-next-line no-unused-vars
     .catch((error) => {
-      log?.error && log.error('[External Daikin] Failed to set fan mode on "%s"', systemURL);
+      log?.error?.('[External Daikin] Failed to set fan mode on "%s"', systemURL);
     });
   lastMode = MODE.FAN;
   lastFanMode = FAN_DIRECTION.SWING;
@@ -241,11 +241,11 @@ async function off() {
         throw new Error('Daikin A/C system get failed with error');
       }
 
-      log?.info && log.info('[External Daikin] Turned off "%s"', systemURL);
+      log?.info?.('[External Daikin] Turned off "%s"', systemURL);
     })
     // eslint-disable-next-line no-unused-vars
     .catch((error) => {
-      log?.error && log.error('[External Daikin] Failed to turn off "%s"', systemURL);
+      log?.error?.('[External Daikin] Failed to turn off "%s"', systemURL);
     });
   lastMode = MODE.OFF;
 }
@@ -339,7 +339,7 @@ async function fetchWrapper(method, url, options, data) {
 // returned = test.default(loggerFunctions, 'http://x.x.x.x');
 export default (logger, options) => {
   // Validate the passed in logging object. We are expecting certain functions to be present
-  if (Object.keys(LOG_LEVELS).every((fn) => typeof logger?.[fn] === 'function')) {
+  if (Object.values(LOG_LEVELS).every((fn) => typeof logger?.[fn] === 'function')) {
     log = logger;
   }
 

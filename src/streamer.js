@@ -41,11 +41,11 @@ const STREAM_FRAME_INTERVAL = 1000 / 30; // 30fps approx
 const RESOURCE_PATH = './res';
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 const LOG_LEVELS = {
-  info: 'info',
-  success: 'success',
-  warn: 'warn',
-  error: 'error',
-  debug: 'debug',
+  INFO: 'info',
+  SUCCESS: 'success',
+  WARN: 'warn',
+  ERROR: 'error',
+  DEBUG: 'debug',
 };
 
 // Streamer object
@@ -72,7 +72,7 @@ export default class Streamer {
 
   constructor(deviceData, options) {
     // Setup logger object if passed as option
-    if (Object.keys(LOG_LEVELS).every((fn) => typeof options?.log?.[fn] === 'function')) {
+    if (Object.values(LOG_LEVELS).every((fn) => typeof options?.log?.[fn] === 'function')) {
       this.log = options.log;
     }
 

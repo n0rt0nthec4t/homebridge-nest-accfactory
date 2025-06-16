@@ -2,6 +2,10 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.3.1 (2025/06/16)
+
+- Minor stability improvements affecting standalone docker version
+
 ## v0.3.0 (2025/06/14)
 
 - General code cleanup and stability improvements
