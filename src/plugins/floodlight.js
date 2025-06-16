@@ -9,7 +9,7 @@ import NestCamera from './camera.js';
 
 export default class NestFloodlight extends NestCamera {
   static TYPE = 'FloodlightCamera';
-  static VERSION = '2025.06.11';
+  static VERSION = '2025.06.16';
 
   lightService = undefined; // HomeKit light
 
@@ -18,9 +18,9 @@ export default class NestFloodlight extends NestCamera {
   }
 
   // Class functions
-  setupDevice() {
+  onAdd() {
     // Call parent to setup the common camera things. Once we return, we can add in the specifics for our floodlight
-    super.setupDevice();
+    super.onAdd();
 
     if (this.deviceData.has_light === true) {
       // Add service to for a light, including brightness control
@@ -65,8 +65,8 @@ export default class NestFloodlight extends NestCamera {
     this.lightService !== undefined && this.postSetupDetails('Light support');
   }
 
-  removeDevice() {
-    super.removeDevice();
+  onUpdate() {
+    super.onUpdate();
 
     if (this.lightService !== undefined) {
       this.accessory.removeService(this.lightService);
@@ -74,13 +74,13 @@ export default class NestFloodlight extends NestCamera {
     this.lightService = undefined;
   }
 
-  updateDevice(deviceData) {
+  onUpdate(deviceData) {
     if (typeof deviceData !== 'object' || this.controller === undefined) {
       return;
     }
 
     // Get the camera class todo all its updates first, then we'll handle the doorbell specific stuff
-    super.updateDevice(deviceData);
+    super.onUpdate(deviceData);
 
     if (this.lightService !== undefined) {
       // Update status of light, including brightness

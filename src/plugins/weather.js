@@ -9,7 +9,7 @@ import HomeKitDevice from '../HomeKitDevice.js';
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = 'Weather';
-  static VERSION = '2025.06.11';
+  static VERSION = '2025.06.16';
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -21,7 +21,7 @@ export default class NestWeather extends HomeKitDevice {
   }
 
   // Class functions
-  setupDevice() {
+  onAdd() {
     // Setup temperature service if not already present on the accessory
     this.temperatureService = this.addHKService(this.hap.Service.TemperatureSensor, '', 1);
     this.temperatureService.setPrimaryService();
@@ -75,7 +75,7 @@ export default class NestWeather extends HomeKitDevice {
     this.deviceData?.elevation !== undefined && this.postSetupDetail('Elevation of ' + this.deviceData.elevation + 'm');
   }
 
-  updateDevice(deviceData) {
+  onUpdate(deviceData) {
     if (
       typeof deviceData !== 'object' ||
       this.temperatureService === undefined ||

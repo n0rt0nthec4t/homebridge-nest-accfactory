@@ -12,7 +12,7 @@ import NestCamera from './camera.js';
 
 export default class NestDoorbell extends NestCamera {
   static TYPE = 'Doorbell';
-  static VERSION = '2025.06.11';
+  static VERSION = '2025.06.16';
 
   doorbellTimer = undefined; // Cooldown timer for doorbell events
   switchService = undefined; // HomeKit switch for enabling/disabling chime
@@ -22,10 +22,10 @@ export default class NestDoorbell extends NestCamera {
   }
 
   // Class functions
-  setupDevice() {
+  onAdd() {
     // Call parent to setup the common camera things. Once we return, we can add in the specifics for our doorbell
     // We pass in the HAP Doorbell controller constructor function here also
-    super.setupDevice(this.hap.DoorbellController);
+    super.onAdd(this.hap.DoorbellController);
 
     if (this.deviceData?.has_indoor_chime === true && this.deviceData?.chimeSwitch === true) {
       // Add service to allow automation and enabling/disabling indoor chiming.
@@ -61,8 +61,8 @@ export default class NestDoorbell extends NestCamera {
     this.switchService !== undefined && this.postSetupDetail('Chime switch');
   }
 
-  removeDevice() {
-    super.removeDevice();
+  onUpdate() {
+    super.onUpdate();
 
     clearTimeout(this.doorbellTimer);
     this.doorbellTimer = undefined;
@@ -73,13 +73,13 @@ export default class NestDoorbell extends NestCamera {
     this.switchService = undefined;
   }
 
-  updateDevice(deviceData) {
+  onUpdate(deviceData) {
     if (typeof deviceData !== 'object' || this.controller === undefined) {
       return;
     }
 
     // Get the camera class todo all its updates first, then we'll handle the doorbell specific stuff
-    super.updateDevice(deviceData);
+    super.onUpdate(deviceData);
 
     if (this.switchService !== undefined) {
       // Update status of indoor chime enable/disable switch

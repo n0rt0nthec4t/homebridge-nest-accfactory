@@ -14,7 +14,7 @@ export default [{
   rules: {
     '@stylistic/semi': ['warn'],
     '@stylistic/quotes': ['warn', 'single'],
-    '@stylistic/indent': ['warn', 2, {SwitchCase: 1}],
+    '@stylistic/indent': ['warn', 2, {SwitchCase: 1, offsetTernaryExpressions: true} ],
     '@stylistic/comma-dangle': ['warn', 'always-multiline'],
     '@stylistic/dot-notation': 'off',
     'eqeqeq': 'warn',

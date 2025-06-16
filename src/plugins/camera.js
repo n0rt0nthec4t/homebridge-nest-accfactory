@@ -37,7 +37,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a define
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2025.06.15';
+  static VERSION = '2025.06.16';
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -78,7 +78,7 @@ export default class NestCamera extends HomeKitDevice {
   }
 
   // Class functions
-  setupDevice(hapController = this.hap.CameraController) {
+  onAdd(hapController = this.hap.CameraController) {
     // Setup motion services
     if (this.motionServices === undefined) {
       this.createCameraMotionServices();
@@ -231,7 +231,7 @@ export default class NestCamera extends HomeKitDevice {
     this.deviceData.localAccess === true && this.postSetupDetail('Local access');
   }
 
-  removeDevice() {
+  onUpdate() {
     // Clean up our camera object since this device is being removed
     clearTimeout(this.motionTimer);
     clearTimeout(this.personTimer);
@@ -987,7 +987,7 @@ export default class NestCamera extends HomeKitDevice {
     }
   }
 
-  updateDevice(deviceData) {
+  onUpdate(deviceData) {
     if (typeof deviceData !== 'object' || this.controller === undefined) {
       return;
     }

@@ -11,7 +11,7 @@ const LOW_BATTERY_LEVEL = 10; // Low battery level percentage
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = 'Protect';
-  static VERSION = '2025.06.15';
+  static VERSION = '2025.06.16';
 
   batteryService = undefined;
   smokeService = undefined;
@@ -23,7 +23,7 @@ export default class NestProtect extends HomeKitDevice {
   }
 
   // Class functions
-  setupDevice() {
+  onAdd() {
     // Setup the smoke sensor service if not already present on the accessory
     this.smokeService = this.addHKService(this.hap.Service.SmokeSensor, '', 1);
     this.smokeService.setPrimaryService();
@@ -65,7 +65,7 @@ export default class NestProtect extends HomeKitDevice {
     }
   }
 
-  updateDevice(deviceData) {
+  onUpdate(deviceData) {
     if (
       typeof deviceData !== 'object' ||
       this.smokeService === undefined ||
