@@ -12,13 +12,13 @@ import NestCamera from './camera.js';
 
 export default class NestDoorbell extends NestCamera {
   static TYPE = 'Doorbell';
-  static VERSION = '2025.06.16';
+  static VERSION = '2025.06.17';
 
   doorbellTimer = undefined; // Cooldown timer for doorbell events
   switchService = undefined; // HomeKit switch for enabling/disabling chime
 
-  constructor(accessory, api, log, eventEmitter, deviceData) {
-    super(accessory, api, log, eventEmitter, deviceData);
+  constructor(accessory, api, log, deviceData) {
+    super(accessory, api, log, deviceData);
   }
 
   // Class functions
@@ -37,7 +37,7 @@ export default class NestDoorbell extends NestCamera {
         onSet: (value) => {
           if (value !== this.deviceData.indoor_chime_enabled) {
             // only change indoor chime status value if different than on-device
-            this.set({ uuid: this.deviceData.nest_google_uuid, indoor_chime_enabled: value });
+            this.message(NestCamera.SET, { uuid: this.deviceData.nest_google_uuid, indoor_chime_enabled: value });
 
             this?.log?.info?.('Indoor chime on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
           }

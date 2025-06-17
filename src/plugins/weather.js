@@ -9,15 +9,15 @@ import HomeKitDevice from '../HomeKitDevice.js';
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = 'Weather';
-  static VERSION = '2025.06.16';
+  static VERSION = '2025.06.17';
 
   batteryService = undefined;
   airPressureService = undefined;
   temperatureService = undefined;
   humidityService = undefined;
 
-  constructor(accessory, api, log, eventEmitter, deviceData) {
-    super(accessory, api, log, eventEmitter, deviceData);
+  constructor(accessory, api, log, deviceData) {
+    super(accessory, api, log, deviceData);
   }
 
   // Class functions

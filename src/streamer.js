@@ -251,7 +251,7 @@ export default class Streamer {
       type: 'record',
       video: videoStream,
       audio: audioStream,
-      // eslint-disable-next-line no-undef
+
       buffer: this.#outputs?.buffer?.buffer !== undefined ? structuredClone(this.#outputs.buffer.buffer) : [],
     };
 

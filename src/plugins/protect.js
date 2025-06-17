@@ -11,15 +11,15 @@ const LOW_BATTERY_LEVEL = 10; // Low battery level percentage
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = 'Protect';
-  static VERSION = '2025.06.16';
+  static VERSION = '2025.06.17';
 
   batteryService = undefined;
   smokeService = undefined;
   motionService = undefined;
   carbonMonoxideService = undefined;
 
-  constructor(accessory, api, log, eventEmitter, deviceData) {
-    super(accessory, api, log, eventEmitter, deviceData);
+  constructor(accessory, api, log, deviceData) {
+    super(accessory, api, log, deviceData);
   }
 
   // Class functions
@@ -197,7 +197,7 @@ export default class NestProtect extends HomeKitDevice {
       //this?.log?.info?.('Eve Smoke Alarm test', (EveHomeSetData.alarmtest === true ? 'start' : 'stop'));
     }
     if (typeof EveHomeSetData?.statusled === 'boolean') {
-      this.set({ uuid: this.deviceData.nest_google_uuid, ntp_green_led_enable: EveHomeSetData.statusled });
+      this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, ntp_green_led_enable: EveHomeSetData.statusled });
     }
   }
 }

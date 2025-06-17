@@ -11,13 +11,17 @@ const LOW_BATTERY_LEVEL = 10; // Low battery level percentage
 
 export default class NestTemperatureSensor extends HomeKitDevice {
   static TYPE = 'TemperatureSensor';
-  static VERSION = '2025.06.16';
+  static VERSION = '2025.06.17';
+
+  // For messaging back to parent class
+  static SET = HomeKitDevice.SET;
+  static GET = HomeKitDevice.GET;
 
   batteryService = undefined;
   temperatureService = undefined;
 
-  constructor(accessory, api, log, eventEmitter, deviceData) {
-    super(accessory, api, log, eventEmitter, deviceData);
+  constructor(accessory, api, log, deviceData) {
+    super(accessory, api, log, deviceData);
   }
 
   // Class functions

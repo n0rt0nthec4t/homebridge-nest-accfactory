@@ -9,7 +9,6 @@
 import protobuf from 'protobufjs';
 
 // Define nodejs module requirements
-import EventEmitter from 'node:events';
 import { Buffer } from 'node:buffer';
 import { setInterval, clearInterval, setTimeout, clearTimeout } from 'node:timers';
 import fs from 'node:fs';
@@ -42,18 +41,11 @@ export default class NestAccfactory {
   // Internal data only for this class
   #connections = undefined; // Object of confirmed connections
   #rawData = {}; // Cached copy of data from both Nest and Protobuf APIs
-  #eventEmitter = new EventEmitter(); // Used for object messaging from this platform
   #protobufRoot = null; // Protobuf loaded protos
   #trackedDevices = {}; // Object of devices we've created. used to track data source type, comms uuid. key'd by serial #
   #deviceModules = undefined; // No loaded device support modules to start
 
-  constructor(log, config, api, eventEmitter) {
-    // If no explicit event emitter was passed, and the api is an EventEmitter (e.g., in Homebridge),
-    // we'll treat it as the source for lifecycle messages like didFinishLaunching/shutdown in this constructor
-    if (api instanceof EventEmitter && eventEmitter === undefined) {
-      eventEmitter = api;
-    }
-
+  constructor(log, config, api) {
     this.log = log;
     this.api = api;
 
@@ -67,7 +59,7 @@ export default class NestAccfactory {
       return;
     }
 
-    eventEmitter?.on?.('didFinishLaunching', async () => {
+    api?.on?.('didFinishLaunching', async () => {
       // We got notified that Homebridge (or Docker) has finished loading
 
       // Load device support modules from the plugins folder if not already done
@@ -101,11 +93,9 @@ export default class NestAccfactory {
       }
     });
 
-    eventEmitter?.on?.('shutdown', async () => {
+    api?.on?.('shutdown', async () => {
       // We got notified that Homebridge is shutting down
       // Perform cleanup of internal state
-      this.#eventEmitter?.removeAllListeners();
-
       Object.values(this.#trackedDevices).forEach((device) => {
         Object.values(device?.timers || {}).forEach((timer) => clearInterval(timer));
       });
@@ -113,18 +103,6 @@ export default class NestAccfactory {
       this.#trackedDevices = {};
       this.#rawData = {};
       this.#protobufRoot = null;
-      this.#eventEmitter = undefined;
-    });
-
-    // Setup event listeners for set/get calls from devices if not already done so
-    this.#eventEmitter.addListener(HomeKitDevice.SET, (uuid, values) => {
-      this.#set(values);
-    });
-
-    this.#eventEmitter.addListener(HomeKitDevice.GET, async (uuid, values) => {
-      let results = await this.#get(values);
-      // Send the results back to the device via a special event (only if still active)
-      this.#eventEmitter?.emit?.(HomeKitDevice.GET + '->' + uuid, results);
     });
   }
 
@@ -511,7 +489,7 @@ export default class NestAccfactory {
                         });
 
                         // Send removed notice onto HomeKit device for it to process
-                        this.#eventEmitter?.emit?.(
+                        HomeKitDevice.message(
                           this.#trackedDevices[this.#rawData[object_key].value.serial_number].uuid,
                           HomeKitDevice.REMOVE,
                           {},
@@ -720,7 +698,7 @@ export default class NestAccfactory {
                       }
 
                       // Send removed notice onto HomeKit device for it to process
-                      this.#eventEmitter?.emit?.(
+                      HomeKitDevice.message(
                         this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber].uuid,
                         HomeKitDevice.REMOVE,
                         {},
@@ -835,8 +813,18 @@ export default class NestAccfactory {
               .replace(/[^a-zA-Z0-9 ]+/g, ' ')
               .toLowerCase()
               .replace(/\b\w/g, (character) => character.toUpperCase());
-          let tempDevice = new deviceClass(this.cachedAccessories, this.api, this.log, this.#eventEmitter, deviceData);
+
+          let tempDevice = new deviceClass(this.cachedAccessories, this.api, this.log, deviceData);
           tempDevice.add(accessoryName, getDeviceHKCategory(deviceClass.TYPE), true);
+
+          // Register per-device set/get handlers
+          HomeKitDevice.message(tempDevice.uuid, HomeKitDevice.SET, async (values) => {
+            await this.#set(values);
+          });
+
+          HomeKitDevice.message(tempDevice.uuid, HomeKitDevice.GET, async (values) => {
+            return await this.#get(values);
+          });
 
           // Track this device once created
           this.#trackedDevices[deviceData.serialNumber] = {
@@ -896,14 +884,16 @@ export default class NestAccfactory {
 
                   // Update internal structure with new zone details.
                   // We do a test to see if it's still present, not interval loop not finished or device removed
-                  if (this.#rawData?.[nest_google_uuid]?.value !== undefined) {
+                  if (
+                    this.#rawData?.[nest_google_uuid]?.value !== undefined &&
+                    this.#trackedDevices?.[deviceData?.serialNumber]?.uuid !== undefined
+                  ) {
                     this.#rawData[nest_google_uuid].value.activity_zones = zones;
 
                     // Send updated data onto HomeKit device for it to process
-                    this.#trackedDevices?.[deviceData?.serialNumber]?.uuid &&
-                      this.#eventEmitter?.emit?.(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, {
-                        activity_zones: zones,
-                      });
+                    HomeKitDevice.message(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, {
+                      activity_zones: zones,
+                    });
                   }
                 } catch (error) {
                   // Log debug message if it wasn't a timeout
@@ -1047,13 +1037,15 @@ export default class NestAccfactory {
               }
 
               // Update internal structure with new alerts.
-              // We do a test to see if its still present not interval loop not finished or device removed
-              if (this.#rawData?.[nest_google_uuid]?.value !== undefined) {
+              // We do a test to see if it's still present, not interval loop not finished or device removed
+              if (
+                this.#rawData?.[nest_google_uuid]?.value !== undefined &&
+                this.#trackedDevices?.[deviceData?.serialNumber]?.uuid !== undefined
+              ) {
                 this.#rawData[nest_google_uuid].value.alerts = alerts;
 
                 // Send updated alerts onto HomeKit device for it to process
-                this.#trackedDevices?.[deviceData?.serialNumber]?.uuid &&
-                  this.#eventEmitter?.emit?.(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, { alerts: alerts });
+                HomeKitDevice.message(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, { alerts: alerts });
               }
             }, CAMERA_ALERT_POLLING);
           }
@@ -1070,12 +1062,13 @@ export default class NestAccfactory {
                   this.#rawData[this.#trackedDevices[deviceData.serialNumber].rawDataUuid].value.weather.longitude,
                 );
 
-                this.#trackedDevices?.[deviceData.serialNumber]?.uuid &&
-                  this.#eventEmitter?.emit?.(
+                if (this.#trackedDevices?.[deviceData.serialNumber]?.uuid !== undefined) {
+                  HomeKitDevice.message(
                     this.#trackedDevices[deviceData.serialNumber].uuid,
                     HomeKitDevice.UPDATE,
                     this.#processData(this.#trackedDevices[deviceData.serialNumber].rawDataUuid)?.[deviceData.serialNumber],
                   );
+                }
               }
             }, WEATHER_POLLING);
           }
@@ -1100,8 +1093,9 @@ export default class NestAccfactory {
           this.#trackedDevices[deviceData.serialNumber].rawDataUuid = deviceData.nest_google_uuid;
         }
 
-        this.#trackedDevices?.[deviceData?.serialNumber]?.uuid &&
-          this.#eventEmitter?.emit?.(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, deviceData);
+        if (this.#trackedDevices?.[deviceData?.serialNumber]?.uuid !== undefined) {
+          HomeKitDevice.message(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, deviceData);
+        }
       }
     });
   }
@@ -2297,7 +2291,6 @@ export default class NestAccfactory {
           tempDevice.personCooldown = parseDurationToSeconds(deviceOptions?.personCooldown, { defaultValue: 120, min: 0, max: 300 });
           tempDevice.chimeSwitch = deviceOptions?.chimeSwitch === true; // Control 'indoor' chime by switch
           tempDevice.localAccess = deviceOptions?.localAccess === true; // Local network video streaming rather than from cloud from camera/doorbells
-          // eslint-disable-next-line no-undef
           tempDevice.ffmpeg = structuredClone(this.config.options.ffmpeg); // ffmpeg details, path, libraries. No ffmpeg = undefined
           if (deviceOptions?.ffmpegDebug !== undefined) {
             // Device specific ffmpeg debugging
@@ -2717,7 +2710,6 @@ export default class NestAccfactory {
             }
 
             if (protobufElement.traitRequest.traitLabel !== '' && protobufElement.state.type_url !== '') {
-              // eslint-disable-next-line no-undef
               updatedTraits.push(structuredClone(protobufElement));
             }
           }),

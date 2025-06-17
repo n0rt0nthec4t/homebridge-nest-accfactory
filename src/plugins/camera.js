@@ -37,7 +37,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a define
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2025.06.16';
+  static VERSION = '2025.06.17';
+
+  // For messaging back to parent class
+  static SET = HomeKitDevice.SET;
+  static GET = HomeKitDevice.GET;
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -57,8 +61,8 @@ export default class NestCamera extends HomeKitDevice {
   #cameraVideoOffImage = undefined; // JPG image buffer for camera video off
   #cameraTransferringImage = undefined; // JPG image buffer for camera transferring between Nest/Google Home
 
-  constructor(accessory, api, log, eventEmitter, deviceData) {
-    super(accessory, api, log, eventEmitter, deviceData);
+  constructor(accessory, api, log, deviceData) {
+    super(accessory, api, log, deviceData);
 
     // Load supporrt image files as required
     const loadImageIfExists = (filename, label) => {
@@ -112,7 +116,7 @@ export default class NestCamera extends HomeKitDevice {
             (value === true && this.deviceData.statusled_brightness !== 0) ||
             (value === false && this.deviceData.statusled_brightness !== 1)
           ) {
-            this.set({ uuid: this.deviceData.nest_google_uuid, statusled_brightness: value === true ? 0 : 1 });
+            this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, statusled_brightness: value === true ? 0 : 1 });
             this?.log?.info?.('Recording status LED on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
           }
         },
@@ -127,7 +131,10 @@ export default class NestCamera extends HomeKitDevice {
         onSet: (value) => {
           // only change IRLed status value if different than on-device
           if ((value === false && this.deviceData.irled_enabled === true) || (value === true && this.deviceData.irled_enabled === false)) {
-            this.set({ uuid: this.deviceData.nest_google_uuid, irled_enabled: value === true ? 'auto_on' : 'always_off' });
+            this.message(HomeKitDevice.SET, {
+              uuid: this.deviceData.nest_google_uuid,
+              irled_enabled: value === true ? 'auto_on' : 'always_off',
+            });
 
             this?.log?.info?.('Night vision on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
           }
@@ -147,7 +154,7 @@ export default class NestCamera extends HomeKitDevice {
             (this.deviceData.streaming_enabled === true && value === true)
           ) {
             // Camera state does not reflect requested state, so fix
-            this.set({ uuid: this.deviceData.nest_google_uuid, streaming_enabled: value === false ? true : false });
+            this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, streaming_enabled: value === false ? true : false });
             this?.log?.info?.('Camera on "%s" was turned', this.deviceData.description, value === false ? 'on' : 'off');
           }
         }
@@ -177,7 +184,7 @@ export default class NestCamera extends HomeKitDevice {
               (this.deviceData.audio_enabled === true && value === this.hap.Characteristic.RecordingAudioActive.DISABLE) ||
               (this.deviceData.audio_enabled === false && value === this.hap.Characteristic.RecordingAudioActive.ENABLE)
             ) {
-              this.set({
+              this.message(HomeKitDevice.SET, {
                 uuid: this.deviceData.nest_google_uuid,
                 audio_enabled: value === this.hap.Characteristic.RecordingAudioActive.ENABLE ? true : false,
               });
@@ -549,7 +556,7 @@ export default class NestCamera extends HomeKitDevice {
     let imageBuffer = undefined;
 
     if (this.deviceData.migrating === false && this.deviceData.streaming_enabled === true && this.deviceData.online === true) {
-      let response = await this.get({ uuid: this.deviceData.nest_google_uuid, camera_snapshot: '' });
+      let response = await this.message(HomeKitDevice.GET, { uuid: this.deviceData.nest_google_uuid, camera_snapshot: '' });
       if (Buffer.isBuffer(response?.camera_snapshot) === true) {
         imageBuffer = response.camera_snapshot;
         this.lastSnapshotImage = response.camera_snapshot;

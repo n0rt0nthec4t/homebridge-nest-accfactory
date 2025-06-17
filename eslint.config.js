@@ -10,11 +10,14 @@ export default [{
     parser: parserTs,
     ecmaVersion: 'latest',
     sourceType: 'module',
+    globals: {
+      structuredClone: 'readonly',
+    },
   },
   rules: {
     '@stylistic/semi': ['warn'],
     '@stylistic/quotes': ['warn', 'single'],
-    '@stylistic/indent': ['warn', 2, {SwitchCase: 1, offsetTernaryExpressions: true} ],
+    '@stylistic/indent': ['warn', 2, {SwitchCase: 1, offsetTernaryExpressions: true}],
     '@stylistic/comma-dangle': ['warn', 'always-multiline'],
     '@stylistic/dot-notation': 'off',
     'eqeqeq': 'warn',
