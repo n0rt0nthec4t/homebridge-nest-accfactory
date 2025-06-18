@@ -2,11 +2,13 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.3.2 (alpha.1)
+## v0.3.2 (alpha.3)
 
-- General code cleanup and stability improvements
-- Refactored for updated base class
-
+- General code cleanup and stability improvements  
+- Refactored for updated base class  
+- Improved EveHome integration for thermostat and smoke detector  
+- Streamlined history logging for motion, doorbell, fan, and dehumidifier  
+ 
 ## v0.3.1 (2025/06/16)
 
 - Minor stability improvements affecting standalone docker version

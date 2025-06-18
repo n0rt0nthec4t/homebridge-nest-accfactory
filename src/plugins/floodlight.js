@@ -9,13 +9,9 @@ import NestCamera from './camera.js';
 
 export default class NestFloodlight extends NestCamera {
   static TYPE = 'FloodlightCamera';
-  static VERSION = '2025.06.17';
+  static VERSION = '2025.06.17'; // Code version
 
   lightService = undefined; // HomeKit light
-
-  constructor(accessory, api, log, deviceData) {
-    super(accessory, api, log, deviceData);
-  }
 
   // Class functions
   onAdd() {
@@ -29,7 +25,7 @@ export default class NestFloodlight extends NestCamera {
         props: { minStep: 10 }, // Light only goes in 10% increments
         onSet: (value) => {
           if (value !== this.deviceData.light_brightness) {
-            this.message(NestCamera.SET, { uuid: this.deviceData.nest_google_uuid, light_brightness: value });
+            this.message(NestFloodlight.SET, { uuid: this.deviceData.nest_google_uuid, light_brightness: value });
 
             this?.log?.info?.('Floodlight brightness on "%s" was set to "%s %"', this.deviceData.description, value);
           }
@@ -42,7 +38,7 @@ export default class NestFloodlight extends NestCamera {
       this.addHKCharacteristic(this.lightService, this.hap.Characteristic.On, {
         onSet: (value) => {
           if (value !== this.deviceData.light_enabled) {
-            this.message(NestCamera.SET, { uuid: this.deviceData.nest_google_uuid, light_enabled: value });
+            this.message(NestFloodlight.SET, { uuid: this.deviceData.nest_google_uuid, light_enabled: value });
 
             this?.log?.info?.('Floodlight on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
           }

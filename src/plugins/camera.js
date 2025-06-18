@@ -37,9 +37,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a define
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2025.06.17';
+  static VERSION = '2025.06.18'; // Code version
 
-  // For messaging back to parent class
+  // For messaging back to parent class (Doorbell/Floodlight)
   static SET = HomeKitDevice.SET;
   static GET = HomeKitDevice.GET;
 
@@ -222,15 +222,7 @@ export default class NestCamera extends HomeKitDevice {
     }
 
     // Setup linkage to EveHome app if configured todo so
-    if (
-      this.deviceData?.eveHistory === true &&
-      typeof this.motionServices?.[1]?.service === 'object' &&
-      typeof this.historyService?.linkToEveHome === 'function'
-    ) {
-      this.historyService.linkToEveHome(this.motionServices[1].service, {
-        description: this.deviceData.description,
-      });
-    }
+    this.setupEveHomeLink(this.motionServices?.[1]?.service);
 
     // Extra setup details for output
     this.deviceData.hksv === true &&
@@ -1174,12 +1166,9 @@ export default class NestCamera extends HomeKitDevice {
               this.motionServices[zoneID].service.updateCharacteristic(this.hap.Characteristic.MotionDetected, true);
 
               // Log motion started into history
-              if (typeof this.historyService?.addHistory === 'function') {
-                this.historyService.addHistory(this.motionServices[zoneID].service, {
-                  time: Math.floor(Date.now() / 1000),
-                  status: 1,
-                });
-              }
+              this.addHistory(this.motionServices[zoneID].service, {
+                status: 1,
+              });
             }
           });
 
@@ -1192,12 +1181,7 @@ export default class NestCamera extends HomeKitDevice {
                 this.motionServices[zoneID].service.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
 
                 // Log motion started into history
-                if (typeof this.historyService?.addHistory === 'function') {
-                  this.historyService.addHistory(this.motionServices[zoneID].service, {
-                    time: Math.floor(Date.now() / 1000),
-                    status: 0,
-                  });
-                }
+                this.addHistory(this.motionServices[zoneID].service, { status: 0 });
               }
             });
 

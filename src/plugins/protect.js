@@ -11,16 +11,12 @@ const LOW_BATTERY_LEVEL = 10; // Low battery level percentage
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = 'Protect';
-  static VERSION = '2025.06.17';
+  static VERSION = '2025.06.18'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
   motionService = undefined;
   carbonMonoxideService = undefined;
-
-  constructor(accessory, api, log, deviceData) {
-    super(accessory, api, log, deviceData);
-  }
 
   // Class functions
   onAdd() {
@@ -45,24 +41,17 @@ export default class NestProtect extends HomeKitDevice {
     }
 
     // Setup linkage to EveHome app if configured todo so
-    if (
-      this.deviceData?.eveHistory === true &&
-      this.smokeService !== undefined &&
-      typeof this.historyService?.linkToEveHome === 'function'
-    ) {
-      this.historyService.linkToEveHome(this.smokeService, {
-        description: this.deviceData.description,
-        getcommand: this.#EveHomeGetcommand.bind(this),
-        setcommand: this.#EveHomeSetcommand.bind(this),
-        EveSmoke_lastalarmtest: this.deviceData.latest_alarm_test,
-        EveSmoke_alarmtest: this.deviceData.self_test_in_progress,
-        EveSmoke_heatstatus: this.deviceData.heat_status,
-        EveSmoke_hushedstate: this.deviceData.hushed_state,
-        Evesmoke_statusled: this.deviceData.ntp_green_led_enable,
-        EveSmoke_smoketestpassed: this.deviceData.smoke_test_passed,
-        EveSmoke_heattestpassed: this.deviceData.heat_test_passed,
-      });
-    }
+    this.setupEveHomeLink(this.smokeService, {
+      getcommand: this.#EveHomeGetcommand.bind(this),
+      setcommand: this.#EveHomeSetcommand.bind(this),
+      EveSmoke_lastalarmtest: this.deviceData.latest_alarm_test,
+      EveSmoke_alarmtest: this.deviceData.self_test_in_progress,
+      EveSmoke_heatstatus: this.deviceData.heat_status,
+      EveSmoke_hushedstate: this.deviceData.hushed_state,
+      Evesmoke_statusled: this.deviceData.ntp_green_led_enable,
+      EveSmoke_smoketestpassed: this.deviceData.smoke_test_passed,
+      EveSmoke_heattestpassed: this.deviceData.heat_test_passed,
+    });
   }
 
   onUpdate(deviceData) {
@@ -148,29 +137,19 @@ export default class NestProtect extends HomeKitDevice {
       }
 
       // Log motion to history only if changed to previous recording
-      if (deviceData.detected_motion !== this.deviceData.detected_motion && typeof this.historyService?.addHistory === 'function') {
-        this.historyService.addHistory(this.motionService, {
-          time: Math.floor(Date.now() / 1000),
-          status: deviceData.detected_motion === true ? 1 : 0,
-        });
-      }
+      this.addHistory(this.motionService, {
+        status: deviceData.detected_motion === true ? 1 : 0,
+      });
     }
 
-    // Notify Eve App of device status changes if linked
-    if (
-      this.deviceData.eveHistory === true &&
-      this.smokeService !== undefined &&
-      typeof this.historyService?.updateEveHome === 'function'
-    ) {
-      // Update our internal data with properties Eve will need to process
-      this.deviceData.latest_alarm_test = deviceData.latest_alarm_test;
-      this.deviceData.self_test_in_progress = deviceData.self_test_in_progress;
-      this.deviceData.heat_status = deviceData.heat_status;
-      this.deviceData.ntp_green_led_enable = deviceData.ntp_green_led_enable;
-      this.deviceData.smoke_test_passed = deviceData.smoke_test_passed;
-      this.deviceData.heat_test_passed = deviceData.heat_test_passed;
-      this.historyService.updateEveHome(this.smokeService, this.#EveHomeGetcommand.bind(this));
-    }
+    // Update our internal data with properties Eve will need to process then Notify Eve App of device status changes if linked
+    this.deviceData.latest_alarm_test = deviceData.latest_alarm_test;
+    this.deviceData.self_test_in_progress = deviceData.self_test_in_progress;
+    this.deviceData.heat_status = deviceData.heat_status;
+    this.deviceData.ntp_green_led_enable = deviceData.ntp_green_led_enable;
+    this.deviceData.smoke_test_passed = deviceData.smoke_test_passed;
+    this.deviceData.heat_test_passed = deviceData.heat_test_passed;
+    this.historyService?.updateEveHome?.(this.smokeService, this.#EveHomeGetcommand.bind(this));
   }
 
   #EveHomeGetcommand(EveHomeGetData) {

@@ -11,18 +11,10 @@ const LOW_BATTERY_LEVEL = 10; // Low battery level percentage
 
 export default class NestTemperatureSensor extends HomeKitDevice {
   static TYPE = 'TemperatureSensor';
-  static VERSION = '2025.06.17';
-
-  // For messaging back to parent class
-  static SET = HomeKitDevice.SET;
-  static GET = HomeKitDevice.GET;
+  static VERSION = '2025.06.18'; // Code version
 
   batteryService = undefined;
   temperatureService = undefined;
-
-  constructor(accessory, api, log, deviceData) {
-    super(accessory, api, log, deviceData);
-  }
 
   // Class functions
   onAdd() {
@@ -35,15 +27,7 @@ export default class NestTemperatureSensor extends HomeKitDevice {
     this.batteryService.setHiddenService(true);
 
     // Setup linkage to EveHome app if configured todo so
-    if (
-      this.deviceData?.eveHistory === true &&
-      this.temperatureService !== undefined &&
-      typeof this.historyService?.linkToEveHome === 'function'
-    ) {
-      this.historyService.linkToEveHome(this.temperatureService, {
-        description: this.deviceData.description,
-      });
-    }
+    this.setupEveHomeLink(this.temperatureService);
   }
 
   onUpdate(deviceData) {
@@ -81,19 +65,12 @@ export default class NestTemperatureSensor extends HomeKitDevice {
     this.batteryService.updateCharacteristic(this.hap.Characteristic.ChargingState, this.hap.Characteristic.ChargingState.NOT_CHARGEABLE);
 
     // If we have the history service running and temperature has changed to previous in past 5mins
-    if (
-      deviceData.current_temperature !== this.deviceData.current_temperature &&
-      this.temperatureService !== undefined &&
-      typeof this.historyService?.addHistory === 'function'
-    ) {
-      this.historyService.addHistory(
-        this.temperatureService,
-        {
-          time: Math.floor(Date.now() / 1000),
-          temperature: deviceData.current_temperature,
-        },
-        300,
-      );
-    }
+    this.addHistory(
+      this.temperatureService,
+      {
+        temperature: deviceData.current_temperature,
+      },
+      { timegap: 300, force: true },
+    );
   }
 }

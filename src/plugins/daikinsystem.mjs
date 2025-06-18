@@ -338,7 +338,7 @@ async function fetchWrapper(method, url, options, data) {
 // let test = await import('./daikinsystem.js', ['cool', 'off]);
 // returned = test.default(loggerFunctions, 'http://x.x.x.x');
 export default (logger, options) => {
-  // Validate the passed in logging object. We are expecting certain functions to be present
+  // Validate the passed in logging object
   if (Object.values(LOG_LEVELS).every((fn) => typeof logger?.[fn] === 'function')) {
     log = logger;
   }

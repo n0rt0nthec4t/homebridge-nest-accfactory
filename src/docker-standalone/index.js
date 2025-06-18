@@ -18,12 +18,12 @@
 //
 // Supports both Nest REST and Protobuf APIs for communication
 //
-// Code version 2025.06.13
+// Code version 2025.06.18
 // Mark Hulskamp
 'use strict';
 
 // Define HAP-NodeJS module requirements
-import HAP from 'hap-nodejs';
+import HAP from '@homebridge/hap-nodejs';
 
 // Define nodejs module requirements
 import EventEmitter from 'node:events';
@@ -46,9 +46,8 @@ HomeKitDevice.HISTORY = HomeKitHistory;
 import Logger from './logger.js';
 const log = Logger.withPrefix(HomeKitDevice.PLATFORM_NAME);
 
-// Import the package.json file to get the version number
-const { version } = createRequire(import.meta.url)('../package.json');
-
+// Define constants
+const { version } = createRequire(import.meta.url)('../package.json'); // Import the package.json file to get the version number
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 const ACCESSORY_PINCODE = '031-45-154'; // Default HomeKit pairing code
 const CONFIGURATIONFILE = 'Nest_config.json'; // Default configuration file name

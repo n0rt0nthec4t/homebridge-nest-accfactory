@@ -12,14 +12,10 @@ import NestCamera from './camera.js';
 
 export default class NestDoorbell extends NestCamera {
   static TYPE = 'Doorbell';
-  static VERSION = '2025.06.17';
+  static VERSION = '2025.06.18'; // Code version
 
   doorbellTimer = undefined; // Cooldown timer for doorbell events
   switchService = undefined; // HomeKit switch for enabling/disabling chime
-
-  constructor(accessory, api, log, deviceData) {
-    super(accessory, api, log, deviceData);
-  }
 
   // Class functions
   onAdd() {
@@ -37,7 +33,7 @@ export default class NestDoorbell extends NestCamera {
         onSet: (value) => {
           if (value !== this.deviceData.indoor_chime_enabled) {
             // only change indoor chime status value if different than on-device
-            this.message(NestCamera.SET, { uuid: this.deviceData.nest_google_uuid, indoor_chime_enabled: value });
+            this.message(NestDoorbell.SET, { uuid: this.deviceData.nest_google_uuid, indoor_chime_enabled: value });
 
             this?.log?.info?.('Indoor chime on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
           }
@@ -105,17 +101,9 @@ export default class NestDoorbell extends NestCamera {
           this.controller.ringDoorbell();
         }
 
-        if (this.controller?.doorbellService !== undefined && typeof this.historyService?.addHistory === 'function') {
-          // Record a doorbell press and unpress event to our history
-          this.historyService.addHistory(this.controller.doorbellService, {
-            time: Math.floor(Date.now() / 1000),
-            status: 1,
-          });
-          this.historyService.addHistory(this.controller.doorbellService, {
-            time: Math.floor(Date.now() / 1000),
-            status: 0,
-          });
-        }
+        // Record a doorbell press and unpress event to our history
+        this.addHistory(this.controller.doorbellService, { status: 1 }, { timegap: 2, force: true });
+        this.addHistory(this.controller.doorbellService, { status: 0 }, { timegap: 2, force: true });
       }
     });
   }

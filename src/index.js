@@ -31,6 +31,6 @@ import HomeKitHistory from './HomeKitHistory.js';
 HomeKitDevice.HISTORY = HomeKitHistory;
 
 export default (api) => {
-  // Register our platform with HomeBridge
+  // Register our platform with Homebridge
   api.registerPlatform(HomeKitDevice.PLATFORM_NAME, NestAccfactory);
 };

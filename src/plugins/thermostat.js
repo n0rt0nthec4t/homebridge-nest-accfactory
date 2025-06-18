@@ -20,7 +20,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a define
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2025.06.17';
+  static VERSION = '2025.06.18'; // Code version
 
   batteryService = undefined;
   occupancyService = undefined;
@@ -32,10 +32,6 @@ export default class NestThermostat extends HomeKitDevice {
   externalHeat = undefined; // External module function
   externalFan = undefined; // External module function
   externalDehumidifier = undefined; // External module function
-
-  constructor(accessory, api, log, deviceData) {
-    super(accessory, api, log, deviceData);
-  }
 
   // Class functions
   async onAdd() {
@@ -225,17 +221,10 @@ export default class NestThermostat extends HomeKitDevice {
     }
 
     // Setup linkage to EveHome app if configured todo so
-    if (
-      this.deviceData?.eveHistory === true &&
-      this.thermostatService !== undefined &&
-      typeof this.historyService?.linkToEveHome === 'function'
-    ) {
-      this.historyService.linkToEveHome(this.thermostatService, {
-        description: this.deviceData.description,
-        getcommand: this.#EveHomeGetcommand.bind(this),
-        setcommand: this.#EveHomeSetcommand.bind(this),
-      });
-    }
+    this.setupEveHomeLink(this.thermostatService, {
+      getcommand: this.#EveHomeGetcommand.bind(this),
+      setcommand: this.#EveHomeSetcommand.bind(this),
+    });
 
     // Attempt to load any external modules for this thermostat
     // We support external cool/heat/fan/dehumidifier module functions
@@ -787,7 +776,7 @@ export default class NestThermostat extends HomeKitDevice {
         this.hap.Characteristic.CurrentHeatingCoolingState,
         this.hap.Characteristic.CurrentHeatingCoolingState.COOL,
       );
-      historyEntry.status = 3; // cooling
+      historyEntry.status = 1; // cooling
     }
     if (deviceData.hvac_state.toUpperCase() === 'OFF') {
       if (this.deviceData.hvac_state.toUpperCase() === 'COOLING' && typeof this.externalCool?.off === 'function') {
@@ -825,7 +814,12 @@ export default class NestThermostat extends HomeKitDevice {
         this.hap.Characteristic.Active,
         deviceData.fan_state === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE,
       );
-      historyEntry.status = 1; // fan
+
+      this.addHistory(this.fanService, {
+        status: deviceData.fan_state === true ? 1 : 0,
+        temperature: deviceData.current_temperature,
+        humidity: deviceData.current_humidity,
+      });
     }
 
     if (this.dehumidifierService !== undefined) {
@@ -853,7 +847,12 @@ export default class NestThermostat extends HomeKitDevice {
         this.hap.Characteristic.Active,
         deviceData.dehumidifier_state === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE,
       );
-      historyEntry.status = 4; // dehumidifier
+
+      this.addHistory(this.dehumidifierService, {
+        status: deviceData.dehumidifier_state === true ? 1 : 0,
+        temperature: deviceData.current_temperature,
+        humidity: deviceData.current_humidity,
+      });
     }
 
     if (this.switchService !== undefined) {
@@ -862,40 +861,21 @@ export default class NestThermostat extends HomeKitDevice {
     }
 
     // Log thermostat metrics to history only if changed to previous recording
-    if (this.thermostatService !== undefined && typeof this.historyService?.addHistory === 'function') {
-      let tempEntry = this.historyService.lastHistory(this.thermostatService);
-      if (
-        tempEntry === undefined ||
-        (typeof tempEntry === 'object' && tempEntry.status !== historyEntry.status) ||
-        tempEntry.temperature !== deviceData.current_temperature ||
-        JSON.stringify(tempEntry.target) !== JSON.stringify(historyEntry.target) ||
-        tempEntry.humidity !== deviceData.current_humidity
-      ) {
-        this.historyService.addHistory(this.thermostatService, {
-          time: Math.floor(Date.now() / 1000),
-          status: historyEntry.status,
-          temperature: deviceData.current_temperature,
-          target: historyEntry.target,
-          humidity: deviceData.current_humidity,
-        });
-      }
-    }
+    this.addHistory(this.thermostatService, {
+      status: historyEntry.status,
+      temperature: deviceData.current_temperature,
+      target: historyEntry.target,
+      humidity: deviceData.current_humidity,
+    });
 
-    // Notify Eve App of device status changes if linked
-    if (
-      this.deviceData.eveHistory === true &&
-      this.thermostatService !== undefined &&
-      typeof this.historyService?.updateEveHome === 'function'
-    ) {
-      // Update our internal data with properties Eve will need to process
-      this.deviceData.online = deviceData.online;
-      this.deviceData.removed_from_base = deviceData.removed_from_base;
-      this.deviceData.vacation_mode = deviceData.vacation_mode;
-      this.deviceData.hvac_mode = deviceData.hvac_mode;
-      this.deviceData.schedules = deviceData.schedules;
-      this.deviceData.schedule_mode = deviceData.schedule_mode;
-      this.historyService.updateEveHome(this.thermostatService, this.#EveHomeGetcommand.bind(this));
-    }
+    // Update our internal data with properties Eve will need to process then Notify Eve App of device status changes if linked
+    this.deviceData.online = deviceData.online;
+    this.deviceData.removed_from_base = deviceData.removed_from_base;
+    this.deviceData.vacation_mode = deviceData.vacation_mode;
+    this.deviceData.hvac_mode = deviceData.hvac_mode;
+    this.deviceData.schedules = deviceData.schedules;
+    this.deviceData.schedule_mode = deviceData.schedule_mode;
+    this.historyService?.updateEveHome?.(this.thermostatService, this.#EveHomeGetcommand.bind(this));
   }
 
   #EveHomeGetcommand(EveHomeGetData) {

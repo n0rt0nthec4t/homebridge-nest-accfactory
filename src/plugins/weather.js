@@ -9,16 +9,12 @@ import HomeKitDevice from '../HomeKitDevice.js';
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = 'Weather';
-  static VERSION = '2025.06.17';
+  static VERSION = '2025.06.18'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
   temperatureService = undefined;
   humidityService = undefined;
-
-  constructor(accessory, api, log, deviceData) {
-    super(accessory, api, log, deviceData);
-  }
 
   // Class functions
   onAdd() {
@@ -61,15 +57,7 @@ export default class NestWeather extends HomeKitDevice {
     }
 
     // Setup linkage to EveHome app if configured todo so
-    if (
-      this.deviceData?.eveHistory === true &&
-      this.airPressureService !== undefined &&
-      typeof this.historyService?.linkToEveHome === 'function'
-    ) {
-      this.historyService.linkToEveHome(this.airPressureService, {
-        description: this.deviceData.description,
-      });
-    }
+    this.setupEveHomeLink(this.airPressureService);
 
     // Extra setup details for output
     this.deviceData?.elevation !== undefined && this.postSetupDetail('Elevation of ' + this.deviceData.elevation + 'm');
@@ -97,7 +85,7 @@ export default class NestWeather extends HomeKitDevice {
     this.humidityService.updateCharacteristic(this.hap.Characteristic.CurrentRelativeHumidity, deviceData.current_humidity);
 
     if (this.airPressureService !== undefined) {
-      //this.airPressureService.updateCharacteristic(this.hap.Characteristic.EveAirPressure, 0);   // Where from??
+      // this.airPressureService.updateCharacteristic(this.hap.Characteristic.EveAirPressure, 0);   // Where from??
       this.airPressureService.updateCharacteristic(this.hap.Characteristic.EveElevation, deviceData.elevation);
     }
 
@@ -155,17 +143,10 @@ export default class NestWeather extends HomeKitDevice {
     }
 
     // If we have the history service running, record temperature and humity every 5mins
-    if (this.airPressureService !== undefined && typeof this.historyService?.addHistory === 'function') {
-      this.historyService.addHistory(
-        this.airPressureService,
-        {
-          time: Math.floor(Date.now() / 1000),
-          temperature: deviceData.current_temperature,
-          humidity: deviceData.current_humidity,
-          pressure: 0,
-        },
-        300,
-      );
-    }
+    this.addHistory(
+      this.airPressureService,
+      { temperature: deviceData.current_temperature, humidity: deviceData.current_humidity, pressure: 0 },
+      { timegap: 300, force: true },
+    );
   }
 }
