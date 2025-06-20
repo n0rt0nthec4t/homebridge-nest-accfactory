@@ -2,12 +2,22 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.3.2 (alpha.3)
+## v0.3.2 (alpha.5)
 
 - General code cleanup and stability improvements  
 - Refactored for updated base class  
 - Improved EveHome integration for thermostat and smoke detector  
 - Streamlined history logging for motion, doorbell, fan, and dehumidifier  
+- Fixed an issue where thermostat temperature settings caused errors at startup by ensuring initial values are within valid ranges
+- Fixed missing audio for newer Nest/Google cameras
+- Refinements to camera streaming and recording
+
+### Deprecation Notice
+- Support for the standalone Docker version of this plugin is planned to be deprecated in an upcoming release. While it currently remains functional, future updates may no longer include Docker-specific build support. Users are encouraged to transition to standard Homebridge installations where possible.
+
+### Known Issues
+
+- The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
  
 ## v0.3.1 (2025/06/16)
 

@@ -1,7 +1,7 @@
 // Configuration validation and processing
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.06.15
+// Code version 2025.06.20
 // Mark Hulskamp
 'use strict';
 
@@ -87,7 +87,7 @@ function processConfig(config, log) {
         }) === -1;
 
       if (
-        versionTooOld ||
+        versionTooOld === true ||
         options.ffmpeg.libspeex === false ||
         options.ffmpeg.libopus === false ||
         options.ffmpeg.libx264 === false ||
@@ -95,29 +95,29 @@ function processConfig(config, log) {
       ) {
         log?.warn?.('ffmpeg binary "%s" does not meet the minimum support requirements', options.ffmpeg.binary);
 
-        if (versionTooOld) {
+        if (versionTooOld === true) {
           log?.warn?.('Minimum binary version is "%s", however the installed version is "%s"', FFMPEG_VERSION, options.ffmpeg.version);
           log?.warn?.('Stream video/recording from camera/doorbells will be unavailable');
           options.ffmpeg.binary = undefined; // No ffmpeg since below min version
         }
 
-        if (!options.ffmpeg.libspeex && options.ffmpeg.libx264 && options.ffmpeg.libfdk_aac) {
+        if (options.ffmpeg.libspeex === false && options.ffmpeg.libx264 === true && options.ffmpeg.libfdk_aac === true) {
           log?.warn?.('Missing libspeex in ffmpeg binary, talkback on certain camera/doorbells will be unavailable');
         }
 
-        if (options.ffmpeg.libx264 && !options.ffmpeg.libfdk_aac && !options.ffmpeg.libopus) {
+        if (options.ffmpeg.libx264 === true && options.ffmpeg.libfdk_aac === false && options.ffmpeg.libopus === false) {
           log?.warn?.('Missing libfdk_aac and libopus in ffmpeg binary, audio from camera/doorbells will be unavailable');
         }
 
-        if (options.ffmpeg.libx264 && !options.ffmpeg.libfdk_aac) {
+        if (options.ffmpeg.libx264 === true && options.ffmpeg.libfdk_aac === false) {
           log?.warn?.('Missing libfdk_aac in ffmpeg binary, audio from camera/doorbells will be unavailable');
         }
 
-        if (options.ffmpeg.libx264 && options.ffmpeg.libfdk_aac && !options.ffmpeg.libopus) {
-          log?.warn?.('Missing libopus in ffmpeg binary, audio (including talkback) from certain camera/doorbells will be unavailable');
+        if (options.ffmpeg.libx264 === true && options.ffmpeg.libopus === false) {
+          log?.warn?.('Missing libopus in ffmpeg binary, talkback on certain camera/doorbells will be unavailable');
         }
 
-        if (!options.ffmpeg.libx264) {
+        if (options.ffmpeg.libx264 === false) {
           log?.warn?.('Missing libx264 in ffmpeg binary, stream video/recording from camera/doorbells will be unavailable');
           options.ffmpeg.binary = undefined; // No ffmpeg since we do not have all the required libraries
         }

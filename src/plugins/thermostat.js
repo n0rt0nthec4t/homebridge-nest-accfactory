@@ -41,6 +41,14 @@ export default class NestThermostat extends HomeKitDevice {
 
     // Setup set characteristics
 
+    // Patch to avoid characteristic errros when setting inital property ranges
+    this.hap.Characteristic.HeatingThresholdTemperature.prototype.getDefaultValue = function () {
+      return MIN_TEMPERATURE; // start at minimum heating threshold
+    };
+    this.hap.Characteristic.CoolingThresholdTemperature.prototype.getDefaultValue = function () {
+      return MAX_TEMPERATURE; // start at maximum cooling threshold
+    };
+
     // Used to indicate active temperature if the thermostat is using its temperature sensor data
     // or an external temperature sensor ie: Nest Temperature Sensor
     this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.StatusActive);

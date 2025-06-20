@@ -5,7 +5,7 @@
 //
 // Credit to https://github.com/Brandawg93/homebridge-nest-cam for the work on the Nest Camera comms code on which this is based
 //
-// Code version 2025.06.15
+// Code version 2025.06.20
 // Mark Hulskamp
 'use strict';
 
@@ -80,6 +80,15 @@ export default class NexusTalk extends Streamer {
   #authorised = false; // Have we been authorised
   #id = undefined; // Session ID
 
+  // Codecs being used for video, audio and talking
+  get codecs() {
+    return {
+      video: 'h264',
+      audio: 'aac',
+      talk: 'speex',
+    };
+  }
+
   constructor(deviceData, options) {
     super(deviceData, options);
 
@@ -93,13 +102,6 @@ export default class NexusTalk extends Streamer {
     this.token = deviceData?.apiAccess?.token;
     this.tokenType = deviceData?.apiAccess?.oauth2 !== undefined ? 'google' : 'nest';
     this.host = deviceData?.streaming_host; // Host we'll connect to
-
-    // Set our streamer codec types
-    this.codecs = {
-      video: 'h264',
-      audio: 'aac',
-      talk: 'speex',
-    };
 
     // If specified option to start buffering, kick off
     if (options?.buffer === true) {

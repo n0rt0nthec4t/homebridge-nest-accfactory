@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.06.16
+// Code version 2025.06.20
 // Mark Hulskamp
 'use strict';
 
@@ -2293,8 +2293,10 @@ export default class NestAccfactory {
           tempDevice.localAccess = deviceOptions?.localAccess === true; // Local network video streaming rather than from cloud from camera/doorbells
           tempDevice.ffmpeg = structuredClone(this.config.options.ffmpeg); // ffmpeg details, path, libraries. No ffmpeg = undefined
           if (deviceOptions?.ffmpegDebug !== undefined) {
-            // Device specific ffmpeg debugging
-            tempDevice.ffmpeg.debug = deviceOptions?.ffmpegDebug === true;
+            tempDevice.ffmpeg.debug = deviceOptions.ffmpegDebug === true;
+          }
+          if (deviceOptions?.ffmpegUseWallclock !== undefined) {
+            tempDevice.ffmpeg.useWallclock = deviceOptions.ffmpegUseWallclock === true;
           }
           tempDevice.maxStreams = this.config.options.hksv === true || deviceOptions?.hksv === true ? 1 : 2;
           devices[tempDevice.serialNumber] = tempDevice; // Store processed device
