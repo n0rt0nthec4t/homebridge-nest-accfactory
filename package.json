@@ -53,7 +53,7 @@
     "devDependencies": {
         "homebridge": "^2.0.0-beta.0",
         "@eslint/js": "^9.29.0",
-        "@stylistic/eslint-plugin": "^4.4.1",
+        "@stylistic/eslint-plugin": "^5.1.0",
         "@types/node": "^24.0.3",
         "@typescript-eslint/parser": "^8.34.1",
         "copyfiles": "^2.4.1",
