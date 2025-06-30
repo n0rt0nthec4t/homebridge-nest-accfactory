@@ -65,7 +65,7 @@
     "dependencies": {
         "@evan/opus": "^1.0.3",
         "protobufjs": "^7.5.3",
-        "werift": "^0.22.1",
+        "werift": "^0.22.2",
         "ws": "^8.18.2"
     }
 }
