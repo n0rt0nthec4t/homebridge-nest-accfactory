@@ -4,7 +4,7 @@
 // Handles connection and data from Google WebRTC systems
 // Currently a "work in progress"
 //
-// Code version 2025.06.20
+// Code version 2025.06.30
 // Mark Hulskamp
 'use strict';
 
@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url';
 import Streamer from './streamer.js';
 
 // Define constants
-const EXTEND_INTERVAL = 120000; // Send extend command to Google Home Foyer every this period for active streams
+const EXTEND_INTERVAL = 60000; // Send extend command to Google Home Foyer every this period for active streams
 const RTP_PACKET_HEADER_SIZE = 12;
 const RTP_VIDEO_PAYLOAD_TYPE = 102;
 const RTP_AUDIO_PAYLOAD_TYPE = 111;
@@ -64,14 +64,14 @@ export default class WebRTC extends Streamer {
   // Codecs being used for video, audio and talking
   get codecs() {
     return {
-      video: 'h264',
-      audio: 'pcm',
-      talk: 'opus',
+      video: Streamer.CODEC_TYPE.H264, // Video is H264
+      audio: Streamer.CODEC_TYPE.PCM, // Audio is PCM, but Opus encoded
+      talk: Streamer.CODEC_TYPE.OPUS, // Talking is also Opus
     };
   }
 
-  constructor(deviceData, options) {
-    super(deviceData, options);
+  constructor(nest_google_uuid, deviceData, options) {
+    super(nest_google_uuid, deviceData, options);
 
     // Load the protobuf for Google Home Foyer. Needed to communicate with camera devices using webrtc
     if (fs.existsSync(path.resolve(__dirname + '/protobuf/googlehome/foyer.proto')) === true) {
@@ -119,7 +119,7 @@ export default class WebRTC extends Streamer {
                 // Test to see if our uuid matches here
                 let currentGoogleUuid = device?.id?.googleUuid;
                 Object.values(device.otherIds.otherThirdPartyId).forEach((other) => {
-                  if (other?.id === this.uuid) {
+                  if (other?.id === this.nest_google_uuid) {
                     this.#googleHomeDeviceUUID = currentGoogleUuid;
                   }
                 });
@@ -143,7 +143,7 @@ export default class WebRTC extends Streamer {
 
         if (homeFoyerResponse.status !== 0) {
           this.connected = undefined;
-          this?.log?.debug?.('Request to start camera viewing was not accepted for uuid "%s"', this.uuid);
+          this?.log?.debug?.('Request to start camera viewing was not accepted for uuid "%s"', this.nest_google_uuid);
         }
 
         if (homeFoyerResponse.status === 0) {
@@ -198,11 +198,11 @@ export default class WebRTC extends Streamer {
           let webRTCOffer = await this.#peerConnection.createOffer();
           await this.#peerConnection.setLocalDescription(webRTCOffer);
 
-          this?.log?.debug?.('Sending WebRTC offer for uuid "%s"', this.uuid);
+          this?.log?.debug?.('Sending WebRTC offer for uuid "%s"', this.nest_google_uuid);
 
           homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'JoinStream', {
             command: 'offer',
-            deviceId: this.uuid,
+            deviceId: this.nest_google_uuid,
             local: this.localAccess,
             streamContext: 'STREAM_CONTEXT_DEFAULT',
             requestedVideoResolution: 'VIDEO_RESOLUTION_FULL_HIGH',
@@ -211,7 +211,7 @@ export default class WebRTC extends Streamer {
 
           if (homeFoyerResponse.status !== 0) {
             this.connected = undefined;
-            this?.log?.debug?.('WebRTC offer was not agreed with remote for uuid "%s"', this.uuid);
+            this?.log?.debug?.('WebRTC offer was not agreed with remote for uuid "%s"', this.nest_google_uuid);
           }
 
           if (
@@ -219,7 +219,7 @@ export default class WebRTC extends Streamer {
             homeFoyerResponse.data?.[0]?.responseType === 'answer' &&
             homeFoyerResponse.data?.[0]?.streamId !== undefined
           ) {
-            this?.log?.debug?.('WebRTC offer agreed with remote for uuid "%s"', this.uuid);
+            this?.log?.debug?.('WebRTC offer agreed with remote for uuid "%s"', this.nest_google_uuid);
 
             this.#audioTransceiver?.onTrack &&
               this.#audioTransceiver.onTrack.subscribe((track) => {
@@ -253,7 +253,7 @@ export default class WebRTC extends Streamer {
                 sdp: homeFoyerResponse.data[0].sdp,
               }));
 
-            this?.log?.debug?.('Playback started from WebRTC for uuid "%s" with session ID "%s"', this.uuid, this.#id);
+            this?.log?.debug?.('Playback started from WebRTC for uuid "%s" with session ID "%s"', this.nest_google_uuid, this.#id);
             this.connected = true;
 
             // Monitor connection status. If closed and there are still output streams, re-connect
@@ -261,9 +261,9 @@ export default class WebRTC extends Streamer {
             this.#peerConnection &&
               this.#peerConnection.connectionStateChange.subscribe((state) => {
                 if (state !== 'connected' && state !== 'connecting') {
-                  this?.log?.debug?.('Connection closed to WebRTC for uuid "%s"', this.uuid);
+                  this?.log?.debug?.('Connection closed to WebRTC for uuid "%s"', this.nest_google_uuid);
                   this.connected = undefined;
-                  if (this.haveOutputs() === true) {
+                  if (this.isStreaming() === true) {
                     this.connect();
                   }
                 }
@@ -279,12 +279,12 @@ export default class WebRTC extends Streamer {
               ) {
                 let homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'JoinStream', {
                   command: 'extend',
-                  deviceId: this.uuid,
+                  deviceId: this.nest_google_uuid,
                   streamId: this.#id,
                 });
 
                 if (homeFoyerResponse?.data?.[0]?.streamExtensionStatus !== 'STATUS_STREAM_EXTENDED') {
-                  this?.log?.debug?.('Error occurred while requested stream extension for uuid "%s"', this.uuid);
+                  this?.log?.debug?.('Error occurred while requested stream extension for uuid "%s"', this.nest_google_uuid);
 
                   if (typeof this.#peerConnection?.close === 'function') {
                     await this.#peerConnection.close();
@@ -311,10 +311,10 @@ export default class WebRTC extends Streamer {
         });
       }
 
-      this?.log?.debug?.('Notifying remote about closing connection for uuid "%s"', this.uuid);
+      this?.log?.debug?.('Notifying remote about closing connection for uuid "%s"', this.nest_google_uuid);
       await this.#googleHomeFoyerCommand('CameraService', 'JoinStream', {
         command: 'end',
-        deviceId: this.uuid,
+        deviceId: this.nest_google_uuid,
         streamId: this.#id,
         endStreamReason: 'REASON_USER_EXITED_SESSION',
       });
@@ -342,23 +342,29 @@ export default class WebRTC extends Streamer {
     this.audio = {};
   }
 
-  update(deviceData) {
+  async onUpdate(deviceData) {
     if (typeof deviceData !== 'object') {
       return;
     }
 
-    if (deviceData.apiAccess.oauth2 !== this.token) {
+    if (
+      typeof deviceData?.apiAccess?.oauth2 === 'string' &&
+      deviceData.apiAccess.oauth2 !== '' &&
+      deviceData.apiAccess.oauth2 !== this.token
+    ) {
       // OAuth2 token has changed
       this.token = deviceData.apiAccess.oauth2;
     }
 
-    // Let our parent handle the remaining updates
-    super.update(deviceData);
+    // Call parent class onUpdate if it exists
+    if (typeof super.onUpdate === 'function') {
+      await super.onUpdate(deviceData);
+    }
   }
 
-  async talkingAudio(talkingData) {
+  async sendTalkback(talkingBuffer) {
     if (
-      Buffer.isBuffer(talkingData) === false ||
+      Buffer.isBuffer(talkingBuffer) === false ||
       this.#googleHomeDeviceUUID === undefined ||
       this.#id === undefined ||
       typeof this.#audioTransceiver?.sender?.sendRtp !== 'function'
@@ -366,7 +372,7 @@ export default class WebRTC extends Streamer {
       return;
     }
 
-    if (talkingData.length !== 0) {
+    if (talkingBuffer.length !== 0) {
       if (this.audio?.talking === undefined) {
         this.audio.talking = false;
         let homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'SendTalkback', {
@@ -379,11 +385,11 @@ export default class WebRTC extends Streamer {
 
         if (homeFoyerResponse?.status !== 0) {
           this.audio.talking = undefined;
-          this?.log?.debug?.('Error occurred while requesting talkback to start for uuid "%s"', this.uuid);
+          this?.log?.debug?.('Error occurred while requesting talkback to start for uuid "%s"', this.nest_google_uuid);
         }
         if (homeFoyerResponse?.status === 0) {
           this.audio.talking = true;
-          this?.log?.debug?.('Talking start on uuid "%s"', this.uuid);
+          this?.log?.debug?.('Talking start on uuid "%s"', this.nest_google_uuid);
         }
       }
 
@@ -396,12 +402,12 @@ export default class WebRTC extends Streamer {
         rtpHeader.payloadType = this.audio.id; // As the camera is send/recv, we use the same payload type id as the incoming audio
         rtpHeader.timestamp = Date.now() >>> 0; // Think the time stamp difference should be 960ms per audio packet?
         rtpHeader.sequenceNumber = this.audio.talkSquenceNumber++ & 0xffff;
-        let rtpPacket = new werift.RtpPacket(rtpHeader, talkingData);
+        let rtpPacket = new werift.RtpPacket(rtpHeader, talkingBuffer);
         this.#audioTransceiver.sender.sendRtp(rtpPacket.serialize());
       }
     }
 
-    if (talkingData.length === 0 && this.audio?.talking === true) {
+    if (talkingBuffer.length === 0 && this.audio?.talking === true) {
       // Buffer length of zero, ised to signal no more talking data for the moment
       let homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'SendTalkback', {
         googleDeviceId: {
@@ -411,222 +417,193 @@ export default class WebRTC extends Streamer {
         command: 'COMMAND_STOP',
       });
       if (homeFoyerResponse?.status !== 0) {
-        this?.log?.debug?.('Error occurred while requesting talkback to stop for uuid "%s"', this.uuid);
+        this?.log?.debug?.('Error occurred while requesting talkback to stop for uuid "%s"', this.nest_google_uuid);
       }
       if (homeFoyerResponse?.status === 0) {
-        this?.log?.debug?.('Talking ended on uuid "%s"', this.uuid);
+        this?.log?.debug?.('Talking ended on uuid "%s"', this.nest_google_uuid);
       }
       this.audio.talking = undefined;
     }
   }
 
   #handlePlaybackBegin(weriftTrack) {
+    // Handle the beginning of RTP playback for an audio or video track
     if (weriftTrack === undefined || typeof weriftTrack !== 'object') {
       return;
     }
 
     if (weriftTrack?.kind === 'audio') {
-      // Store details about the audio track
       this.audio = {
-        id: weriftTrack.codec.payloadType, // Audio track payload type being used
-        startTime: Date.now(),
+        id: weriftTrack.codec.payloadType, // RTP payload type for audio
+        baseTimestamp: undefined,
+        baseTime: undefined,
         sampleRate: 48000,
-        opus: undefined, // Buffer for processing incoming Opus RTP packets
+        opus: undefined,
         talkSquenceNumber: weriftTrack?.sender?.sequenceNumber === undefined ? 0 : weriftTrack.sender.sequenceNumber,
-        talking: undefined, // undefined = not connected, false = connecting, true = connected and talking
+        talking: undefined,
       };
     }
 
     if (weriftTrack?.kind === 'video') {
-      // Store details about the video track
       this.video = {
-        id: weriftTrack.codec.payloadType, // Video track payload type being used
-        startTime: Date.now(),
+        id: weriftTrack.codec.payloadType, // RTP payload type for video
+        baseTimestamp: undefined,
+        baseTime: undefined,
         sampleRate: 90000,
-        h264: undefined, // Buffer for processing incoming fragmented H264 RTP packets
+        h264: {
+          fuBuffer: undefined,
+          fuTimer: undefined,
+          fuSeqStart: undefined,
+          fuType: undefined,
+          fuTimestamp: undefined,
+          lastSPS: undefined,
+          lastPPS: undefined,
+        },
       };
     }
   }
 
-  async #handlePlaybackPacket(rtpPacket) {
-    if (rtpPacket === undefined || typeof rtpPacket !== 'object') {
+  #handlePlaybackPacket(rtpPacket) {
+    if (typeof rtpPacket !== 'object' || rtpPacket === undefined) {
       return;
     }
 
     clearTimeout(this.stalledTimer);
     this.stalledTimer = setTimeout(async () => {
-      this?.log?.debug?.(
-        'We have not received any data from webrtc in the past "%s" seconds for uuid "%s". Attempting restart',
-        10,
-        this.uuid,
-      );
       if (typeof this.#peerConnection?.close === 'function') {
         await this.#peerConnection.close();
       }
     }, 10000);
 
-    if (rtpPacket.header.payloadType === this.video?.id && rtpPacket.header.padding === false) {
-      if (typeof this.video.h264 !== 'object') {
-        this.video.h264 = {};
+    const calculateTimestamp = (packet, stream) => {
+      if (typeof packet?.header?.timestamp !== 'number' || typeof stream?.sampleRate !== 'number') {
+        return Date.now();
       }
 
-      this.video.h264.raw = rtpPacket.payload;
-      this.video.h264.nalType = this.video.h264.raw[0] & 0x1f;
+      if (stream.baseTimestamp === undefined) {
+        stream.baseTimestamp = packet.header.timestamp;
+        stream.baseTime = Date.now();
+      }
 
-      if (
-        this.video.h264.nalType === Streamer.H264NALUS.TYPES.SLICE_NON_IDR ||
-        this.video.h264.nalType === Streamer.H264NALUS.TYPES.IDR ||
-        this.video.h264.nalType === Streamer.H264NALUS.TYPES.SPS ||
-        this.video.h264.nalType === Streamer.H264NALUS.TYPES.PPS
-      ) {
-        if (this.video.h264.nalType === Streamer.H264NALUS.TYPES.SPS) {
-          this.video.sps = Buffer.from(this.video.h264.raw);
-        } else if (this.video.h264.nalType === Streamer.H264NALUS.TYPES.PPS) {
-          this.video.pps = Buffer.from(this.video.h264.raw);
-        } else if (
-          this.video.h264.nalType === Streamer.H264NALUS.TYPES.IDR ||
-          this.video.h264.nalType === Streamer.H264NALUS.TYPES.SLICE_NON_IDR
-        ) {
-          if (Buffer.isBuffer(this.video.sps) && Buffer.isBuffer(this.video.pps)) {
-            this.addToOutput('video', this.video.sps);
-            this.addToOutput('video', this.video.pps);
-          } else {
-            this?.log?.debug?.('WebRTC: Delaying frame (uuid %s) until SPS/PPS seen', this.uuid);
-            return;
-          }
-          this.addToOutput('video', this.video.h264.raw);
-        }
-      } else if (this.video.h264.nalType === Streamer.H264NALUS.TYPES.STAP_A) {
-        this.video.h264.offset = 1;
-        while (this.video.h264.offset + 2 < this.video.h264.raw.length) {
-          this.video.h264.length = this.video.h264.raw.readUInt16BE(this.video.h264.offset);
-          this.video.h264.offset += 2;
-          if (this.video.h264.offset + this.video.h264.length > this.video.h264.raw.length) {
+      let deltaTicks = (packet.header.timestamp - stream.baseTimestamp + 0x100000000) % 0x100000000;
+      let deltaMs = (deltaTicks / stream.sampleRate) * 1000;
+      return stream.baseTime + deltaMs;
+    };
+
+    // Handle video packets
+    if (rtpPacket.header.payloadType === this.video?.id) {
+      let payload = rtpPacket.payload;
+      if (!Buffer.isBuffer(payload) || payload.length < 1) {
+        return;
+      }
+
+      let nalType = payload[0] & 0x1f;
+
+      // STAP-A: store SPS/PPS
+      if (nalType === Streamer.H264NALUS.TYPES.STAP_A) {
+        let offset = 1;
+        while (offset + 2 < payload.length) {
+          let size = payload.readUInt16BE(offset);
+          offset += 2;
+          if (size < 1 || offset + size > payload.length) {
             break;
           }
 
-          this.video.h264.unit = this.video.h264.raw.slice(this.video.h264.offset, this.video.h264.offset + this.video.h264.length);
-          this.video.h264.unitType = this.video.h264.unit[0] & 0x1f;
+          let nalu = payload.slice(offset, offset + size);
+          let type = nalu[0] & 0x1f;
 
-          if (this.video.h264.unitType === Streamer.H264NALUS.TYPES.SPS) {
-            this.video.sps = Buffer.from(this.video.h264.unit);
-          } else if (this.video.h264.unitType === Streamer.H264NALUS.TYPES.PPS) {
-            this.video.pps = Buffer.from(this.video.h264.unit);
-          } else if (
-            this.video.h264.unitType === Streamer.H264NALUS.TYPES.IDR ||
-            this.video.h264.unitType === Streamer.H264NALUS.TYPES.SLICE_NON_IDR
-          ) {
-            if (Buffer.isBuffer(this.video.sps) && Buffer.isBuffer(this.video.pps)) {
-              this.addToOutput('video', this.video.sps);
-              this.addToOutput('video', this.video.pps);
-            } else {
-              this?.log?.debug?.('WebRTC: Delaying STAP-A frame until SPS/PPS seen (uuid %s)', this.uuid);
-              return;
-            }
-            this.addToOutput('video', this.video.h264.unit);
+          if (type === Streamer.H264NALUS.TYPES.SPS && nalu.length >= 12) {
+            this.video.h264.sps = nalu;
           }
 
-          this.video.h264.offset += this.video.h264.length;
-        }
-      } else if (this.video.h264.nalType === Streamer.H264NALUS.TYPES.FU_A) {
-        this.video.h264.fuHeader = this.video.h264.raw[1];
-        this.video.h264.start = (this.video.h264.fuHeader & 0x80) !== 0;
-        this.video.h264.end = (this.video.h264.fuHeader & 0x40) !== 0;
-        this.video.h264.type = this.video.h264.fuHeader & 0x1f;
-        this.video.h264.naluHeader = Buffer.from([(this.video.h264.raw[0] & 0xe0) | this.video.h264.type]);
-        this.video.h264.fragment = this.video.h264.raw.slice(2);
-
-        if (this.video.h264.start) {
-          this.video.h264.fragmented = [this.video.h264.naluHeader, this.video.h264.fragment];
-        } else if (Array.isArray(this.video.h264.fragmented)) {
-          this.video.h264.fragmented.push(this.video.h264.fragment);
-          if (this.video.h264.end) {
-            this.video.h264.nal = Buffer.concat(this.video.h264.fragmented);
-            this.video.h264.nalType = this.video.h264.nal[0] & 0x1f;
-
-            if (this.video.h264.nalType === Streamer.H264NALUS.TYPES.SPS) {
-              this.video.sps = Buffer.from(this.video.h264.nal);
-            } else if (this.video.h264.nalType === Streamer.H264NALUS.TYPES.PPS) {
-              this.video.pps = Buffer.from(this.video.h264.nal);
-            } else if (
-              this.video.h264.nalType === Streamer.H264NALUS.TYPES.IDR ||
-              this.video.h264.nalType === Streamer.H264NALUS.TYPES.SLICE_NON_IDR
-            ) {
-              if (Buffer.isBuffer(this.video.sps) && Buffer.isBuffer(this.video.pps)) {
-                this.addToOutput('video', this.video.sps);
-                this.addToOutput('video', this.video.pps);
-              } else {
-                this?.log?.debug?.('WebRTC: Delaying FU-A frame until SPS/PPS seen (uuid %s)', this.uuid);
-                return;
-              }
-              this.addToOutput('video', this.video.h264.nal);
-            }
-
-            this.video.h264.fragmented = undefined;
+          if (type === Streamer.H264NALUS.TYPES.PPS && nalu.length >= 4) {
+            this.video.h264.pps = nalu;
           }
+
+          offset += size;
         }
-      } else {
-        this?.log?.debug?.('WebRTC: Skipping unsupported NAL type %d (uuid %s)', this.video.h264.nalType, this.uuid);
+        return;
       }
+
+      // FU-A reassembly
+      if (nalType === Streamer.H264NALUS.TYPES.FU_A) {
+        let indicator = payload[0];
+        let header = payload[1];
+        let start = (header & 0x80) !== 0;
+        let end = (header & 0x40) !== 0;
+        let type = header & 0x1f;
+        let nal = Buffer.from([(indicator & 0xe0) | type]);
+
+        if (start === true) {
+          this.video.h264.fragment = [nal, payload.subarray(2)];
+          this.video.h264.fragmentTime = Date.now();
+        } else if (this.video.h264.fragment) {
+          this.video.h264.fragment.push(payload.subarray(2));
+          if (end === true) {
+            let fullNAL = Buffer.concat(this.video.h264.fragment);
+            delete this.video.h264.fragment;
+            delete this.video.h264.fragmentTime;
+
+            let ts = calculateTimestamp(rtpPacket, this.video);
+
+            if (type === Streamer.H264NALUS.TYPES.IDR) {
+              if (Buffer.isBuffer(this.video.h264.sps)) {
+                this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.sps, ts);
+              }
+              if (Buffer.isBuffer(this.video.h264.pps)) {
+                this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.pps, ts);
+              }
+            }
+
+            this.add(Streamer.PACKET_TYPE.VIDEO, fullNAL, ts);
+          }
+        } else if (Date.now() - (this.video.h264.fragmentTime || 0) > 2000) {
+          delete this.video.h264.fragment;
+          delete this.video.h264.fragmentTime;
+        }
+        return;
+      }
+
+      // Raw NAL unit
+      let type = payload[0] & 0x1f;
+      if (type === 0) {
+        return;
+      }
+
+      let ts = calculateTimestamp(rtpPacket, this.video);
+      if (type === Streamer.H264NALUS.TYPES.IDR) {
+        if (Buffer.isBuffer(this.video.h264.sps)) {
+          this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.sps, ts);
+        }
+        if (Buffer.isBuffer(this.video.h264.pps)) {
+          this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.pps, ts);
+        }
+      }
+
+      this.add(Streamer.PACKET_TYPE.VIDEO, payload, ts);
+      return;
     }
 
+    // Handle Opus audio
     if (rtpPacket.header.payloadType === this.audio?.id) {
-      this.audio.opus = werift.OpusRtpPayload.deSerialize(rtpPacket.payload);
-      if (this.audio.opus?.payload?.length > 0) {
-        this.addToOutput('audio', Buffer.from(this.#opusDecoder.decode(this.audio.opus.payload)));
-      } else {
-        this.addToOutput('audio', this.blankAudio);
+      let opus = werift.OpusRtpPayload.deSerialize(rtpPacket.payload);
+      if (opus?.payload?.[0] === 0xfc) {
+        return;
+      }
+
+      let ts = calculateTimestamp(rtpPacket, this.audio);
+      try {
+        let pcm = this.#opusDecoder.decode(opus.payload);
+        this.add(Streamer.PACKET_TYPE.AUDIO, Buffer.from(pcm), ts);
+      } catch {
+        this.add(Streamer.PACKET_TYPE.AUDIO, this.blankAudio, ts);
       }
     }
   }
 
-  /* async #handlePlaybackPacket(weriftRtpPacket) {
-    if (weriftRtpPacket === undefined || typeof weriftRtpPacket !== 'object') {
-      return;
-    }
-
-    // Setup up a timeout to monitor for no packets recieved in a certain period
-    // If its trigger, we'll attempt to restart the stream and/or connection
-    clearTimeout(this.stalledTimer);
-    this.stalledTimer = setTimeout(async () => {
-      this?.log?.debug?.(
-        'We have not received any data from webrtc in the past "%s" seconds for uuid "%s". Attempting restart',
-        10,
-        this.uuid,
-      );
-
-      if (typeof this.#peerConnection?.close === 'function') {
-        await this.#peerConnection.close();
-      }
-    }, 10000);
-
-    if (weriftRtpPacket.header.payloadType !== undefined && weriftRtpPacket.header.payloadType === this.video?.id) {
-      // Process video RTP packets. Need to re-assemble the H264 NALUs into a single H264 frame we can output
-      if (weriftRtpPacket.header.padding === false) {
-        this.#video.h264 = werift.H264RtpPayload.deSerialize(weriftRtpPacket.payload, this.#video.h264?.fragment);
-        if (this.#video.h264?.payload !== undefined) {
-          this.addToOutput('video', this.#video.h264.payload);
-          this.#video.h264 = undefined;
-        }
-      }
-    }
-
-    if (weriftRtpPacket.header.payloadType !== undefined && weriftRtpPacket.header.payloadType === this.audio?.id) {
-      // Process audio RTP packet
-      this.audio.opus = werift.OpusRtpPayload.deSerialize(weriftRtpPacket.payload);
-      if (this.audio.opus?.payload?.length > 0) {
-        // Decode Opus audio to PCM (s16le). Allows ffmpeg to demux etc rather than raw Opus
-        this.addToOutput('audio', Buffer.from(this.#opusDecoder.decode(this.audio.opus.payload)));
-      } else {
-        // Empty payload, so send blank audio
-        this.addToOutput('audio', this.blankAudio);
-      }
-    }
-  } */
-
   // Need more work in here*
-  // <--- error handling
-  // <--- timeout?
+  // < error handling
+  // < timeout?
   async #googleHomeFoyerCommand(service, command, values) {
     if (typeof service !== 'string' || service === '' || typeof command !== 'string' || command === '' || typeof values !== 'object') {
       return;

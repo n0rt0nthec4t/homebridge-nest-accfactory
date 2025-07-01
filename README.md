@@ -106,6 +106,7 @@ The following options are available in the config.json options object. These app
 | eveHistory         | Provide history in EveHome application where applicable                                      | true           |
 | exclude            | Exclude ALL devices                                                                          | false          |
 | ffmegDebug         | Turns on specific debugging output for when ffmpeg is envoked                                | false          |
+| ffmpegHWaccel      | Enable video hardward acceleration for supported camera(s) and doorbell(s)                   | false          |  
 | ffmegPath          | Path to an ffmpeg binary for us to use                                                       | /usr/local/bin |
 | hksv               | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                          | false          |
 | weather            | Virtual weather station for each Nest/Google home we discover                                | false          |
@@ -122,7 +123,7 @@ The following options are available on a per-device level in the `config.json` `
 | eveHistory         | Provide history in EveHome application where applicable for the specific device              | true           |
 | exclude            | Exclude the device                                                                           | false          |
 | ffmegDebug         | Turns on specific debugging output for when ffmpeg is envoked                                | false          |
-| ffmpegUseWallclock | Improves streaming and recording compatibility with certain older Nest cameras               | false          |
+| ffmpegHWaccel      | Enable video hardward acceleration for supported camera(s) and doorbell(s)                   | false          |                                                         
 | hksv               | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                          | false          |
 | hotWaterBoostTime  | Time in seconds for hotwater boost heating                                                   | 1800           |
 | humiditySensor     | Create a seperate humidity sensor for supported thermostat(s)                                | false          |

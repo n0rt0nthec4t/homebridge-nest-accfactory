@@ -10,15 +10,15 @@
 //
 // streamer.connect()
 // streamer.close()
-// streamer.talkingAudio(talkingData)
-// streamer.update(deviceData) <- call super after
+// streamer.sendTalkback(talkingBuffer)
+// streamer.onUpdate(deviceData)
 // streamer.codecs() <- return codecs beeing used in
 //
 // The following defines should be overriden in your class which extends this
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2025.06.20
+// Code version 2025.06.30
 // Mark Hulskamp
 'use strict';
 
@@ -69,11 +69,34 @@ export default class Streamer {
     },
   };
 
+  static STREAM_TYPE = {
+    LIVE: 'live',
+    RECORD: 'record',
+    BUFFER: 'buffer',
+  };
+
+  static PACKET_TYPE = {
+    VIDEO: 'video',
+    AUDIO: 'audio',
+    TALK: 'talk',
+    METADATA: 'meta',
+  };
+
+  static CODEC_TYPE = {
+    H264: 'h264',
+    AAC: 'aac',
+    OPUS: 'opus',
+    PCM: 'pcm',
+    SPEEX: 'speex',
+    META: 'meta',
+    UNKNOWN: 'undefined',
+  };
+
   log = undefined; // Logging function object
   videoEnabled = undefined; // Video stream on camera enabled or not
   audioEnabled = undefined; // Audio from camera enabled or not
   online = undefined; // Camera online or not
-  uuid = undefined; // UUID of the device connecting
+  nest_google_uuid = undefined; // Nest/Google UUID of the device connecting
   connected = undefined; // Stream endpoint connection: undefined = not connected , false = connecting , true = connected and streaming
   blankAudio = undefined; // Blank audio 'frame'
 
@@ -83,9 +106,8 @@ export default class Streamer {
   #cameraOfflineFrame = undefined; // Camera offline video frame
   #cameraVideoOffFrame = undefined; // Video turned off on camera video frame
   #cameraTransferringFrame = undefined; // Camera transferring between Nest/Google Home video frame
-  #lastSPS = undefined; // last H264 SPS we saw
-  #lastPPS = undefined; // Last H264 PPS we saw
-  #seenIDR = undefined; // Have we seen a H264 IDR
+  #sequenceCounters = {}; // Sequence counters for packet types
+  #h264Video = {}; // H264 video state for SPS/PPS and IDR frames
 
   // Codecs being used for video, audio and talking
   get codecs() {
@@ -96,7 +118,7 @@ export default class Streamer {
     };
   }
 
-  constructor(deviceData, options) {
+  constructor(nest_google_uuid, deviceData, options) {
     // Setup logger object if passed as option
     if (Object.values(LOG_LEVELS).every((fn) => typeof options?.log?.[fn] === 'function')) {
       this.log = options.log;
@@ -107,17 +129,22 @@ export default class Streamer {
     this.online = deviceData?.online === true;
     this.videoEnabled = deviceData?.streaming_enabled === true;
     this.audioEnabled = deviceData?.audio_enabled === true;
-    this.uuid = deviceData?.nest_google_uuid;
+    this.nest_google_uuid = nest_google_uuid;
 
     // Load support video frame files as required
     const loadFrameResource = (filename, label) => {
       let buffer = undefined;
       let file = path.resolve(__dirname, RESOURCE_PATH, filename);
+
       if (fs.existsSync(file) === true) {
         buffer = fs.readFileSync(file);
+        if (buffer.indexOf(Streamer.H264NALUS.START_CODE) === 0) {
+          buffer = buffer.subarray(Streamer.H264NALUS.START_CODE.length);
+        }
       } else {
         this.log?.warn?.('Failed to load %s video resource for "%s"', label, deviceData.description);
       }
+
       return buffer;
     };
 
@@ -127,75 +154,93 @@ export default class Streamer {
 
     // Start a non-blocking loop for output to the various streams which connect to our streamer object
     // This process will also handle the rolling-buffer size we require
-    // Record streams will always start from the beginning of the buffer (tail)
-    // Live streams will always start from the end of the buffer (head)
-    let lastVideoFrameTime = Date.now();
+    let lastFallbackFrameTime = Date.now();
     this.#outputTimer = setInterval(() => {
       let dateNow = Date.now();
-      let outputVideoFrame = dateNow - lastVideoFrameTime >= STREAM_FRAME_INTERVAL;
-      Object.values(this.#outputs).forEach((output) => {
-        // Monitor for camera going offline, video enabled/disabled or being transferred between Nest/Google Home
-        // We'll insert the appropriate video frame into the stream
-        if (this.online === false && this.#cameraOfflineFrame !== undefined && outputVideoFrame === true) {
-          // Camera is offline so feed in our custom h264 frame and AAC silence
-          output.buffer.push({ time: dateNow, type: 'video', data: this.#cameraOfflineFrame });
-          output.buffer.push({ time: dateNow, type: 'audio', data: this.blankAudio });
-          lastVideoFrameTime = dateNow;
-        }
-        if (this.online === true && this.videoEnabled === false && this.#cameraVideoOffFrame !== undefined && outputVideoFrame === true) {
-          // Camera video is turned off so feed in our custom h264 frame and AAC silence
-          output.buffer.push({ time: dateNow, type: 'video', data: this.#cameraVideoOffFrame });
-          output.buffer.push({ time: dateNow, type: 'audio', data: this.blankAudio });
-          lastVideoFrameTime = dateNow;
-        }
-        if (this.migrating === true && this.#cameraTransferringFrame !== undefined && outputVideoFrame === true) {
-          // Camera video is turned off so feed in our custom h264 frame and AAC silence
-          output.buffer.push({ time: dateNow, type: 'video', data: this.#cameraTransferringFrame });
-          output.buffer.push({ time: dateNow, type: 'audio', data: this.blankAudio });
-          lastVideoFrameTime = dateNow;
-        }
 
+      for (const session of Object.values(this.#outputs)) {
         // Keep our 'main' rolling buffer under a certain size
         // Live/record buffers will always reduce in length in the next section
-        if (output.type === 'buffer') {
+        if (session.type === Streamer.STREAM_TYPE.BUFFER) {
           let cutoffTime = dateNow - MAX_BUFFER_AGE;
-          while (output.buffer.length > 0 && output.buffer[0].time < cutoffTime) {
-            output.buffer.shift();
+          while (session.buffer.length > 0 && session.buffer[0].time < cutoffTime) {
+            session.buffer.shift();
+          }
+          continue;
+        }
+
+        // Output fallback frame directly for offline, video disabled, or migrating
+        // This is required as the streamer may be disconnected or has no incoming packets
+        // We will pace this at ~30fps (every STREAM_FRAME_INTERVAL)
+        if (dateNow - lastFallbackFrameTime >= STREAM_FRAME_INTERVAL) {
+          if (this.online === false && this.#cameraOfflineFrame !== undefined) {
+            // Camera is offline so feed in our custom h264 frame and AAC silence
+            if (this.codecs?.video === Streamer.CODEC_TYPE.H264) {
+              session?.video?.write?.(Buffer.concat([Streamer.H264NALUS.START_CODE, this.#cameraOfflineFrame]));
+            } else {
+              session?.video?.write?.(this.#cameraOfflineFrame);
+            }
+            session?.audio?.write?.(this.blankAudio);
+            lastFallbackFrameTime = dateNow;
+            continue;
+          }
+
+          if (this.online === true && this.videoEnabled === false && this.#cameraVideoOffFrame !== undefined) {
+            // Camera video is turned off so feed in our custom h264 frame and AAC silence
+            if (this.codecs?.video === Streamer.CODEC_TYPE.H264) {
+              session?.video?.write?.(Buffer.concat([Streamer.H264NALUS.START_CODE, this.#cameraVideoOffFrame]));
+            } else {
+              session?.video?.write?.(this.#cameraVideoOffFrame);
+            }
+            session?.audio?.write?.(this.blankAudio);
+            lastFallbackFrameTime = dateNow;
+            continue;
+          }
+
+          if (this.migrating === true && this.#cameraTransferringFrame !== undefined) {
+            // Camera is migrating between Nest/Google Home so feed in custom h264 frame and AAC silence
+            if (this.codecs?.video === Streamer.CODEC_TYPE.H264) {
+              session?.video?.write?.(Buffer.concat([Streamer.H264NALUS.START_CODE, this.#cameraTransferringFrame]));
+            } else {
+              session?.video?.write?.(this.#cameraTransferringFrame);
+            }
+            session?.audio?.write?.(this.blankAudio);
+            lastFallbackFrameTime = dateNow;
+            continue;
           }
         }
 
-        // Output the packet data to any 'live' or 'recording' streams
-        if (output.type === 'live' || output.type === 'record') {
-          let packet = output.buffer.shift();
-          if (packet?.type === 'video' && typeof output?.video?.write === 'function') {
-            if (this.codecs?.video === 'h264') {
+        // Normal buffered video output using actual packet timestamps
+        if (session.type === Streamer.STREAM_TYPE.LIVE || session.type === Streamer.STREAM_TYPE.RECORD) {
+          while (session.buffer.length > 0 && session.buffer[0].type === Streamer.PACKET_TYPE.VIDEO && session.buffer[0].time <= dateNow) {
+            let packet = session.buffer.shift();
+            if (this.codecs?.video === Streamer.CODEC_TYPE.H264) {
               packet.data = Buffer.concat([Streamer.H264NALUS.START_CODE, packet.data]);
             }
-            output.video.write(packet.data);
+            session?.video?.write?.(packet.data);
           }
-          if (packet?.type === 'audio' && typeof output?.audio?.write === 'function') {
-            output.audio.write(packet.data);
+
+          // Output any available audio packets immediately (based on timestamp)
+          while (session.buffer.length > 0 && session.buffer[0].type === Streamer.PACKET_TYPE.AUDIO && session.buffer[0].time <= dateNow) {
+            let packet = session.buffer.shift();
+            session?.audio?.write?.(packet.data);
           }
         }
-      });
-    }, 10); // Every 10ms, rather than "next tick"
+      }
+    }, 5); // Every 5ms
   }
 
   // Class functions
-  isBuffering() {
-    return this.#outputs?.buffer !== undefined;
-  }
-
   startBuffering() {
     if (this.#outputs?.buffer === undefined) {
       // No active buffer session, start connection to streamer
       if (this.online === true && this.videoEnabled === true && this.connected === undefined && typeof this.connect === 'function') {
-        this?.log?.debug?.('Started buffering for uuid "%s"', this.uuid);
+        this?.log?.debug?.('Started buffering for uuid "%s"', this.nest_google_uuid);
         this.connect();
       }
 
       this.#outputs.buffer = {
-        type: 'buffer',
+        type: Streamer.STREAM_TYPE.BUFFER,
         buffer: [],
       };
     }
@@ -224,13 +269,13 @@ export default class Streamer {
 
       talkbackStream.on('data', (data) => {
         // Received audio data to send onto camera/doorbell for output
-        if (typeof this.talkingAudio === 'function') {
-          this.talkingAudio(data);
+        if (typeof this?.sendTalkback === 'function') {
+          this.sendTalkback(data);
 
           clearTimeout(talkbackTimeout);
           talkbackTimeout = setTimeout(() => {
             // no audio received in 1000ms, so mark end of stream
-            this.talkingAudio(Buffer.alloc(0));
+            this.sendTalkback(Buffer.alloc(0));
           }, TALKBACK_AUDIO_TIMEOUT);
         }
       });
@@ -239,9 +284,9 @@ export default class Streamer {
     // If we do not have an active connection, so startup connection
     this.#doConnect();
 
-    // Add video/audio streams for our output loop to handle outputting
+    // Assign session
     this.#outputs[sessionID] = {
-      type: 'live',
+      type: Streamer.STREAM_TYPE.LIVE,
       video: videoStream,
       audio: audioStream,
       talk: talkbackStream,
@@ -251,13 +296,13 @@ export default class Streamer {
     // finally, we've started live stream
     this?.log?.debug?.(
       'Started live stream from uuid "%s" %s "%s"',
-      this.uuid,
+      this.nest_google_uuid,
       talkbackStream !== null && typeof talkbackStream === 'object' ? 'with two-way audio and session id of' : 'and session id of',
       sessionID,
     );
   }
 
-  startRecordStream(sessionID, videoStream, audioStream) {
+  startRecording(sessionID, videoStream, audioStream) {
     // Setup error catching for video/audio streams
     if (videoStream !== null && typeof videoStream === 'object') {
       videoStream.on('error', () => {
@@ -274,60 +319,32 @@ export default class Streamer {
     // If we do not have an active connection, so startup connection
     this.#doConnect();
 
-    // Create buffer copy
-    let trimmedBuffer = [];
-    let sps = undefined;
-    let pps = undefined;
-    let startIndex = -1;
+    // Capture recent buffer frames within the past 3000ms
+    let now = Date.now();
+    let recentBuffer = Array.isArray(this.#outputs?.buffer?.buffer)
+      ? this.#outputs.buffer.buffer.filter(
+          (packet) =>
+            typeof packet?.time === 'number' &&
+            packet.time >= now - 3000 &&
+            (packet.type === Streamer.PACKET_TYPE.VIDEO || packet.type === Streamer.PACKET_TYPE.AUDIO),
+        )
+      : [];
 
-    if (this.#outputs?.buffer?.buffer !== undefined) {
-      let buffer = this.#outputs.buffer.buffer;
-
-      for (let i = 0; i < buffer.length; i++) {
-        if (buffer[i].type === 'video') {
-          let nalType = buffer[i].data[0] & 0x1f;
-          if (nalType === Streamer.H264NALUS.TYPES.SPS) {
-            sps = buffer[i];
-          }
-          if (nalType === Streamer.H264NALUS.TYPES.PPS) {
-            pps = buffer[i];
-          }
-          if (nalType === Streamer.H264NALUS.TYPES.IDR) {
-            startIndex = i;
-            break;
-          }
-        }
-      }
-
-      if (startIndex !== -1) {
-        if (Buffer.isBuffer(sps?.data) === true) {
-          trimmedBuffer.push(sps);
-        }
-        if (Buffer.isBuffer(pps?.data) === true) {
-          trimmedBuffer.push(pps);
-        }
-        trimmedBuffer.push(...buffer.slice(startIndex));
-      } else {
-        trimmedBuffer = structuredClone(buffer);
-      }
-    }
-
-    // Add video/audio streams for our output loop to handle outputting
     this.#outputs[sessionID] = {
-      type: 'record',
+      type: Streamer.STREAM_TYPE.RECORD,
       video: videoStream,
       audio: audioStream,
-      buffer: trimmedBuffer,
+      buffer: recentBuffer,
     };
 
     // Finally we've started the recording stream
-    this?.log?.debug?.('Started recording stream from uuid "%s" with session id of "%s"', this.uuid, sessionID);
+    this?.log?.debug?.('Started recording stream from uuid "%s" with session id of "%s"', this.nest_google_uuid, sessionID);
   }
 
-  stopRecordStream(sessionID) {
+  stopRecording(sessionID) {
     // Request to stop a recording stream
     if (this.#outputs?.[sessionID] !== undefined) {
-      this?.log?.debug?.('Stopped recording stream from uuid "%s"', this.uuid);
+      this?.log?.debug?.('Stopped recording stream from uuid "%s"', this.nest_google_uuid);
 
       // Gracefully close audio and video pipes
       this.#outputs?.[sessionID]?.video?.end?.();
@@ -337,7 +354,7 @@ export default class Streamer {
     }
 
     // If we have no more output streams active, we'll close the connection
-    if (this.haveOutputs() === false) {
+    if (this.isStreaming() === false) {
       this.#doClose();
     }
   }
@@ -345,7 +362,7 @@ export default class Streamer {
   stopLiveStream(sessionID) {
     // Request to stop an active live stream
     if (this.#outputs?.[sessionID] !== undefined) {
-      this?.log?.debug?.('Stopped live stream from uuid "%s"', this.uuid);
+      this?.log?.debug?.('Stopped live stream from uuid "%s"', this.nest_google_uuid);
 
       // Gracefully close audio and video pipes
       this.#outputs?.[sessionID]?.video?.end?.();
@@ -355,42 +372,44 @@ export default class Streamer {
     }
 
     // If we have no more output streams active, we'll close the connection
-    if (this.haveOutputs() === false) {
+    if (this.isStreaming() === false) {
       this.#doClose();
     }
   }
 
   stopBuffering() {
     if (this.#outputs?.buffer !== undefined) {
-      this?.log?.debug?.('Stopped buffering from uuid "%s"', this.uuid);
+      this?.log?.debug?.('Stopped buffering from uuid "%s"', this.nest_google_uuid);
       delete this.#outputs.buffer;
     }
 
     // If we have no more output streams active, we'll close the connection
-    if (this.haveOutputs() === false) {
+    if (this.isStreaming() === false) {
       this.#doClose();
     }
   }
 
-  stopEverything() {
-    if (this.haveOutputs() === true) {
-      this?.log?.debug?.('Stopped buffering, live and recording from uuid "%s"', this.uuid);
-      this.#outputs = {}; // No more outputs
-      this.#doClose();
+  stop() {
+    if (this.isStreaming() === true) {
+      this?.log?.debug?.('Stopped buffering, live and recording from uuid "%s"', this.nest_google_uuid);
+      this.#outputs = {}; // Remove all outputs (live, record, buffer)
+      this.#sequenceCounters = {}; // Reset sequence tracking
+      this.#h264Video = {}; // Reset cached SPS/PPS and keyframe flag
+      this.#doClose(); // Trigger subclass-defined stream close logic
     }
   }
 
-  update(deviceData) {
+  onUpdate(deviceData) {
     if (typeof deviceData !== 'object') {
       return;
     }
 
     this.migrating = deviceData.migrating;
 
-    if (this.uuid !== deviceData?.nest_google_uuid) {
-      this.uuid = deviceData?.nest_google_uuid;
+    if (this.nest_google_uuid !== deviceData?.nest_google_uuid) {
+      this.nest_google_uuid = deviceData?.nest_google_uuid;
 
-      if (this.haveOutputs() === true) {
+      if (this.isStreaming() === true) {
         // Since the uuid has change and a streamer may use this, if there any any active outputs, close and connect again
         this.#doClose();
         this.#doConnect();
@@ -407,7 +426,7 @@ export default class Streamer {
       this.videoEnabled = deviceData?.streaming_enabled === true;
       this.audioEnabled = deviceData?.audio_enabled === true;
 
-      if (this.haveOutputs() === true) {
+      if (this.isStreaming() === true) {
         // Since online, video, audio enabled status has changed, if there any any active outputs, close and connect again
         if (this.online === false || this.videoEnabled === false || this.audioEnabled === false) {
           this.#doClose(); // as offline or streaming not enabled, close streamer
@@ -417,53 +436,76 @@ export default class Streamer {
     }
   }
 
-  addToOutput(type, data) {
-    if (typeof type !== 'string' || type === '' || Buffer.isBuffer(data) === false) {
+  add(packetType, data, timestamp = Date.now(), sequence = undefined) {
+    if (typeof packetType !== 'string' || packetType === '' || Buffer.isBuffer(data) !== true) {
       return;
     }
 
-    if (type === 'video' && this.codecs?.video === 'h264') {
-      // Strip start code if present
+    packetType = packetType.toLowerCase();
+    if (Streamer.PACKET_TYPE?.[packetType.toUpperCase()] === undefined) {
+      return;
+    }
+
+    if (this.#sequenceCounters?.[packetType] === undefined) {
+      this.#sequenceCounters[packetType] = 0;
+    }
+
+    let seq = typeof sequence === 'number' ? sequence : this.#sequenceCounters[packetType]++;
+
+    // H264-specific NALU validation
+    if (packetType === Streamer.PACKET_TYPE.VIDEO && this.codecs?.video === Streamer.CODEC_TYPE.H264) {
+      // Strip start code if present (0x00 00 00 01)
       if (data.indexOf(Streamer.H264NALUS.START_CODE) === 0) {
         data = data.subarray(Streamer.H264NALUS.START_CODE.length);
       }
 
+      if (data.length < 1) {
+        return;
+      }
+
       let naluType = data[0] & 0x1f;
-
-      if (naluType === Streamer.H264NALUS.TYPES.SPS) {
-        this.#lastSPS = Buffer.concat([Streamer.H264NALUS.START_CODE, data]);
+      if (naluType === 0 || naluType > 31) {
         return;
-      }
-
-      if (naluType === Streamer.H264NALUS.TYPES.PPS) {
-        this.#lastPPS = Buffer.concat([Streamer.H264NALUS.START_CODE, data]);
-        return;
-      }
-
-      // If it's a slice, prepend SPS and PPS if available
-      if (
-        (naluType === Streamer.H264NALUS.TYPES.IDR || naluType === Streamer.H264NALUS.TYPES.SLICE_NON_IDR) &&
-        Buffer.isBuffer(this.#lastSPS) === true &&
-        Buffer.isBuffer(this.#lastPPS) === true
-      ) {
-        data = Buffer.concat([this.#lastSPS, this.#lastPPS, Streamer.H264NALUS.START_CODE, data]);
-      } else {
-        // Still prepend start code for other NALs
-        data = Buffer.concat([Streamer.H264NALUS.START_CODE, data]);
       }
     }
 
-    Object.values(this.#outputs).forEach((output) => {
-      output.buffer.push({
-        time: Date.now(),
-        type: type,
-        data: data,
-      });
-    });
+    for (const session of Object.values(this.#outputs)) {
+      if (Array.isArray(session?.buffer) === true) {
+        session.buffer.push({
+          type: packetType,
+          data,
+          time: timestamp,
+          sequence: seq,
+        });
+
+        session.buffer.sort((a, b) => a.time - b.time);
+
+        let cutoff = Date.now() - MAX_BUFFER_AGE;
+        while (session.buffer.length > 0 && session.buffer[0].time < cutoff) {
+          session.buffer.shift();
+        }
+
+        if (session.buffer.length > 200) {
+          session.buffer.splice(0, session.buffer.length - 200);
+        }
+      }
+    }
   }
 
-  haveOutputs() {
+  isBuffering() {
+    return Object.values(this.#outputs).some((x) => Array.isArray(x?.buffer));
+  }
+
+  isStreaming() {
     return Object.keys(this.#outputs).length > 0;
+  }
+
+  isRecording() {
+    return Object.values(this.#outputs).some((x) => x?.type === Streamer.STREAM_TYPE.RECORD);
+  }
+
+  isLiveStreaming() {
+    return Object.values(this.#outputs).some((x) => x?.type === Streamer.STREAM_TYPE.LIVE);
   }
 
   #doConnect() {
@@ -473,9 +515,6 @@ export default class Streamer {
   }
 
   #doClose() {
-    this.#lastSPS = undefined;
-    this.#lastPPS = undefined;
-    this.#seenIDR = undefined;
     if (typeof this.close === 'function') {
       this.close();
     }

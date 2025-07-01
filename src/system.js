@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.06.20
+// Code version 2025.07.01
 // Mark Hulskamp
 'use strict';
 
@@ -115,18 +115,23 @@ export default class NestAccfactory {
   }
 
   async #connect(uuid) {
-    if (typeof this.#connections?.[uuid] === 'object') {
-      this?.log?.info?.(
-        'Performing authorisation for connection "%s" %s',
-        this.#connections[uuid].name,
-        this.#connections[uuid].fieldTest === true ? 'using field test endpoints' : '',
-      );
-      if (this.#connections[uuid].type === ACCOUNT_TYPE.GOOGLE) {
-        // Google cookie method as refresh token method no longer supported by Google since October 2022
-        // Instructions from homebridge_nest or homebridge_nest_cam to obtain this
-        this?.log?.debug?.('Performing authorisation using Google account for connection uuid "%s"', uuid);
+    if (typeof this.#connections?.[uuid] !== 'object') {
+      return;
+    }
 
-        await fetchWrapper('get', this.#connections[uuid].issuetoken, {
+    this?.log?.info?.(
+      'Performing authorisation for connection "%s" %s',
+      this.#connections[uuid].name,
+      this.#connections[uuid].fieldTest === true ? 'using field test endpoints' : '',
+    );
+
+    if (this.#connections[uuid].type === ACCOUNT_TYPE.GOOGLE) {
+      // Authorisation using Google account (cookie-based since 2022)
+      this?.log?.debug?.('Performing authorisation using Google account for connection uuid "%s"', uuid);
+
+      try {
+        //  Fetch OAuth access token
+        let tokenResponse = await fetchWrapper('get', this.#connections[uuid].issuetoken, {
           headers: {
             referer: 'https://accounts.google.com/o/oauth2/iframe',
             'User-Agent': USER_AGENT,
@@ -134,82 +139,86 @@ export default class NestAccfactory {
             'Sec-Fetch-Mode': 'cors',
             'X-Requested-With': 'XmlHttpRequest',
           },
-        })
-          .then((response) => response.json())
-          .then(async (data) => {
-            let googleOAuth2Token = data.access_token;
+        });
 
-            await fetchWrapper(
-              'post',
-              'https://nestauthproxyservice-pa.googleapis.com/v1/issue_jwt',
-              {
-                headers: {
-                  referer: 'https://' + this.#connections[uuid].referer,
-                  'User-Agent': USER_AGENT,
-                  Authorization: data.token_type + ' ' + data.access_token,
-                  'Content-Type': 'application/x-www-form-urlencoded',
-                },
-              },
-              'embed_google_oauth_access_token=true&expire_after=3600s&google_oauth_access_token=' +
-                data.access_token +
-                '&policy_id=authproxy-oauth-policy',
-            )
-              .then((response) => response.json())
-              .then(async (data) => {
-                let googleToken = data.jwt;
-                let tokenExpire = Math.floor(new Date(data.claims.expirationTime).valueOf() / 1000); // Token expiry, should be 1hr
+        let tokenData = await tokenResponse.json();
+        let googleOAuth2Token = tokenData.access_token;
 
-                await fetchWrapper('get', 'https://' + this.#connections[uuid].restAPIHost + '/session', {
-                  headers: {
-                    referer: 'https://' + this.#connections[uuid].referer,
-                    'User-Agent': USER_AGENT,
-                    Authorization: 'Basic ' + googleToken,
-                  },
-                })
-                  .then((response) => response.json())
-                  .then((data) => {
-                    // Store successful connection details
-                    this.#connections[uuid].authorised = true;
-                    this.#connections[uuid].userID = data.userid;
-                    this.#connections[uuid].transport_url = data.urls.transport_url;
-                    this.#connections[uuid].weather_url = data.urls.weather_url;
-                    this.#connections[uuid].token = googleToken;
-                    this.#connections[uuid].cameraAPI = {
-                      key: 'Authorization',
-                      value: 'Basic ', // NOTE: extra space required
-                      token: googleToken,
-                      oauth2: googleOAuth2Token,
-                      fieldTest: this.#connections[uuid]?.fieldTest === true,
-                    };
+        // Exchange access token for Nest JWT
+        let jwtResponse = await fetchWrapper(
+          'post',
+          'https://nestauthproxyservice-pa.googleapis.com/v1/issue_jwt',
+          {
+            headers: {
+              referer: 'https://' + this.#connections[uuid].referer,
+              'User-Agent': USER_AGENT,
+              Authorization: tokenData.token_type + ' ' + tokenData.access_token,
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+          },
+          'embed_google_oauth_access_token=true&expire_after=3600s&google_oauth_access_token=' +
+            tokenData.access_token +
+            '&policy_id=authproxy-oauth-policy',
+        );
 
-                    // Set timeout for token expiry refresh
-                    clearTimeout(this.#connections[uuid].timer);
-                    this.#connections[uuid].timer = setTimeout(
-                      () => {
-                        this?.log?.info?.('Performing periodic token refresh for connection "%s"', this.#connections[uuid].name);
-                        this.#connect(uuid);
-                      },
-                      (tokenExpire - Math.floor(Date.now() / 1000) - 60) * 1000,
-                    ); // Refresh just before token expiry
+        let jwtData = await jwtResponse.json();
+        let googleToken = jwtData.jwt;
+        let tokenExpire = Math.floor(new Date(jwtData.claims.expirationTime).valueOf() / 1000);
 
-                    this?.log?.success?.('Successfully authorised connection "%s"', this.#connections[uuid].name);
-                  });
-              });
-          })
-          // eslint-disable-next-line no-unused-vars
-          .catch((error) => {
-            // The token we used to obtained a Nest session failed, so overall authorisation failed
-            this.#connections[uuid].authorised = false;
-            this?.log?.debug?.('Failed to connect using credential details for connection uuid "%s"', uuid);
-            this?.log?.error?.('Authorisation failed on connection "%s"', this.#connections[uuid].name);
-          });
+        // Use token to get session metadata (userID, API URLs)
+        let sessionResponse = await fetchWrapper('get', 'https://' + this.#connections[uuid].restAPIHost + '/session', {
+          headers: {
+            referer: 'https://' + this.#connections[uuid].referer,
+            'User-Agent': USER_AGENT,
+            Authorization: 'Basic ' + googleToken,
+          },
+        });
+
+        let sessionData = await sessionResponse.json();
+
+        // Store authorised session details
+        this.#connections[uuid].authorised = true;
+        this.#connections[uuid].userID = sessionData.userid;
+        this.#connections[uuid].transport_url = sessionData.urls.transport_url;
+        this.#connections[uuid].weather_url = sessionData.urls.weather_url;
+        this.#connections[uuid].token = googleToken;
+        this.#connections[uuid].cameraAPI = {
+          key: 'Authorization',
+          value: 'Basic ', // NOTE: space is required
+          token: googleToken,
+          oauth2: googleOAuth2Token,
+          fieldTest: this.#connections[uuid]?.fieldTest === true,
+        };
+
+        // Schedule token refresh before expiry
+        clearTimeout(this.#connections[uuid].timer);
+        this.#connections[uuid].timer = setTimeout(
+          () => {
+            this?.log?.info?.('Performing periodic token refresh for connection "%s"', this.#connections[uuid].name);
+            this.#connect(uuid);
+          },
+          (tokenExpire - Math.floor(Date.now() / 1000) - 60) * 1000,
+        ); // 60s before expiry
+
+        this?.log?.success?.('Successfully authorised connection "%s"', this.#connections[uuid].name);
+      } catch (error) {
+        this.#connections[uuid].authorised = false;
+        this?.log?.debug?.(
+          'Failed to connect using Google credentials for connection uuid "%s": %s',
+          uuid,
+          typeof error?.message === 'string' ? error.message : String(error),
+        );
+        this?.log?.error?.('Authorisation failed on connection "%s"', this.#connections[uuid].name);
       }
+    }
 
-      if (this.#connections[uuid].type === ACCOUNT_TYPE.NEST) {
-        // Nest access token method. Get WEBSITE2 cookie for use with camera API calls if needed later
-        this?.log?.debug?.('Performing authorisation using Nest account for connection uuid "%s"', uuid);
+    if (this.#connections[uuid].type === ACCOUNT_TYPE.NEST) {
+      // Authorisation using legacy Nest account
+      this?.log?.debug?.('Performing authorisation using Nest account for connection uuid "%s"', uuid);
 
-        await fetchWrapper(
+      try {
+        // Login to get website_2/ft session token
+        let loginResponse = await fetchWrapper(
           'post',
           'https://webapi.' + this.#connections[uuid].cameraAPIHost + '/api/v1/login.login_nest',
           {
@@ -221,57 +230,58 @@ export default class NestAccfactory {
             },
           },
           Buffer.from('access_token=' + this.#connections[uuid].access_token, 'utf8'),
-        )
-          .then((response) => response.json())
-          .then(async (data) => {
-            if (data?.items?.[0]?.session_token === undefined) {
-              throw new Error('No Nest session token was obtained');
-            }
+        );
 
-            let nestToken = data.items[0].session_token;
+        let loginData = await loginResponse.json();
+        if (loginData?.items?.[0]?.session_token === undefined) {
+          throw new Error('No Nest session token was obtained');
+        }
 
-            await fetchWrapper('get', 'https://' + this.#connections[uuid].restAPIHost + '/session', {
-              headers: {
-                referer: 'https://' + this.#connections[uuid].referer,
-                'User-Agent': USER_AGENT,
-                Authorization: 'Basic ' + this.#connections[uuid].access_token,
-              },
-            })
-              .then((response) => response.json())
-              .then((data) => {
-                // Store successful connection details
-                this.#connections[uuid].authorised = true;
-                this.#connections[uuid].userID = data.userid;
-                this.#connections[uuid].transport_url = data.urls.transport_url;
-                this.#connections[uuid].weather_url = data.urls.weather_url;
-                this.#connections[uuid].token = this.#connections[uuid].access_token;
-                this.#connections[uuid].cameraAPI = {
-                  key: 'cookie',
-                  value: this.#connections[uuid].fieldTest === true ? 'website_ft=' : 'website_2=',
-                  token: nestToken,
-                  fieldTest: this.#connections[uuid]?.fieldTest === true,
-                };
+        let nestToken = loginData.items[0].session_token;
 
-                // Set timeout for token expiry refresh
-                clearTimeout(this.#connections[uuid].timer);
-                this.#connections[uuid].timer = setTimeout(
-                  () => {
-                    this?.log?.info?.('Performing periodic token refresh for connection "%s"', this.#connections[uuid].name);
-                    this.#connect(uuid);
-                  },
-                  1000 * 3600 * 24,
-                ); // Refresh token every 24hrs
+        // Step 2: Use token to get session metadata
+        let sessionResponse = await fetchWrapper('get', 'https://' + this.#connections[uuid].restAPIHost + '/session', {
+          headers: {
+            referer: 'https://' + this.#connections[uuid].referer,
+            'User-Agent': USER_AGENT,
+            Authorization: 'Basic ' + this.#connections[uuid].access_token,
+          },
+        });
 
-                this?.log?.success?.('Successfully authorised connection "%s"', this.#connections[uuid].name);
-              });
-          })
-          // eslint-disable-next-line no-unused-vars
-          .catch((error) => {
-            // The token we used to obtained a Nest session failed, so overall authorisation failed
-            this.#connections[uuid].authorised = false;
-            this?.log?.debug?.('Failed to connect using credential details for connection uuid "%s"', uuid);
-            this?.log?.error?.('Authorisation failed on connection "%s"', this.#connections[uuid].name);
-          });
+        let sessionData = await sessionResponse.json();
+
+        // Store authorised session details
+        this.#connections[uuid].authorised = true;
+        this.#connections[uuid].userID = sessionData.userid;
+        this.#connections[uuid].transport_url = sessionData.urls.transport_url;
+        this.#connections[uuid].weather_url = sessionData.urls.weather_url;
+        this.#connections[uuid].token = this.#connections[uuid].access_token;
+        this.#connections[uuid].cameraAPI = {
+          key: 'cookie',
+          value: this.#connections[uuid].fieldTest === true ? 'website_ft=' : 'website_2=',
+          token: nestToken,
+          fieldTest: this.#connections[uuid].fieldTest === true,
+        };
+
+        // Schedule token refresh every 24h
+        clearTimeout(this.#connections[uuid].timer);
+        this.#connections[uuid].timer = setTimeout(
+          () => {
+            this?.log?.info?.('Performing periodic token refresh for connection "%s"', this.#connections[uuid].name);
+            this.#connect(uuid);
+          },
+          1000 * 3600 * 24,
+        );
+
+        this?.log?.success?.('Successfully authorised connection "%s"', this.#connections[uuid].name);
+      } catch (error) {
+        this.#connections[uuid].authorised = false;
+        this?.log?.debug?.(
+          'Failed to connect using Nest credentials for connection uuid "%s": %s',
+          uuid,
+          typeof error?.message === 'string' ? error.message : String(error),
+        );
+        this?.log?.error?.('Authorisation failed on connection "%s"', this.#connections[uuid].name);
       }
     }
   }
@@ -527,20 +537,43 @@ export default class NestAccfactory {
         await this.#processPostSubscribe();
       })
       .catch((error) => {
+        // Attempt to extract HTTP status code from error cause or error object
+        let statusCode;
+        if (typeof error?.cause === 'object' && typeof error.cause.status === 'number') {
+          statusCode = error.cause.status;
+        } else if (typeof error?.status === 'number') {
+          statusCode = error.status;
+        }
+
+        // If we get a 401 Unauthorized and the connection was previously authorised,
+        // mark it as unauthorised so the reconnect loop will handle it
+        if (statusCode === 401 && this.#connections?.[uuid]?.authorised === true) {
+          this?.log?.debug?.(
+            'Connection "%s" is no longer authorised with the Nest API, will attempt to reconnect',
+            this.#connections[uuid].name,
+          );
+          this.#connections[uuid].authorised = false;
+          return; // Do not continue subscription attempts now
+        }
+
+        // Log unexpected errors (excluding timeouts) for debugging
         if (
           error?.cause === undefined ||
           (typeof error.cause === 'object' && String(error.cause).toUpperCase().includes('TIMEOUT') === false)
         ) {
           this?.log?.debug?.(
-            'Nest API had an error performing subscription with connection uuid "%s"',
+            'Nest API had an error performing subscription with connection uuid "%s": %s',
             uuid,
-            error?.message ?? String(error),
+            typeof error?.message === 'string' ? error.message : String(error),
           );
           this?.log?.debug?.('Restarting Nest API subscription for connection uuid "%s"', uuid);
         }
       })
       .finally(() => {
-        setTimeout(() => this.#subscribeNest(uuid, fullRefresh), 1000);
+        // Only continue the subscription loop if still authorised
+        if (this.#connections?.[uuid]?.authorised === true) {
+          setTimeout(() => this.#subscribeNest(uuid, fullRefresh), 1000);
+        }
       });
   }
 
@@ -756,6 +789,25 @@ export default class NestAccfactory {
         }
       })
       .catch((error) => {
+        // Attempt to extract HTTP status code from error cause or error object
+        let statusCode;
+        if (typeof error?.cause === 'object' && typeof error.cause.status === 'number') {
+          statusCode = error.cause.status;
+        } else if (typeof error?.status === 'number') {
+          statusCode = error.status;
+        }
+
+        // If connection was authorised but we receive a 401 Unauthorized, demote it
+        if (statusCode === 401 && this.#connections?.[uuid]?.authorised === true) {
+          this?.log?.debug?.(
+            'Connection "%s" is no longer authorised with the Protobuf API, will attempt to reconnect',
+            this.#connections[uuid].name,
+          );
+          this.#connections[uuid].authorised = false;
+          return; // Exit early, do not schedule another subscribe attempt now
+        }
+
+        // Log other unexpected errors (excluding known timeouts)
         if (
           error?.cause === undefined ||
           (typeof error.cause === 'object' && String(error.cause).toUpperCase().includes('TIMEOUT') === false)
@@ -763,13 +815,16 @@ export default class NestAccfactory {
           this?.log?.debug?.(
             'Protobuf API had an error performing trait observe with connection uuid "%s". Error: "%s"',
             uuid,
-            error?.message ?? String(error),
+            typeof error?.message === 'string' ? error.message : String(error),
           );
           this?.log?.debug?.('Restarting Protobuf API trait observe for connection uuid "%s"', uuid);
         }
       })
       .finally(() => {
-        setTimeout(() => this.#subscribeProtobuf(uuid, false), 1000);
+        // Only restart trait observation if still authorised
+        if (this.#connections?.[uuid]?.authorised === true) {
+          setTimeout(() => this.#subscribeProtobuf(uuid, false), 1000);
+        }
       });
   }
 
@@ -2285,19 +2340,22 @@ export default class NestAccfactory {
           );
           // Insert any extra options we've read in from configuration file for this device
           tempDevice.eveHistory = this.config.options.eveHistory === true || deviceOptions?.eveHistory === true;
-          tempDevice.hksv = this.config.options.hksv === true || deviceOptions?.hksv === true;
+          tempDevice.hksv =
+            (this.config.options?.hksv === true || deviceOptions?.hksv === true) && this.config.options?.ffmpeg?.valid === true;
           tempDevice.doorbellCooldown = parseDurationToSeconds(deviceOptions?.doorbellCooldown, { defaultValue: 60, min: 0, max: 300 });
           tempDevice.motionCooldown = parseDurationToSeconds(deviceOptions?.motionCooldown, { defaultValue: 60, min: 0, max: 300 });
           tempDevice.personCooldown = parseDurationToSeconds(deviceOptions?.personCooldown, { defaultValue: 120, min: 0, max: 300 });
           tempDevice.chimeSwitch = deviceOptions?.chimeSwitch === true; // Control 'indoor' chime by switch
           tempDevice.localAccess = deviceOptions?.localAccess === true; // Local network video streaming rather than from cloud from camera/doorbells
-          tempDevice.ffmpeg = structuredClone(this.config.options.ffmpeg); // ffmpeg details, path, libraries. No ffmpeg = undefined
-          if (deviceOptions?.ffmpegDebug !== undefined) {
-            tempDevice.ffmpeg.debug = deviceOptions.ffmpegDebug === true;
-          }
-          if (deviceOptions?.ffmpegUseWallclock !== undefined) {
-            tempDevice.ffmpeg.useWallclock = deviceOptions.ffmpegUseWallclock === true;
-          }
+          tempDevice.ffmpeg = {
+            binary: this.config.options.ffmpeg.binary,
+            valid: this.config.options.ffmpeg.valid === true,
+            debug: deviceOptions?.ffmpegDebug === true || this.config.options?.ffmpeg.debug === true,
+            hwaccel:
+              (deviceOptions?.ffmpegHWaccel === true || this.config.options?.ffmpegHWaccel === true) &&
+              this.config.options.ffmpeg.valid === true &&
+              this.config.options.ffmpeg.hwaccel === true,
+          };
           tempDevice.maxStreams = this.config.options.hksv === true || deviceOptions?.hksv === true ? 1 : 2;
           devices[tempDevice.serialNumber] = tempDevice; // Store processed device
         }

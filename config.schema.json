@@ -106,7 +106,10 @@
                         "placeholder": "Path to an ffmpeg binary",
                         "default": "/usr/local/bin/ffmpeg"
                     },
-                    "ffmegDebug": {
+                    "ffmpegDebug": {
+                        "type": "boolean"
+                    },
+                    "ffmpegHWAccel": {
                         "type": "boolean"
                     },
                     "maxStreams": {
@@ -162,10 +165,10 @@
                         "externalHeat": {
                             "type": "string"
                         },
-                        "ffmegDebug": {
+                        "ffmpegDebug": {
                             "type": "boolean"
                         },
-                        "ffmpegUseWallclock": {
+                        "ffmpegHWAccel": {
                             "type": "boolean"
                         },
                         "hkPairingCode": {
@@ -173,6 +176,9 @@
                         },
                         "hksv": {
                             "type": "boolean"
+                        },
+                        "hotWaterBoostTime": {
+                            "type": "number"
                         },
                         "humiditySensor": {
                             "type": "boolean"

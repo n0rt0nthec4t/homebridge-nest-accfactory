@@ -11,23 +11,20 @@ const LOW_BATTERY_LEVEL = 10; // Low battery level percentage
 
 export default class NestTemperatureSensor extends HomeKitDevice {
   static TYPE = 'TemperatureSensor';
-  static VERSION = '2025.06.18'; // Code version
+  static VERSION = '2025.06.28'; // Code version
 
   batteryService = undefined;
   temperatureService = undefined;
 
   // Class functions
   onAdd() {
-    // Setup temperature service if not already present on the accessory
-    this.temperatureService = this.addHKService(this.hap.Service.TemperatureSensor, '', 1);
+    // Setup temperature service if not already present on the accessory and link it to the Eve app if configured to do so
+    this.temperatureService = this.addHKService(this.hap.Service.TemperatureSensor, '', 1, {});
     this.temperatureService.setPrimaryService();
 
     // Setup battery service if not already present on the accessory
     this.batteryService = this.addHKService(this.hap.Service.Battery, '', 1);
     this.batteryService.setHiddenService(true);
-
-    // Setup linkage to EveHome app if configured todo so
-    this.setupEveHomeLink(this.temperatureService);
   }
 
   onUpdate(deviceData) {
@@ -65,7 +62,7 @@ export default class NestTemperatureSensor extends HomeKitDevice {
     this.batteryService.updateCharacteristic(this.hap.Characteristic.ChargingState, this.hap.Characteristic.ChargingState.NOT_CHARGEABLE);
 
     // If we have the history service running and temperature has changed to previous in past 5mins
-    this.addHistory(
+    this.history(
       this.temperatureService,
       {
         temperature: deviceData.current_temperature,

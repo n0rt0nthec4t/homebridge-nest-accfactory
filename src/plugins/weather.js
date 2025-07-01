@@ -9,7 +9,7 @@ import HomeKitDevice from '../HomeKitDevice.js';
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = 'Weather';
-  static VERSION = '2025.06.18'; // Code version
+  static VERSION = '2025.06.28'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -31,7 +31,8 @@ export default class NestWeather extends HomeKitDevice {
 
     // Add custom weather service and characteristics if they have been defined
     if (this.hap.Service?.EveAirPressureSensor !== undefined) {
-      this.airPressureService = this.addHKService(this.hap.Service.EveAirPressureSensor, '', 1);
+      // This will be linked to the Eve app if configured to do so
+      this.airPressureService = this.addHKService(this.hap.Service.EveAirPressureSensor, '', 1, {});
     }
 
     if (this.hap.Characteristic?.ForecastDay !== undefined) {
@@ -55,9 +56,6 @@ export default class NestWeather extends HomeKitDevice {
     if (this.hap.Characteristic?.SunsetTime !== undefined) {
       this.addHKCharacteristic(this.temperatureService, this.hap.Characteristic.SunsetTime);
     }
-
-    // Setup linkage to EveHome app if configured todo so
-    this.setupEveHomeLink(this.airPressureService);
 
     // Extra setup details for output
     this.deviceData?.elevation !== undefined && this.postSetupDetail('Elevation of ' + this.deviceData.elevation + 'm');
@@ -143,7 +141,7 @@ export default class NestWeather extends HomeKitDevice {
     }
 
     // If we have the history service running, record temperature and humity every 5mins
-    this.addHistory(
+    this.history(
       this.airPressureService,
       { temperature: deviceData.current_temperature, humidity: deviceData.current_humidity, pressure: 0 },
       { timegap: 300, force: true },

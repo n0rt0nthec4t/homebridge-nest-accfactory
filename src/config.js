@@ -1,16 +1,16 @@
 // Configuration validation and processing
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.06.20
+// Code version 2025.06.30
 // Mark Hulskamp
 'use strict';
 
 // Define nodejs module requirements
-import fs from 'fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import process from 'node:process';
-import child_process from 'node:child_process';
+
+// Import our modules
+import FFmpeg from './ffmpeg.js';
 
 // Define constants
 const FFMPEG_VERSION = '6.0.0';
@@ -40,93 +40,79 @@ function processConfig(config, log) {
   options.maxStreams = isNaN(config.options?.maxStreams) === false ? Number(config.options.maxStreams) : 2;
 
   // Check if a ffmpeg binary exist via a specific path in configuration OR /usr/local/bin
-  options.ffmpeg = {};
-  options.ffmpeg.debug = config.options?.ffmpegDebug === true;
-  options.ffmpeg.binary = path.resolve(
-    typeof config.options?.ffmpegPath === 'string' && config.options.ffmpegPath !== '' ? config.options.ffmpegPath : '/usr/local/bin',
-  );
+  options.ffmpeg = {
+    binary: undefined,
+    valid: false,
+    debug: config.options?.ffmpegDebug === true,
+    hwaccel: false,
+  };
 
-  // If the path doesn't include 'ffmpeg' on the end, we'll add it here
-  if (options.ffmpeg.binary.endsWith('/ffmpeg') === false) {
-    options.ffmpeg.binary += '/ffmpeg';
+  let ffmpegPath =
+    typeof config.options?.ffmpegPath === 'string' && config.options.ffmpegPath !== '' ? config.options.ffmpegPath : '/usr/local/bin';
+
+  let resolvedPath = path.resolve(ffmpegPath);
+  if (resolvedPath.endsWith('/ffmpeg') === false) {
+    resolvedPath += '/ffmpeg';
   }
 
-  options.ffmpeg.version = undefined;
-  options.ffmpeg.libspeex = false;
-  options.ffmpeg.libopus = false;
-  options.ffmpeg.libx264 = false;
-  options.ffmpeg.libfdk_aac = false;
+  // Create FFmpeg probe
+  let ffmpeg = new FFmpeg(resolvedPath, log);
 
-  if (fs.existsSync(options.ffmpeg.binary) === false) {
-    // If we flag ffmpegPath as undefined, no video streaming/record support enabled for camers/doorbells
-    log?.warn?.('Specified ffmpeg binary "%s" was not found', options.ffmpeg.binary);
-    log?.warn?.('Stream video/recording from camera/doorbells will be unavailable');
-    options.ffmpeg.binary = undefined;
-  }
-
-  if (fs.existsSync(options.ffmpeg.binary) === true) {
-    let ffmpegProcess = child_process.spawnSync(options.ffmpeg.binary, ['-version'], {
-      env: process.env,
+  if (typeof ffmpeg.version !== 'string') {
+    log?.warn?.('ffmpeg binary "%s" not found or not executable, camera/doorbell streaming will be unavailable', ffmpeg.binary);
+  } else {
+    // Proceed with compatibility checks
+    options.ffmpeg.valid = ffmpeg.hasMinimumSupport({
+      version: FFMPEG_VERSION,
+      encoders: ['libx264', 'libfdk_aac', 'libopus'],
+      decoders: ['libspeex'],
     });
+    if (options.ffmpeg.valid === false) {
+      log?.warn?.('ffmpeg binary "%s" does not meet the minimum support requirements', ffmpeg.binary);
 
-    if (ffmpegProcess.stdout !== null) {
-      let stdout = ffmpegProcess.stdout.toString();
-
-      // Determine what libraries ffmpeg is compiled with
-      options.ffmpeg.version = stdout.match(/(?:ffmpeg version:(\d+)\.)?(?:(\d+)\.)?(?:(\d+)\.\d+)(.*?)/gim)?.[0];
-      options.ffmpeg.libspeex = stdout.includes('--enable-libspeex') === true;
-      options.ffmpeg.libopus = stdout.includes('--enable-libopus') === true;
-      options.ffmpeg.libx264 = stdout.includes('--enable-libx264') === true;
-      options.ffmpeg.libfdk_aac = stdout.includes('--enable-libfdk-aac') === true;
-
-      let versionTooOld =
-        options.ffmpeg.version?.localeCompare(FFMPEG_VERSION, undefined, {
+      if (
+        ffmpeg.version?.localeCompare(FFMPEG_VERSION, undefined, {
           numeric: true,
           sensitivity: 'case',
           caseFirst: 'upper',
-        }) === -1;
+        }) === -1
+      ) {
+        log?.warn?.('Minimum binary version is "%s", however the installed version is "%s"', FFMPEG_VERSION, ffmpeg.version);
+        log?.warn?.('Stream video/recording from camera/doorbells will be unavailable');
+      }
+
+      if ((ffmpeg.features?.decoders || []).includes('libspeex') === false) {
+        log?.warn?.('Missing speex decoder in ffmpeg, talkback on certain camera/doorbells will be unavailable');
+      }
 
       if (
-        versionTooOld === true ||
-        options.ffmpeg.libspeex === false ||
-        options.ffmpeg.libopus === false ||
-        options.ffmpeg.libx264 === false ||
-        options.ffmpeg.libfdk_aac === false
+        (ffmpeg.features?.encoders || []).includes('libfdk_aac') === false &&
+        (ffmpeg.features?.encoders || []).includes('libopus') === false
       ) {
-        log?.warn?.('ffmpeg binary "%s" does not meet the minimum support requirements', options.ffmpeg.binary);
+        log?.warn?.('Missing fdk_aac and opus encoders in ffmpeg, audio from camera/doorbells will be unavailable');
+      }
 
-        if (versionTooOld === true) {
-          log?.warn?.('Minimum binary version is "%s", however the installed version is "%s"', FFMPEG_VERSION, options.ffmpeg.version);
-          log?.warn?.('Stream video/recording from camera/doorbells will be unavailable');
-          options.ffmpeg.binary = undefined; // No ffmpeg since below min version
-        }
+      if ((ffmpeg.features?.encoders || []).includes('libfdk_aac') === false) {
+        log?.warn?.('Missing fdk_aac encoder in ffmpeg, audio from camera/doorbells will be unavailable');
+      }
 
-        if (options.ffmpeg.libspeex === false && options.ffmpeg.libx264 === true && options.ffmpeg.libfdk_aac === true) {
-          log?.warn?.('Missing libspeex in ffmpeg binary, talkback on certain camera/doorbells will be unavailable');
-        }
+      if ((ffmpeg.features?.encoders || []).includes('libopus') === false) {
+        log?.warn?.('Missing opus encoder in ffmpeg, talkback on certain camera/doorbells will be unavailable');
+      }
 
-        if (options.ffmpeg.libx264 === true && options.ffmpeg.libfdk_aac === false && options.ffmpeg.libopus === false) {
-          log?.warn?.('Missing libfdk_aac and libopus in ffmpeg binary, audio from camera/doorbells will be unavailable');
-        }
-
-        if (options.ffmpeg.libx264 === true && options.ffmpeg.libfdk_aac === false) {
-          log?.warn?.('Missing libfdk_aac in ffmpeg binary, audio from camera/doorbells will be unavailable');
-        }
-
-        if (options.ffmpeg.libx264 === true && options.ffmpeg.libopus === false) {
-          log?.warn?.('Missing libopus in ffmpeg binary, talkback on certain camera/doorbells will be unavailable');
-        }
-
-        if (options.ffmpeg.libx264 === false) {
-          log?.warn?.('Missing libx264 in ffmpeg binary, stream video/recording from camera/doorbells will be unavailable');
-          options.ffmpeg.binary = undefined; // No ffmpeg since we do not have all the required libraries
-        }
+      if ((ffmpeg.features?.encoders || []).includes('libx264') === false) {
+        log?.warn?.('Missing libx264 encoder in ffmpeg, stream video/recording from camera/doorbells will be unavailable');
       }
     }
-  }
 
-  if (options.ffmpeg.binary !== undefined) {
-    log?.success?.('Found valid ffmpeg binary in %s', options.ffmpeg.binary);
+    if (options.ffmpeg.valid === true) {
+      log?.success?.('Found valid ffmpeg binary in %s', ffmpeg.binary);
+      options.ffmpeg.binary = ffmpeg.binary;
+      options.ffmpeg.hwaccel = ffmpeg.supportsHardwareH264 === true;
+      if (ffmpeg.supportsHardwareH264 === true) {
+        log?.debug?.('Hardware H264 encoding available via "%s"', ffmpeg.hardwareH264Codec);
+      }
+    }
   }
 
   // Process per device configuration(s)
@@ -135,7 +121,7 @@ function processConfig(config, log) {
   }
 
   if (config?.devices !== undefined && Array.isArray(config.devices) === false) {
-    // If the devices section is a JSON oject keyed by the devices serial number, convert to devices array object
+    // If the devices section is a JSON object keyed by the devices serial number, convert to devices array object
     let newDeviceArray = [];
     for (const [serialNumber, props] of Object.entries(config.devices)) {
       newDeviceArray.push({

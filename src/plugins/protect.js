@@ -11,7 +11,7 @@ const LOW_BATTERY_LEVEL = 10; // Low battery level percentage
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = 'Protect';
-  static VERSION = '2025.06.18'; // Code version
+  static VERSION = '2025.06.28'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -21,7 +21,16 @@ export default class NestProtect extends HomeKitDevice {
   // Class functions
   onAdd() {
     // Setup the smoke sensor service if not already present on the accessory
-    this.smokeService = this.addHKService(this.hap.Service.SmokeSensor, '', 1);
+    this.smokeService = this.addHKService(this.hap.Service.SmokeSensor, '', 1, {
+      messages: this.message.bind(this),
+      EveSmoke_lastalarmtest: this.deviceData.latest_alarm_test,
+      EveSmoke_alarmtest: this.deviceData.self_test_in_progress,
+      EveSmoke_heatstatus: this.deviceData.heat_status,
+      EveSmoke_hushedstate: this.deviceData.hushed_state,
+      Evesmoke_statusled: this.deviceData.ntp_green_led_enable,
+      EveSmoke_smoketestpassed: this.deviceData.smoke_test_passed,
+      EveSmoke_heattestpassed: this.deviceData.heat_test_passed,
+    });
     this.smokeService.setPrimaryService();
 
     this.addHKCharacteristic(this.smokeService, this.hap.Characteristic.StatusActive);
@@ -39,19 +48,6 @@ export default class NestProtect extends HomeKitDevice {
       this.motionService = this.addHKService(this.hap.Service.MotionSensor, '', 1);
       this.postSetupDetail('With motion sensor');
     }
-
-    // Setup linkage to EveHome app if configured todo so
-    this.setupEveHomeLink(this.smokeService, {
-      getcommand: this.#EveHomeGetcommand.bind(this),
-      setcommand: this.#EveHomeSetcommand.bind(this),
-      EveSmoke_lastalarmtest: this.deviceData.latest_alarm_test,
-      EveSmoke_alarmtest: this.deviceData.self_test_in_progress,
-      EveSmoke_heatstatus: this.deviceData.heat_status,
-      EveSmoke_hushedstate: this.deviceData.hushed_state,
-      Evesmoke_statusled: this.deviceData.ntp_green_led_enable,
-      EveSmoke_smoketestpassed: this.deviceData.smoke_test_passed,
-      EveSmoke_heattestpassed: this.deviceData.heat_test_passed,
-    });
   }
 
   onUpdate(deviceData) {
@@ -137,7 +133,7 @@ export default class NestProtect extends HomeKitDevice {
       }
 
       // Log motion to history only if changed to previous recording
-      this.addHistory(this.motionService, {
+      this.history(this.motionService, {
         status: deviceData.detected_motion === true ? 1 : 0,
       });
     }
@@ -149,34 +145,36 @@ export default class NestProtect extends HomeKitDevice {
     this.deviceData.ntp_green_led_enable = deviceData.ntp_green_led_enable;
     this.deviceData.smoke_test_passed = deviceData.smoke_test_passed;
     this.deviceData.heat_test_passed = deviceData.heat_test_passed;
-    this.historyService?.updateEveHome?.(this.smokeService, this.#EveHomeGetcommand.bind(this));
+    this.historyService?.updateEveHome?.(this.smokeService);
   }
 
-  #EveHomeGetcommand(EveHomeGetData) {
-    // Pass back extra data for Eve Smoke onGet() to process command
-    // Data will already be an object, our only job is to add/modify to it
-    if (typeof EveHomeGetData === 'object') {
-      EveHomeGetData.lastalarmtest = this.deviceData.latest_alarm_test;
-      EveHomeGetData.alarmtest = this.deviceData.self_test_in_progress;
-      EveHomeGetData.heatstatus = this.deviceData.heat_status;
-      EveHomeGetData.statusled = this.deviceData.ntp_green_led_enable;
-      EveHomeGetData.smoketestpassed = this.deviceData.smoke_test_passed;
-      EveHomeGetData.heattestpassed = this.deviceData.heat_test_passed;
-      EveHomeGetData.hushedstate = this.deviceData.hushed_state;
-    }
-    return EveHomeGetData;
-  }
-
-  #EveHomeSetcommand(EveHomeSetData) {
-    if (typeof EveHomeSetData !== 'object') {
+  onMessage(type, message) {
+    if (typeof message !== 'object' || message === null) {
       return;
     }
 
-    if (typeof EveHomeSetData?.alarmtest === 'boolean') {
-      //this?.log?.info?.('Eve Smoke Alarm test', (EveHomeSetData.alarmtest === true ? 'start' : 'stop'));
+    if (type === HomeKitDevice?.HISTORY?.GET) {
+      // Pass back extra data for Eve Smoke onGet() to process command
+      // Data will already be an object, our only job is to add/modify to it
+      message.lastalarmtest = this.deviceData.latest_alarm_test;
+      message.alarmtest = this.deviceData.self_test_in_progress;
+      message.heatstatus = this.deviceData.heat_status;
+      message.statusled = this.deviceData.ntp_green_led_enable;
+      message.smoketestpassed = this.deviceData.smoke_test_passed;
+      message.heattestpassed = this.deviceData.heat_test_passed;
+      message.hushedstate = this.deviceData.hushed_state;
+      return message;
     }
-    if (typeof EveHomeSetData?.statusled === 'boolean') {
-      this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, ntp_green_led_enable: EveHomeSetData.statusled });
+
+    if (type === HomeKitDevice?.HISTORY?.SET) {
+      if (typeof message?.alarmtest === 'boolean') {
+        //this?.log?.info?.('Eve Smoke Alarm test', (message.alarmtest === true ? 'start' : 'stop'));
+      }
+      if (typeof message?.statusled === 'boolean') {
+        this.set({ uuid: this.deviceData.nest_google_uuid, ntp_green_led_enable: message.statusled });
+      }
+      return;
     }
+    return;
   }
 }

@@ -17,10 +17,11 @@ const LOW_BATTERY_LEVEL = 10; // Low battery level percentage
 const MIN_TEMPERATURE = 9; // Minimum temperature for Nest Thermostat
 const MAX_TEMPERATURE = 32; // Maximum temperature for Nest Thermostat
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
+const DAYS_OF_WEEK = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2025.06.18'; // Code version
+  static VERSION = '2025.06.28'; // Code version
 
   batteryService = undefined;
   occupancyService = undefined;
@@ -35,8 +36,8 @@ export default class NestThermostat extends HomeKitDevice {
 
   // Class functions
   async onAdd() {
-    // Setup the thermostat service if not already present on the accessory
-    this.thermostatService = this.addHKService(this.hap.Service.Thermostat, '', 1);
+    // Setup the thermostat service if not already present on the accessory, and link it to the Eve app if configured to do so
+    this.thermostatService = this.addHKService(this.hap.Service.Thermostat, '', 1, { messages: this.message.bind(this) });
     this.thermostatService.setPrimaryService();
 
     // Setup set characteristics
@@ -228,12 +229,6 @@ export default class NestThermostat extends HomeKitDevice {
       this.switchService = undefined;
     }
 
-    // Setup linkage to EveHome app if configured todo so
-    this.setupEveHomeLink(this.thermostatService, {
-      getcommand: this.#EveHomeGetcommand.bind(this),
-      setcommand: this.#EveHomeSetcommand.bind(this),
-    });
-
     // Attempt to load any external modules for this thermostat
     // We support external cool/heat/fan/dehumidifier module functions
     // This is all undocumented on how to use, as its for my specific use case :-)
@@ -255,7 +250,7 @@ export default class NestThermostat extends HomeKitDevice {
       fanState !== this.fanService.getCharacteristic(this.hap.Characteristic.Active).value ||
       speed !== this.fanService.getCharacteristic(this.hap.Characteristic.RotationSpeed).value
     ) {
-      this.message(HomeKitDevice.SET, {
+      this.set({
         uuid: this.deviceData.nest_google_uuid,
         fan_state: fanState === this.hap.Characteristic.Active.ACTIVE ? true : false,
         fan_timer_speed: Math.round((speed / 100) * this.deviceData.fan_max_speed),
@@ -272,7 +267,7 @@ export default class NestThermostat extends HomeKitDevice {
   }
 
   setDehumidifier(dehumidiferState) {
-    this.message(HomeKitDevice.SET, {
+    this.set({
       uuid: this.deviceData.nest_google_uuid,
       dehumidifier_state: dehumidiferState === this.hap.Characteristic.Active.ACTIVE ? true : false,
     });
@@ -288,7 +283,7 @@ export default class NestThermostat extends HomeKitDevice {
   }
 
   setHotwaterBoost(hotwaterState) {
-    this.message(HomeKitDevice.SET, {
+    this.set({
       uuid: this.deviceData.nest_google_uuid,
       hot_water_boost_active: { state: hotwaterState === true, time: this.deviceData.hotWaterBoostTime },
     });
@@ -302,7 +297,7 @@ export default class NestThermostat extends HomeKitDevice {
   }
 
   setDisplayUnit(temperatureUnit) {
-    this.message(HomeKitDevice.SET, {
+    this.set({
       uuid: this.deviceData.nest_google_uuid,
       temperature_scale: temperatureUnit === this.hap.Characteristic.TemperatureDisplayUnits.CELSIUS ? 'C' : 'F',
     });
@@ -376,7 +371,7 @@ export default class NestThermostat extends HomeKitDevice {
         mode = 'range';
       }
 
-      this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, hvac_mode: mode });
+      this.set({ uuid: this.deviceData.nest_google_uuid, hvac_mode: mode });
 
       this?.log?.info?.('Set mode on "%s" to "%s"', this.deviceData.description, mode);
     }
@@ -412,7 +407,7 @@ export default class NestThermostat extends HomeKitDevice {
         this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).value !==
           this.hap.Characteristic.TargetHeatingCoolingState.AUTO
       ) {
-        this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, target_temperature: temperature });
+        this.set({ uuid: this.deviceData.nest_google_uuid, target_temperature: temperature });
 
         this?.log?.info?.(
           'Set %s%s temperature on "%s" to "%s °C"',
@@ -430,7 +425,7 @@ export default class NestThermostat extends HomeKitDevice {
         this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).value ===
           this.hap.Characteristic.TargetHeatingCoolingState.AUTO
       ) {
-        this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, target_temperature_low: temperature });
+        this.set({ uuid: this.deviceData.nest_google_uuid, target_temperature_low: temperature });
 
         this?.log?.info?.(
           'Set %sheating temperature on "%s" to "%s °C"',
@@ -444,7 +439,7 @@ export default class NestThermostat extends HomeKitDevice {
         this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).value ===
           this.hap.Characteristic.TargetHeatingCoolingState.AUTO
       ) {
-        this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, target_temperature_high: temperature });
+        this.set({ uuid: this.deviceData.nest_google_uuid, target_temperature_high: temperature });
 
         this?.log?.info?.(
           'Set %scooling temperature on "%s" to "%s °C"',
@@ -494,7 +489,7 @@ export default class NestThermostat extends HomeKitDevice {
     if (value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_DISABLED) {
       // Clear pin hash????
     }
-    this.message(HomeKitDevice.SET, {
+    this.set({
       uuid: this.deviceData.nest_google_uuid,
       temperature_lock: value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED ? true : false,
     });
@@ -823,7 +818,7 @@ export default class NestThermostat extends HomeKitDevice {
         deviceData.fan_state === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE,
       );
 
-      this.addHistory(this.fanService, {
+      this.history(this.fanService, {
         status: deviceData.fan_state === true ? 1 : 0,
         temperature: deviceData.current_temperature,
         humidity: deviceData.current_humidity,
@@ -856,7 +851,7 @@ export default class NestThermostat extends HomeKitDevice {
         deviceData.dehumidifier_state === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE,
       );
 
-      this.addHistory(this.dehumidifierService, {
+      this.history(this.dehumidifierService, {
         status: deviceData.dehumidifier_state === true ? 1 : 0,
         temperature: deviceData.current_temperature,
         humidity: deviceData.current_humidity,
@@ -869,7 +864,7 @@ export default class NestThermostat extends HomeKitDevice {
     }
 
     // Log thermostat metrics to history only if changed to previous recording
-    this.addHistory(this.thermostatService, {
+    this.history(this.thermostatService, {
       status: historyEntry.status,
       temperature: deviceData.current_temperature,
       target: historyEntry.target,
@@ -883,86 +878,80 @@ export default class NestThermostat extends HomeKitDevice {
     this.deviceData.hvac_mode = deviceData.hvac_mode;
     this.deviceData.schedules = deviceData.schedules;
     this.deviceData.schedule_mode = deviceData.schedule_mode;
-    this.historyService?.updateEveHome?.(this.thermostatService, this.#EveHomeGetcommand.bind(this));
+    this.historyService?.updateEveHome?.(this.thermostatService);
   }
 
-  #EveHomeGetcommand(EveHomeGetData) {
-    // Pass back extra data for Eve Thermo onGet() to process command
-    // Data will already be an object, our only job is to add/modify it
-    if (typeof EveHomeGetData === 'object') {
-      EveHomeGetData.enableschedule = this.deviceData.schedule_mode === 'heat'; // Schedules on/off
-      EveHomeGetData.attached = this.deviceData.online === true && this.deviceData.removed_from_base === false;
-      EveHomeGetData.vacation = this.deviceData.vacation_mode === true; //   Vaction mode on/off
-      EveHomeGetData.vacationtemp = this.deviceData.vacation_mode === true ? EveHomeGetData.vacationtemp : null;
-      EveHomeGetData.programs = []; // No programs yet, we'll process this below
-      if (this.deviceData.schedule_mode.toUpperCase() === 'HEAT' || this.deviceData.schedule_mode.toUpperCase() === 'RANGE') {
-        const DAYSOFWEEK = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
-
-        Object.entries(this.deviceData.schedules).forEach(([day, schedules]) => {
-          let tempSchedule = [];
-          let tempTemperatures = [];
-          Object.values(schedules)
-            .reverse()
-            .forEach((schedule) => {
-              if (schedule.entry_type === 'setpoint' && (schedule.type === 'HEAT' || schedule.type === 'RANGE')) {
-                tempSchedule.push({
-                  start: schedule.time,
-                  duration: 0,
-                  temperature: typeof schedule['temp-min'] === 'number' ? schedule['temp-min'] : schedule.temp,
-                });
-                tempTemperatures.push(typeof schedule['temp-min'] === 'number' ? schedule['temp-min'] : schedule.temp);
-              }
-            });
-
-          // Sort the schedule array by start time
-          tempSchedule = tempSchedule.sort((a, b) => {
-            if (a.start < b.start) {
-              return -1;
-            }
-          });
-
-          let ecoTemp = tempTemperatures.length === 0 ? 0 : Math.min(...tempTemperatures);
-          let comfortTemp = tempTemperatures.length === 0 ? 0 : Math.max(...tempTemperatures);
-          let program = {};
-          program.id = parseInt(day) + 1;
-          program.days = DAYSOFWEEK[day];
-          program.schedule = [];
-          let lastTime = 86400; // seconds in a day
-          Object.values(tempSchedule)
-            .reverse()
-            .forEach((schedule) => {
-              if (schedule.temperature === comfortTemp) {
-                // We only want to add the schedule time if its using the 'max' temperature
-                program.schedule.push({
-                  start: schedule.start,
-                  duration: lastTime - schedule.start,
-                  ecotemp: ecoTemp,
-                  comforttemp: comfortTemp,
-                });
-              }
-              lastTime = schedule.start;
-            });
-          EveHomeGetData.programs.push(program);
-        });
-      }
-    }
-    return EveHomeGetData;
-  }
-
-  #EveHomeSetcommand(EveHomeSetData) {
-    if (typeof EveHomeSetData !== 'object') {
+  onMessage(type, message) {
+    if (typeof message !== 'object' || message === null) {
       return;
     }
 
-    if (typeof EveHomeSetData?.vacation === 'boolean') {
-      this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, vacation_mode: EveHomeSetData.vacation.status });
+    if (type === HomeKitDevice?.HISTORY?.GET) {
+      // Extend Eve Thermo GET payload with device state
+      message.enableschedule = this.deviceData.schedule_mode === 'heat';
+      message.attached = this.deviceData.online === true && this.deviceData.removed_from_base === false;
+      message.vacation = this.deviceData.vacation_mode === true;
+      message.vacationtemp = this.deviceData.vacation_mode === true ? message.vacationtemp : null;
+      message.programs = [];
+
+      if (['HEAT', 'RANGE'].includes(this.deviceData.schedule_mode?.toUpperCase?.()) === true) {
+        Object.entries(this.deviceData.schedules || {}).forEach(([day, entries]) => {
+          let tempSchedule = [];
+          let tempTemperatures = [];
+
+          Object.values(entries || {}).forEach((schedule) => {
+            if (schedule.entry_type === 'setpoint' && ['HEAT', 'RANGE'].includes(schedule.type)) {
+              let temp = typeof schedule['temp-min'] === 'number' ? schedule['temp-min'] : schedule.temp;
+              tempSchedule.push({ start: schedule.time, duration: 0, temperature: temp });
+              tempTemperatures.push(temp);
+            }
+          });
+
+          tempSchedule.sort((a, b) => a.start - b.start);
+
+          let ecoTemp = tempTemperatures.length === 0 ? 0 : Math.min(...tempTemperatures);
+          let comfortTemp = tempTemperatures.length === 0 ? 0 : Math.max(...tempTemperatures);
+
+          let program = {
+            id: parseInt(day),
+            days: isNaN(day) === false && DAYS_OF_WEEK?.[day] !== undefined ? DAYS_OF_WEEK[day] : 'mon',
+            schedule: [],
+          };
+
+          let lastTime = 86400;
+          [...tempSchedule].reverse().forEach((entry) => {
+            if (entry.temperature === comfortTemp) {
+              program.schedule.push({
+                start: entry.start,
+                duration: lastTime - entry.start,
+                ecotemp: ecoTemp,
+                comforttemp: comfortTemp,
+              });
+            }
+            lastTime = entry.start;
+          });
+
+          message.programs.push(program);
+        });
+      }
+
+      return message;
     }
-    if (typeof EveHomeSetData?.programs === 'object') {
-      //EveHomeSetData.programs.forEach((day) => {
-      // Convert into Nest thermostat schedule format and set. Need to work this out
-      //  this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, days: { 6: { temp: 17, time: 13400, touched_at: Date.now() } } });
-      //});
+
+    if (type === HomeKitDevice?.HISTORY?.SET) {
+      if (typeof message.vacation === 'boolean') {
+        this.set({ uuid: this.deviceData.nest_google_uuid, vacation_mode: message.vacation.status });
+      }
+
+      if (typeof message.programs === 'object') {
+        // Future: convert to Nest format and apply via .set()
+        // this.set({ uuid: ..., days: { ... } });
+      }
+
+      return;
     }
+
+    return;
   }
 
   #setupFan() {

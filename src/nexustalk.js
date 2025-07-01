@@ -5,7 +5,7 @@
 //
 // Credit to https://github.com/Brandawg93/homebridge-nest-cam for the work on the Nest Camera comms code on which this is based
 //
-// Code version 2025.06.20
+// Code version 2025.06.30
 // Mark Hulskamp
 'use strict';
 
@@ -83,14 +83,14 @@ export default class NexusTalk extends Streamer {
   // Codecs being used for video, audio and talking
   get codecs() {
     return {
-      video: 'h264',
-      audio: 'aac',
-      talk: 'speex',
+      video: Streamer.CODEC_TYPE.H264, // Video codec
+      audio: Streamer.CODEC_TYPE.AAC, // Audio codec
+      talk: Streamer.CODEC_TYPE.SPEEX, // Talkback codec
     };
   }
 
-  constructor(deviceData, options) {
-    super(deviceData, options);
+  constructor(nest_google_uuid, deviceData, options) {
+    super(nest_google_uuid, deviceData, options);
 
     if (fs.existsSync(path.resolve(__dirname + '/protobuf/nest/nexustalk.proto')) === true) {
       protobuf.util.Long = null;
@@ -157,7 +157,7 @@ export default class NexusTalk extends Streamer {
         this.connected = undefined;
         this.#id = undefined; // Not an active session anymore
 
-        if (hadError === true && this.haveOutputs() === true) {
+        if (hadError === true && this.isStreaming() === true) {
           // We still have either active buffering occuring or output streams running
           // so attempt to restart connection to existing host
           this.connect(host);
@@ -185,7 +185,7 @@ export default class NexusTalk extends Streamer {
     this.audio = {};
   }
 
-  update(deviceData) {
+  async onUpdate(deviceData) {
     if (typeof deviceData !== 'object') {
       return;
     }
@@ -204,25 +204,29 @@ export default class NexusTalk extends Streamer {
       this?.log?.debug?.('New host has been requested for connection. Host requested is "%s"', this.host);
     }
 
-    // Let our parent handle the remaining updates
-    super.update(deviceData);
+    // Call parent class onUpdate if it exists
+    if (typeof super.onUpdate === 'function') {
+      await super.onUpdate(deviceData);
+    }
   }
 
-  talkingAudio(talkingData) {
+  sendTalkback(talkingBuffer) {
+    if (Buffer.isBuffer(talkingBuffer) === false || this.#protobufNexusTalk === undefined || this.#id === undefined) {
+      return;
+    }
+
     // Encode audio packet for sending to camera
-    if (typeof talkingData === 'object' && this.#protobufNexusTalk !== undefined) {
-      let TraitMap = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.AudioPayload');
-      if (TraitMap !== null) {
-        let encodedData = TraitMap.encode(
-          TraitMap.fromObject({
-            payload: talkingData,
-            sessionId: this.#id,
-            codec: this.codecs.talk.toUpperCase(),
-            sampleRate: 16000,
-          }),
-        ).finish();
-        this.#sendMessage(PACKET_TYPE.AUDIO_PAYLOAD, encodedData);
-      }
+    let TraitMap = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.AudioPayload');
+    if (TraitMap !== null) {
+      let encodedData = TraitMap.encode(
+        TraitMap.fromObject({
+          payload: talkingBuffer,
+          sessionId: this.#id,
+          codec: this.codecs.talk.toUpperCase(),
+          sampleRate: 16000,
+        }),
+      ).finish();
+      this.#sendMessage(PACKET_TYPE.AUDIO_PAYLOAD, encodedData);
     }
   }
 
@@ -323,7 +327,7 @@ export default class NexusTalk extends Streamer {
           let encodedData = TraitMap.encode(
             TraitMap.fromObject({
               protocolVersion: 'VERSION_3',
-              uuid: this.uuid.split(/[._]+/)[1],
+              uuid: this.nest_google_uuid.split(/[._]+/)[1],
               requireConnectedCamera: false,
               USER_AGENT: USER_AGENT,
               deviceId: crypto.randomUUID(),
@@ -370,18 +374,17 @@ export default class NexusTalk extends Streamer {
         if (stream.codecType === this.codecs.video.toUpperCase()) {
           this.video = {
             id: stream.channelId,
-            startTime: Date.now() + stream.startTime,
+            baseTimestamp: stream.startTimestamp,
+            baseTime: Date.now(),
             sampleRate: stream.sampleRate,
-            timeStamp: 0,
           };
         }
         if (stream.codecType === this.codecs.audio.toUpperCase()) {
           this.audio = {
             id: stream.channelId,
-            startTime: Date.now() + stream.startTime,
+            baseTimestamp: stream.startTimestamp,
+            baseTime: Date.now(),
             sampleRate: stream.sampleRate,
-            timeStamp: 0,
-            talking: false,
           };
         }
       });
@@ -396,6 +399,21 @@ export default class NexusTalk extends Streamer {
   }
 
   #handlePlaybackPacket(payload) {
+    const calculateTimestamp = (delta, stream) => {
+      if (
+        typeof delta !== 'number' ||
+        typeof stream?.sampleRate !== 'number' ||
+        stream?.baseTime === undefined ||
+        stream?.baseTimestamp === undefined
+      ) {
+        return Date.now();
+      }
+
+      let deltaTicks = stream.baseTimestamp + delta - stream.baseTimestamp;
+      let deltaMs = (deltaTicks / stream.sampleRate) * 1000;
+      return stream.baseTime + deltaMs;
+    };
+
     // Decode playback packet
     if (typeof payload === 'object' && this.#protobufNexusTalk !== undefined) {
       let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.PlaybackPacket').decode(payload).toJSON();
@@ -408,7 +426,7 @@ export default class NexusTalk extends Streamer {
         this?.log?.debug?.(
           'We have not received any data from nexus in the past "%s" seconds for uuid "%s". Attempting restart',
           10,
-          this.uuid,
+          this.nest_google_uuid,
         );
 
         // Setup listener for socket close event. Once socket is closed, we'll perform the re-connection
@@ -419,14 +437,18 @@ export default class NexusTalk extends Streamer {
         this.close(false); // Close existing socket
       }, 10000);
 
+      // Timestamps are rolling — incremented from startTime using timestampDelta per packet
+
       // Handle video packet
       if (decodedMessage?.channelId !== undefined && decodedMessage.channelId === this.video?.id) {
-        this.addToOutput('video', Buffer.from(decodedMessage.payload, 'base64'));
+        let ts = calculateTimestamp(decodedMessage.timestampDelta, this.video);
+        this.add(Streamer.PACKET_TYPE.VIDEO, Buffer.from(decodedMessage.payload, 'base64'), ts);
       }
 
       // Handle audio packet
       if (decodedMessage?.channelId !== undefined && decodedMessage.channelId === this.audio?.id) {
-        this.addToOutput('audio', Buffer.from(decodedMessage.payload, 'base64'));
+        let ts = calculateTimestamp(decodedMessage.timestampDelta, this.audio);
+        this.add(Streamer.PACKET_TYPE.AUDIO, Buffer.from(decodedMessage.payload, 'base64'), ts);
       }
     }
   }
@@ -474,7 +496,7 @@ export default class NexusTalk extends Streamer {
     if (typeof payload === 'object' && this.#protobufNexusTalk !== undefined) {
       //let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.TalkbackBegin').decode(payload).toJSON();
       this.audio.talking = true;
-      this?.log?.debug?.('Talking started on uuid "%s"', this.uuid);
+      this?.log?.debug?.('Talking started on uuid "%s"', this.nest_google_uuid);
     }
   }
 
@@ -483,7 +505,7 @@ export default class NexusTalk extends Streamer {
     if (typeof payload === 'object' && this.#protobufNexusTalk !== undefined) {
       //let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.TalkbackEnd').decode(payload).toJSON();
       this.audio.talking = false;
-      this?.log?.debug?.('Talking ended on uuid "%s"', this.uuid);
+      this?.log?.debug?.('Talking ended on uuid "%s"', this.nest_google_uuid);
     }
   }
 

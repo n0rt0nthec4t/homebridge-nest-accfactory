@@ -1,7 +1,7 @@
 // Device support loader
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.06.15
+// Code version 2025.06.30
 // Mark Hulskamp
 'use strict';
 
@@ -33,6 +33,8 @@ async function loadDeviceModules(log, pluginDir = '') {
   let deviceMap = new Map();
   let files = (await fs.readdir(baseDir)).sort();
 
+  log?.debug?.('Using base module v%s', HomeKitDevice.VERSION);
+
   for (const file of files) {
     if (file.endsWith('.js') === false) {
       continue;
@@ -49,7 +51,7 @@ async function loadDeviceModules(log, pluginDir = '') {
 
         let proto = Object.getPrototypeOf(exported);
         while (proto !== undefined && proto.name !== '') {
-          if (proto === HomeKitDevice) {
+          if (HomeKitDevice.prototype.isPrototypeOf(exported.prototype) === true) {
             if (
               typeof exported.TYPE !== 'string' ||
               exported.TYPE === '' ||
@@ -62,7 +64,7 @@ async function loadDeviceModules(log, pluginDir = '') {
 
             if (deviceMap.has(exported.TYPE) === false) {
               deviceMap.set(exported.TYPE, exported);
-              log?.info?.('Loaded device module "%s" (v%s)', exported.TYPE, exported.VERSION);
+              log?.info?.('Loaded %s module v%s', exported.TYPE, exported.VERSION);
             }
 
             break;
