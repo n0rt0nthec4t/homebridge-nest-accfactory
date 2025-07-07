@@ -8,7 +8,6 @@
 import EventEmitter from 'node:events';
 import { Buffer } from 'node:buffer';
 import { setTimeout, clearTimeout } from 'node:timers';
-import net from 'node:net';
 import dgram from 'node:dgram';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -16,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
+import Streamer from '../streamer.js';
 import NexusTalk from '../nexustalk.js';
 import WebRTC from '../webrtc.js';
 import FFmpeg from '../ffmpeg.js';
@@ -37,7 +37,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a define
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2025.07.01'; // Code version
+  static VERSION = '2025.07.07'; // Code version
 
   // For messaging back to parent class (Doorbell/Floodlight)
   static SET = HomeKitDevice.SET;
@@ -88,20 +88,25 @@ export default class NestCamera extends HomeKitDevice {
   }
 
   // Class functions
-  onAdd(hapController = this.hap.CameraController) {
+  onAdd() {
+    // Setup HomeKit camera controller
+
+    // Need to cleanup the CameraOperatingMode service. This is to allow seamless configuration
+    // switching between enabling hksv or not
+    // Thanks to @bcullman (Brad Ullman) for catching this
+    this.accessory.removeService(this.accessory.getService(this.hap.Service.CameraOperatingMode));
+    if (this.controller === undefined) {
+      // Establish the "camera" controller here
+      this.controller = new this.hap.CameraController(this.generateControllerOptions());
+    }
+    if (this.controller !== undefined) {
+      // Configure the controller thats been created
+      this.accessory.configureController(this.controller);
+    }
+
     // Setup motion services
     if (this.motionServices === undefined) {
       this.createCameraMotionServices();
-    }
-
-    // Setup HomeKit camera/doorbell controller
-    if (this.controller === undefined && typeof hapController === 'function') {
-      // Need to cleanup the CameraOperatingMode service. This is to allow seamless configuration
-      // switching between enabling hksv or not
-      // Thanks to @bcullman (Brad Ullman) for catching this
-      this.accessory.removeService(this.accessory.getService(this.hap.Service.CameraOperatingMode));
-      this.controller = new hapController(this.generateControllerOptions());
-      this.accessory.configureController(this.controller);
     }
 
     // Setup additional services/characteristics after we have a controller created
@@ -242,7 +247,7 @@ export default class NestCamera extends HomeKitDevice {
     if (this.deviceData.migrating === false && deviceData.migrating === true) {
       // Migration happening between Nest <-> Google Home apps. We'll stop any active streams, close the current streaming object
       this?.log?.warn?.('Migration between Nest <-> Google Home apps has started for "%s"', deviceData.description);
-      this.streamer !== undefined && this.streamer.stop();
+      this.streamer !== undefined && this.streamer.stopAllStreams();
       this.streamer = undefined;
     }
 
@@ -255,31 +260,30 @@ export default class NestCamera extends HomeKitDevice {
     if (this.streamer === undefined && deviceData.migrating === false) {
       if (JSON.stringify(deviceData.streaming_protocols) !== JSON.stringify(this.deviceData.streaming_protocols)) {
         this?.log?.warn?.('Available streaming protocols have changed for "%s"', deviceData.description);
-        this.streamer !== undefined && this.streamer.stop();
+        this.streamer !== undefined && this.streamer.stopAllStreams();
         this.streamer = undefined;
       }
       if (deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.WEBRTC) === true && WebRTC !== undefined) {
         this?.log?.debug?.('Using WebRTC streamer for "%s"', deviceData.description);
-        this.streamer = new WebRTC(this.deviceData.nest_google_uuid, deviceData, {
+        this.streamer = new WebRTC(this.uuid, deviceData, {
           log: this.log,
-          buffer:
-            deviceData.hksv === true &&
-            this?.controller?.recordingManagement?.recordingManagementService !== undefined &&
-            this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.Active).value ===
-              this.hap.Characteristic.Active.ACTIVE,
         });
       }
 
       if (deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.NEXUSTALK) === true && NexusTalk !== undefined) {
         this?.log?.debug?.('Using NexusTalk streamer for "%s"', deviceData.description);
-        this.streamer = new NexusTalk(this.deviceData.nest_google_uuid, deviceData, {
+        this.streamer = new NexusTalk(this.uuid, deviceData, {
           log: this.log,
-          buffer:
-            deviceData.hksv === true &&
-            this?.controller?.recordingManagement?.recordingManagementService !== undefined &&
-            this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.Active).value ===
-              this.hap.Characteristic.Active.ACTIVE,
         });
+      }
+      if (
+        this?.streamer?.isBuffering() === false &&
+        deviceData?.hksv === true &&
+        this?.controller?.recordingManagement?.recordingManagementService !== undefined &&
+        this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.Active).value ===
+          this.hap.Characteristic.Active.ACTIVE
+      ) {
+        await HomeKitDevice.message(this.uuid, Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_BUFFER);
       }
     }
 
@@ -484,9 +488,7 @@ export default class NestCamera extends HomeKitDevice {
     // Stop any on-going HomeKit sessions, either live or recording
     // We'll terminate any ffmpeg, rtpSplitter etc processes
     this.#liveSessions?.forEach?.((session) => {
-      if (typeof session.rtpSplitter?.close === 'function') {
-        session.rtpSplitter.close();
-      }
+      session?.rtpSplitter?.close?.();
     });
 
     // Remove any motion services we created
@@ -672,7 +674,7 @@ export default class NestCamera extends HomeKitDevice {
       commandLine.join(' ').toString(),
     );
 
-    let ffmpeg = this.ffmpeg.createSession(
+    let ffmpegStream = this.ffmpeg.createSession(
       this.uuid,
       sessionID,
       commandLine,
@@ -687,14 +689,14 @@ export default class NestCamera extends HomeKitDevice {
       4, // 4 pipes required
     );
 
-    if (ffmpeg === undefined) {
+    if (ffmpegStream === undefined) {
       return;
     }
 
     let buffer = Buffer.alloc(0);
     let mp4boxes = [];
 
-    ffmpeg?.stdout?.on?.('data', (chunk) => {
+    ffmpegStream?.stdout?.on?.('data', (chunk) => {
       buffer = Buffer.concat([buffer, chunk]);
 
       while (buffer.length >= 8) {
@@ -719,7 +721,7 @@ export default class NestCamera extends HomeKitDevice {
       }
     });
 
-    ffmpeg?.on?.('exit', (code, signal) => {
+    ffmpegStream?.on?.('exit', (code, signal) => {
       if (signal !== 'SIGKILL' || signal === null) {
         this?.log?.error?.('ffmpeg recording process for "%s" stopped unexpectedly. Exit code was "%s"', this.deviceData.description, code);
       }
@@ -730,7 +732,13 @@ export default class NestCamera extends HomeKitDevice {
     });
 
     // Start the appropriate streamer
-    this.streamer?.startRecording?.(sessionID, ffmpeg.stdin, ffmpeg?.stdio?.[3]);
+    let { video, audio } = await HomeKitDevice.message(this.uuid, Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_RECORD, {
+      sessionID: sessionID,
+    });
+
+    // Connect the ffmpeg process to the streamer input/output
+    video?.pipe?.(ffmpegStream?.stdin); // Streamer video → ffmpeg stdin (pipe:0)
+    audio?.pipe?.(ffmpegStream?.stdio?.[3]); // Streamer audio → ffmpeg pipe:3
 
     this?.log?.info?.('Started recording from "%s" %s', this.deviceData.description, includeAudio === false ? 'without audio' : '');
 
@@ -768,32 +776,32 @@ export default class NestCamera extends HomeKitDevice {
     }
   }
 
-  closeRecordingStream(sessionID, closeReason) {
-    // Stop the associated recording stream from the streamer side
-    this.streamer?.stopRecording?.(sessionID);
+  async closeRecordingStream(sessionID, closeReason) {
+    // Stop recording stream from the streamer
+    await HomeKitDevice.message(this.uuid, Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_RECORD, {
+      sessionID: sessionID,
+    });
 
-    // Terminate any ffmpeg recording process
+    // Terminate the ffmpeg recording process
     this.ffmpeg?.killSession?.(this.uuid, sessionID, 'record', 'SIGKILL');
 
-    // Ensure generator wakes up and exits
+    // Wake and clear HomeKit Secure Video generator
     this.emit(MP4BOX);
     this.removeAllListeners(MP4BOX);
 
-    // Log recording finished messages depending on reason
+    // Log completion depending on reason
     if (closeReason === this.hap.HDSProtocolSpecificErrorReason.NORMAL) {
       this?.log?.info?.('Completed recording from "%s"', this.deviceData.description);
     } else {
       this?.log?.warn?.(
-        'Recording from "' +
-          this.deviceData.description +
-          '" completed with error. Reason was "' +
-          (this.hap.HDSProtocolSpecificErrorReason?.[closeReason] || 'code ' + closeReason) +
-          '"',
+        'Recording from "%s" completed with error. Reason was "%s"',
+        this.deviceData.description,
+        this.hap.HDSProtocolSpecificErrorReason?.[closeReason] || 'code ' + closeReason,
       );
     }
   }
 
-  updateRecordingActive(enableRecording) {
+  async updateRecordingActive(enableRecording) {
     if (this.streamer === undefined) {
       return;
     }
@@ -803,11 +811,12 @@ export default class NestCamera extends HomeKitDevice {
       // Required due to data delays by on prem Nest to cloud to HomeKit accessory to iCloud etc
       // Make sure have appropriate bandwidth!!!
       this?.log?.info?.('Recording was turned on for "%s"', this.deviceData.description);
-      this.streamer.startBuffering();
+      await HomeKitDevice.message(this.uuid, Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_BUFFER);
     }
 
     if (enableRecording === false && this.streamer.isBuffering() === true) {
-      this.streamer.stopBuffering();
+      // Stop buffering stream for this camera/doorbell
+      await HomeKitDevice.message(this.uuid, Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_BUFFER);
       this?.log?.warn?.('Recording was turned off for "%s"', this.deviceData.description);
     }
   }
@@ -832,8 +841,7 @@ export default class NestCamera extends HomeKitDevice {
     if (this.deviceData.migrating === false && this.deviceData.streaming_enabled === true && this.deviceData.online === true) {
       // Call the camera/doorbell to get a snapshot image.
       // Prefer onGet() result if implemented; fallback to static handler
-      let { call, handler } = await this.get({ uuid: this.deviceData.nest_google_uuid, camera_snapshot: '' });
-      let response = call !== undefined ? call : handler;
+      let response = await this.get({ uuid: this.deviceData.nest_google_uuid, camera_snapshot: '' });
       if (
         Buffer.isBuffer(response?.camera_snapshot) === true &&
         response.camera_snapshot.length > 0 &&
@@ -882,18 +890,14 @@ export default class NestCamera extends HomeKitDevice {
   async prepareStream(request, callback) {
     // HomeKit has asked us to prepare ports and encryption details for video/audio streaming
 
-    const getPort = async (options) => {
-      // Get an available port using a temporary socket
+    const getPort = async () => {
       return new Promise((resolve, reject) => {
-        let server = net.createServer();
-        server.unref();
-        server.on('error', reject);
-        server.listen(options, () => {
+        let server = dgram.createSocket('udp4');
+        server.bind({ port: 0, exclusive: true }, () => {
           let port = server.address().port;
-          server.close(() => {
-            resolve(port); // return port
-          });
+          server.close(() => resolve(port));
         });
+        server.on('error', reject);
       });
     };
 
@@ -909,7 +913,7 @@ export default class NestCamera extends HomeKitDevice {
       audioPort: request.audio.port,
       localAudioPort: await getPort(),
       audioTalkbackPort: await getPort(),
-      rptSplitterPort: await getPort(),
+      rtpSplitterPort: await getPort(),
       audioCryptoSuite: request.video.srtpCryptoSuite,
       audioSRTP: Buffer.concat([request.audio.srtp_key, request.audio.srtp_salt]),
       audioSSRC: this.hap.CameraController.generateSynchronisationSource(),
@@ -931,7 +935,7 @@ export default class NestCamera extends HomeKitDevice {
         srtp_salt: request.video.srtp_salt,
       },
       audio: {
-        port: sessionInfo.rptSplitterPort,
+        port: sessionInfo.rtpSplitterPort,
         ssrc: sessionInfo.audioSSRC,
         srtp_key: request.audio.srtp_key,
         srtp_salt: request.audio.srtp_salt,
@@ -1105,7 +1109,7 @@ export default class NestCamera extends HomeKitDevice {
       ) {
         // Setup RTP splitter for two-way audio
         session.rtpSplitter = dgram.createSocket('udp4');
-        session.rtpSplitter.bind(session.rptSplitterPort);
+        session.rtpSplitter.bind(session.rtpSplitterPort);
         session.rtpSplitter.on('error', () => session.rtpSplitter.close());
         session.rtpSplitter.on('message', (message) => {
           let pt = message.readUInt8(1) & 0x7f;
@@ -1190,17 +1194,20 @@ export default class NestCamera extends HomeKitDevice {
 
       // Start the actual streamer process
       this?.log?.info?.('Live stream started on "%s"%s', this.deviceData.description, ffmpegTalk ? ' (two-way audio enabled)' : '');
-      this.streamer?.startLiveStream?.(
-        request.sessionID,
-        ffmpegStream?.stdin,
-        ffmpegStream?.stdio?.[3] || null,
-        ffmpegTalk?.stdout || null,
-      );
+      let { video, audio, talkback } = await HomeKitDevice.message(this.uuid, Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_LIVE, {
+        sessionID: request.sessionID,
+      });
+      // Connect the ffmpeg process to the streamer input/output
+      video?.pipe?.(ffmpegStream?.stdin); // Streamer video → ffmpeg stdin (pipe:0)
+      audio?.pipe?.(ffmpegStream?.stdio?.[3]); // Streamer audio → ffmpeg pipe:3
+      ffmpegTalk?.stdout?.pipe?.(talkback); // ffmpeg talkback stdout → Streamer talkback pipe:1
     }
 
     if (request.type === this.hap.StreamRequestTypes.STOP && this.#liveSessions.has(request.sessionID)) {
       // Stop the HomeKit stream and cleanup any associated ffmpeg or RTP splitter sessions
-      this.streamer?.stopLiveStream?.(request.sessionID);
+      await HomeKitDevice.message(this.uuid, Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_LIVE, {
+        sessionID: request.sessionID,
+      });
       this.controller.forceStopStreamingSession(request.sessionID);
       this.#liveSessions.get(request.sessionID)?.rtpSplitter?.close?.();
       this.ffmpeg?.killSession?.(this.uuid, request.sessionID, 'live', 'SIGKILL');

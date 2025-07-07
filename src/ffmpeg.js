@@ -1,7 +1,7 @@
 // FFmpeg manager for binary probing + session tracking
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.06.30
+// Code version 2025.07.07
 // Mark Hulskamp
 'use strict';
 
@@ -14,11 +14,11 @@ import child_process from 'node:child_process';
 
 // FFmpeg object
 export default class FFmpeg {
-  #binary;
-  #version;
+  #binary = undefined;
+  #version = undefined;
   #features = {};
   #sessions = new Map(); // Map of "uuid:sessionID:sessionType" => ChildProcess
-  #log;
+  #log = undefined; // Logging object
 
   constructor(binaryPath = undefined, log = undefined) {
     this.#log = log;
@@ -243,15 +243,22 @@ export default class FFmpeg {
     let child = child_process.spawn(this.#binary, args, { stdio, env: process.env });
     this.#sessions.set(key, child);
 
-    if (typeof errorCallback === 'function') {
-      child?.stderr?.on?.('data', (data) => {
-        errorCallback(data);
-      });
-    }
+    child?.stderr?.on?.('data', (data) => {
+      errorCallback?.(data);
+    });
 
     child?.on?.('exit', () => {
       this.#sessions.delete(key);
     });
+
+    // Safely attach no-op .on('error') to prevent EPIPE crash
+    for (let i = 0; i < pipeCount; i++) {
+      child?.stdio?.[i]?.on?.('error', (error) => {
+        if (error?.code === 'EPIPE') {
+          // Empty
+        }
+      });
+    }
 
     // Return stdin, stdout, stderr as named aliases, plus stdio array
     return {

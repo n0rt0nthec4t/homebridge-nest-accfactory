@@ -5,7 +5,7 @@
 //
 // Credit to https://github.com/Brandawg93/homebridge-nest-cam for the work on the Nest Camera comms code on which this is based
 //
-// Code version 2025.06.30
+// Code version 2025.07.07
 // Mark Hulskamp
 'use strict';
 
@@ -89,8 +89,8 @@ export default class NexusTalk extends Streamer {
     };
   }
 
-  constructor(nest_google_uuid, deviceData, options) {
-    super(nest_google_uuid, deviceData, options);
+  constructor(uuid, deviceData, options) {
+    super(uuid, deviceData, options);
 
     if (fs.existsSync(path.resolve(__dirname + '/protobuf/nest/nexustalk.proto')) === true) {
       protobuf.util.Long = null;
@@ -102,15 +102,10 @@ export default class NexusTalk extends Streamer {
     this.token = deviceData?.apiAccess?.token;
     this.tokenType = deviceData?.apiAccess?.oauth2 !== undefined ? 'google' : 'nest';
     this.host = deviceData?.streaming_host; // Host we'll connect to
-
-    // If specified option to start buffering, kick off
-    if (options?.buffer === true) {
-      this.startBuffering();
-    }
   }
 
   // Class functions
-  connect(host) {
+  async connect(host) {
     // Clear any timers we have running
     clearInterval(this.pingTimer);
     clearTimeout(this.stalledTimer);
@@ -126,52 +121,61 @@ export default class NexusTalk extends Streamer {
 
       this.connected = false; // Starting connection
       this?.log?.debug?.('Connection started to "%s"', host);
+      this.host = host; // Update internal host name since we’re about to connect
 
-      this.#socket = tls.connect({ host: host, port: 1443 }, () => {
-        // Opened connection to Nexus server, so now need to authenticate ourselves
-        this?.log?.debug?.('Connection established to "%s"', host);
+      // Wrap tls.connect() in a Promise so we can await the TLS handshake
+      await new Promise((resolve, reject) => {
+        this.#socket = tls.connect({ host: host, port: 1443 }, () => {
+          // Opened connection to Nexus server, so now need to authenticate ourselves
+          this?.log?.debug?.('Connection established to "%s"', host);
 
-        this.#socket.setKeepAlive(true); // Keep socket connection alive
-        this.host = host; // update internal host name since we've connected
-        this.connected = true;
-        this.#Authenticate(false);
-      });
+          this.#socket.setKeepAlive(true); // Keep socket connection alive
+          this.connected = true;
+          this.#Authenticate(false); // Send authentication request
+          resolve(); // Allow await connect() to continue
+        });
 
-      this.#socket.on('error', () => {});
+        this.#socket.on('error', (err) => {
+          // TLS error (could be refused, timeout, etc.)
+          this?.log?.warn?.('TLS error on connect to "%s": %s', host, err?.message || err);
+          this.connected = undefined;
+          reject(err);
+        });
 
-      this.#socket.on('end', () => {});
+        this.#socket.on('end', () => {});
 
-      this.#socket.on('data', (data) => {
-        this.#handleNexusData(data);
-      });
+        this.#socket.on('data', (data) => {
+          this.#handleNexusData(data);
+        });
 
-      this.#socket.on('close', (hadError) => {
-        this?.log?.debug?.('Connection closed to "%s"', host);
+        this.#socket.on('close', (hadError) => {
+          this?.log?.debug?.('Connection closed to "%s"', host);
 
-        clearInterval(this.pingTimer);
-        clearTimeout(this.stalledTimer);
-        this.pingTimer = undefined;
-        this.stalledTimer = undefined;
-        this.#authorised = false; // Since connection close, we can't be authorised anymore
-        this.#socket = undefined; // Clear socket object
-        this.connected = undefined;
-        this.#id = undefined; // Not an active session anymore
+          clearInterval(this.pingTimer);
+          clearTimeout(this.stalledTimer);
+          this.pingTimer = undefined;
+          this.stalledTimer = undefined;
+          this.#authorised = false; // Since connection closed, we can't be authorised anymore
+          this.#socket = undefined; // Clear socket object
+          this.connected = undefined;
+          this.#id = undefined; // Not an active session anymore
 
-        if (hadError === true && this.isStreaming() === true) {
-          // We still have either active buffering occuring or output streams running
-          // so attempt to restart connection to existing host
-          this.connect(host);
-        }
+          if (hadError === true && (this.isStreaming() === true || this.isBuffering() === true)) {
+            // We still have either active buffering occurring or output streams running
+            // so attempt to restart connection to existing host
+            this.connect(host);
+          }
+        });
       });
     }
   }
 
-  close(stopStreamFirst) {
+  async close(stopStreamFirst) {
     // Close an authenicated socket stream gracefully
     if (this.#socket !== undefined) {
       if (stopStreamFirst === true) {
         // Send a notifcation to nexus we're finished playback
-        this.#stopNexusData();
+        await this.#stopNexusData();
       }
       this.#socket.destroy();
     }
@@ -190,8 +194,9 @@ export default class NexusTalk extends Streamer {
       return;
     }
 
-    if (deviceData.apiAccess.token !== this.token) {
+    if (deviceData?.apiAccess?.token !== undefined && deviceData.apiAccess.token !== this.token) {
       // access token has changed so re-authorise
+      this?.log?.debug?.('Access token has changed for uuid "%s". Updating token', this.nest_google_uuid);
       this.token = deviceData.apiAccess.token;
 
       if (this.#socket !== undefined) {
@@ -199,14 +204,9 @@ export default class NexusTalk extends Streamer {
       }
     }
 
-    if (this.host !== deviceData.streaming_host) {
+    if (deviceData?.streaming_host !== undefined && this.host !== deviceData.streaming_host) {
       this.host = deviceData.streaming_host;
       this?.log?.debug?.('New host has been requested for connection. Host requested is "%s"', this.host);
-    }
-
-    // Call parent class onUpdate if it exists
-    if (typeof super.onUpdate === 'function') {
-      await super.onUpdate(deviceData);
     }
   }
 
@@ -359,10 +359,9 @@ export default class NexusTalk extends Streamer {
     this?.log?.debug?.('Redirect requested from "%s" to "%s"', this.host, redirectToHost);
 
     // Setup listener for socket close event. Once socket is closed, we'll perform the redirect
-    this.#socket &&
-      this.#socket.on('close', () => {
-        this.connect(redirectToHost); // Connect to new host
-      });
+    this.#socket?.on?.('close', () => {
+      this.connect(redirectToHost); // Connect to new host
+    });
     this.close(true); // Close existing socket
   }
 
@@ -430,10 +429,9 @@ export default class NexusTalk extends Streamer {
         );
 
         // Setup listener for socket close event. Once socket is closed, we'll perform the re-connection
-        this.#socket &&
-          this.#socket.on('close', () => {
-            this.connect(); // try reconnection
-          });
+        this.#socket?.on?.('close', () => {
+          this.connect(); // try reconnection
+        });
         this.close(false); // Close existing socket
       }, 10000);
 
@@ -468,10 +466,9 @@ export default class NexusTalk extends Streamer {
         this?.log?.debug?.('Playback ended on "%s" with error "%s". Attempting reconnection', this.host, decodedMessage.reason);
 
         // Setup listener for socket close event. Once socket is closed, we'll perform the re-connection
-        this.#socket &&
-          this.#socket.on('close', () => {
-            this.connect(); // try reconnection to existing host
-          });
+        this.#socket?.on?.('close', () => {
+          this.connect(); // try reconnection to existing host
+        });
         this.close(false); // Close existing socket
       }
     }

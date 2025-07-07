@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.07.01
+// Code version 2025.07.05
 // Mark Hulskamp
 'use strict';
 
@@ -1776,7 +1776,7 @@ export default class NestAccfactory {
           }
           // eslint-disable-next-line no-unused-vars
         } catch (error) {
-          this?.log?.debug?.('Error processing data for thermostat(s)');
+          this?.log?.debug?.('Error processing data for thermostat "%s"', object_key);
         }
 
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
@@ -1884,7 +1884,7 @@ export default class NestAccfactory {
           }
           // eslint-disable-next-line no-unused-vars
         } catch (error) {
-          this?.log?.debug?.('Error processing data for temperature sensor(s)');
+          this?.log?.debug?.('Error processing data for temperature sensor %s', object_key);
         }
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
           let deviceOptions = this.config?.devices?.find(
@@ -1947,7 +1947,7 @@ export default class NestAccfactory {
           }
           // eslint-disable-next-line no-unused-vars
         } catch (error) {
-          this?.log?.debug?.('Error processing data for heatlink(s)');
+          this?.log?.debug?.('Error processing data for heatlink "%s"', object_key);
         }
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
           let deviceOptions = this.config?.devices?.find(
@@ -2112,7 +2112,7 @@ export default class NestAccfactory {
           }
           // eslint-disable-next-line no-unused-vars
         } catch (error) {
-          this?.log?.debug?.('Error processing data for smoke sensor(s)');
+          this?.log?.debug?.('Error processing data for smoke sensor "%s"', object_key);
         }
 
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
@@ -2154,6 +2154,7 @@ export default class NestAccfactory {
       'nest.resource.NestCamIndoorResource',
       'nest.resource.NestCamIQResource',
       'nest.resource.NestCamIQOutdoorResource',
+      'nest.resource.NestCamOutdoorResource',
       'nest.resource.NestHelloResource',
       'google.resource.GoogleNewmanResource',
     ];
@@ -2195,6 +2196,9 @@ export default class NestAccfactory {
             }
             if (value.value.device_info.typeName === 'google.resource.VenusResource') {
               RESTTypeData.model = 'Doorbell (2nd gen, wired)';
+            }
+            if (value.value.device_info.typeName === 'nest.resource.NestCamOutdoorResource') {
+              RESTTypeData.model = 'Cam Outdoor (1st gen)';
             }
             if (value.value.device_info.typeName === 'nest.resource.NestCamIndoorResource') {
               RESTTypeData.model = 'Cam Indoor (1st gen)';
@@ -2331,7 +2335,7 @@ export default class NestAccfactory {
           }
           // eslint-disable-next-line no-unused-vars
         } catch (error) {
-          this?.log?.debug?.('Error processing data for camera/doorbell(s)');
+          this?.log?.debug?.('Error processing data for camera/doorbell "%s"', object_key);
         }
 
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {
@@ -2444,7 +2448,7 @@ export default class NestAccfactory {
           }
           // eslint-disable-next-line no-unused-vars
         } catch (error) {
-          this?.log?.debug?.('Error processing data for weather');
+          this?.log?.debug?.('Error processing data for weather "%s"', object_key);
         }
 
         if (Object.entries(tempDevice).length !== 0 && typeof devices[tempDevice.serialNumber] === 'undefined') {

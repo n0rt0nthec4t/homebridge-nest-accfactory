@@ -12,16 +12,24 @@ import NestCamera from './camera.js';
 
 export default class NestDoorbell extends NestCamera {
   static TYPE = 'Doorbell';
-  static VERSION = '2025.06.27'; // Code version
+  static VERSION = '2025.07.07'; // Code version
 
   doorbellTimer = undefined; // Cooldown timer for doorbell events
   switchService = undefined; // HomeKit switch for enabling/disabling chime
 
   // Class functions
   onAdd() {
-    // Call parent to setup the common camera things. Once we return, we can add in the specifics for our doorbell
-    // We pass in the HAP Doorbell controller constructor function here also
-    super.onAdd(this.hap.DoorbellController);
+    // Setup HomeKit doorbell controller
+
+    // Need to cleanup the CameraOperatingMode service. This is to allow seamless configuration
+    // switching between enabling hksv or not
+    // Thanks to @bcullman (Brad Ullman) for catching this
+    this.accessory.removeService(this.accessory.getService(this.hap.Service.CameraOperatingMode));
+    if (this.controller === undefined) {
+      // Establish the "camera" controller here as a doorbell specific one
+      this.controller = new this.hap.DoorbellController(this.generateControllerOptions());
+      // when onAdd is called for the base camera class, this will cconfigure our camera controller established here
+    }
 
     if (this.deviceData?.has_indoor_chime === true && this.deviceData?.chimeSwitch === true) {
       // Add service to allow automation and enabling/disabling indoor chiming.
@@ -58,8 +66,6 @@ export default class NestDoorbell extends NestCamera {
   }
 
   onRemove() {
-    super.onRemove();
-
     clearTimeout(this.doorbellTimer);
     this.doorbellTimer = undefined;
 
@@ -73,9 +79,6 @@ export default class NestDoorbell extends NestCamera {
     if (typeof deviceData !== 'object' || this.controller === undefined) {
       return;
     }
-
-    // Get the camera class todo all its updates first, then we'll handle the doorbell specific stuff
-    super.onUpdate(deviceData);
 
     if (this.switchService !== undefined) {
       // Update status of indoor chime enable/disable switch

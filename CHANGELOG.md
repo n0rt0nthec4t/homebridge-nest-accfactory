@@ -2,7 +2,7 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.3.2 (alpha.6)
+## v0.3.2 (alpha.9)
 
 - General code cleanup and stability improvements
 - Refactored for updated base class
@@ -11,7 +11,8 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 - Streamlined history logging for motion, doorbell, fan, and dehumidifier  
 - Fixed an issue where thermostat temperature settings caused errors at startup by ensuring initial values are within valid ranges
 - Fixed missing audio for newer Nest/Google cameras
-- Inital support for video hardware acceleration for camera recording
+- Fixed an issue for missing Nest/Google cameras after migration to Google Home
+- Initial support for video hardware acceleration for camera recording
 
 ### Deprecation Notice
 - Support for the standalone Docker version of this plugin is planned to be deprecated in an upcoming release. While it currently remains functional, future updates may no longer include Docker-specific build support. Users are encouraged to transition to standard Homebridge installations where possible.
