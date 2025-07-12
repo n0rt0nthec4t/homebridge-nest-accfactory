@@ -37,7 +37,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a define
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2025.07.07'; // Code version
+  static VERSION = '2025.07.10'; // Code version
 
   // For messaging back to parent class (Doorbell/Floodlight)
   static SET = HomeKitDevice.SET;
@@ -566,9 +566,11 @@ export default class NestCamera extends HomeKitDevice {
 
       // Audio input (optional)
       ...(includeAudio === true
-        ? this.streamer?.codecs?.audio === 'pcm'
+        ? this.streamer.codecs.audio === Streamer.CODEC_TYPE.PCM
           ? ['-thread_queue_size', '512', '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', 'pipe:3']
-          : ['-thread_queue_size', '512', '-f', 'aac', '-i', 'pipe:3']
+          : this.streamer.codecs.audio === Streamer.CODEC_TYPE.AAC
+            ? ['-thread_queue_size', '512', '-f', 'aac', '-i', 'pipe:3']
+            : []
         : []),
 
       // Video output including hardware acceleration if available
@@ -614,47 +616,6 @@ export default class NestCamera extends HomeKitDevice {
       '-movflags',
       'frag_keyframe+empty_moov+default_base_moof',
 
-      /* Original code for reference
-      // Video output
-      '-map',
-      '0:v:0',
-      '-codec:v',
-      'libx264',
-      '-preset',
-      'veryfast',
-      '-profile:v',
-      this.#recordingConfig.videoCodec.parameters.profile === this.hap.H264Profile.HIGH
-        ? 'high'
-        : this.#recordingConfig.videoCodec.parameters.profile === this.hap.H264Profile.MAIN
-          ? 'main'
-          : 'baseline',
-      '-level:v',
-      this.#recordingConfig.videoCodec.parameters.level === this.hap.H264Level.LEVEL4_0
-        ? '4.0'
-        : this.#recordingConfig.videoCodec.parameters.level === this.hap.H264Level.LEVEL3_2
-          ? '3.2'
-          : '3.1',
-      '-bf',
-      '0',
-      '-filter:v',
-      'fps=fps=' + this.#recordingConfig.videoCodec.resolution[2],
-      '-fps_mode',
-      'cfr',
-      '-g:v',
-      Math.round(
-        (this.#recordingConfig.videoCodec.resolution[2] * this.#recordingConfig.videoCodec.parameters.iFrameInterval) / 1000,
-      ).toString(),
-      '-b:v',
-      this.#recordingConfig.videoCodec.parameters.bitRate + 'k',
-      '-bufsize',
-      2 * this.#recordingConfig.videoCodec.parameters.bitRate + 'k',
-      // '-reset_timestamps',
-      //   '1',
-      '-video_track_timescale',
-      '90000',
-      '-movflags',
-      'frag_keyframe+empty_moov+default_base_moof',
-*/
       // Audio output
       ...(includeAudio === true
         ? ['-map', '1:a:0', '-codec:a', 'libfdk_aac', '-profile:a', 'aac_low', '-ar', '16000', '-b:a', '16k', '-ac', '1']
@@ -992,9 +953,11 @@ export default class NestCamera extends HomeKitDevice {
 
         // Audio input (if enabled)
         ...(includeAudio === true
-          ? this.streamer.codecs.audio === 'pcm'
+          ? this.streamer.codecs.audio === Streamer.CODEC_TYPE.PCM
             ? ['-thread_queue_size', '512', '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', 'pipe:3']
-            : ['-thread_queue_size', '512', '-f', 'aac', '-i', 'pipe:3']
+            : this.streamer.codecs.audio === Streamer.CODEC_TYPE.AAC
+              ? ['-thread_queue_size', '512', '-f', 'aac', '-i', 'pipe:3']
+              : []
           : []),
 
         // Video output
@@ -1097,11 +1060,12 @@ export default class NestCamera extends HomeKitDevice {
       );
 
       // Two-way audio support if enabled and codecs available
-      let talkCodec = this.streamer?.codecs?.talk;
       let ffmpegTalk = null;
       if (
-        ((talkCodec === 'speex' && this.ffmpeg?.features?.encoders?.includes('libspeex') === true) ||
-          (talkCodec === 'opus' && this.ffmpeg?.features?.encoders?.includes('libopus') === true)) &&
+        ((this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.SPEEX &&
+          this.ffmpeg?.features?.encoders?.includes('libspeex') === true) ||
+          (this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.OPUS &&
+            this.ffmpeg?.features?.encoders?.includes('libopus') === true)) &&
         this.ffmpeg?.features?.encoders?.includes('libfdk_aac') === true &&
         this.deviceData.audio_enabled === true &&
         this.deviceData.has_speaker === true &&
@@ -1134,8 +1098,12 @@ export default class NestCamera extends HomeKitDevice {
           'pipe:0',
           '-map',
           '0:a',
-          ...(talkCodec === 'speex' ? ['-codec:a', 'libspeex', '-frames_per_packet', '4', '-vad', '1', '-ac', '1', '-ar', '16k'] : []),
-          ...(talkCodec === 'opus' ? ['-codec:a', 'libopus', '-application', 'lowdelay', '-ac', '2', '-ar', '48k'] : []),
+          ...(this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.SPEEX
+            ? ['-codec:a', 'libspeex', '-frames_per_packet', '4', '-vad', '1', '-ac', '1', '-ar', '16k']
+            : []),
+          ...(this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.OPUS
+            ? ['-codec:a', 'libopus', '-application', 'lowdelay', '-ac', '2', '-ar', '48k']
+            : []),
           '-f',
           'data',
           'pipe:1',

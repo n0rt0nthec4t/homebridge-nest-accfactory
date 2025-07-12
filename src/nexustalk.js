@@ -5,7 +5,7 @@
 //
 // Credit to https://github.com/Brandawg93/homebridge-nest-cam for the work on the Nest Camera comms code on which this is based
 //
-// Code version 2025.07.07
+// Code version 2025.07.10
 // Mark Hulskamp
 'use strict';
 
@@ -26,7 +26,7 @@ import Streamer from './streamer.js';
 
 // Define constants
 const PING_INTERVAL = 15000; // Ping interval to nexus server while stream active
-const USER_AGENT = 'Nest/5.78.0 (iOScom.nestlabs.jasper.release) os=18.0'; // User Agent string
+const USER_AGENT = 'Nest/5.82.2 (iOScom.nestlabs.jasper.release) os=18.5'; // User Agent string
 const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 
 const PACKET_TYPE = {
@@ -63,11 +63,9 @@ const AAC_MONO_48000_BLANK = Buffer.from([
 
 // nexusTalk object
 export default class NexusTalk extends Streamer {
+  streaming_host = undefined; // Main nexustalk streaming host
   token = undefined;
-  tokenType = undefined;
-  pingTimer = undefined; // Timer object for ping interval
-  stalledTimer = undefined; // Timer object for no received data
-  host = ''; // Host to connect to or connected too
+  useGoogleAuth = false; // Nest vs google auth
   blankAudio = AAC_MONO_48000_BLANK;
   video = {}; // Video stream details once connected
   audio = {}; // Audio stream details once connected
@@ -79,20 +77,23 @@ export default class NexusTalk extends Streamer {
   #messages = []; // Incoming messages
   #authorised = false; // Have we been authorised
   #id = undefined; // Session ID
+  #host = undefined; // Current host connected to
+  #pingTimer = undefined; // Timer object for ping interval
+  #stalledTimer = undefined; // Timer object for no received data
 
   // Codecs being used for video, audio and talking
   get codecs() {
     return {
       video: Streamer.CODEC_TYPE.H264, // Video codec
       audio: Streamer.CODEC_TYPE.AAC, // Audio codec
-      talk: Streamer.CODEC_TYPE.SPEEX, // Talkback codec
+      talkback: Streamer.CODEC_TYPE.SPEEX, // Talkback codec
     };
   }
 
   constructor(uuid, deviceData, options) {
     super(uuid, deviceData, options);
 
-    if (fs.existsSync(path.resolve(__dirname + '/protobuf/nest/nexustalk.proto')) === true) {
+    if (fs.existsSync(path.join(__dirname, 'protobuf/nest/nexustalk.proto')) === true) {
       protobuf.util.Long = null;
       protobuf.configure();
       this.#protobufNexusTalk = protobuf.loadSync(path.resolve(__dirname + '/protobuf/nest/nexustalk.proto'));
@@ -100,28 +101,28 @@ export default class NexusTalk extends Streamer {
 
     // Store data we need from the device data passed it
     this.token = deviceData?.apiAccess?.token;
-    this.tokenType = deviceData?.apiAccess?.oauth2 !== undefined ? 'google' : 'nest';
-    this.host = deviceData?.streaming_host; // Host we'll connect to
+    this.streaming_host = deviceData?.streaming_host; // Host we'll connect to
+    this.useGoogleAuth = typeof deviceData?.apiAccess?.oauth2 === 'string' && deviceData?.apiAccess?.oauth2 !== '';
   }
 
   // Class functions
   async connect(host) {
     // Clear any timers we have running
-    clearInterval(this.pingTimer);
-    clearTimeout(this.stalledTimer);
-    this.pingTimer = undefined;
-    this.stalledTimer = undefined;
+    clearInterval(this.#pingTimer);
+    clearTimeout(this.#stalledTimer);
+    this.#pingTimer = undefined;
+    this.#stalledTimer = undefined;
     this.#id = undefined; // No session ID yet
 
     if (this.online === true && this.videoEnabled === true) {
       if (typeof host === 'undefined' || host === null) {
         // No host parameter passed in, so we'll set this to our internally stored host
-        host = this.host;
+        host = this.streaming_host;
       }
 
       this.connected = false; // Starting connection
       this?.log?.debug?.('Connection started to "%s"', host);
-      this.host = host; // Update internal host name since we’re about to connect
+      this.#host = host; // Update internal host name since we’re about to connect
 
       // Wrap tls.connect() in a Promise so we can await the TLS handshake
       await new Promise((resolve, reject) => {
@@ -151,10 +152,10 @@ export default class NexusTalk extends Streamer {
         this.#socket.on('close', (hadError) => {
           this?.log?.debug?.('Connection closed to "%s"', host);
 
-          clearInterval(this.pingTimer);
-          clearTimeout(this.stalledTimer);
-          this.pingTimer = undefined;
-          this.stalledTimer = undefined;
+          clearInterval(this.#pingTimer);
+          clearTimeout(this.#stalledTimer);
+          this.#pingTimer = undefined;
+          this.#stalledTimer = undefined;
           this.#authorised = false; // Since connection closed, we can't be authorised anymore
           this.#socket = undefined; // Clear socket object
           this.connected = undefined;
@@ -187,6 +188,7 @@ export default class NexusTalk extends Streamer {
     this.#messages = [];
     this.video = {};
     this.audio = {};
+    this.#host = undefined; // No longer connected to this host
   }
 
   async onUpdate(deviceData) {
@@ -204,9 +206,18 @@ export default class NexusTalk extends Streamer {
       }
     }
 
-    if (deviceData?.streaming_host !== undefined && this.host !== deviceData.streaming_host) {
-      this.host = deviceData.streaming_host;
-      this?.log?.debug?.('New host has been requested for connection. Host requested is "%s"', this.host);
+    if (deviceData?.streaming_host !== undefined && this.streaming_host !== deviceData.streaming_host) {
+      this.streaming_host = deviceData.streaming_host;
+
+      if (this.isStreaming() === true || this.isBuffering() === true) {
+        this?.log?.debug?.('New host has been requested for connection. Host requested is "%s"', this.streaming_host);
+
+        // Setup listener for socket close event. Once socket is closed, we'll perform the redirect
+        this.#socket?.on?.('close', () => {
+          this.connect(this.streaming_host); // Connect to new host
+        });
+        this.close(true); // Close existing socket
+      }
     }
   }
 
@@ -222,7 +233,7 @@ export default class NexusTalk extends Streamer {
         TraitMap.fromObject({
           payload: talkingBuffer,
           sessionId: this.#id,
-          codec: this.codecs.talk.toUpperCase(),
+          codec: Streamer.CODEC_TYPE.SPEEX,
           sampleRate: 16000,
         }),
       ).finish();
@@ -306,15 +317,13 @@ export default class NexusTalk extends Streamer {
       let TraitMap = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.AuthoriseRequest');
       if (TraitMap !== null) {
         authoriseRequest = TraitMap.encode(
-          TraitMap.fromObject(
-            this.tokenType === 'nest' ? { sessionToken: this.token } : this.tokenType === 'google' ? { oliveToken: this.token } : {},
-          ),
+          TraitMap.fromObject(this.useGoogleAuth === true ? { oliveToken: this.token } : { sessionToken: this.token }),
         ).finish();
       }
 
       if (reauthorise === true && authoriseRequest !== null) {
         // Request to re-authorise only
-        this?.log?.debug?.('Re-authentication requested to "%s"', this.host);
+        this?.log?.debug?.('Re-authentication requested to "%s"', this.#host);
         this.#sendMessage(PACKET_TYPE.AUTHORIZE_REQUEST, authoriseRequest);
       }
 
@@ -322,7 +331,7 @@ export default class NexusTalk extends Streamer {
         // This isn't a re-authorise request, so perform 'Hello' packet
         let TraitMap = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.Hello');
         if (TraitMap !== null) {
-          this?.log?.debug?.('Performing authentication to "%s"', this.host);
+          this?.log?.debug?.('Performing authentication to "%s"', this.#host);
 
           let encodedData = TraitMap.encode(
             TraitMap.fromObject({
@@ -356,7 +365,7 @@ export default class NexusTalk extends Streamer {
       return;
     }
 
-    this?.log?.debug?.('Redirect requested from "%s" to "%s"', this.host, redirectToHost);
+    this?.log?.debug?.('Redirect requested from "%s" to "%s"', this.#host, redirectToHost);
 
     // Setup listener for socket close event. Once socket is closed, we'll perform the redirect
     this.#socket?.on?.('close', () => {
@@ -393,7 +402,7 @@ export default class NexusTalk extends Streamer {
       this.#packets = [];
       this.#messages = [];
 
-      this?.log?.debug?.('Playback started from "%s" with session ID "%s"', this.host, this.#id);
+      this?.log?.debug?.('Playback started from "%s" with session ID "%s"', this.#host, this.#id);
     }
   }
 
@@ -420,8 +429,8 @@ export default class NexusTalk extends Streamer {
       // Setup up a timeout to monitor for no packets recieved in a certain period
       // If its trigger, we'll attempt to restart the stream and/or connection
       // <-- testing to see how often this occurs first
-      clearTimeout(this.stalledTimer);
-      this.stalledTimer = setTimeout(() => {
+      clearTimeout(this.#stalledTimer);
+      this.#stalledTimer = setTimeout(() => {
         this?.log?.debug?.(
           'We have not received any data from nexus in the past "%s" seconds for uuid "%s". Attempting restart',
           10,
@@ -458,12 +467,12 @@ export default class NexusTalk extends Streamer {
 
       if (this.#id !== undefined && decodedMessage.reason === 'USER_ENDED_SESSION') {
         // Normal playback ended ie: when we stopped playback
-        this?.log?.debug?.('Playback ended on "%s"', this.host);
+        this?.log?.debug?.('Playback ended on "%s"', this.#host);
       }
 
       if (decodedMessage.reason !== 'USER_ENDED_SESSION') {
         // Error during playback, so we'll attempt to restart by reconnection to host
-        this?.log?.debug?.('Playback ended on "%s" with error "%s". Attempting reconnection', this.host, decodedMessage.reason);
+        this?.log?.debug?.('Playback ended on "%s" with error "%s". Attempting reconnection', this.#host, decodedMessage.reason);
 
         // Setup listener for socket close event. Once socket is closed, we'll perform the re-connection
         this.#socket?.on?.('close', () => {
@@ -542,8 +551,8 @@ export default class NexusTalk extends Streamer {
           }
 
           // Periodically send PING message to keep stream alive
-          clearInterval(this.pingTimer);
-          this.pingTimer = setInterval(() => {
+          clearInterval(this.#pingTimer);
+          this.#pingTimer = setInterval(() => {
             this.#sendMessage(PACKET_TYPE.PING, Buffer.alloc(0));
           }, PING_INTERVAL);
 

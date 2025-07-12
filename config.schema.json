@@ -180,6 +180,12 @@
                         "hotWaterBoostTime": {
                             "type": "number"
                         },
+                        "hotWaterMaxTemp": {
+                            "type": "string"
+                        },
+                        "hotWaterMinTemp": {
+                            "type": "string"
+                        },
                         "humiditySensor": {
                             "type": "boolean"
                         },

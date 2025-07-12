@@ -18,7 +18,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2025.07.07
+// Code version 2025.07.10
 // Mark Hulskamp
 'use strict';
 
@@ -127,7 +127,7 @@ export default class Streamer {
     return {
       video: undefined,
       audio: undefined,
-      talk: undefined,
+      talkback: undefined,
     };
   }
 

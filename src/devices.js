@@ -1,7 +1,7 @@
 // Device support loader
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.06.30
+// Code version 2025.07.09
 // Mark Hulskamp
 'use strict';
 
@@ -88,16 +88,15 @@ function getDeviceHKCategory(type) {
     category = 6; // Categories.DOOR_LOCK
   }
 
+  if (type === DEVICE_TYPE.HEATLINK) {
+    category = 8; // Categories.SWITCH
+  }
+
   if (type === DEVICE_TYPE.THERMOSTAT) {
     category = 9; // Categories.THERMOSTAT
   }
 
-  if (
-    type === DEVICE_TYPE.TEMPSENSOR ||
-    type === DEVICE_TYPE.HEATLINK ||
-    type === DEVICE_TYPE.SMOKESENSOR ||
-    type === DEVICE_TYPE.WEATHER
-  ) {
+  if (type === DEVICE_TYPE.TEMPSENSOR || type === DEVICE_TYPE.SMOKESENSOR || type === DEVICE_TYPE.WEATHER) {
     category = 10; // Categories.SENSOR
   }
 

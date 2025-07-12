@@ -7,6 +7,7 @@
 
 [![npm](https://badgen.net/npm/v/homebridge-nest-accfactory/latest)](https://www.npmjs.com/package/homebridge-nest-accfactory)
 [![npm](https://badgen.net/npm/dt/homebridge-nest-accfactory?label=downloads)](https://www.npmjs.com/package/homebridge-nest-accfactory)
+[![verified-by-homebridge](https://badgen.net/badge/homebridge/verified/purple)](https://github.com/homebridge/homebridge/wiki/Verified-Plugins)
 
 </span>
 
@@ -105,8 +106,8 @@ The following options are available in the config.json options object. These app
 | elevation          | Height above sea level for the weather station                                               | 0              |
 | eveHistory         | Provide history in EveHome application where applicable                                      | true           |
 | exclude            | Exclude ALL devices                                                                          | false          |
-| ffmegDebug         | Turns on specific debugging output for when ffmpeg is envoked                                | false          |
-| ffmpegHWaccel      | Enable video hardward acceleration for supported camera(s) and doorbell(s)                   | false          |  
+| ffmpegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                | false          |
+| ffmpegHWaccel      | Enable video hardware acceleration for supported camera(s) and doorbell(s)                   | false          |  
 | ffmegPath          | Path to an ffmpeg binary for us to use                                                       | /usr/local/bin |
 | hksv               | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                          | false          |
 | weather            | Virtual weather station for each Nest/Google home we discover                                | false          |
@@ -122,10 +123,12 @@ The following options are available on a per-device level in the `config.json` `
 | elevation          | Height above sea level for the specific weather station                                      | 0              |
 | eveHistory         | Provide history in EveHome application where applicable for the specific device              | true           |
 | exclude            | Exclude the device                                                                           | false          |
-| ffmegDebug         | Turns on specific debugging output for when ffmpeg is envoked                                | false          |
-| ffmpegHWaccel      | Enable video hardward acceleration for supported camera(s) and doorbell(s)                   | false          |                                                         
+| ffmpegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                | false          |
+| ffmpegHWaccel      | Enable video hardware acceleration for supported camera(s) and doorbell(s)                   | false          |
 | hksv               | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                          | false          |
 | hotWaterBoostTime  | Time in seconds for hotwater boost heating                                                   | 1800           |
+| hotWaterMaxTemp    | Maximum supported temperature for hotwater heating                                           | 70c            |
+| hotWaterMinTemp    | Minimum supported temperature for hotwater heating                                           | 30c            |
 | humiditySensor     | Create a seperate humidity sensor for supported thermostat(s)                                | false          |
 | localAccess        | Use direct access to supported camera(s) and doorbell(s) for video streaming and recording   | false          |    
 | motionCooldown     | Time in seconds between detected motion events                                               | 60             |
