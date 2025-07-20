@@ -11,7 +11,7 @@ const LOW_BATTERY_LEVEL = 10; // Low battery level percentage
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = 'Protect';
-  static VERSION = '2025.06.28'; // Code version
+  static VERSION = '2025.07.20'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -48,6 +48,17 @@ export default class NestProtect extends HomeKitDevice {
       this.motionService = this.addHKService(this.hap.Service.MotionSensor, '', 1);
       this.postSetupDetail('With motion sensor');
     }
+  }
+
+  onRemove() {
+    this.accessory.removeService(this.smokeService);
+    this.accessory.removeService(this.carbonMonoxideService);
+    this.accessory.removeService(this.batteryService);
+    this.accessory.removeService(this.motionService);
+    this.smokeService = undefined;
+    this.carbonMonoxideService = undefined;
+    this.batteryService = undefined;
+    this.motionService = undefined;
   }
 
   onUpdate(deviceData) {
@@ -171,7 +182,7 @@ export default class NestProtect extends HomeKitDevice {
         //this?.log?.info?.('Eve Smoke Alarm test', (message.alarmtest === true ? 'start' : 'stop'));
       }
       if (typeof message?.statusled === 'boolean') {
-        this.set({ uuid: this.deviceData.nest_google_uuid, ntp_green_led_enable: message.statusled });
+        this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, ntp_green_led_enable: message.statusled });
       }
       return;
     }

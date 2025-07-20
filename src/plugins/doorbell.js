@@ -12,7 +12,7 @@ import NestCamera from './camera.js';
 
 export default class NestDoorbell extends NestCamera {
   static TYPE = 'Doorbell';
-  static VERSION = '2025.07.07'; // Code version
+  static VERSION = '2025.07.13'; // Code version
 
   doorbellTimer = undefined; // Cooldown timer for doorbell events
   switchService = undefined; // HomeKit switch for enabling/disabling chime
@@ -69,9 +69,7 @@ export default class NestDoorbell extends NestCamera {
     clearTimeout(this.doorbellTimer);
     this.doorbellTimer = undefined;
 
-    if (this.switchService !== undefined) {
-      this.accessory.removeService(this.switchService);
-    }
+    this.accessory.removeService(this.switchService);
     this.switchService = undefined;
   }
 

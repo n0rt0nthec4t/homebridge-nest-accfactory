@@ -126,9 +126,9 @@ The following options are available on a per-device level in the `config.json` `
 | ffmpegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                | false          |
 | ffmpegHWaccel      | Enable video hardware acceleration for supported camera(s) and doorbell(s)                   | false          |
 | hksv               | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                          | false          |
-| hotWaterBoostTime  | Time in seconds for hotwater boost heating                                                   | 1800           |
-| hotWaterMaxTemp    | Maximum supported temperature for hotwater heating                                           | 70c            |
-| hotWaterMinTemp    | Minimum supported temperature for hotwater heating                                           | 30c            |
+| hotwaterBoostTime  | Time in seconds for hotwater boost heating                                                   | 1800           |
+| hotwaterMaxTemp    | Maximum supported temperature for hotwater heating                                           | 70c            |
+| hotwaterMinTemp    | Minimum supported temperature for hotwater heating                                           | 30c            |
 | humiditySensor     | Create a seperate humidity sensor for supported thermostat(s)                                | false          |
 | localAccess        | Use direct access to supported camera(s) and doorbell(s) for video streaming and recording   | false          |    
 | motionCooldown     | Time in seconds between detected motion events                                               | 60             |

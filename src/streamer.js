@@ -6,7 +6,7 @@
 // Buffers a single audio/video stream which allows multiple HomeKit devices to connect to the single stream
 // for live viewing and/or recording
 //
-// The following functions should be overriden in your class which extends this
+// The following functions should be defined in your class which extends this
 //
 // streamer.connect()
 // streamer.close()
@@ -18,16 +18,16 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2025.07.10
+// Code version 2025.07.13
 // Mark Hulskamp
 'use strict';
 
 // Define nodejs module requirements
 import { Buffer } from 'node:buffer';
-import { setInterval, setTimeout, clearTimeout } from 'node:timers';
+import { setInterval, clearInterval, setTimeout, clearTimeout } from 'node:timers';
 import fs from 'fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import url from 'node:url';
 import { PassThrough } from 'stream';
 
 // Define our modules
@@ -43,7 +43,7 @@ const TALKBACK_AUDIO_TIMEOUT = 1000;
 const MAX_BUFFER_AGE = 5000; // Keep last 5s of media in buffer
 const STREAM_FRAME_INTERVAL = 1000 / 30; // 30fps approx
 const RESOURCE_PATH = './res';
-const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
+const __dirname = path.dirname(url.fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 const LOG_LEVELS = {
   INFO: 'info',
   SUCCESS: 'success',
@@ -137,9 +137,10 @@ export default class Streamer {
       this.log = options.log;
     }
 
-    // Setup HomeKitDevicee message type  handler back to HomeKitDevice classes
+    // Setup HomeKitDevicee message type handler back to HomeKitDevice classes
     HomeKitDevice.message(uuid, Streamer.MESSAGE, this);
-    HomeKitDevice.message(uuid, HomeKitDevice.UPDATE, this); // We'll register for updates for this uuid also
+    HomeKitDevice.message(uuid, HomeKitDevice.UPDATE, this); // Register for 'update' message for this uuid also
+    HomeKitDevice.message(uuid, HomeKitDevice.SHUTDOWN, this); // Register for 'shutdown' message for this uuid also
 
     // Store data we need from the device data passed it
     this.migrating = deviceData?.migrating === true;
@@ -175,7 +176,7 @@ export default class Streamer {
   }
 
   // Class functions
-  onUpdate(deviceData) {
+  async onUpdate(deviceData) {
     if (typeof deviceData !== 'object') {
       return;
     }
@@ -189,7 +190,8 @@ export default class Streamer {
       this.nest_google_uuid = deviceData?.nest_google_uuid;
 
       if (this.isStreaming() === true || this.isBuffering() === true) {
-        // Since the Nest/Goolgle device uuid has change and a streamer may use this, if there any any active outputs, close and connect again
+        // Since the Nest/Google device uuid has changed if there any any active outputs, close and connect again
+        // This may occur if a device has migrated between Nest and Google APIs
         this.#doClose();
         this.#doConnect();
       }
@@ -255,7 +257,12 @@ export default class Streamer {
     }
   }
 
-  stopAllStreams() {
+  onShutdown() {
+    clearInterval(this.#outputTimer);
+    this.stopEverything();
+  }
+
+  stopEverything() {
     if (this.isStreaming() === true || this.isBuffering() === true) {
       this?.log?.debug?.('Stopped buffering, live and recording from uuid "%s"', this.nest_google_uuid);
       this.#outputs = {}; // Remove all outputs (live, record, buffer)

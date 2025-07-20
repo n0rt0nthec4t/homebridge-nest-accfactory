@@ -21,7 +21,7 @@ const DAYS_OF_WEEK = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2025.07.10'; // Code version
+  static VERSION = '2025.07.20'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -43,13 +43,13 @@ export default class NestThermostat extends HomeKitDevice {
     // Setup set characteristics
 
     // Patch to avoid characteristic errors when setting initial property ranges
-    this.hap.Characteristic.TargetTemperature.prototype.getDefaultValue = function () {
+    this.hap.Characteristic.TargetTemperature.prototype.getDefaultValue = () => {
       return MIN_TEMPERATURE; // start at minimum target temperature
     };
-    this.hap.Characteristic.HeatingThresholdTemperature.prototype.getDefaultValue = function () {
+    this.hap.Characteristic.HeatingThresholdTemperature.prototype.getDefaultValue = () => {
       return MIN_TEMPERATURE; // start at minimum heating threshold
     };
-    this.hap.Characteristic.CoolingThresholdTemperature.prototype.getDefaultValue = function () {
+    this.hap.Characteristic.CoolingThresholdTemperature.prototype.getDefaultValue = () => {
       return MAX_TEMPERATURE; // start at maximum cooling threshold
     };
 
@@ -240,242 +240,23 @@ export default class NestThermostat extends HomeKitDevice {
     this.externalDehumidifier !== undefined && this.postSetupDetail('Using external dehumidification module');
   }
 
-  setFan(fanState, speed) {
-    let currentState = this.fanService.getCharacteristic(this.hap.Characteristic.Active).value;
-    let currentSpeed = this.fanService.getCharacteristic(this.hap.Characteristic.RotationSpeed).value;
-
-    if (fanState !== currentState || speed !== currentSpeed) {
-      let isActive = fanState === this.hap.Characteristic.Active.ACTIVE;
-      let scaledSpeed = Math.round((speed / 100) * this.deviceData.fan_max_speed);
-
-      this.set({
-        uuid: this.deviceData.nest_google_uuid,
-        fan_state: isActive,
-        fan_timer_speed: scaledSpeed,
-      });
-
-      this.fanService.updateCharacteristic(this.hap.Characteristic.Active, fanState);
-      this.fanService.updateCharacteristic(this.hap.Characteristic.RotationSpeed, speed);
-
-      this?.log?.info?.(
-        'Set fan on thermostat "%s" to "%s"',
-        this.deviceData.description,
-        isActive ? 'On with fan speed of ' + speed + '%' : 'Off',
-      );
-    }
-  }
-
-  setDehumidifier(dehumidiferState) {
-    let isActive = dehumidiferState === this.hap.Characteristic.Active.ACTIVE;
-
-    this.set({
-      uuid: this.deviceData.nest_google_uuid,
-      dehumidifier_state: isActive,
-    });
-
-    this.dehumidifierService.updateCharacteristic(this.hap.Characteristic.Active, dehumidiferState);
-
-    this?.log?.info?.(
-      'Set dehumidifer on thermostat "%s" to "%s"',
-      this.deviceData.description,
-      isActive ? 'On with target humidity level of ' + this.deviceData.target_humidity + '%' : 'Off',
-    );
-  }
-
-  setDisplayUnit(temperatureUnit) {
-    let unit = temperatureUnit === this.hap.Characteristic.TemperatureDisplayUnits.CELSIUS ? 'C' : 'F';
-
-    this.set({
-      uuid: this.deviceData.nest_google_uuid,
-      temperature_scale: unit,
-    });
-
-    this.thermostatService.updateCharacteristic(this.hap.Characteristic.TemperatureDisplayUnits, temperatureUnit);
-
-    this?.log?.info?.('Set temperature units on thermostat "%s" to "%s"', this.deviceData.description, unit === 'C' ? '°C' : '°F');
-  }
-
-  setMode(thermostatMode) {
-    if (thermostatMode !== this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).value) {
-      // Work out based on the HomeKit requested mode, what can the thermostat really switch too
-      // We may over-ride the requested HomeKit mode
-      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.HEAT && this.deviceData.can_heat === false) {
-        thermostatMode = this.hap.Characteristic.TargetHeatingCoolingState.OFF;
-      }
-      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.COOL && this.deviceData.can_cool === false) {
-        thermostatMode = this.hap.Characteristic.TargetHeatingCoolingState.OFF;
-      }
-      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.AUTO) {
-        // Workaround for 'Hey Siri, turn on my thermostat'
-        // Appears to automatically request mode as 'auto', but we need to see what Nest device supports
-        if (this.deviceData.can_cool === true && this.deviceData.can_heat === false) {
-          thermostatMode = this.hap.Characteristic.TargetHeatingCoolingState.COOL;
-        }
-        if (this.deviceData.can_cool === false && this.deviceData.can_heat === true) {
-          thermostatMode = this.hap.Characteristic.TargetHeatingCoolingState.HEAT;
-        }
-        if (this.deviceData.can_cool === false && this.deviceData.can_heat === false) {
-          thermostatMode = this.hap.Characteristic.TargetHeatingCoolingState.OFF;
-        }
-      }
-
-      let mode = '';
-      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.OFF) {
-        this.thermostatService.updateCharacteristic(this.hap.Characteristic.TargetTemperature, this.deviceData.target_temperature);
-        this.thermostatService.updateCharacteristic(
-          this.hap.Characteristic.TargetHeatingCoolingState,
-          this.hap.Characteristic.TargetHeatingCoolingState.OFF,
-        );
-        mode = 'off';
-      }
-      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.COOL) {
-        this.thermostatService.updateCharacteristic(this.hap.Characteristic.TargetTemperature, this.deviceData.target_temperature_high);
-        this.thermostatService.updateCharacteristic(
-          this.hap.Characteristic.TargetHeatingCoolingState,
-          this.hap.Characteristic.TargetHeatingCoolingState.COOL,
-        );
-        mode = 'cool';
-      }
-      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.HEAT) {
-        this.thermostatService.updateCharacteristic(this.hap.Characteristic.TargetTemperature, this.deviceData.target_temperature_low);
-        this.thermostatService.updateCharacteristic(
-          this.hap.Characteristic.TargetHeatingCoolingState,
-          this.hap.Characteristic.TargetHeatingCoolingState.HEAT,
-        );
-        mode = 'heat';
-      }
-      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.AUTO) {
-        this.thermostatService.updateCharacteristic(
-          this.hap.Characteristic.TargetTemperature,
-          (this.deviceData.target_temperature_low + this.deviceData.target_temperature_high) * 0.5,
-        );
-        this.thermostatService.updateCharacteristic(
-          this.hap.Characteristic.TargetHeatingCoolingState,
-          this.hap.Characteristic.TargetHeatingCoolingState.AUTO,
-        );
-        mode = 'range';
-      }
-
-      this.set({ uuid: this.deviceData.nest_google_uuid, hvac_mode: mode });
-
-      this?.log?.info?.('Set mode on "%s" to "%s"', this.deviceData.description, mode);
-    }
-  }
-
-  getMode() {
-    let currentMode = null;
-    let mode = this.deviceData.hvac_mode.toUpperCase();
-
-    if (mode === 'HEAT' || mode === 'ECOHEAT') {
-      // heating mode, either eco or normal
-      currentMode = this.hap.Characteristic.TargetHeatingCoolingState.HEAT;
-    }
-    if (mode === 'COOL' || mode === 'ECOCOOL') {
-      // cooling mode, either eco or normal
-      currentMode = this.hap.Characteristic.TargetHeatingCoolingState.COOL;
-    }
-    if (mode === 'RANGE' || mode === 'ECORANGE') {
-      // range mode, either eco or normal
-      currentMode = this.hap.Characteristic.TargetHeatingCoolingState.AUTO;
-    }
-    if (mode === 'OFF' || (this.deviceData.can_cool === false && this.deviceData.can_heat === false)) {
-      // off mode or no heating or cooling capability
-      currentMode = this.hap.Characteristic.TargetHeatingCoolingState.OFF;
-    }
-
-    return currentMode;
-  }
-
-  setTemperature(characteristic, temperature) {
-    if (typeof characteristic !== 'function' || typeof characteristic?.UUID !== 'string') {
-      return;
-    }
-
-    let mode = this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).value;
-    let isEco = this.deviceData.hvac_mode?.toUpperCase?.().includes('ECO') === true;
-    let scale = this.deviceData.temperature_scale?.toUpperCase?.() === 'F' ? 'F' : 'C';
-    let tempDisplay = (scale === 'F' ? (temperature * 9) / 5 + 32 : temperature).toFixed(1);
-    let tempUnit = scale === 'F' ? '°F' : '°C';
-    let ecoPrefix = isEco ? 'eco mode ' : '';
-
-    let targetKey = undefined;
-    let modeLabel = '';
-
-    if (
-      characteristic.UUID === this.hap.Characteristic.TargetTemperature.UUID &&
-      mode !== this.hap.Characteristic.TargetHeatingCoolingState.AUTO
-    ) {
-      targetKey = 'target_temperature';
-      modeLabel = mode === this.hap.Characteristic.TargetHeatingCoolingState.HEAT ? 'heating' : 'cooling';
-    } else if (
-      characteristic.UUID === this.hap.Characteristic.HeatingThresholdTemperature.UUID &&
-      mode === this.hap.Characteristic.TargetHeatingCoolingState.AUTO
-    ) {
-      targetKey = 'target_temperature_low';
-      modeLabel = 'heating';
-    } else if (
-      characteristic.UUID === this.hap.Characteristic.CoolingThresholdTemperature.UUID &&
-      mode === this.hap.Characteristic.TargetHeatingCoolingState.AUTO
-    ) {
-      targetKey = 'target_temperature_high';
-      modeLabel = 'cooling';
-    }
-
-    if (targetKey !== undefined) {
-      this.set({ uuid: this.deviceData.nest_google_uuid, [targetKey]: temperature });
-      this?.log?.info?.(
-        'Set %s%s temperature on "%s" to "%s %s"',
-        ecoPrefix,
-        modeLabel,
-        this.deviceData.description,
-        tempDisplay,
-        tempUnit,
-      );
-    }
-
-    this.thermostatService.updateCharacteristic(characteristic, temperature);
-  }
-
-  getTemperature(characteristic) {
-    if (typeof characteristic !== 'function' || typeof characteristic?.UUID !== 'string') {
-      return null;
-    }
-
-    let currentTemperature = {
-      [this.hap.Characteristic.TargetTemperature.UUID]: this.deviceData.target_temperature,
-      [this.hap.Characteristic.HeatingThresholdTemperature.UUID]: this.deviceData.target_temperature_low,
-      [this.hap.Characteristic.CoolingThresholdTemperature.UUID]: this.deviceData.target_temperature_high,
-    }[characteristic.UUID];
-
-    if (isNaN(currentTemperature) === false) {
-      currentTemperature = Math.min(Math.max(currentTemperature, MIN_TEMPERATURE), MAX_TEMPERATURE);
-    }
-
-    return currentTemperature;
-  }
-
-  setChildlock(pin, value) {
-    // TODO - pincode setting when turning on.
-    // On REST API, writes to device.xxxxxxxx.temperature_lock_pin_hash. How is the hash calculated???
-    // Do we set temperature range limits when child lock on??
-
-    this.thermostatService.updateCharacteristic(this.hap.Characteristic.LockPhysicalControls, value); // Update HomeKit with value
-    if (value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED) {
-      // Set pin hash????
-    }
-    if (value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_DISABLED) {
-      // Clear pin hash????
-    }
-    this.set({
-      uuid: this.deviceData.nest_google_uuid,
-      temperature_lock: value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED ? true : false,
-    });
-
-    this?.log?.info?.(
-      'Setting Childlock on "%s" to "%s"',
-      this.deviceData.description,
-      value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED ? 'Enabled' : 'Disabled',
-    );
+  onRemove() {
+    this.accessory.removeService(this.thermostatService);
+    this.accessory.removeService(this.batteryService);
+    this.accessory.removeService(this.occupancyService);
+    this.accessory.removeService(this.humidityService);
+    this.accessory.removeService(this.fanService);
+    this.accessory.removeService(this.dehumidifierService);
+    this.thermostatService = undefined;
+    this.batteryService = undefined;
+    this.occupancyService = undefined;
+    this.humidityService = undefined;
+    this.fanService = undefined;
+    this.dehumidifierService = undefined;
+    this.externalCool = undefined;
+    this.externalHeat = undefined;
+    this.externalFan = undefined;
+    this.externalDehumidifier = undefined;
   }
 
   onUpdate(deviceData) {
@@ -514,7 +295,7 @@ export default class NestThermostat extends HomeKitDevice {
         : this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_DISABLED,
     );
 
-    // Update air filter sttaus if has been added
+    // Update air filter status if has been added
     if (this.thermostatService.testCharacteristic(this.hap.Characteristic.FilterChangeIndication) === true) {
       this.thermostatService.updateCharacteristic(
         this.hap.Characteristic.FilterChangeIndication,
@@ -882,18 +663,256 @@ export default class NestThermostat extends HomeKitDevice {
 
     if (type === HomeKitDevice?.HISTORY?.SET) {
       if (typeof message.vacation === 'boolean') {
-        this.set({ uuid: this.deviceData.nest_google_uuid, vacation_mode: message.vacation.status });
+        this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, vacation_mode: message.vacation.status });
       }
 
       if (typeof message.programs === 'object') {
         // Future: convert to Nest format and apply via .set()
-        // this.set({ uuid: ..., days: { ... } });
+        // this.message(HomeKitDevice.SET, { uuid: ..., days: { ... } });
       }
 
       return;
     }
 
     return;
+  }
+
+  setFan(fanState, speed) {
+    let currentState = this.fanService.getCharacteristic(this.hap.Characteristic.Active).value;
+    let currentSpeed = this.fanService.getCharacteristic(this.hap.Characteristic.RotationSpeed).value;
+
+    if (fanState !== currentState || speed !== currentSpeed) {
+      let isActive = fanState === this.hap.Characteristic.Active.ACTIVE;
+      let scaledSpeed = Math.round((speed / 100) * this.deviceData.fan_max_speed);
+
+      this.message(HomeKitDevice.SET, {
+        uuid: this.deviceData.nest_google_uuid,
+        fan_state: isActive,
+        fan_timer_speed: scaledSpeed,
+      });
+
+      this.fanService.updateCharacteristic(this.hap.Characteristic.Active, fanState);
+      this.fanService.updateCharacteristic(this.hap.Characteristic.RotationSpeed, speed);
+
+      this?.log?.info?.(
+        'Set fan on thermostat "%s" to "%s"',
+        this.deviceData.description,
+        isActive ? 'On with fan speed of ' + speed + '%' : 'Off',
+      );
+    }
+  }
+
+  setDehumidifier(dehumidiferState) {
+    let isActive = dehumidiferState === this.hap.Characteristic.Active.ACTIVE;
+
+    this.message(HomeKitDevice.SET, {
+      uuid: this.deviceData.nest_google_uuid,
+      dehumidifier_state: isActive,
+    });
+
+    this.dehumidifierService.updateCharacteristic(this.hap.Characteristic.Active, dehumidiferState);
+
+    this?.log?.info?.(
+      'Set dehumidifer on thermostat "%s" to "%s"',
+      this.deviceData.description,
+      isActive ? 'On with target humidity level of ' + this.deviceData.target_humidity + '%' : 'Off',
+    );
+  }
+
+  setDisplayUnit(temperatureUnit) {
+    let unit = temperatureUnit === this.hap.Characteristic.TemperatureDisplayUnits.CELSIUS ? 'C' : 'F';
+
+    this.message(HomeKitDevice.SET, {
+      uuid: this.deviceData.nest_google_uuid,
+      temperature_scale: unit,
+    });
+
+    this.thermostatService.updateCharacteristic(this.hap.Characteristic.TemperatureDisplayUnits, temperatureUnit);
+
+    this?.log?.info?.('Set temperature units on thermostat "%s" to "%s"', this.deviceData.description, unit === 'C' ? '°C' : '°F');
+  }
+
+  setMode(thermostatMode) {
+    if (thermostatMode !== this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).value) {
+      // Work out based on the HomeKit requested mode, what can the thermostat really switch too
+      // We may over-ride the requested HomeKit mode
+      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.HEAT && this.deviceData.can_heat === false) {
+        thermostatMode = this.hap.Characteristic.TargetHeatingCoolingState.OFF;
+      }
+      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.COOL && this.deviceData.can_cool === false) {
+        thermostatMode = this.hap.Characteristic.TargetHeatingCoolingState.OFF;
+      }
+      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.AUTO) {
+        // Workaround for 'Hey Siri, turn on my thermostat'
+        // Appears to automatically request mode as 'auto', but we need to see what Nest device supports
+        if (this.deviceData.can_cool === true && this.deviceData.can_heat === false) {
+          thermostatMode = this.hap.Characteristic.TargetHeatingCoolingState.COOL;
+        }
+        if (this.deviceData.can_cool === false && this.deviceData.can_heat === true) {
+          thermostatMode = this.hap.Characteristic.TargetHeatingCoolingState.HEAT;
+        }
+        if (this.deviceData.can_cool === false && this.deviceData.can_heat === false) {
+          thermostatMode = this.hap.Characteristic.TargetHeatingCoolingState.OFF;
+        }
+      }
+
+      let mode = '';
+      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.OFF) {
+        this.thermostatService.updateCharacteristic(this.hap.Characteristic.TargetTemperature, this.deviceData.target_temperature);
+        this.thermostatService.updateCharacteristic(
+          this.hap.Characteristic.TargetHeatingCoolingState,
+          this.hap.Characteristic.TargetHeatingCoolingState.OFF,
+        );
+        mode = 'off';
+      }
+      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.COOL) {
+        this.thermostatService.updateCharacteristic(this.hap.Characteristic.TargetTemperature, this.deviceData.target_temperature_high);
+        this.thermostatService.updateCharacteristic(
+          this.hap.Characteristic.TargetHeatingCoolingState,
+          this.hap.Characteristic.TargetHeatingCoolingState.COOL,
+        );
+        mode = 'cool';
+      }
+      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.HEAT) {
+        this.thermostatService.updateCharacteristic(this.hap.Characteristic.TargetTemperature, this.deviceData.target_temperature_low);
+        this.thermostatService.updateCharacteristic(
+          this.hap.Characteristic.TargetHeatingCoolingState,
+          this.hap.Characteristic.TargetHeatingCoolingState.HEAT,
+        );
+        mode = 'heat';
+      }
+      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.AUTO) {
+        this.thermostatService.updateCharacteristic(
+          this.hap.Characteristic.TargetTemperature,
+          (this.deviceData.target_temperature_low + this.deviceData.target_temperature_high) * 0.5,
+        );
+        this.thermostatService.updateCharacteristic(
+          this.hap.Characteristic.TargetHeatingCoolingState,
+          this.hap.Characteristic.TargetHeatingCoolingState.AUTO,
+        );
+        mode = 'range';
+      }
+
+      this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, hvac_mode: mode });
+
+      this?.log?.info?.('Set mode on "%s" to "%s"', this.deviceData.description, mode);
+    }
+  }
+
+  getMode() {
+    let currentMode = null;
+    let mode = this.deviceData.hvac_mode.toUpperCase();
+
+    if (mode === 'HEAT' || mode === 'ECOHEAT') {
+      // heating mode, either eco or normal
+      currentMode = this.hap.Characteristic.TargetHeatingCoolingState.HEAT;
+    }
+    if (mode === 'COOL' || mode === 'ECOCOOL') {
+      // cooling mode, either eco or normal
+      currentMode = this.hap.Characteristic.TargetHeatingCoolingState.COOL;
+    }
+    if (mode === 'RANGE' || mode === 'ECORANGE') {
+      // range mode, either eco or normal
+      currentMode = this.hap.Characteristic.TargetHeatingCoolingState.AUTO;
+    }
+    if (mode === 'OFF' || (this.deviceData.can_cool === false && this.deviceData.can_heat === false)) {
+      // off mode or no heating or cooling capability
+      currentMode = this.hap.Characteristic.TargetHeatingCoolingState.OFF;
+    }
+
+    return currentMode;
+  }
+
+  setTemperature(characteristic, temperature) {
+    if (typeof characteristic !== 'function' || typeof characteristic?.UUID !== 'string') {
+      return;
+    }
+
+    let mode = this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).value;
+    let isEco = this.deviceData.hvac_mode?.toUpperCase?.().includes('ECO') === true;
+    let scale = this.deviceData.temperature_scale?.toUpperCase?.() === 'F' ? 'F' : 'C';
+    let tempDisplay = (scale === 'F' ? (temperature * 9) / 5 + 32 : temperature).toFixed(1);
+    let tempUnit = scale === 'F' ? '°F' : '°C';
+    let ecoPrefix = isEco ? 'eco mode ' : '';
+
+    let targetKey = undefined;
+    let modeLabel = '';
+
+    if (
+      characteristic.UUID === this.hap.Characteristic.TargetTemperature.UUID &&
+      mode !== this.hap.Characteristic.TargetHeatingCoolingState.AUTO
+    ) {
+      targetKey = 'target_temperature';
+      modeLabel = mode === this.hap.Characteristic.TargetHeatingCoolingState.HEAT ? 'heating' : 'cooling';
+    } else if (
+      characteristic.UUID === this.hap.Characteristic.HeatingThresholdTemperature.UUID &&
+      mode === this.hap.Characteristic.TargetHeatingCoolingState.AUTO
+    ) {
+      targetKey = 'target_temperature_low';
+      modeLabel = 'heating';
+    } else if (
+      characteristic.UUID === this.hap.Characteristic.CoolingThresholdTemperature.UUID &&
+      mode === this.hap.Characteristic.TargetHeatingCoolingState.AUTO
+    ) {
+      targetKey = 'target_temperature_high';
+      modeLabel = 'cooling';
+    }
+
+    if (targetKey !== undefined) {
+      this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, [targetKey]: temperature });
+      this?.log?.info?.(
+        'Set %s%s temperature on "%s" to "%s %s"',
+        ecoPrefix,
+        modeLabel,
+        this.deviceData.description,
+        tempDisplay,
+        tempUnit,
+      );
+    }
+
+    this.thermostatService.updateCharacteristic(characteristic, temperature);
+  }
+
+  getTemperature(characteristic) {
+    if (typeof characteristic !== 'function' || typeof characteristic?.UUID !== 'string') {
+      return null;
+    }
+
+    let currentTemperature = {
+      [this.hap.Characteristic.TargetTemperature.UUID]: this.deviceData.target_temperature,
+      [this.hap.Characteristic.HeatingThresholdTemperature.UUID]: this.deviceData.target_temperature_low,
+      [this.hap.Characteristic.CoolingThresholdTemperature.UUID]: this.deviceData.target_temperature_high,
+    }[characteristic.UUID];
+
+    if (isNaN(currentTemperature) === false) {
+      currentTemperature = Math.min(Math.max(currentTemperature, MIN_TEMPERATURE), MAX_TEMPERATURE);
+    }
+
+    return currentTemperature;
+  }
+
+  setChildlock(pin, value) {
+    // TODO - pincode setting when turning on.
+    // On REST API, writes to device.xxxxxxxx.temperature_lock_pin_hash. How is the hash calculated???
+    // Do we set temperature range limits when child lock on??
+
+    this.thermostatService.updateCharacteristic(this.hap.Characteristic.LockPhysicalControls, value); // Update HomeKit with value
+    if (value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED) {
+      // Set pin hash????
+    }
+    if (value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_DISABLED) {
+      // Clear pin hash????
+    }
+    this.message(HomeKitDevice.SET, {
+      uuid: this.deviceData.nest_google_uuid,
+      temperature_lock: value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED ? true : false,
+    });
+
+    this?.log?.info?.(
+      'Setting Childlock on "%s" to "%s"',
+      this.deviceData.description,
+      value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED ? 'Enabled' : 'Disabled',
+    );
   }
 
   #setupFan() {

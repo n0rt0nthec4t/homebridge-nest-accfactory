@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.07.12
+// Code version 2025.07.20
 // Mark Hulskamp
 'use strict';
 
@@ -97,13 +97,24 @@ export default class NestAccfactory {
     api?.on?.('shutdown', async () => {
       // We got notified that Homebridge is shutting down
       // Perform cleanup of internal state
-      Object.values(this.#trackedDevices).forEach((device) => {
-        Object.values(device?.timers || {}).forEach((timer) => clearInterval(timer));
-      });
 
+      for (let device of Object.values(this.#trackedDevices)) {
+        // Send a message to each device we've tracked and isn't excluded, that Homebridge is shutting down
+        if (device.exclude === false) {
+          await HomeKitDevice.message(device.uuid, HomeKitDevice.SHUTDOWN, {});
+        }
+
+        // Cleanup any timers we have running the devices ie: weather, alerts, zones polling etc
+        Object.values(device?.timers || {}).forEach((timer) => clearInterval(timer));
+      }
+
+      // Cleanup internal data
       this.#trackedDevices = {};
       this.#rawData = {};
       this.#protobufRoot = null;
+      this.#connections = undefined;
+      this.#deviceModules = undefined;
+      this.cachedAccessories = [];
     });
   }
 
@@ -130,7 +141,6 @@ export default class NestAccfactory {
       // Authorisation using Google account (cookie-based since 2022)
       this?.log?.debug?.('Performing authorisation using Google account for connection uuid "%s"', uuid);
       try {
-        this?.log?.debug?.('Fetching OAuth access token for connection "%s"', this.#connections[uuid].name);
         let tokenResponse = await fetchWrapper('get', this.#connections[uuid].issuetoken, {
           headers: {
             referer: 'https://accounts.google.com/o/oauth2/iframe',
@@ -142,14 +152,12 @@ export default class NestAccfactory {
         });
 
         let tokenData = await tokenResponse.json();
-        this?.log?.debug?.('OAuth token response: %j', tokenData);
 
         let googleOAuth2Token = tokenData.access_token;
         if (typeof googleOAuth2Token !== 'string') {
           throw new Error('Missing access_token in OAuth response');
         }
 
-        this?.log?.debug?.('Exchanging access token for Nest JWT for "%s"', this.#connections[uuid].name);
         let jwtResponse = await fetchWrapper(
           'post',
           'https://nestauthproxyservice-pa.googleapis.com/v1/issue_jwt',
@@ -167,8 +175,6 @@ export default class NestAccfactory {
         );
 
         let jwtData = await jwtResponse.json();
-        this?.log?.debug?.('JWT response: %j', jwtData);
-
         let googleToken = jwtData.jwt;
         if (typeof googleToken !== 'string') {
           throw new Error('Missing jwt in JWT response');
@@ -176,7 +182,6 @@ export default class NestAccfactory {
 
         let tokenExpire = Math.floor(new Date(jwtData.claims.expirationTime).valueOf() / 1000);
 
-        this?.log?.debug?.('Fetching session metadata for connection "%s"', this.#connections[uuid].name);
         let sessionResponse = await fetchWrapper('get', 'https://' + this.#connections[uuid].restAPIHost + '/session', {
           headers: {
             referer: 'https://' + this.#connections[uuid].referer,
@@ -186,7 +191,6 @@ export default class NestAccfactory {
         });
 
         let sessionData = await sessionResponse.json();
-        this?.log?.debug?.('Session response: %j', sessionData);
 
         this.#connections[uuid].authorised = true;
         this.#connections[uuid].userID = sessionData.userid;
@@ -498,6 +502,28 @@ export default class NestAccfactory {
           }),
         );
 
+        // Dump the the raw data if configured todo so
+        // This can be used for user support, rather than specific build to dump this :-)
+        if (this?.config?.options?.rawdump === true) {
+          Object.entries(this.#rawData)
+            .filter(([, data]) => data?.source === DATASOURCE.NEST_API)
+            .forEach(([serial, data]) => {
+              this?.log?.debug?.('Raw data [%s]', serial);
+              Object.entries(data).forEach(([key, value]) => {
+                if (typeof value === 'object' && value !== null) {
+                  this?.log?.debug?.('  %s:', key);
+                  String(JSON.stringify(value, null, 2))
+                    .split('\n')
+                    .forEach((line) => {
+                      this?.log?.debug?.('    %s', line);
+                    });
+                } else {
+                  this?.log?.debug?.('  %s: %j', key, value);
+                }
+              });
+            });
+        }
+
         await this.#processPostSubscribe();
       })
       .catch((error) => {
@@ -746,6 +772,28 @@ export default class NestAccfactory {
                   }
                 }),
               );
+
+              // Dump the the raw data if configured todo so
+              // This can be used for user support, rather than specific build to dump this :-)
+              if (this?.config?.options?.rawdump === true) {
+                Object.entries(this.#rawData)
+                  .filter(([, data]) => data?.source === DATASOURCE.PROTOBUF_API)
+                  .forEach(([serial, data]) => {
+                    this?.log?.debug?.('Raw data [%s]', serial);
+                    Object.entries(data).forEach(([key, value]) => {
+                      if (typeof value === 'object' && value !== null) {
+                        this?.log?.debug?.('  %s:', key);
+                        String(JSON.stringify(value, null, 2))
+                          .split('\n')
+                          .forEach((line) => {
+                            this?.log?.debug?.('    %s', line);
+                          });
+                      } else {
+                        this?.log?.debug?.('  %s: %j', key, value);
+                      }
+                    });
+                  });
+              }
 
               await this.#processPostSubscribe();
             }
@@ -1857,6 +1905,10 @@ export default class NestAccfactory {
             value?.source === DATASOURCE.PROTOBUF_API &&
             this.config.options?.useGoogleAPI === true &&
             value.value?.configuration_done?.deviceReady === true &&
+            value.value?.heat_link?.connectionStatus !== undefined &&
+            value.value?.heat_link?.connectionStatus !== '' &&
+            value.value?.heat_link?.connectionStatus !== 'HVAC_CONNECTION_STATE_UNSPECIFIED' &&
+            value.value?.heat_link?.connectionStatus !== 'HVAC_CONNECTION_STATE_DISCONNECTED' &&
             value.value?.heat_link?.heatLinkModel?.value !== undefined &&
             value.value?.heat_link?.heatLinkSerialNumber?.value !== undefined &&
             value.value?.heat_link?.heatLinkSwVersion?.value !== undefined
@@ -1938,30 +1990,30 @@ export default class NestAccfactory {
           );
           // Insert any extra options we've read in from configuration file for this device
           tempDevice.eveHistory = this.config.options.eveHistory === true || deviceOptions?.eveHistory === true;
-          tempDevice.hotWaterBoostTime = parseDurationToSeconds(deviceOptions?.hotWaterBoostTime, {
+          tempDevice.hotwaterBoostTime = parseDurationToSeconds(deviceOptions?.hotwaterBoostTime, {
             defaultValue: 30 * 60, // 30mins
             min: 60, // 1min
             max: 7200, // 2hrs
           });
-          tempDevice.hotWaterMinTemp =
-            isNaN(deviceOptions?.hotWaterMinTemp) === false
-              ? adjustTemperature(deviceOptions.hotWaterMinTemp, 'C', 'C', true)
-              : typeof deviceOptions?.hotWaterMinTemp === 'string' && /^([0-9.]+)\s*([CF])$/i.test(deviceOptions.hotWaterMinTemp)
+          tempDevice.hotwaterMinTemp =
+            isNaN(deviceOptions?.hotwaterMinTemp) === false
+              ? adjustTemperature(deviceOptions.hotwaterMinTemp, 'C', 'C', true)
+              : typeof deviceOptions?.hotwaterMinTemp === 'string' && /^([0-9.]+)\s*([CF])$/i.test(deviceOptions.hotwaterMinTemp)
                 ? adjustTemperature(
-                    parseFloat(deviceOptions.hotWaterMinTemp.match(/^([0-9.]+)\s*([CF])$/i)[1]),
-                    deviceOptions.hotWaterMinTemp.match(/^([0-9.]+)\s*([CF])$/i)[2],
+                    parseFloat(deviceOptions.hotwaterMinTemp.match(/^([0-9.]+)\s*([CF])$/i)[1]),
+                    deviceOptions.hotwaterMinTemp.match(/^([0-9.]+)\s*([CF])$/i)[2],
                     'C',
                     true,
                   )
                 : 30; // 30c minimum
 
-          tempDevice.hotWaterMaxTemp =
-            isNaN(deviceOptions?.hotWaterMaxTemp) === false
-              ? adjustTemperature(deviceOptions.hotWaterMaxTemp, 'C', 'C', true)
-              : typeof deviceOptions?.hotWaterMaxTemp === 'string' && /^([0-9.]+)\s*([CF])$/i.test(deviceOptions.hotWaterMaxTemp)
+          tempDevice.hotwaterMaxTemp =
+            isNaN(deviceOptions?.hotwaterMaxTemp) === false
+              ? adjustTemperature(deviceOptions.hotwaterMaxTemp, 'C', 'C', true)
+              : typeof deviceOptions?.hotwaterMaxTemp === 'string' && /^([0-9.]+)\s*([CF])$/i.test(deviceOptions.hotwaterMaxTemp)
                 ? adjustTemperature(
-                    parseFloat(deviceOptions.hotWaterMaxTemp.match(/^([0-9.]+)\s*([CF])$/i)[1]),
-                    deviceOptions.hotWaterMaxTemp.match(/^([0-9.]+)\s*([CF])$/i)[2],
+                    parseFloat(deviceOptions.hotwaterMaxTemp.match(/^([0-9.]+)\s*([CF])$/i)[1]),
+                    deviceOptions.hotwaterMaxTemp.match(/^([0-9.]+)\s*([CF])$/i)[2],
                     'C',
                     true,
                   )

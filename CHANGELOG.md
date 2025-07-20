@@ -2,18 +2,19 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.3.2 (alpha.11)
+## v0.3.2 (alpha.13)
 
-- We're Homebridge verfied :-)
-- General code cleanup and stability improvements
-- Refactored for updated base class
-- Refinements to camera streaming and recording
-- Improved EveHome integration
-- Fixed an issue where thermostat temperature settings caused errors at startup by ensuring initial values are within valid ranges
-- Fixed missing audio for newer Nest/Google cameras
-- Fixed an issue for missing Nest/Google cameras after migration to Google Home
-- Initial support for video hardware acceleration for camera recording
-- Enhanced hotwater support (temperature control) for compatible EU/UK Thermostats
+- Now Homebridge Verified
+- Refactored core to use the updated base class
+- General code cleanup and improved stability
+- Improved camera streaming and HKSV recording
+- Initial support for video hardware acceleration during recording
+- Fixed missing audio on newer Nest/Google cameras
+- Fixed missing Nest/Google cameras after Google Home migration
+- Fixed startup errors caused by invalid thermostat temperature settings
+- Improved EveHome integration (including history and custom characteristics)
+- Added support for hot water temperature control on compatible EU/UK thermostats [README](./README.md#devices)
+- Removed support for using Nest HeatLink devices as room temperature sensors
 
 ### Deprecation Notice
 - Support for the standalone Docker version of this plugin is planned to be deprecated in an upcoming release. While it currently remains functional, future updates may no longer include Docker-specific build support. Users are encouraged to transition to standard Homebridge installations where possible.
@@ -21,6 +22,9 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 ### Known Issues
 
 - The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
+
+### Thanks
+Special thanks to [@Daniel](https://github.com/no1knows), [@Matthew](https://github.com/mphyde) and [@Erik](https://github.com/esille) for testing and feedback on this release!
  
 ## v0.3.1 (2025/06/16)
 

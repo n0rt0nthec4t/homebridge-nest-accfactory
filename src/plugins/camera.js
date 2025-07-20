@@ -11,7 +11,7 @@ import { setTimeout, clearTimeout } from 'node:timers';
 import dgram from 'node:dgram';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import url from 'node:url';
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
@@ -33,11 +33,11 @@ const STREAMING_PROTOCOL = {
   NEXUSTALK: 'PROTOCOL_NEXUSTALK',
 };
 const RESOURCE_PATH = '../res';
-const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
+const __dirname = path.dirname(url.fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2025.07.10'; // Code version
+  static VERSION = '2025.07.20'; // Code version
 
   // For messaging back to parent class (Doorbell/Floodlight)
   static SET = HomeKitDevice.SET;
@@ -127,7 +127,7 @@ export default class NestCamera extends HomeKitDevice {
             (value === true && this.deviceData.statusled_brightness !== 0) ||
             (value === false && this.deviceData.statusled_brightness !== 1)
           ) {
-            this.set({ uuid: this.deviceData.nest_google_uuid, statusled_brightness: value === true ? 0 : 1 });
+            this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, statusled_brightness: value === true ? 0 : 1 });
             this?.log?.info?.('Recording status LED on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
           }
         },
@@ -142,7 +142,7 @@ export default class NestCamera extends HomeKitDevice {
         onSet: (value) => {
           // only change IRLed status value if different than on-device
           if ((value === false && this.deviceData.irled_enabled === true) || (value === true && this.deviceData.irled_enabled === false)) {
-            this.set({
+            this.message(HomeKitDevice.SET, {
               uuid: this.deviceData.nest_google_uuid,
               irled_enabled: value === true ? 'auto_on' : 'always_off',
             });
@@ -165,7 +165,7 @@ export default class NestCamera extends HomeKitDevice {
             (this.deviceData.streaming_enabled === true && value === true)
           ) {
             // Camera state does not reflect requested state, so fix
-            this.set({ uuid: this.deviceData.nest_google_uuid, streaming_enabled: value === false ? true : false });
+            this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, streaming_enabled: value === false ? true : false });
             this?.log?.info?.('Camera on "%s" was turned', this.deviceData.description, value === false ? 'on' : 'off');
           }
         }
@@ -195,7 +195,7 @@ export default class NestCamera extends HomeKitDevice {
               (this.deviceData.audio_enabled === true && value === this.hap.Characteristic.RecordingAudioActive.DISABLE) ||
               (this.deviceData.audio_enabled === false && value === this.hap.Characteristic.RecordingAudioActive.ENABLE)
             ) {
-              this.set({
+              this.message(HomeKitDevice.SET, {
                 uuid: this.deviceData.nest_google_uuid,
                 audio_enabled: value === this.hap.Characteristic.RecordingAudioActive.ENABLE ? true : false,
               });
@@ -237,6 +237,44 @@ export default class NestCamera extends HomeKitDevice {
       this.postSetupDetail('HomeKit Secure Video support' + (this.streamer?.isBuffering() === true ? ' and recording buffer started' : ''));
     this.deviceData.localAccess === true && this.postSetupDetail('Local access');
     this.deviceData.ffmpeg.hwaccel === true && this.postSetupDetail('Video hardware acceleration');
+  }
+
+  onRemove() {
+    // Clean up our camera object since this device is being removed
+    clearTimeout(this.motionTimer);
+    clearTimeout(this.personTimer);
+    clearTimeout(this.#snapshotTimer);
+    this.motionTimer = undefined;
+    this.personTimer = undefined;
+    this.#snapshotTimer = undefined;
+
+    // Stop all streamer logic (buffering, output, etc)
+    this.streamer?.stopEverything?.();
+
+    // Terminate any remaining ffmpeg sessions for this camera/doorbell
+    this.ffmpeg?.killAllSessions?.(this.uuid);
+
+    // Stop any on-going HomeKit sessions, either live or recording
+    // We'll terminate any ffmpeg, rtpSplitter etc processes
+    this.#liveSessions?.forEach?.((session) => {
+      session?.rtpSplitter?.close?.();
+    });
+
+    // Remove any motion services we created
+    Object.values(this.motionServices).forEach((service) => {
+      service.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
+      this.accessory.removeService(service);
+    });
+
+    // Remove the camera controller
+    this.accessory.removeController(this.controller);
+
+    // Clear references
+    this.operatingModeService = undefined;
+    this.#liveSessions = undefined;
+    this.motionServices = undefined;
+    this.streamer = undefined;
+    this.controller = undefined;
   }
 
   async onUpdate(deviceData) {
@@ -470,15 +508,7 @@ export default class NestCamera extends HomeKitDevice {
     });
   }
 
-  onRemove() {
-    // Clean up our camera object since this device is being removed
-    clearTimeout(this.motionTimer);
-    clearTimeout(this.personTimer);
-    clearTimeout(this.#snapshotTimer);
-    this.motionTimer = undefined;
-    this.personTimer = undefined;
-    this.#snapshotTimer = undefined;
-
+  onShutdown() {
     // Stop all streamer logic (buffering, output, etc)
     this.streamer?.stopEverything?.();
 
@@ -490,22 +520,6 @@ export default class NestCamera extends HomeKitDevice {
     this.#liveSessions?.forEach?.((session) => {
       session?.rtpSplitter?.close?.();
     });
-
-    // Remove any motion services we created
-    Object.values(this.motionServices).forEach((service) => {
-      service.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
-      this.accessory.removeService(service);
-    });
-
-    // Remove the camera controller
-    this.accessory.removeController(this.controller);
-
-    // Clear references
-    this.operatingModeService = undefined;
-    this.#liveSessions = undefined;
-    this.motionServices = undefined;
-    this.streamer = undefined;
-    this.controller = undefined;
   }
 
   // Taken and adapted from:

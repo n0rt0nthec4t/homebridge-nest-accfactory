@@ -9,15 +9,15 @@ import HomeKitDevice from '../HomeKitDevice.js';
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = 'Heatlink';
-  static VERSION = '2025.07.12'; // Code version
+  static VERSION = '2025.07.20'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
 
-  async onAdd() {
+  onAdd() {
     // Patch to avoid characteristic errors when setting initial property ranges
-    this.hap.Characteristic.TargetTemperature.prototype.getDefaultValue = function () {
-      return this.deviceData.hotWaterMinTemp; // start at minimum heating threshold
+    this.hap.Characteristic.TargetTemperature.prototype.getDefaultValue = () => {
+      return this.deviceData.hotwaterMinTemp; // start at minimum heating threshold
     };
 
     // If the heatlink supports hotwater temperature control
@@ -50,10 +50,17 @@ export default class NestHeatlink extends HomeKitDevice {
 
     // Extra setup details for output
     this.thermostatService !== undefined &&
-      this.postSetupDetail('Temperature control (' + this.deviceData.hotWaterMinTemp + '–' + this.deviceData.hotWaterMaxTemp + '°C)');
+      this.postSetupDetail('Temperature control (' + this.deviceData.hotwaterMinTemp + '–' + this.deviceData.hotwaterMaxTemp + '°C)');
   }
 
-  async onUpdate(deviceData) {
+  onRemove() {
+    this.accessory.removeService(this.thermostatService);
+    this.accessory.removeService(this.switchService);
+    this.thermostatService = undefined;
+    this.switchService = undefined;
+  }
+
+  onUpdate(deviceData) {
     if (typeof deviceData !== 'object') {
       return;
     }
@@ -117,7 +124,16 @@ export default class NestHeatlink extends HomeKitDevice {
 
     this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.TemperatureDisplayUnits, {
       onSet: (value) => {
-        this.setDisplayUnit(value);
+        let unit = value === this.hap.Characteristic.TemperatureDisplayUnits.CELSIUS ? 'C' : 'F';
+
+        this.message(HomeKitDevice.SET, {
+          uuid: this.deviceData.associated_thermostat,
+          temperature_scale: unit,
+        });
+
+        this.thermostatService.updateCharacteristic(this.hap.Characteristic.TemperatureDisplayUnits, value);
+
+        this?.log?.info?.('Set temperature units on heatlink "%s" to "%s"', this.deviceData.description, unit === 'C' ? '°C' : '°F');
       },
       onGet: () => {
         return this.deviceData.temperature_scale.toUpperCase() === 'C'
@@ -136,13 +152,15 @@ export default class NestHeatlink extends HomeKitDevice {
     this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.TargetTemperature, {
       props: {
         minStep: 0.5,
-        minValue: this.deviceData.hotWaterMinTemp,
-        maxValue: this.deviceData.hotWaterMaxTemp,
+        minValue: this.deviceData.hotwaterMinTemp,
+        maxValue: this.deviceData.hotwaterMaxTemp,
       },
       onSet: (value) => {
-        this.set({ uuid: this.deviceData.associated_thermostat, hot_water_temperature: value });
+        if (value !== this.deviceData.hot_water_temperature) {
+          this.message(HomeKitDevice.SET, { uuid: this.deviceData.associated_thermostat, hot_water_temperature: value });
 
-        this?.log?.info?.('Set hotwater boiler temperature on heatlink "%s" to "%s °C"', this.deviceData.description, value);
+          this?.log?.info?.('Set hotwater boiler temperature on heatlink "%s" to "%s °C"', this.deviceData.description, value);
+        }
       },
       onGet: () => {
         return this.deviceData.hot_water_temperature;
@@ -162,28 +180,30 @@ export default class NestHeatlink extends HomeKitDevice {
 
     this.addHKCharacteristic(this.switchService, this.hap.Characteristic.On, {
       onSet: (value) => {
-        this.set({
-          uuid: this.deviceData.associated_thermostat,
-          hot_water_boost_active: { state: value === true, time: this.deviceData.hotWaterBoostTime },
-        });
+        if (value !== this.deviceData.hot_water_boost_active) {
+          this.message(HomeKitDevice.SET, {
+            uuid: this.deviceData.associated_thermostat,
+            hot_water_boost_active: { state: value === true, time: this.deviceData.hotwaterBoostTime },
+          });
 
-        this.switchService.updateCharacteristic(this.hap.Characteristic.On, value);
+          this.switchService.updateCharacteristic(this.hap.Characteristic.On, value);
 
-        this?.log?.info?.(
-          'Set hotwater boost heating on heatlink "%s" to "%s"',
-          this.deviceData.description,
-          value === true
-            ? 'On for ' +
-                (this.deviceData.hotWaterBoostTime >= 3600
-                  ? Math.floor(this.deviceData.hotWaterBoostTime / 3600) +
-                    ' hr' +
-                    (Math.floor(this.deviceData.hotWaterBoostTime / 3600) > 1 ? 's ' : ' ')
-                  : '') +
-                Math.floor((this.deviceData.hotWaterBoostTime % 3600) / 60) +
-                ' min' +
-                (Math.floor((this.deviceData.hotWaterBoostTime % 3600) / 60) !== 1 ? 's' : '')
-            : 'Off',
-        );
+          this?.log?.info?.(
+            'Set hotwater boost heating on heatlink "%s" to "%s"',
+            this.deviceData.description,
+            value === true
+              ? 'On for ' +
+                  (this.deviceData.hotwaterBoostTime >= 3600
+                    ? Math.floor(this.deviceData.hotwaterBoostTime / 3600) +
+                      ' hr' +
+                      (Math.floor(this.deviceData.hotwaterBoostTime / 3600) > 1 ? 's ' : ' ')
+                    : '') +
+                  Math.floor((this.deviceData.hotwaterBoostTime % 3600) / 60) +
+                  ' min' +
+                  (Math.floor((this.deviceData.hotwaterBoostTime % 3600) / 60) !== 1 ? 's' : '')
+              : 'Off',
+          );
+        }
       },
       onGet: () => {
         return this.deviceData?.hot_water_boost_active === true;

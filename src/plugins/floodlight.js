@@ -9,7 +9,7 @@ import NestCamera from './camera.js';
 
 export default class NestFloodlight extends NestCamera {
   static TYPE = 'FloodlightCamera';
-  static VERSION = '2025.07.07'; // Code version
+  static VERSION = '2025.07.13'; // Code version
 
   lightService = undefined; // HomeKit light
 
@@ -59,9 +59,7 @@ export default class NestFloodlight extends NestCamera {
   }
 
   onRemove() {
-    if (this.lightService !== undefined) {
-      this.accessory.removeService(this.lightService);
-    }
+    this.accessory.removeService(this.lightService);
     this.lightService = undefined;
   }
 

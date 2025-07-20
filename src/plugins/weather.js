@@ -9,7 +9,7 @@ import HomeKitDevice from '../HomeKitDevice.js';
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = 'Weather';
-  static VERSION = '2025.06.28'; // Code version
+  static VERSION = '2025.07.13'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -59,6 +59,17 @@ export default class NestWeather extends HomeKitDevice {
 
     // Extra setup details for output
     this.deviceData?.elevation !== undefined && this.postSetupDetail('Elevation of ' + this.deviceData.elevation + 'm');
+  }
+
+  onRemove() {
+    this.accessory.removeService(this.temperatureService);
+    this.accessory.removeService(this.humidityService);
+    this.accessory.removeService(this.batteryService);
+    this.accessory.removeService(this.airPressureService);
+    this.temperatureService = undefined;
+    this.humidityService = undefined;
+    this.batteryService = undefined;
+    this.airPressureService = undefined;
   }
 
   onUpdate(deviceData) {

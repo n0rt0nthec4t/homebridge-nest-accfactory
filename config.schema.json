@@ -71,18 +71,6 @@
                 "expandable": true,
                 "expanded": true,
                 "properties": {
-                    "eveHistory": {
-                        "title": "EveHome History",
-                        "description": "Provide history in EveHome application where applicable",
-                        "type": "boolean",
-                        "default": true
-                    },
-                    "weather": {
-                        "title": "Virtual Weather",
-                        "description": "Virtual weather station",
-                        "type": "boolean",
-                        "default": false
-                    },
                     "elevation": {
                         "title": "Elevation",
                         "description": "Height above sea level for the weather station",
@@ -94,35 +82,56 @@
                             "functionBody": "return model.options.weather"
                         }
                     },
+                    "eveHistory": {
+                        "title": "EveHome History",
+                        "description": "Provide history in EveHome application where applicable",
+                        "type": "boolean",
+                        "default": true
+                    },
+                    "exclude": {
+                        "description": "Exclude all devices",
+                        "type": "boolean"
+                    },
+                    "ffmpegDebug": {
+                        "description": "Enable ffmpeg output debugging",
+                        "type": "boolean"
+                    },
+                    "ffmpegHWAccel": {
+                        "description": "Enable hardware acceleration for video encoding with ffmpeg",
+                        "type": "boolean"
+                    },
+                    "ffmpegPath": {
+                        "title": "Path to ffmpeg binary",
+                        "type": "string",
+                        "placeholder": "Path to ffmpeg binary",
+                        "default": "/usr/local/bin/ffmpeg"
+                    },
                     "hksv": {
                         "title": "HomeKit Secure Video",
                         "description": "Enable HomeKit Secure Video for supported camera(s) and doorbell(s)",
                         "type": "boolean",
                         "default": false
                     },
-                    "ffmpegPath": {
-                        "title": "Path to ffmpeg binary",
-                        "type": "string",
-                        "placeholder": "Path to an ffmpeg binary",
-                        "default": "/usr/local/bin/ffmpeg"
-                    },
-                    "ffmpegDebug": {
-                        "type": "boolean"
-                    },
-                    "ffmpegHWAccel": {
-                        "type": "boolean"
-                    },
                     "maxStreams": {
                         "type": "integer"
                     },
-                    "exclude": {
+                    "rawdump": {
+                        "description": "Output internal raw data",
                         "type": "boolean"
-                    },
+                    },            
                     "useNestAPI": {
+                        "description": "Use Nest backend API",
                         "type": "boolean"
                     },
                     "useGoogleAPI": {
+                        "description": "Use Google backend API",
                         "type": "boolean"
+                    },
+                    "weather": {
+                        "title": "Virtual Weather",
+                        "description": "Virtual weather station",
+                        "type": "boolean",
+                        "default": false
                     }
                 }
             },

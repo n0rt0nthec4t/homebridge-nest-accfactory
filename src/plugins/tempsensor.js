@@ -11,7 +11,7 @@ const LOW_BATTERY_LEVEL = 10; // Low battery level percentage
 
 export default class NestTemperatureSensor extends HomeKitDevice {
   static TYPE = 'TemperatureSensor';
-  static VERSION = '2025.06.28'; // Code version
+  static VERSION = '2025.07.13'; // Code version
 
   batteryService = undefined;
   temperatureService = undefined;
@@ -25,6 +25,13 @@ export default class NestTemperatureSensor extends HomeKitDevice {
     // Setup battery service if not already present on the accessory
     this.batteryService = this.addHKService(this.hap.Service.Battery, '', 1);
     this.batteryService.setHiddenService(true);
+  }
+
+  onRemove() {
+    this.accessory.removeService(this.temperatureService);
+    this.accessory.removeService(this.batteryService);
+    this.temperatureService = undefined;
+    this.batteryService = undefined;
   }
 
   onUpdate(deviceData) {
