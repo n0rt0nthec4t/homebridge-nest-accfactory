@@ -21,7 +21,7 @@ const DAYS_OF_WEEK = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2025.07.20'; // Code version
+  static VERSION = '2025.07.22'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -605,7 +605,7 @@ export default class NestThermostat extends HomeKitDevice {
   }
 
   onMessage(type, message) {
-    if (typeof message !== 'object' || message === null) {
+    if (typeof type !== 'string' || type === '' || message === null || typeof message !== 'object' || message?.constructor !== Object) {
       return;
     }
 
@@ -662,19 +662,15 @@ export default class NestThermostat extends HomeKitDevice {
     }
 
     if (type === HomeKitDevice?.HISTORY?.SET) {
-      if (typeof message.vacation === 'boolean') {
+      if (typeof message?.vacation === 'boolean') {
         this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, vacation_mode: message.vacation.status });
       }
 
-      if (typeof message.programs === 'object') {
+      if (typeof message?.programs === 'object') {
         // Future: convert to Nest format and apply via .set()
         // this.message(HomeKitDevice.SET, { uuid: ..., days: { ... } });
       }
-
-      return;
     }
-
-    return;
   }
 
   setFan(fanState, speed) {

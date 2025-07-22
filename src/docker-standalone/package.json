@@ -2,7 +2,7 @@
     "name": "nest-accfactory",
     "displayName": "Nest Accfactory",
     "type": "module",
-    "version": "0.3.2-alpha.12",
+    "version": "0.3.2-alpha.16",
     "description": "HomeKit integration for Nest devices using HAP-NodeJS library",
     "author": "n0rt0nthec4t",
     "license": "Apache-2.0",
@@ -31,7 +31,7 @@
     ],
     "main": "dist/index.js",
     "engines": {
-        "node": "^20.17.0 || ^22.9.0",
+        "node": "^20.19.0 || ^22.12.0 || ^24.0.0",
         "hap-nodejs": "^2.0.0"
     },
     "files": [
@@ -51,9 +51,9 @@
     "devDependencies": {
         "@eslint/js": "^9.31.0",
         "eslint": "^9.31.0",
-        "@stylistic/eslint-plugin": "^5.1.0",
-        "@types/node": "^24.0.13",
-        "@typescript-eslint/parser": "^8.36.0",
+        "@stylistic/eslint-plugin": "^5.2.0",
+        "@types/node": "^24.0.15",
+        "@typescript-eslint/parser": "^8.37.0",
         "prettier": "^3.6.2",
         "prettier-eslint": "^16.4.2",
         "copyfiles": "^2.4.1",

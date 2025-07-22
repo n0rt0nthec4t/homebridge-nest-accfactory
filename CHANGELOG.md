@@ -2,7 +2,7 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.3.2 (alpha.13)
+## v0.3.2 (alpha.16)
 
 - Now Homebridge Verified
 - Refactored core to use the updated base class

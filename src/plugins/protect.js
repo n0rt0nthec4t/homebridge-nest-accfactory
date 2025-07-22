@@ -11,7 +11,7 @@ const LOW_BATTERY_LEVEL = 10; // Low battery level percentage
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = 'Protect';
-  static VERSION = '2025.07.20'; // Code version
+  static VERSION = '2025.07.21'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -160,7 +160,7 @@ export default class NestProtect extends HomeKitDevice {
   }
 
   onMessage(type, message) {
-    if (typeof message !== 'object' || message === null) {
+    if (typeof type !== 'string' || type === '' || typeof message !== 'object' || message === '') {
       return;
     }
 
@@ -179,13 +179,12 @@ export default class NestProtect extends HomeKitDevice {
 
     if (type === HomeKitDevice?.HISTORY?.SET) {
       if (typeof message?.alarmtest === 'boolean') {
+        // TODO - How do we trigger an alarm test :-)
         //this?.log?.info?.('Eve Smoke Alarm test', (message.alarmtest === true ? 'start' : 'stop'));
       }
       if (typeof message?.statusled === 'boolean') {
         this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, ntp_green_led_enable: message.statusled });
       }
-      return;
     }
-    return;
   }
 }

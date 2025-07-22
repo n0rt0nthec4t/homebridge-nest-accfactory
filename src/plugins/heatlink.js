@@ -9,7 +9,7 @@ import HomeKitDevice from '../HomeKitDevice.js';
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = 'Heatlink';
-  static VERSION = '2025.07.20'; // Code version
+  static VERSION = '2025.07.22'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
@@ -106,13 +106,14 @@ export default class NestHeatlink extends HomeKitDevice {
   }
 
   onMessage(type, message) {
-    if (typeof message !== 'object' || message === null) {
+    if (typeof type !== 'string' || type === '' || message === null || typeof message !== 'object' || message?.constructor !== Object) {
       return;
     }
 
     if (type === HomeKitDevice?.HISTORY?.GET) {
       // Extend Eve Thermo GET payload with device state
       message.attached = this.deviceData.online === true;
+      return message;
     }
   }
 

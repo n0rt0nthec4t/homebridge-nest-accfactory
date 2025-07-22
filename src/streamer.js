@@ -18,7 +18,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2025.07.13
+// Code version 2025.07.22
 // Mark Hulskamp
 'use strict';
 
@@ -226,6 +226,13 @@ export default class Streamer {
   }
 
   async onMessage(type, message) {
+    if (typeof type !== 'string' || type === '') {
+      return;
+    }
+
+    // Ensure a message with sessionID is always a string
+    let sessionID = message?.sessionID !== undefined ? String(message.sessionID) : undefined;
+
     if (type === Streamer.MESSAGE_TYPE.START_BUFFER) {
       // Start buffering media packets
       await this.#startBuffering();
@@ -238,22 +245,22 @@ export default class Streamer {
 
     if (type === Streamer.MESSAGE_TYPE.START_LIVE) {
       // Start live HomeKit stream
-      return await this.#startLiveStream(message?.sessionID);
+      return await this.#startLiveStream(sessionID);
     }
 
     if (type === Streamer.MESSAGE_TYPE.STOP_LIVE) {
       // Stop live stream
-      await this.#stopLiveStream(message?.sessionID);
+      await this.#stopLiveStream(sessionID);
     }
 
     if (type === Streamer.MESSAGE_TYPE.START_RECORD) {
       // Start recording HomeKit stream
-      return await this.#startRecording(message?.sessionID);
+      return await this.#startRecording(sessionID);
     }
 
     if (type === Streamer.MESSAGE_TYPE.STOP_RECORD) {
       // Stop recording stream
-      await this.#stopRecording(message?.sessionID);
+      await this.#stopRecording(sessionID);
     }
   }
 
@@ -264,7 +271,7 @@ export default class Streamer {
 
   stopEverything() {
     if (this.isStreaming() === true || this.isBuffering() === true) {
-      this?.log?.debug?.('Stopped buffering, live and recording from uuid "%s"', this.nest_google_uuid);
+      this?.log?.debug?.('Stopped buffering, live and recording from device uuid "%s"', this.nest_google_uuid);
       this.#outputs = {}; // Remove all outputs (live, record, buffer)
       this.#sequenceCounters = {}; // Reset sequence tracking
       this.#h264Video = {}; // Reset cached SPS/PPS and keyframe flag
@@ -373,7 +380,7 @@ export default class Streamer {
         buffer: [],
       };
 
-      this.log?.debug?.('Started buffering from uuid "%s"', this.nest_google_uuid);
+      this.log?.debug?.('Started buffering from device uuid "%s"', this.nest_google_uuid);
 
       if (this.connected !== true) {
         this.#doConnect();
@@ -384,7 +391,7 @@ export default class Streamer {
   #stopBuffering() {
     if (this.#outputs?.__BUFFER !== undefined) {
       delete this.#outputs.__BUFFER;
-      this.log?.debug?.('Stopped buffering from uuid "%s"', this.nest_google_uuid);
+      this.log?.debug?.('Stopped buffering from device uuid "%s"', this.nest_google_uuid);
 
       // If we have no more output streams active, we'll close the connection
       if (this.isStreaming() === false) {
@@ -394,6 +401,10 @@ export default class Streamer {
   }
 
   #startLiveStream(sessionID) {
+    if (typeof sessionID !== 'string' || sessionID === '') {
+      return;
+    }
+
     if (this.#outputs?.[sessionID] !== undefined) {
       this?.log?.warn?.('Live stream already exists for uuid "%s" and session id "%s"', this.nest_google_uuid, sessionID);
       return {
@@ -443,7 +454,7 @@ export default class Streamer {
       buffer: [],
     };
 
-    this?.log?.debug?.('Started live stream from uuid "%s" and session id "%s"', this.nest_google_uuid, sessionID);
+    this?.log?.debug?.('Started live stream from device uuid "%s" and session id "%s"', this.nest_google_uuid, sessionID);
 
     return { video: videoOut, audio: audioOut, talkback: talkbackIn };
   }
@@ -451,7 +462,7 @@ export default class Streamer {
   #stopLiveStream(sessionID) {
     let output = this.#outputs?.[sessionID];
     if (output !== undefined) {
-      this?.log?.debug?.('Stopped live stream from uuid "%s" and session id "%s"', this.nest_google_uuid, sessionID);
+      this?.log?.debug?.('Stopped live stream from device uuid "%s" and session id "%s"', this.nest_google_uuid, sessionID);
 
       // Gracefully end output streams
       output.video?.end?.(); // Video output stream
@@ -468,6 +479,10 @@ export default class Streamer {
   }
 
   #startRecording(sessionID) {
+    if (typeof sessionID !== 'string' || sessionID === '') {
+      return;
+    }
+
     // Prevent duplicate recording sessions
     if (this.#outputs?.[sessionID] !== undefined) {
       this?.log?.warn?.('Recording stream already exists for uuid "%s" and session id "%s"', this.nest_google_uuid, sessionID);
@@ -497,7 +512,7 @@ export default class Streamer {
       buffer: undefined,
     };
 
-    this?.log?.debug?.('Started recording stream from uuid "%s" with session id of "%s"', this.nest_google_uuid, sessionID);
+    this?.log?.debug?.('Started recording stream from device uuid "%s" with session id of "%s"', this.nest_google_uuid, sessionID);
 
     // Return stream objects for ffmpeg to consume
     return { video: videoOut, audio: audioOut };
@@ -506,7 +521,7 @@ export default class Streamer {
   #stopRecording(sessionID) {
     let output = this.#outputs?.[sessionID];
     if (output !== undefined) {
-      this?.log?.debug?.('Stopped recording stream from uuid "%s"', this.nest_google_uuid);
+      this?.log?.debug?.('Stopped recording stream from device uuid "%s"', this.nest_google_uuid);
 
       // Gracefully end output streams
       output.video?.end?.(); // Video output stream
