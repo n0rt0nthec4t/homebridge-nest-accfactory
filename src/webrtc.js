@@ -4,7 +4,7 @@
 // Handles connection and data from Google WebRTC systems
 // Currently a "work in progress"
 //
-// Code version 2025.07.10
+// Code version 2025.07.23
 // Mark Hulskamp
 'use strict';
 
@@ -21,20 +21,19 @@ import { setInterval, clearInterval, setTimeout, clearTimeout } from 'node:timer
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 
 // Define our modules
 import Streamer from './streamer.js';
 
 // Define constants
+import { USER_AGENT, __dirname } from './consts.js';
+
 const EXTEND_INTERVAL = 30000; // Send extend command to Google Home Foyer every this period for active streams
 const RTP_PACKET_HEADER_SIZE = 12;
 const RTP_VIDEO_PAYLOAD_TYPE = 102;
 const RTP_AUDIO_PAYLOAD_TYPE = 111;
 //const RTP_TALKBACK_PAYLOAD_TYPE = 110;
-const USER_AGENT = 'Nest/5.82.2 (iOScom.nestlabs.jasper.release) os=18.5'; // User Agent string
 const GOOGLE_HOME_FOYER_PREFIX = 'google.internal.home.foyer.v1.';
-const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 
 // Blank audio in Opus format, mono channel @48000
 const PCM_S16LE_48000_STEREO_BLANK = Buffer.alloc(1920 * 2 * 2); // 20ms stereo silence at 48kHz

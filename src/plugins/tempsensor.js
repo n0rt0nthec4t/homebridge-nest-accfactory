@@ -6,12 +6,14 @@
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
+import { getDeviceLocationName, processCommonData, adjustTemperature, scaleValue } from '../utils.js';
 
-const LOW_BATTERY_LEVEL = 10; // Low battery level percentage
+// Define constants
+import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_THERMOSTAT_RESOURCES, DEVICE_TYPE } from '../consts.js';
 
 export default class NestTemperatureSensor extends HomeKitDevice {
   static TYPE = 'TemperatureSensor';
-  static VERSION = '2025.07.13'; // Code version
+  static VERSION = '2025.07.23'; // Code version
 
   batteryService = undefined;
   temperatureService = undefined;
@@ -77,4 +79,135 @@ export default class NestTemperatureSensor extends HomeKitDevice {
       { timegap: 300, force: true },
     );
   }
+}
+
+// Function to process our RAW Nest or Google for this device type
+export function processRawData(rawData, config, deviceType = undefined, deviceUUID = undefined) {
+  if (
+    rawData === null ||
+    typeof rawData !== 'object' ||
+    rawData?.constructor !== Object ||
+    typeof config !== 'object' ||
+    config?.constructor !== Object
+  ) {
+    return;
+  }
+
+  // Process data for any temperature sensors we have in the raw data
+  // We do this using any thermostat data
+  let devices = {};
+  Object.entries(rawData)
+    .filter(
+      ([key, value]) =>
+        key.startsWith('device.') === true ||
+        (key.startsWith('DEVICE_') === true && PROTOBUF_THERMOSTAT_RESOURCES.includes(value.value?.device_info?.typeName) === true),
+    )
+    .forEach(([object_key, value]) => {
+      try {
+        if (
+          value?.source === DATA_SOURCE.GOOGLE &&
+          config.options?.useGoogleAPI === true &&
+          value.value?.configuration_done?.deviceReady === true &&
+          Array.isArray(value.value?.remote_comfort_sensing_settings?.associatedRcsSensors) === true
+        ) {
+          value.value.remote_comfort_sensing_settings.associatedRcsSensors.forEach((sensor) => {
+            if (
+              typeof rawData?.[sensor?.deviceId?.resourceId]?.value === 'object' &&
+              (deviceUUID === undefined || deviceUUID === sensor.deviceId.resourceId)
+            ) {
+              let sensorData = rawData[sensor.deviceId.resourceId].value;
+              let tempDevice = processCommonData(
+                sensor.deviceId.resourceId,
+                {
+                  type: DEVICE_TYPE.TEMPSENSOR,
+                  model: 'Temperature Sensor',
+                  softwareVersion: '1.0.0',
+                  serialNumber: sensorData.device_identity.serialNumber,
+                  // Guessing battery minimum voltage is 2v??
+                  battery_level: scaleValue(Number(sensorData.battery.assessedVoltage.value), 2.0, 3.0, 0, 100),
+                  current_temperature: adjustTemperature(sensorData.current_temperature.temperatureValue.temperature.value, 'C', 'C', true),
+                  online:
+                    isNaN(sensorData?.last_updated_beacon?.lastBeaconTime?.seconds) === false &&
+                    Math.floor(Date.now() / 1000) - Number(sensorData.last_updated_beacon.lastBeaconTime.seconds) < 3600 * 4,
+                  associated_thermostat: object_key,
+                  description: typeof sensorData?.label?.label === 'string' ? sensorData.label.label : '',
+                  location: getDeviceLocationName(
+                    rawData,
+                    sensorData?.device_info?.pairerId?.resourceId,
+                    sensorData?.device_located_settings?.whereAnnotationRid?.resourceId,
+                  ),
+                  active_sensor:
+                    value.value?.remote_comfort_sensing_settings?.activeRcsSelection?.activeRcsSensor?.resourceId ===
+                    sensor.deviceId.resourceId,
+                },
+                config,
+              );
+
+              if (
+                Object.entries(tempDevice).length !== 0 &&
+                typeof devices[tempDevice.serialNumber] === 'undefined' &&
+                (deviceType === undefined || (typeof deviceType === 'string' && deviceType !== '' && tempDevice.type === deviceType))
+              ) {
+                let deviceOptions = config?.devices?.find(
+                  (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+                );
+                // Insert any extra options we've read in from configuration file for this device
+                tempDevice.eveHistory = config.options.eveHistory === true || deviceOptions?.eveHistory === true;
+                devices[tempDevice.serialNumber] = tempDevice; // Store processed device
+              }
+            }
+          });
+        }
+
+        if (
+          value?.source === DATA_SOURCE.NEST &&
+          config.options?.useNestAPI === true &&
+          value.value?.where_id !== undefined &&
+          value.value?.structure_id !== undefined &&
+          Array.isArray(rawData?.['rcs_settings.' + value.value?.serial_number]?.value?.associated_rcs_sensors) === true
+        ) {
+          rawData['rcs_settings.' + value.value.serial_number].value.associated_rcs_sensors.forEach((sensor) => {
+            if (typeof rawData[sensor]?.value === 'object' && (deviceUUID === undefined || deviceUUID === sensor)) {
+              let sensorData = rawData[sensor].value;
+              let tempDevice = processCommonData(
+                sensor,
+                {
+                  type: DEVICE_TYPE.TEMPSENSOR,
+                  model: 'Temperature Sensor',
+                  softwareVersion: '1.0.0',
+                  serialNumber: sensorData.serial_number,
+                  battery_level: scaleValue(Number(sensorData.battery_level), 0, 100, 0, 100),
+                  current_temperature: adjustTemperature(sensorData.current_temperature, 'C', 'C', true),
+                  online: Math.floor(Date.now() / 1000) - sensorData.last_updated_at < 3600 * 4,
+                  associated_thermostat: object_key,
+                  description: sensorData.description,
+                  location: getDeviceLocationName(rawData, sensorData.structure_id, sensorData.where_id),
+                  active_sensor:
+                    rawData?.['rcs_settings.' + value.value.serial_number]?.value?.active_rcs_sensors?.includes(object_key) === true,
+                },
+                config,
+              );
+
+              if (
+                Object.entries(tempDevice).length !== 0 &&
+                typeof devices[tempDevice.serialNumber] === 'undefined' &&
+                (deviceType === undefined || (typeof deviceType === 'string' && deviceType !== '' && tempDevice.type === deviceType))
+              ) {
+                let deviceOptions = config?.devices?.find(
+                  (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+                );
+                // Insert any extra options we've read in from configuration file for this device
+                tempDevice.eveHistory = config.options.eveHistory === true || deviceOptions?.eveHistory === true;
+                devices[tempDevice.serialNumber] = tempDevice; // Store processed device
+              }
+            }
+          });
+        }
+        // eslint-disable-next-line no-unused-vars
+      } catch (error) {
+        // Empty
+      }
+    });
+
+  return devices;
 }

@@ -6,10 +6,14 @@
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
+import { processCommonData, adjustTemperature, crc24 } from '../utils.js';
+
+// Define constants
+import { DATA_SOURCE, DEVICE_TYPE } from '../consts.js';
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = 'Weather';
-  static VERSION = '2025.07.13'; // Code version
+  static VERSION = '2025.07.24'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -158,4 +162,131 @@ export default class NestWeather extends HomeKitDevice {
       { timegap: 300, force: true },
     );
   }
+}
+
+// Function to process our RAW Nest or Google for this device type
+export function processRawData(rawData, config, deviceType = undefined, deviceUUID = undefined) {
+  if (
+    rawData === null ||
+    typeof rawData !== 'object' ||
+    rawData?.constructor !== Object ||
+    typeof config !== 'object' ||
+    config?.constructor !== Object
+  ) {
+    return;
+  }
+
+  // Process data for any structure(s) for both Nest and Protobuf API data
+  // We use this to created virtual weather station(s) for each structure that has location data
+  let devices = {};
+  Object.entries(rawData)
+    .filter(
+      ([key]) =>
+        (key.startsWith('structure.') === true || key.startsWith('STRUCTURE_') === true) &&
+        (deviceUUID === undefined || deviceUUID === key) &&
+        config?.options?.weather === true, // Only if weather enabled
+    )
+    .forEach(([object_key, value]) => {
+      let tempDevice = {};
+      try {
+        if (
+          value?.source === DATA_SOURCE.GOOGLE &&
+          config.options?.useGoogleAPI === true &&
+          value.value?.structure_location?.geoCoordinate?.latitude !== undefined &&
+          value.value?.structure_location?.geoCoordinate?.longitude !== undefined &&
+          value.value?.structure_info?.rtsStructureId !== undefined
+        ) {
+          tempDevice = processCommonData(
+            object_key,
+            {
+              type: DEVICE_TYPE.WEATHER,
+              model: 'Weather',
+              softwareVersion: '1.0.0',
+              // Use the Nest API structure ID from the Protobuf structure. This will ensure we generate the same serial number
+              // This should prevent two 'weather' objects being created
+              serialNumber: '18B430' + crc24(value.value.structure_info.rtsStructureId.toUpperCase()).toUpperCase(),
+              postal_code: value.value?.structure_location?.postalCode.value ?? '',
+              country_code: value.value?.structure_location?.countryCode.value ?? '',
+              city: value.value?.structure_location?.city?.value ?? '',
+              state: value.value?.structure_location?.state?.value ?? '',
+              latitude: value.value?.structure_location?.geoCoordinate.latitude,
+              longitude: value.value?.structure_location?.geoCoordinate.longitude,
+              description:
+                (value.value?.structure_location?.city?.value ?? '') !== '' && (value.value?.structure_location?.state?.value ?? '') !== ''
+                  ? value.value.structure_location.city.value + ' - ' + value.value.structure_location.state.value
+                  : value.value.structure_info.name,
+              current_temperature: adjustTemperature(value.value.weather.current_temperature, 'C', 'C', true),
+              current_humidity: value.value.weather.current_humidity,
+              condition: value.value.weather.condition,
+              wind_direction: value.value.weather.wind_direction,
+              wind_speed: value.value.weather.wind_speed,
+              sunrise: value.value.weather.sunrise,
+              sunset: value.value.weather.sunset,
+              station: value.value.weather.station,
+              forecast: value.value.weather.forecast,
+            },
+            config,
+          );
+        }
+
+        if (
+          value?.source === DATA_SOURCE.NEST &&
+          config.options?.useNestAPI === true &&
+          value.value?.latitude !== undefined &&
+          value.value?.longitude !== undefined
+        ) {
+          tempDevice = processCommonData(
+            object_key,
+            {
+              type: DEVICE_TYPE.WEATHER,
+              model: 'Weather',
+              softwareVersion: '1.0.0',
+              serialNumber: '18B430' + crc24(object_key.toUpperCase()).toUpperCase(),
+              postal_code: value.value?.postal_code ?? '',
+              country_code: value.value?.country_code ?? '',
+              city: value.value?.city ?? '',
+              state: value.value?.state ?? '',
+              latitude: value.value.latitude,
+              longitude: value.value.longitude,
+              description:
+                (value.value?.city ?? '') !== '' && (value.value?.state ?? '') !== ''
+                  ? value.value.city + ' - ' + value.value.state
+                  : value.value.name,
+              current_temperature: adjustTemperature(value.value.weather.current_temperature, 'C', 'C', true),
+              current_humidity: value.value.weather.current_humidity,
+              condition: value.value.weather.condition,
+              wind_direction: value.value.weather.wind_direction,
+              wind_speed: value.value.weather.wind_speed,
+              sunrise: value.value.weather.sunrise,
+              sunset: value.value.weather.sunset,
+              station: value.value.weather.station,
+              forecast: value.value.weather.forecast,
+            },
+            config,
+          );
+        }
+        // eslint-disable-next-line no-unused-vars
+      } catch (error) {
+        // Empty
+      }
+
+      if (
+        Object.entries(tempDevice).length !== 0 &&
+        typeof devices[tempDevice.serialNumber] === 'undefined' &&
+        (deviceType === undefined || (typeof deviceType === 'string' && deviceType !== '' && tempDevice.type === deviceType))
+      ) {
+        let deviceOptions = config?.devices?.find(
+          (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+        );
+        // Insert any extra options we've read in from configuration file for this device
+        tempDevice.eveHistory = config.options.eveHistory === true || deviceOptions?.eveHistory === true;
+        tempDevice.elevation =
+          isNaN(deviceOptions?.elevation) === false && Number(deviceOptions?.elevation) >= 0 && Number(deviceOptions?.elevation) <= 8848
+            ? Number(deviceOptions?.elevation)
+            : config.options.elevation;
+        devices[tempDevice.serialNumber] = tempDevice; // Store processed device
+      }
+    });
+
+  return devices;
 }

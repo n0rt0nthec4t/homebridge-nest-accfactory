@@ -27,30 +27,17 @@ import { Buffer } from 'node:buffer';
 import { setInterval, clearInterval, setTimeout, clearTimeout } from 'node:timers';
 import fs from 'fs';
 import path from 'node:path';
-import url from 'node:url';
 import { PassThrough } from 'stream';
 
 // Define our modules
 import HomeKitDevice from './HomeKitDevice.js';
 
 // Define constants
-const CAMERA_RESOURCE = {
-  OFFLINE: 'Nest_camera_offline.h264',
-  OFF: 'Nest_camera_off.h264',
-  TRANSFER: 'Nest_camera_transfer.h264',
-};
+import { CAMERA_RESOURCE_FRAMES, RESOURCE_PATH, LOG_LEVELS, __dirname } from './consts.js';
+
 const TALKBACK_AUDIO_TIMEOUT = 1000;
 const MAX_BUFFER_AGE = 5000; // Keep last 5s of media in buffer
 const STREAM_FRAME_INTERVAL = 1000 / 30; // 30fps approx
-const RESOURCE_PATH = './res';
-const __dirname = path.dirname(url.fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
-const LOG_LEVELS = {
-  INFO: 'info',
-  SUCCESS: 'success',
-  WARN: 'warn',
-  ERROR: 'error',
-  DEBUG: 'debug',
-};
 
 // Streamer object
 export default class Streamer {
@@ -167,9 +154,9 @@ export default class Streamer {
     };
 
     this.#cameraFrames = {
-      offline: loadFrameResource(CAMERA_RESOURCE.OFFLINE, 'offline'),
-      off: loadFrameResource(CAMERA_RESOURCE.OFF, 'video off'),
-      transfer: loadFrameResource(CAMERA_RESOURCE.TRANSFER, 'transferring'),
+      offline: loadFrameResource(CAMERA_RESOURCE_FRAMES.OFFLINE, 'offline'),
+      off: loadFrameResource(CAMERA_RESOURCE_FRAMES.OFF, 'video off'),
+      transfer: loadFrameResource(CAMERA_RESOURCE_FRAMES.TRANSFER, 'transferring'),
     };
 
     this.#outputLoop(); // Start the output loop to process media packets

@@ -5,7 +5,7 @@
 //
 // Credit to https://github.com/Brandawg93/homebridge-nest-cam for the work on the Nest Camera comms code on which this is based
 //
-// Code version 2025.07.10
+// Code version 2025.07.23
 // Mark Hulskamp
 'use strict';
 
@@ -19,15 +19,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import tls from 'tls';
 import crypto from 'crypto';
-import { fileURLToPath } from 'node:url';
 
 // Define our modules
 import Streamer from './streamer.js';
 
 // Define constants
+import { USER_AGENT, __dirname } from './consts.js';
+
 const PING_INTERVAL = 15000; // Ping interval to nexus server while stream active
-const USER_AGENT = 'Nest/5.82.2 (iOScom.nestlabs.jasper.release) os=18.5'; // User Agent string
-const __dirname = path.dirname(fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 
 const PACKET_TYPE = {
   PING: 1,

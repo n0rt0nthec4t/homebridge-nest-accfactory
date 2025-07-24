@@ -6,12 +6,14 @@
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
+import { getDeviceLocationName, processCommonData, scaleValue } from '../utils.js';
 
-const LOW_BATTERY_LEVEL = 10; // Low battery level percentage
+// Define constants
+import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_PROTECT_RESOURCES, DEVICE_TYPE } from '../consts.js';
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = 'Protect';
-  static VERSION = '2025.07.21'; // Code version
+  static VERSION = '2025.07.24'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -187,4 +189,177 @@ export default class NestProtect extends HomeKitDevice {
       }
     }
   }
+}
+
+// Function to process our RAW Nest or Google for this device type
+export function processRawData(rawData, config, deviceType = undefined, deviceUUID = undefined) {
+  if (
+    rawData === null ||
+    typeof rawData !== 'object' ||
+    rawData?.constructor !== Object ||
+    typeof config !== 'object' ||
+    config?.constructor !== Object
+  ) {
+    return;
+  }
+
+  // Process data for any smoke detectors we have in the raw data
+  let devices = {};
+  Object.entries(rawData)
+    .filter(
+      ([key, value]) =>
+        (key.startsWith('topaz.') === true ||
+          (key.startsWith('DEVICE_') === true && PROTOBUF_PROTECT_RESOURCES.includes(value.value?.device_info?.typeName) === true)) &&
+        (deviceUUID === undefined || deviceUUID === key),
+    )
+    .forEach(([object_key, value]) => {
+      let tempDevice = {};
+      try {
+        if (
+          value?.source === DATA_SOURCE.GOOGLE &&
+          config.options?.useGoogleAPI === true &&
+          value.value?.configuration_done?.deviceReady === true
+        ) {
+          tempDevice = processCommonData(
+            object_key,
+            {
+              type: DEVICE_TYPE.SMOKESENSOR,
+              serialNumber: value.value.device_identity.serialNumber,
+              softwareVersion: value.value.device_identity.softwareVersion,
+              model:
+                value.value.device_info.typeName === 'nest.resource.NestProtect1LinePoweredResource'
+                  ? 'Protect (1st gen, wired)'
+                  : value.value.device_info.typeName === 'nest.resource.NestProtect1BatteryPoweredResource'
+                    ? 'Protect (1st gen, battery)'
+                    : value.value.device_info.typeName === 'nest.resource.NestProtect2LinePoweredResource'
+                      ? 'Protect (2nd gen, wired)'
+                      : value.value.device_info.typeName === 'nest.resource.NestProtect2BatteryPoweredResource'
+                        ? 'Protect (2nd gen, battery)'
+                        : 'Protect (unknown)',
+              online: value.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
+              line_power_present: value.value?.wall_power?.status === 'POWER_SOURCE_STATUS_ACTIVE',
+              wired_or_battery: typeof value.value?.wall_power?.status === 'string' ? 0 : 1,
+              battery_level:
+                isNaN(value.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === false
+                  ? scaleValue(Number(value.value.battery_voltage_bank1.batteryValue.batteryVoltage.value), 0, 5.4, 0, 100)
+                  : 0,
+              battery_health_state:
+                value.value?.battery_voltage_bank0?.faultInformation === undefined &&
+                value.value?.battery_voltage_bank1?.faultInformation === undefined
+                  ? 0
+                  : 1,
+              smoke_status: value.value?.safety_alarm_smoke?.alarmState === 'ALARM_STATE_ALARM',
+              co_status: value.value?.safety_alarm_co?.alarmState === 'ALARM_STATE_ALARM',
+              heat_status: false, // TODO <- need to find in protobuf
+              hushed_state:
+                value.value?.safety_alarm_smoke?.silenceState === 'SILENCE_STATE_SILENCED' ||
+                value.value?.safety_alarm_co?.silenceState === 'SILENCE_STATE_SILENCED',
+              ntp_green_led: value.value?.night_time_promise_settings?.greenLedEnabled === true,
+              smoke_test_passed:
+                typeof value.value.safety_summary?.warningDevices?.failures === 'object'
+                  ? value.value.safety_summary.warningDevices.failures.includes('FAILURE_TYPE_SMOKE') === false
+                  : true,
+              heat_test_passed:
+                typeof value.value.safety_summary?.warningDevices?.failures === 'object'
+                  ? value.value.safety_summary.warningDevices.failures.includes('FAILURE_TYPE_TEMP') === false
+                  : true,
+              latest_alarm_test:
+                isNaN(value.value?.self_test?.lastMstEnd?.seconds) === false ? Number(value.value.self_test.lastMstEnd.seconds) : 0,
+              self_test_in_progress:
+                value.value?.legacy_structure_self_test?.mstInProgress === true ||
+                value.value?.legacy_structure_self_test?.astInProgress === true,
+              replacement_date:
+                isNaN(value.value?.legacy_protect_device_settings?.replaceByDate?.seconds) === false
+                  ? Number(value.value.legacy_protect_device_settings.replaceByDate.seconds)
+                  : 0,
+              topaz_hush_key:
+                typeof value.value?.safety_structure_settings?.structureHushKey === 'string'
+                  ? value.value.safety_structure_settings.structureHushKey
+                  : '',
+              detected_motion:
+                value.value?.legacy_protect_device_info?.autoAway !== true || value.value?.structure_mode?.occupancy === 'ACTIVITY_ACTIVE',
+              description: typeof value.value?.label?.label === 'string' ? value.value.label.label : '',
+              location: getDeviceLocationName(
+                rawData,
+                value.value?.device_info?.pairerId?.resourceId,
+                value.value?.device_located_settings?.whereAnnotationRid?.resourceId,
+              ),
+            },
+            config,
+          );
+        }
+        if (
+          value?.source === DATA_SOURCE.NEST &&
+          config.options?.useNestAPI === true &&
+          value.value?.where_id !== undefined &&
+          value.value?.structure_id !== undefined
+        ) {
+          tempDevice = processCommonData(
+            object_key,
+            {
+              type: DEVICE_TYPE.SMOKESENSOR,
+              serialNumber: value.value.serial_number,
+              softwareVersion: value.value.software_version,
+              model: (() => {
+                let model =
+                  value.value.serial_number.substring(0, 2) === '06'
+                    ? 'Protect (2nd gen)'
+                    : value.value.serial_number.substring(0, 2) === '05'
+                      ? 'Protect (1st gen)'
+                      : 'Protect (unknown)';
+                return value.value.wired_or_battery === 1
+                  ? model.replace(/\bgen\)/, 'gen, battery)')
+                  : value.value.wired_or_battery === 0
+                    ? model.replace(/\bgen\)/, 'gen, wired)')
+                    : model;
+              })(),
+              online:
+                typeof value?.value?.thread_mac_address === 'string'
+                  ? rawData?.['widget_track.' + value.value.thread_mac_address.toUpperCase()]?.value?.online === true
+                  : false,
+              line_power_present: value.value.line_power_present === true,
+              wired_or_battery: value.value.wired_or_battery,
+              battery_level: scaleValue(value.value.battery_level, 0, 5400, 0, 100),
+              battery_health_state: value.value.battery_health_state,
+              smoke_status: value.value.smoke_status !== 0,
+              co_status: value.value.co_status !== 0,
+              heat_status: value.value.heat_status !== 0,
+              hushed_state: value.value.hushed_state === true,
+              ntp_green_led_enable: value.value.ntp_green_led_enable === true,
+              smoke_test_passed: value.value.component_smoke_test_passed === true,
+              heat_test_passed: value.value.component_temp_test_passed === true,
+              latest_alarm_test: value.value.latest_manual_test_end_utc_secs,
+              self_test_in_progress: rawData?.['safety.' + value.value.structure_id]?.value?.manual_self_test_in_progress === true,
+              replacement_date: value.value.replace_by_date_utc_secs,
+              topaz_hush_key:
+                typeof rawData?.['structure.' + value.value.structure_id]?.value?.topaz_hush_key === 'string'
+                  ? rawData['structure.' + value.value.structure_id].value.topaz_hush_key
+                  : '',
+              detected_motion: value.value.auto_away === false,
+              description: value.value?.description,
+              location: getDeviceLocationName(rawData, value.value.structure_id, value.value.where_id),
+            },
+            config,
+          );
+        }
+        // eslint-disable-next-line no-unused-vars
+      } catch (error) {
+        // Empty
+      }
+
+      if (
+        Object.entries(tempDevice).length !== 0 &&
+        typeof devices[tempDevice.serialNumber] === 'undefined' &&
+        (deviceType === undefined || (typeof deviceType === 'string' && deviceType !== '' && tempDevice.type === deviceType))
+      ) {
+        let deviceOptions = config?.devices?.find(
+          (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+        );
+        // Insert any extra options we've read in from configuration file for this device
+        tempDevice.eveHistory = config.options.eveHistory === true || deviceOptions?.eveHistory === true;
+        devices[tempDevice.serialNumber] = tempDevice; // Store processed device
+      }
+    });
+
+  return devices;
 }

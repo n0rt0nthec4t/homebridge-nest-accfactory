@@ -6,10 +6,14 @@
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
+import { getDeviceLocationName, processCommonData, adjustTemperature, parseDurationToSeconds } from '../utils.js';
+
+// Define constants
+import { DATA_SOURCE, DEVICE_TYPE, HOTWATER_MAX_TEMPERATURE, HOTWATER_MIN_TEMPERATURE, PROTOBUF_THERMOSTAT_RESOURCES } from '../consts.js';
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = 'Heatlink';
-  static VERSION = '2025.07.22'; // Code version
+  static VERSION = '2025.07.24'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
@@ -18,6 +22,9 @@ export default class NestHeatlink extends HomeKitDevice {
     // Patch to avoid characteristic errors when setting initial property ranges
     this.hap.Characteristic.TargetTemperature.prototype.getDefaultValue = () => {
       return this.deviceData.hotwaterMinTemp; // start at minimum heating threshold
+    };
+    this.hap.Characteristic.TargetHeatingCoolingState.prototype.getDefaultValue = () => {
+      return this.hap.Characteristic.TargetHeatingCoolingState.HEAT; // Only heating
     };
 
     // If the heatlink supports hotwater temperature control
@@ -211,4 +218,186 @@ export default class NestHeatlink extends HomeKitDevice {
       },
     });
   }
+}
+
+// Function to process our RAW Nest or Google for this device type
+export function processRawData(rawData, config, deviceType = undefined, deviceUUID = undefined) {
+  if (
+    rawData === null ||
+    typeof rawData !== 'object' ||
+    rawData?.constructor !== Object ||
+    typeof config !== 'object' ||
+    config?.constructor !== Object
+  ) {
+    return;
+  }
+
+  // Process data for any heatlink devices we have in the raw data
+  // We do this using any thermostat data
+  let devices = {};
+  Object.entries(rawData)
+    .filter(
+      ([key, value]) =>
+        key.startsWith('device.') === true ||
+        (key.startsWith('DEVICE_') === true && PROTOBUF_THERMOSTAT_RESOURCES.includes(value.value?.device_info?.typeName) === true),
+    )
+    .forEach(([object_key, value]) => {
+      let tempDevice = {};
+      try {
+        if (
+          value?.source === DATA_SOURCE.GOOGLE &&
+          config.options?.useGoogleAPI === true &&
+          value.value?.configuration_done?.deviceReady === true &&
+          value.value?.heat_link?.connectionStatus !== undefined &&
+          value.value?.heat_link?.connectionStatus !== '' &&
+          value.value?.heat_link?.connectionStatus !== 'HVAC_CONNECTION_STATE_UNSPECIFIED' &&
+          value.value?.heat_link?.connectionStatus !== 'HVAC_CONNECTION_STATE_DISCONNECTED' &&
+          value.value?.heat_link?.heatLinkModel?.value !== undefined &&
+          value.value?.heat_link?.heatLinkSerialNumber?.value !== undefined &&
+          value.value?.heat_link?.heatLinkSwVersion?.value !== undefined &&
+          (deviceUUID === undefined || deviceUUID === object_key)
+        ) {
+          tempDevice = processCommonData(
+            object_key,
+            {
+              type: DEVICE_TYPE.HEATLINK,
+              model:
+                value.value?.heat_link?.heatLinkModel.value.startsWith('Amber-2') === true
+                  ? 'Heatlink for Learning Thermostat (3rd gen, EU)'
+                  : value.value?.heat_link?.heatLinkModel.value.startsWith('Amber-1') === true
+                    ? 'Heatlink for Learning Thermostat (2nd gen, EU)'
+                    : value.value?.heat_link?.heatLinkModel.value.includes('Agate') === true
+                      ? 'Heatlink for Thermostat E (1st gen, EU)'
+                      : 'Heatlink (unknown)',
+              serialNumber: value.value?.heat_link.heatLinkSerialNumber.value,
+              softwareVersion: value.value?.heat_link.heatLinkSwVersion.value,
+              associated_thermostat: object_key, // Thermostat linked to
+              temperature_scale: value.value?.display_settings?.temperatureScale === 'TEMPERATURE_SCALE_F' ? 'F' : 'C',
+              online: value.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE', // Use thermostat online status
+              has_hot_water_control: value.value?.hvac_equipment_capabilities?.hasHotWaterControl === true,
+              hot_water_active: value.value?.hot_water_trait?.boilerActive === true,
+              hot_water_boost_active:
+                isNaN(value.value?.hot_water_settings?.boostTimerEnd?.seconds) === false &&
+                Number(value.value.hot_water_settings.boostTimerEnd.seconds) > 0,
+              has_hot_water_temperature:
+                isNaN(value.value?.hot_water_trait?.temperature?.value) === false &&
+                isNaN(value.value?.hot_water_settings?.temperature?.value) === false,
+              current_water_temperature:
+                isNaN(value.value?.hot_water_trait?.temperature?.value) === false
+                  ? adjustTemperature(Number(value.value.hot_water_trait.temperature.value), 'C', 'C', true)
+                  : 0.0,
+              hot_water_temperature:
+                isNaN(value.value?.hot_water_settings?.temperature?.value) === false
+                  ? adjustTemperature(Number(value.value.hot_water_settings.temperature.value), 'C', 'C', true)
+                  : 0.0,
+              description: typeof value.value?.label?.label === 'string' ? value.value.label.label : '',
+              location: getDeviceLocationName(
+                rawData,
+                value.value?.device_info?.pairerId?.resourceId,
+                value.value?.device_located_settings?.whereAnnotationRid?.resourceId,
+              ),
+            },
+            config,
+          );
+        }
+
+        if (
+          value?.source === DATA_SOURCE.NEST &&
+          config.options?.useNestAPI === true &&
+          value.value?.where_id !== undefined &&
+          Object.keys(value?.value).some((key) => key.startsWith('heat_link_')) === true &&
+          value.value?.heat_link_connection === 3 && // Think '3' means there is one connected. '1' seems to be not connected
+          (deviceUUID === undefined || deviceUUID === object_key)
+        ) {
+          tempDevice = processCommonData(
+            object_key,
+            {
+              type: DEVICE_TYPE.HEATLINK,
+              model:
+                value.value.heat_link_model.startsWith('Amber-2') === true
+                  ? 'Heatlink for Learning Thermostat (3rd gen, EU)'
+                  : value.value.heat_link_model.startsWith('Amber-1') === true
+                    ? 'Heatlink for Learning Thermostat (2nd gen, EU)'
+                    : value.value.heat_link_model.includes('Agate') === true
+                      ? 'Heatlink for Thermostat E (1st gen, EU)'
+                      : 'Heatlink (unknown)',
+              serialNumber: value.value.heat_link_serial_number,
+              softwareVersion: value.value.heat_link_sw_version,
+              associated_thermostat: object_key, // Thermostat linked to
+              temperature_scale: value.value.temperature_scale.toUpperCase() === 'F' ? 'F' : 'C',
+              online: rawData?.['track.' + value.value.serial_number]?.value?.online === true, // Use thermostat online status
+              has_hot_water_control: value.value.has_hot_water_control === true,
+              hot_water_active: value.value?.hot_water_active === true,
+              hot_water_boost_active:
+                isNaN(value.value?.hot_water_boost_time_to_end) === false && Number(value.value.hot_water_boost_time_to_end) > 0,
+              has_hot_water_temperature: value.value?.has_hot_water_temperature === true,
+              hot_water_temperature:
+                isNaN(value.value?.hot_water_temperature) === false
+                  ? adjustTemperature(Number(value.value.hot_water_temperature), 'C', 'C', true)
+                  : 0.0,
+              current_water_temperature:
+                isNaN(value.value?.current_water_temperature) === false
+                  ? adjustTemperature(Number(value.value.current_water_temperature), 'C', 'C', true)
+                  : 0.0,
+              description:
+                rawData?.['shared.' + value.value.serial_number]?.value?.name !== undefined
+                  ? HomeKitDevice.makeValidHKName(rawData['shared.' + value.value.serial_number].value.name)
+                  : '',
+              location: getDeviceLocationName(
+                rawData,
+                rawData?.['link.' + value.value.serial_number]?.value?.structure?.split?.('.')[1],
+                value.value.where_id,
+              ),
+            },
+            config,
+          );
+        }
+        // eslint-disable-next-line no-unused-vars
+      } catch (error) {
+        // Empty
+      }
+
+      if (
+        Object.entries(tempDevice).length !== 0 &&
+        typeof devices[tempDevice.serialNumber] === 'undefined' &&
+        (deviceType === undefined || (typeof deviceType === 'string' && deviceType !== '' && tempDevice.type === deviceType))
+      ) {
+        let deviceOptions = config?.devices?.find(
+          (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+        );
+        // Insert any extra options we've read in from configuration file for this device
+        tempDevice.eveHistory = config.options.eveHistory === true || deviceOptions?.eveHistory === true;
+        tempDevice.hotwaterBoostTime = parseDurationToSeconds(deviceOptions?.hotwaterBoostTime, {
+          defaultValue: 30 * 60, // 30mins
+          min: 60, // 1min
+          max: 7200, // 2hrs
+        });
+        tempDevice.hotwaterMinTemp =
+          isNaN(deviceOptions?.hotwaterMinTemp) === false
+            ? adjustTemperature(deviceOptions.hotwaterMinTemp, 'C', 'C', true)
+            : typeof deviceOptions?.hotwaterMinTemp === 'string' && /^([0-9.]+)\s*([CF])$/i.test(deviceOptions.hotwaterMinTemp)
+              ? adjustTemperature(
+                  parseFloat(deviceOptions.hotwaterMinTemp.match(/^([0-9.]+)\s*([CF])$/i)[1]),
+                  deviceOptions.hotwaterMinTemp.match(/^([0-9.]+)\s*([CF])$/i)[2],
+                  'C',
+                  true,
+                )
+              : HOTWATER_MIN_TEMPERATURE; // 30c minimum
+
+        tempDevice.hotwaterMaxTemp =
+          isNaN(deviceOptions?.hotwaterMaxTemp) === false
+            ? adjustTemperature(deviceOptions.hotwaterMaxTemp, 'C', 'C', true)
+            : typeof deviceOptions?.hotwaterMaxTemp === 'string' && /^([0-9.]+)\s*([CF])$/i.test(deviceOptions.hotwaterMaxTemp)
+              ? adjustTemperature(
+                  parseFloat(deviceOptions.hotwaterMaxTemp.match(/^([0-9.]+)\s*([CF])$/i)[1]),
+                  deviceOptions.hotwaterMaxTemp.match(/^([0-9.]+)\s*([CF])$/i)[2],
+                  'C',
+                  true,
+                )
+              : HOTWATER_MAX_TEMPERATURE; // 70c maximum
+        devices[tempDevice.serialNumber] = tempDevice; // Store processed device
+      }
+    });
+
+  return devices;
 }

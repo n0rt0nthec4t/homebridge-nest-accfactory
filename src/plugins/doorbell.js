@@ -8,11 +8,12 @@
 import { setTimeout, clearTimeout } from 'node:timers';
 
 // Define external module requirements
-import NestCamera from './camera.js';
+import NestCamera, { processRawData } from './camera.js';
+export { processRawData };
 
 export default class NestDoorbell extends NestCamera {
   static TYPE = 'Doorbell';
-  static VERSION = '2025.07.13'; // Code version
+  static VERSION = '2025.07.24'; // Code version
 
   doorbellTimer = undefined; // Cooldown timer for doorbell events
   switchService = undefined; // HomeKit switch for enabling/disabling chime
@@ -20,7 +21,6 @@ export default class NestDoorbell extends NestCamera {
   // Class functions
   onAdd() {
     // Setup HomeKit doorbell controller
-
     // Need to cleanup the CameraOperatingMode service. This is to allow seamless configuration
     // switching between enabling hksv or not
     // Thanks to @bcullman (Brad Ullman) for catching this

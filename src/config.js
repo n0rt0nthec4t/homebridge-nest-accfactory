@@ -13,11 +13,7 @@ import crypto from 'node:crypto';
 import FFmpeg from './ffmpeg.js';
 
 // Define constants
-const FFMPEG_VERSION = '6.0.0';
-const ACCOUNT_TYPE = {
-  NEST: 'Nest',
-  GOOGLE: 'Google',
-};
+import { FFMPEG_VERSION, ACCOUNT_TYPE } from './consts.js';
 
 function processConfig(config, log) {
   let options = (config.options = typeof config?.options === 'object' ? config.options : {});
@@ -190,4 +186,4 @@ function buildConnections(config) {
 }
 
 // Define exports
-export { ACCOUNT_TYPE, processConfig, buildConnections };
+export { processConfig, buildConnections };

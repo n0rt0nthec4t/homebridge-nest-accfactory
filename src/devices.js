@@ -1,7 +1,7 @@
 // Device support loader
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.07.09
+// Code version 2025.07.24
 // Mark Hulskamp
 'use strict';
 
@@ -14,19 +14,7 @@ import url from 'node:url';
 import HomeKitDevice from './HomeKitDevice.js';
 
 // Define constants
-const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
-const DEVICE_TYPE = Object.freeze({
-  THERMOSTAT: 'Thermostat',
-  TEMPSENSOR: 'TemperatureSensor',
-  SMOKESENSOR: 'Protect',
-  CAMERA: 'Camera',
-  DOORBELL: 'Doorbell',
-  FLOODLIGHT: 'FloodlightCamera',
-  WEATHER: 'Weather',
-  HEATLINK: 'Heatlink',
-  LOCK: 'Lock',
-  ALARM: 'Alarm',
-});
+import { __dirname, DEVICE_TYPE } from './consts.js';
 
 async function loadDeviceModules(log, pluginDir = '') {
   let baseDir = path.join(__dirname, pluginDir);
@@ -41,37 +29,35 @@ async function loadDeviceModules(log, pluginDir = '') {
     }
 
     try {
-      let module = await import(url.pathToFileURL(path.join(baseDir, file)).href);
-      let exportsToCheck = Object.values(module);
+      let modulePath = url.pathToFileURL(path.join(baseDir, file)).href;
+      let module = await import(modulePath);
+      let chosenClass = undefined;
 
-      for (const exported of exportsToCheck) {
-        if (typeof exported !== 'function') {
-          continue;
+      // First pass: find a valid subclass of HomeKitDevice
+      for (const exported of Object.values(module)) {
+        if (
+          typeof exported === 'function' &&
+          HomeKitDevice.prototype.isPrototypeOf(exported.prototype) &&
+          typeof exported.TYPE === 'string' &&
+          typeof exported.VERSION === 'string'
+        ) {
+          chosenClass = exported;
+          break; // first valid one wins (like your original)
         }
+      }
 
-        let proto = Object.getPrototypeOf(exported);
-        while (proto !== undefined && proto.name !== '') {
-          if (HomeKitDevice.prototype.isPrototypeOf(exported.prototype) === true) {
-            if (
-              typeof exported.TYPE !== 'string' ||
-              exported.TYPE === '' ||
-              typeof exported.VERSION !== 'string' ||
-              exported.VERSION === ''
-            ) {
-              log?.warn?.('Skipping device module %s (missing TYPE or VERSION)', file);
-              break;
-            }
+      if (chosenClass && deviceMap.has(chosenClass.TYPE) === false) {
+        let entry = { class: chosenClass };
 
-            if (deviceMap.has(exported.TYPE) === false) {
-              deviceMap.set(exported.TYPE, exported);
-              log?.info?.('Loaded %s module v%s', exported.TYPE, exported.VERSION);
-            }
-
-            break;
+        // Add additional named functions (like processRawData)
+        for (const [key, value] of Object.entries(module)) {
+          if (typeof value === 'function' && value !== chosenClass) {
+            entry[key] = value;
           }
-
-          proto = Object.getPrototypeOf(proto);
         }
+
+        deviceMap.set(chosenClass.TYPE, entry);
+        log?.info?.('Loaded %s module v%s', chosenClass.TYPE, chosenClass.VERSION);
       }
     } catch (error) {
       log?.warn?.('Failed to load device support file "%s": %s', file, error.message);
@@ -116,4 +102,4 @@ function getDeviceHKCategory(type) {
 }
 
 // Define exports
-export { DEVICE_TYPE, loadDeviceModules, getDeviceHKCategory };
+export { loadDeviceModules, getDeviceHKCategory };

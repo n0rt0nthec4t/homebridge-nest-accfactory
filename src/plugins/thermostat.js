@@ -7,21 +7,27 @@
 // Define nodejs module requirements
 import path from 'node:path';
 import fs from 'node:fs';
-import url from 'node:url';
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
+import { getDeviceLocationName, processCommonData, scaleValue, adjustTemperature } from '../utils.js';
 
 // Define constants
-const LOW_BATTERY_LEVEL = 10; // Low battery level percentage
-const MIN_TEMPERATURE = 9; // Minimum temperature for Nest Thermostat
-const MAX_TEMPERATURE = 32; // Maximum temperature for Nest Thermostat
-const __dirname = path.dirname(url.fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
-const DAYS_OF_WEEK = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+import {
+  DATA_SOURCE,
+  THERMOSTAT_MIN_TEMPERATURE,
+  THERMOSTAT_MAX_TEMPERATURE,
+  LOW_BATTERY_LEVEL,
+  PROTOBUF_THERMOSTAT_RESOURCES,
+  DAYS_OF_WEEK_FULL,
+  DAYS_OF_WEEK_SHORT,
+  __dirname,
+  DEVICE_TYPE,
+} from '../consts.js';
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2025.07.22'; // Code version
+  static VERSION = '2025.07.24'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -44,13 +50,13 @@ export default class NestThermostat extends HomeKitDevice {
 
     // Patch to avoid characteristic errors when setting initial property ranges
     this.hap.Characteristic.TargetTemperature.prototype.getDefaultValue = () => {
-      return MIN_TEMPERATURE; // start at minimum target temperature
+      return THERMOSTAT_MIN_TEMPERATURE; // start at minimum target temperature
     };
     this.hap.Characteristic.HeatingThresholdTemperature.prototype.getDefaultValue = () => {
-      return MIN_TEMPERATURE; // start at minimum heating threshold
+      return THERMOSTAT_MIN_TEMPERATURE; // start at minimum heating threshold
     };
     this.hap.Characteristic.CoolingThresholdTemperature.prototype.getDefaultValue = () => {
-      return MAX_TEMPERATURE; // start at maximum cooling threshold
+      return THERMOSTAT_MAX_TEMPERATURE; // start at maximum cooling threshold
     };
 
     // Used to indicate active temperature if the thermostat is using its temperature sensor data
@@ -97,8 +103,8 @@ export default class NestThermostat extends HomeKitDevice {
     this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.TargetTemperature, {
       props: {
         minStep: 0.5,
-        minValue: MIN_TEMPERATURE,
-        maxValue: MAX_TEMPERATURE,
+        minValue: THERMOSTAT_MIN_TEMPERATURE,
+        maxValue: THERMOSTAT_MAX_TEMPERATURE,
       },
       onSet: (value) => {
         this.setTemperature(this.hap.Characteristic.TargetTemperature, value);
@@ -111,8 +117,8 @@ export default class NestThermostat extends HomeKitDevice {
     this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.CoolingThresholdTemperature, {
       props: {
         minStep: 0.5,
-        minValue: MIN_TEMPERATURE,
-        maxValue: MAX_TEMPERATURE,
+        minValue: THERMOSTAT_MIN_TEMPERATURE,
+        maxValue: THERMOSTAT_MAX_TEMPERATURE,
       },
       onSet: (value) => {
         this.setTemperature(this.hap.Characteristic.CoolingThresholdTemperature, value);
@@ -125,8 +131,8 @@ export default class NestThermostat extends HomeKitDevice {
     this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.HeatingThresholdTemperature, {
       props: {
         minStep: 0.5,
-        minValue: MIN_TEMPERATURE,
-        maxValue: MAX_TEMPERATURE,
+        minValue: THERMOSTAT_MIN_TEMPERATURE,
+        maxValue: THERMOSTAT_MAX_TEMPERATURE,
       },
       onSet: (value) => {
         this.setTemperature(this.hap.Characteristic.HeatingThresholdTemperature, value);
@@ -637,7 +643,7 @@ export default class NestThermostat extends HomeKitDevice {
 
           let program = {
             id: parseInt(day),
-            days: isNaN(day) === false && DAYS_OF_WEEK?.[day] !== undefined ? DAYS_OF_WEEK[day] : 'mon',
+            days: isNaN(day) === false && DAYS_OF_WEEK_SHORT?.[day] !== undefined ? DAYS_OF_WEEK_SHORT[day].toLowerCase() : 'mon',
             schedule: [],
           };
 
@@ -881,7 +887,7 @@ export default class NestThermostat extends HomeKitDevice {
     }[characteristic.UUID];
 
     if (isNaN(currentTemperature) === false) {
-      currentTemperature = Math.min(Math.max(currentTemperature, MIN_TEMPERATURE), MAX_TEMPERATURE);
+      currentTemperature = Math.min(Math.max(currentTemperature, THERMOSTAT_MIN_TEMPERATURE), THERMOSTAT_MAX_TEMPERATURE);
     }
 
     return currentTemperature;
@@ -1015,4 +1021,539 @@ export default class NestThermostat extends HomeKitDevice {
 
     return loadedModule;
   }
+}
+
+// Function to process our RAW Nest or Google for this device type
+export function processRawData(rawData, config, deviceType = undefined, deviceUUID = undefined) {
+  if (
+    rawData === null ||
+    typeof rawData !== 'object' ||
+    rawData?.constructor !== Object ||
+    typeof config !== 'object' ||
+    config?.constructor !== Object
+  ) {
+    return;
+  }
+
+  const process_thermostat_data = (object_key, data) => {
+    let processed = {};
+    try {
+      // Fix up data we need to
+
+      // If we have hot water control, it should be a 'UK/EU' model, so add that after the 'gen' tag in the model name
+      data.model = data.has_hot_water_control === true ? data.model.replace(/\bgen\)/, 'gen, EU)') : data.model;
+
+      data = processCommonData(object_key, data, config);
+      data.target_temperature_high = adjustTemperature(data.target_temperature_high, 'C', 'C', true);
+      data.target_temperature_low = adjustTemperature(data.target_temperature_low, 'C', 'C', true);
+      data.target_temperature = adjustTemperature(data.target_temperature, 'C', 'C', true);
+      data.backplate_temperature = adjustTemperature(data.backplate_temperature, 'C', 'C', true);
+      data.current_temperature = adjustTemperature(data.current_temperature, 'C', 'C', true);
+      data.battery_level = scaleValue(data.battery_level, 3.6, 3.9, 0, 100);
+
+      processed = data;
+      // eslint-disable-next-line no-unused-vars
+    } catch (error) {
+      // Empty
+    }
+    return processed;
+  };
+
+  // Process data for any thermostat(s) we have in the raw data
+  let devices = {};
+  Object.entries(rawData)
+    .filter(
+      ([key, value]) =>
+        (key.startsWith('device.') === true ||
+          (key.startsWith('DEVICE_') === true && PROTOBUF_THERMOSTAT_RESOURCES.includes(value.value?.device_info?.typeName) === true)) &&
+        (deviceUUID === undefined || deviceUUID === key),
+    )
+    .forEach(([object_key, value]) => {
+      let tempDevice = {};
+      try {
+        if (
+          value?.source === DATA_SOURCE.GOOGLE &&
+          config.options?.useGoogleAPI === true &&
+          value.value?.configuration_done?.deviceReady === true
+        ) {
+          let RESTTypeData = {};
+          RESTTypeData.type = DEVICE_TYPE.THERMOSTAT;
+          RESTTypeData.serialNumber = value.value.device_identity.serialNumber;
+          RESTTypeData.softwareVersion = value.value.device_identity.softwareVersion;
+          RESTTypeData.model = 'Thermostat (unknown)';
+          if (value.value.device_info.typeName === 'nest.resource.NestLearningThermostat1Resource') {
+            RESTTypeData.model = 'Learning Thermostat (1st gen)';
+          }
+          if (
+            value.value.device_info.typeName === 'nest.resource.NestLearningThermostat2Resource' ||
+            value.value.device_info.typeName === 'nest.resource.NestAmber1DisplayResource'
+          ) {
+            RESTTypeData.model = 'Learning Thermostat (2nd gen)';
+          }
+          if (
+            value.value.device_info.typeName === 'nest.resource.NestLearningThermostat3Resource' ||
+            value.value.device_info.typeName === 'nest.resource.NestAmber2DisplayResource'
+          ) {
+            RESTTypeData.model = 'Learning Thermostat (3rd gen)';
+          }
+          if (value.value.device_info.typeName === 'google.resource.GoogleBismuth1Resource') {
+            RESTTypeData.model = 'Learning Thermostat (4th gen)';
+          }
+          if (
+            value.value.device_info.typeName === 'nest.resource.NestOnyxResource' ||
+            value.value.device_info.typeName === 'nest.resource.NestAgateDisplayResource'
+          ) {
+            RESTTypeData.model = 'Thermostat E (1st gen)';
+          }
+          if (value.value.device_info.typeName === 'google.resource.GoogleZirconium1Resource') {
+            RESTTypeData.model = 'Thermostat (2020)';
+          }
+          RESTTypeData.current_humidity =
+            isNaN(value.value?.current_humidity?.humidityValue?.humidity?.value) === false
+              ? Number(value.value.current_humidity.humidityValue.humidity.value)
+              : 0.0;
+          RESTTypeData.temperature_scale = value.value?.display_settings?.temperatureScale === 'TEMPERATURE_SCALE_F' ? 'F' : 'C';
+          RESTTypeData.removed_from_base =
+            Array.isArray(value.value?.display?.thermostatState) === true && value.value.display.thermostatState.includes('bpd') === true;
+          RESTTypeData.backplate_temperature = parseFloat(value.value.backplate_temperature.temperatureValue.temperature.value);
+          RESTTypeData.current_temperature = parseFloat(value.value.current_temperature.temperatureValue.temperature.value);
+          RESTTypeData.battery_level = parseFloat(value.value.battery_voltage.batteryValue.batteryVoltage.value);
+          RESTTypeData.online = value.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE';
+          RESTTypeData.leaf = value.value?.leaf?.active === true;
+          RESTTypeData.can_cool =
+            value.value?.hvac_equipment_capabilities?.hasStage1Cool === true ||
+            value.value?.hvac_equipment_capabilities?.hasStage2Cool === true ||
+            value.value?.hvac_equipment_capabilities?.hasStage3Cool === true;
+          RESTTypeData.can_heat =
+            value.value?.hvac_equipment_capabilities?.hasStage1Heat === true ||
+            value.value?.hvac_equipment_capabilities?.hasStage2Heat === true ||
+            value.value?.hvac_equipment_capabilities?.hasStage3Heat === true;
+          RESTTypeData.temperature_lock = value.value?.temperature_lock_settings?.enabled === true;
+          RESTTypeData.temperature_lock_pin_hash =
+            value.value?.temperature_lock_settings?.enabled === true ? value.value.temperature_lock_settings.pinHash : '';
+          RESTTypeData.away = value.value?.structure_mode?.structureMode === 'STRUCTURE_MODE_AWAY';
+          RESTTypeData.occupancy = value.value?.structure_mode?.structureMode === 'STRUCTURE_MODE_HOME';
+          //RESTTypeData.occupancy = (value.value.structure_mode.occupancy.activity === 'ACTIVITY_ACTIVE');
+          RESTTypeData.vacation_mode = value.value?.structure_mode?.structureMode === 'STRUCTURE_MODE_VACATION';
+          RESTTypeData.description = value.value.label?.label !== undefined ? value.value.label.label : '';
+          RESTTypeData.location = getDeviceLocationName(
+            rawData,
+            value.value?.device_info?.pairerId?.resourceId,
+            value.value?.device_located_settings?.whereAnnotationRid?.resourceId,
+          );
+
+          // Work out current mode. ie: off, cool, heat, range and get temperature low/high and target
+          RESTTypeData.hvac_mode =
+            value.value?.target_temperature_settings?.enabled?.value === true &&
+            value.value?.target_temperature_settings?.targetTemperature?.setpointType !== undefined
+              ? value.value.target_temperature_settings.targetTemperature.setpointType.split('SET_POINT_TYPE_')[1].toLowerCase()
+              : 'off';
+          RESTTypeData.target_temperature_low =
+            isNaN(value.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value) === false
+              ? Number(value.value.target_temperature_settings.targetTemperature.heatingTarget.value)
+              : 0.0;
+          RESTTypeData.target_temperature_high =
+            isNaN(value.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value) === false
+              ? Number(value.value.target_temperature_settings.targetTemperature.coolingTarget.value)
+              : 0.0;
+          RESTTypeData.target_temperature =
+            value.value?.target_temperature_settings?.targetTemperature?.setpointType === 'SET_POINT_TYPE_COOL' &&
+            isNaN(value.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value) === false
+              ? Number(value.value.target_temperature_settings.targetTemperature.coolingTarget.value)
+              : value.value?.target_temperature_settings?.targetTemperature?.setpointType === 'SET_POINT_TYPE_HEAT' &&
+                  isNaN(value.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value) === false
+                ? Number(value.value.target_temperature_settings.targetTemperature.heatingTarget.value)
+                : value.value?.target_temperature_settings?.targetTemperature?.setpointType === 'SET_POINT_TYPE_RANGE' &&
+                    isNaN(value.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value) === false &&
+                    isNaN(value.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value) === false
+                  ? (Number(value.value.target_temperature_settings.targetTemperature.coolingTarget.value) +
+                      Number(value.value.target_temperature_settings.targetTemperature.heatingTarget.value)) *
+                    0.5
+                  : 0.0;
+
+          // Work out if eco mode is active and adjust temperature low/high and target
+          if (value.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE') {
+            RESTTypeData.target_temperature_low = value.value.eco_mode_settings.ecoTemperatureHeat.value.value;
+            RESTTypeData.target_temperature_high = value.value.eco_mode_settings.ecoTemperatureCool.value.value;
+            if (
+              value.value.eco_mode_settings.ecoTemperatureHeat.enabled === true &&
+              value.value.eco_mode_settings.ecoTemperatureCool.enabled === false
+            ) {
+              RESTTypeData.target_temperature = value.value.eco_mode_settings.ecoTemperatureHeat.value.value;
+              RESTTypeData.hvac_mode = 'ecoheat';
+            }
+            if (
+              value.value.eco_mode_settings.ecoTemperatureHeat.enabled === false &&
+              value.value.eco_mode_settings.ecoTemperatureCool.enabled === true
+            ) {
+              RESTTypeData.target_temperature = value.value.eco_mode_settings.ecoTemperatureCool.value.value;
+              RESTTypeData.hvac_mode = 'ecocool';
+            }
+            if (
+              value.value.eco_mode_settings.ecoTemperatureHeat.enabled === true &&
+              value.value.eco_mode_settings.ecoTemperatureCool.enabled === true
+            ) {
+              RESTTypeData.target_temperature =
+                (value.value.eco_mode_settings.ecoTemperatureCool.value.value +
+                  value.value.eco_mode_settings.ecoTemperatureHeat.value.value) *
+                0.5;
+              RESTTypeData.hvac_mode = 'ecorange';
+            }
+          }
+
+          // Work out current state ie: heating, cooling etc
+          RESTTypeData.hvac_state = 'off'; // By default, we're not heating or cooling
+          if (
+            value.value?.hvac_control?.hvacState?.coolStage1Active === true ||
+            value.value?.hvac_control?.hvacState?.coolStage2Active === true ||
+            value.value?.hvac_control?.hvacState?.coolStage2Active === true
+          ) {
+            // A cooling source is on, so we're in cooling mode
+            RESTTypeData.hvac_state = 'cooling';
+          }
+          if (
+            value.value?.hvac_control?.hvacState?.heatStage1Active === true ||
+            value.value?.hvac_control?.hvacState?.heatStage2Active === true ||
+            value.value?.hvac_control?.hvacState?.heatStage3Active === true ||
+            value.value?.hvac_control?.hvacState?.alternateHeatStage1Active === true ||
+            value.value?.hvac_control?.hvacState?.alternateHeatStage2Active === true ||
+            value.value?.hvac_control?.hvacState?.auxiliaryHeatActive === true ||
+            value.value?.hvac_control?.hvacState?.emergencyHeatActive === true
+          ) {
+            // A heating source is on, so we're in heating mode
+            RESTTypeData.hvac_state = 'heating';
+          }
+
+          // Fan details, on or off and max number of speeds supported
+          RESTTypeData.has_fan =
+            typeof value.value?.fan_control_capabilities?.maxAvailableSpeed === 'string' &&
+            value.value.fan_control_capabilities.maxAvailableSpeed !== 'FAN_SPEED_SETTING_OFF';
+          RESTTypeData.fan_state =
+            isNaN(value.value?.fan_control_settings?.timerEnd?.seconds) === false &&
+            Number(value.value.fan_control_settings.timerEnd.seconds) > 0;
+          RESTTypeData.fan_timer_speed =
+            value.value?.fan_control_settings?.timerSpeed?.includes?.('FAN_SPEED_SETTING_STAGE') === true &&
+            isNaN(value.value.fan_control_settings.timerSpeed.split('FAN_SPEED_SETTING_STAGE')[1]) === false
+              ? Number(value.value.fan_control_settings.timerSpeed.split('FAN_SPEED_SETTING_STAGE')[1])
+              : 0;
+          RESTTypeData.fan_max_speed =
+            value.value?.fan_control_capabilities?.maxAvailableSpeed?.includes?.('FAN_SPEED_SETTING_STAGE') === true &&
+            isNaN(value.value.fan_control_capabilities.maxAvailableSpeed.split('FAN_SPEED_SETTING_STAGE')[1]) === false
+              ? Number(value.value.fan_control_capabilities.maxAvailableSpeed.split('FAN_SPEED_SETTING_STAGE')[1])
+              : 0;
+
+          // Humidifier/dehumidifier details
+          RESTTypeData.has_humidifier = value.value?.hvac_equipment_capabilities?.hasHumidifier === true;
+          RESTTypeData.has_dehumidifier = value.value?.hvac_equipment_capabilities?.hasDehumidifier === true;
+          RESTTypeData.target_humidity =
+            isNaN(value.value?.humidity_control_settings?.targetHumidity?.value) === false
+              ? Number(value.value.humidity_control_settings.targetHumidity.value)
+              : 0.0;
+          RESTTypeData.humidifier_state = value.value?.hvac_control?.hvacState?.humidifierActive === true;
+          RESTTypeData.dehumidifier_state = value.value?.hvac_control?.hvacState?.dehumidifierActive === true;
+
+          // Air filter details
+          RESTTypeData.has_air_filter = value.value?.hvac_equipment_capabilities?.hasAirFilter === true;
+          RESTTypeData.filter_replacement_needed = value.value?.filter_reminder?.filterReplacementNeeded?.value === true;
+
+          // Hotwater details
+          RESTTypeData.has_hot_water_control = value.value?.hvac_equipment_capabilities?.hasHotWaterControl === true;
+          RESTTypeData.hot_water_active = value.value?.hot_water?.boilerActive === true;
+          RESTTypeData.hot_water_boost_active =
+            isNaN(value.value?.hot_water_settings?.boostTimerEnd?.seconds) === false &&
+            Number(value.value.hot_water_settings.boostTimerEnd.seconds) > 0;
+
+          // Process any temperature sensors associated with this thermostat
+          RESTTypeData.active_rcs_sensor =
+            value.value?.remote_comfort_sensing_settings?.activeRcsSelection?.activeRcsSensor !== undefined
+              ? value.value.remote_comfort_sensing_settings.activeRcsSelection.activeRcsSensor.resourceId
+              : '';
+          RESTTypeData.linked_rcs_sensors = [];
+          if (Array.isArray(value.value?.remote_comfort_sensing_settings?.associatedRcsSensors) === true) {
+            value.value.remote_comfort_sensing_settings.associatedRcsSensors.forEach((sensor) => {
+              if (typeof rawData?.[sensor?.deviceId?.resourceId]?.value === 'object') {
+                rawData[sensor.deviceId.resourceId].value.associated_thermostat = object_key; // Sensor is linked to this thermostat
+              }
+
+              RESTTypeData.linked_rcs_sensors.push(sensor.deviceId.resourceId);
+            });
+          }
+
+          RESTTypeData.schedule_mode =
+            typeof value.value?.target_temperature_settings?.targetTemperature?.setpointType === 'string' &&
+            value.value.target_temperature_settings.targetTemperature.setpointType.split('SET_POINT_TYPE_')[1].toLowerCase() !== 'off'
+              ? value.value.target_temperature_settings.targetTemperature.setpointType.split('SET_POINT_TYPE_')[1].toLowerCase()
+              : '';
+          RESTTypeData.schedules = {};
+          if (
+            value.value[RESTTypeData.schedule_mode + '_schedule_settings']?.setpoints !== undefined &&
+            value.value[RESTTypeData.schedule_mode + '_schedule_settings']?.type ===
+              'SET_POINT_SCHEDULE_TYPE_' + RESTTypeData.schedule_mode.toUpperCase()
+          ) {
+            Object.values(value.value[RESTTypeData.schedule_mode + '_schedule_settings'].setpoints).forEach((schedule) => {
+              // Create Nest API schedule entries
+              if (schedule?.dayOfWeek !== undefined) {
+                let dayofWeekIndex = DAYS_OF_WEEK_FULL.indexOf(schedule.dayOfWeek.split('DAY_OF_WEEK_')[1]);
+
+                if (RESTTypeData.schedules?.[dayofWeekIndex] === undefined) {
+                  RESTTypeData.schedules[dayofWeekIndex] = {};
+                }
+
+                RESTTypeData.schedules[dayofWeekIndex][Object.entries(RESTTypeData.schedules[dayofWeekIndex]).length] = {
+                  'temp-min': adjustTemperature(schedule.heatingTarget.value, 'C', 'C', true),
+                  'temp-max': adjustTemperature(schedule.coolingTarget.value, 'C', 'C', true),
+                  time: isNaN(schedule?.secondsInDay) === false ? Number(schedule.secondsInDay) : 0,
+                  type: RESTTypeData.schedule_mode.toUpperCase(),
+                  entry_type: 'setpoint',
+                };
+              }
+            });
+          }
+
+          tempDevice = process_thermostat_data(object_key, RESTTypeData);
+        }
+
+        if (value?.source === DATA_SOURCE.NEST && config.options?.useNestAPI === true && value.value?.where_id !== undefined) {
+          let RESTTypeData = {};
+          RESTTypeData.type = DEVICE_TYPE.THERMOSTAT;
+          RESTTypeData.serialNumber = value.value.serial_number;
+          RESTTypeData.softwareVersion = value.value.current_version;
+          RESTTypeData.model = 'Thermostat (unknown)';
+          if (value.value.serial_number.substring(0, 2) === '15') {
+            RESTTypeData.model = 'Thermostat E (1st gen)'; // Nest Thermostat E
+          }
+          if (value.value.serial_number.substring(0, 2) === '09' || value.value.serial_number.substring(0, 2) === '10') {
+            RESTTypeData.model = 'Learning Thermostat (3rd gen)'; // Nest Thermostat 3rd gen
+          }
+          if (value.value.serial_number.substring(0, 2) === '02') {
+            RESTTypeData.model = 'Learning Thermostat (2nd gen)'; // Nest Thermostat 2nd gen
+          }
+          if (value.value.serial_number.substring(0, 2) === '01') {
+            RESTTypeData.model = 'Learning Thermostat (1st gen)'; // Nest Thermostat 1st gen
+          }
+          RESTTypeData.current_humidity = value.value.current_humidity;
+          RESTTypeData.temperature_scale = value.value.temperature_scale.toUpperCase() === 'F' ? 'F' : 'C';
+          RESTTypeData.removed_from_base = value.value.nlclient_state.toUpperCase() === 'BPD';
+          RESTTypeData.backplate_temperature = value.value.backplate_temperature;
+          RESTTypeData.current_temperature = value.value.backplate_temperature;
+          RESTTypeData.battery_level = value.value.battery_level;
+          RESTTypeData.online = rawData?.['track.' + value.value.serial_number]?.value?.online === true;
+          RESTTypeData.leaf = value.value.leaf === true;
+          RESTTypeData.has_humidifier = value.value.has_humidifier === true;
+          RESTTypeData.has_dehumidifier = value.value.has_dehumidifier === true;
+          RESTTypeData.has_fan = value.value.has_fan === true;
+          RESTTypeData.can_cool = rawData?.['shared.' + value.value.serial_number]?.value?.can_cool === true;
+          RESTTypeData.can_heat = rawData?.['shared.' + value.value.serial_number]?.value?.can_heat === true;
+          RESTTypeData.temperature_lock = value.value.temperature_lock === true;
+          RESTTypeData.temperature_lock_pin_hash = value.value.temperature_lock_pin_hash;
+
+          // Look in two possible locations for away status
+          RESTTypeData.away =
+            rawData?.['structure.' + rawData?.['link.' + value.value.serial_number]?.value?.structure?.split?.('.')[1]]?.value?.away ===
+              true ||
+            rawData?.['structure.' + rawData?.['link.' + value.value.serial_number]?.value?.structure?.split?.('.')[1]]?.value
+              ?.structure_mode?.structureMode === 'STRUCTURE_MODE_AWAY';
+
+          RESTTypeData.occupancy = RESTTypeData.away === false; // Occupancy is opposite of away status ie: away is false, then occupied
+
+          // Look in two possible locations for vacation status
+          RESTTypeData.vacation_mode =
+            rawData['structure.' + rawData?.['link.' + value.value.serial_number]?.value?.structure?.split?.('.')[1]]?.value
+              ?.vacation_mode === true ||
+            rawData?.['structure.' + rawData?.['link.' + value.value.serial_number]?.value?.structure?.split?.('.')[1]]?.value
+              ?.structure_mode?.structureMode === 'STRUCTURE_MODE_VACATION';
+
+          RESTTypeData.description =
+            rawData?.['shared.' + value.value.serial_number]?.value?.name !== undefined
+              ? HomeKitDevice.makeValidHKName(rawData['shared.' + value.value.serial_number].value.name)
+              : '';
+          RESTTypeData.location = getDeviceLocationName(
+            rawData,
+            rawData?.['link.' + value.value.serial_number]?.value?.structure?.split?.('.')[1],
+            value.value.where_id,
+          );
+
+          // Work out current mode. ie: off, cool, heat, range and get temperature low (heat) and high (cool)
+          RESTTypeData.hvac_mode =
+            rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_type !== undefined
+              ? rawData?.['shared.' + value.value.serial_number].value.target_temperature_type
+              : 'off';
+          RESTTypeData.target_temperature =
+            isNaN(rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature) === false
+              ? Number(rawData['shared.' + value.value.serial_number].value.target_temperature)
+              : 0.0;
+          RESTTypeData.target_temperature_low =
+            isNaN(rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_low) === false
+              ? Number(rawData['shared.' + value.value.serial_number].value.target_temperature_low)
+              : 0.0;
+          RESTTypeData.target_temperature_high =
+            isNaN(rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_high) === false
+              ? Number(rawData['shared.' + value.value.serial_number].value.target_temperature_high)
+              : 0.0;
+          if (rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_type.toUpperCase() === 'COOL') {
+            // Target temperature is the cooling point
+            RESTTypeData.target_temperature =
+              isNaN(rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_high) === false
+                ? Number(rawData['shared.' + value.value.serial_number].value.target_temperature_high)
+                : 0.0;
+          }
+          if (rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_type.toUpperCase() === 'HEAT') {
+            // Target temperature is the heating point
+            RESTTypeData.target_temperature =
+              isNaN(rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_low) === false
+                ? Number(rawData['shared.' + value.value.serial_number].value.target_temperature_low)
+                : 0.0;
+          }
+          if (rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_type.toUpperCase() === 'RANGE') {
+            // Target temperature is in between the heating and cooling point
+            RESTTypeData.target_temperature =
+              isNaN(rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_low) === false &&
+              isNaN(rawData?.['shared.' + value.value.serial_number]?.value?.target_temperature_high) === false
+                ? (Number(rawData['shared.' + value.value.serial_number].value.target_temperature_low) +
+                    Number(rawData['shared.' + value.value.serial_number].value.target_temperature_high)) *
+                  0.5
+                : 0.0;
+          }
+
+          // Work out if eco mode is active and adjust temperature low/high and target
+          if (value.value.eco.mode.toUpperCase() === 'AUTO-ECO' || value.value.eco.mode.toUpperCase() === 'MANUAL-ECO') {
+            RESTTypeData.target_temperature_low = value.value.away_temperature_low;
+            RESTTypeData.target_temperature_high = value.value.away_temperature_high;
+            if (value.value.away_temperature_high_enabled === true && value.value.away_temperature_low_enabled === false) {
+              RESTTypeData.target_temperature = value.value.away_temperature_low;
+              RESTTypeData.hvac_mode = 'ecoheat';
+            }
+            if (value.value.away_temperature_high_enabled === true && value.value.away_temperature_low_enabled === false) {
+              RESTTypeData.target_temperature = value.value.away_temperature_high;
+              RESTTypeData.hvac_mode = 'ecocool';
+            }
+            if (value.value.away_temperature_high_enabled === true && value.value.away_temperature_low_enabled === true) {
+              RESTTypeData.target_temperature = (value.value.away_temperature_low + value.value.away_temperature_high) * 0.5;
+              RESTTypeData.hvac_mode = 'ecorange';
+            }
+          }
+
+          // Work out current state ie: heating, cooling etc
+          RESTTypeData.hvac_state = 'off'; // By default, we're not heating or cooling
+          if (
+            rawData?.['shared.' + value.value.serial_number]?.value?.hvac_heater_state === true ||
+            rawData?.['shared.' + value.value.serial_number]?.value?.hvac_heat_x2_state === true ||
+            rawData?.['shared.' + value.value.serial_number]?.value?.hvac_heat_x3_state === true ||
+            rawData?.['shared.' + value.value.serial_number]?.value?.hvac_aux_heater_state === true ||
+            rawData?.['shared.' + value.value.serial_number]?.value?.hvac_alt_heat_x2_state === true ||
+            rawData?.['shared.' + value.value.serial_number]?.value?.hvac_emer_heat_state === true ||
+            rawData?.['shared.' + value.value.serial_number]?.value?.hvac_alt_heat_state === true
+          ) {
+            // A heating source is on, so we're in heating mode
+            RESTTypeData.hvac_state = 'heating';
+          }
+          if (
+            rawData?.['shared.' + value.value.serial_number]?.value?.hvac_ac_state === true ||
+            rawData?.['shared.' + value.value.serial_number]?.value?.hvac_cool_x2_state === true ||
+            rawData?.['shared.' + value.value.serial_number]?.value?.hvac_cool_x3_state === true
+          ) {
+            // A cooling source is on, so we're in cooling mode
+            RESTTypeData.hvac_state = 'cooling';
+          }
+
+          // Update fan status, on or off
+          RESTTypeData.fan_state = isNaN(value.value?.fan_timer_timeout) === false && Number(value.value.fan_timer_timeout) > 0;
+          RESTTypeData.fan_timer_speed =
+            value.value?.fan_timer_speed?.includes?.('stage') === true && isNaN(value.value.fan_timer_speed.split('stage')[1]) === false
+              ? Number(value.value.fan_timer_speed.split('stage')[1])
+              : 0;
+          RESTTypeData.fan_max_speed =
+            value.value?.fan_capabilities?.includes?.('stage') === true && isNaN(value.value.fan_capabilities.split('stage')[1]) === false
+              ? Number(value.value.fan_capabilities.split('stage')[1])
+              : 0;
+
+          // Humidifier/dehumidifier details
+          RESTTypeData.target_humidity = isNaN(value.value?.target_humidity) === false ? Number(value.value.target_humidity) : 0.0;
+          RESTTypeData.humidifier_state = value.value.humidifier_state === true;
+          RESTTypeData.dehumidifier_state = value.value.dehumidifier_state === true;
+
+          // Air filter details
+          RESTTypeData.has_air_filter = value.value.has_air_filter === true;
+          RESTTypeData.filter_replacement_needed = value.value.filter_replacement_needed === true;
+
+          // Hotwater details
+          RESTTypeData.has_hot_water_control = value.value.has_hot_water_control === true;
+          RESTTypeData.hot_water_active = value.value?.hot_water_active === true;
+          RESTTypeData.hot_water_boost_active =
+            isNaN(value.value?.hot_water_boost_time_to_end) === false && Number(value.value.hot_water_boost_time_to_end) > 0;
+
+          // Process any temperature sensors associated with this thermostat
+          RESTTypeData.active_rcs_sensor = '';
+          RESTTypeData.linked_rcs_sensors = [];
+          if (rawData?.['rcs_settings.' + value.value.serial_number]?.value?.associated_rcs_sensors !== undefined) {
+            rawData?.['rcs_settings.' + value.value.serial_number].value.associated_rcs_sensors.forEach((sensor) => {
+              if (typeof rawData[sensor]?.value === 'object') {
+                rawData[sensor].value.associated_thermostat = object_key; // Sensor is linked to this thermostat
+
+                // Is this sensor the active one? If so, get some details about it
+                if (
+                  rawData?.['rcs_settings.' + value.value.serial_number]?.value?.active_rcs_sensors !== undefined &&
+                  rawData?.['rcs_settings.' + value.value.serial_number]?.value?.active_rcs_sensors.includes(sensor)
+                ) {
+                  RESTTypeData.active_rcs_sensor = rawData[sensor].value.serial_number.toUpperCase();
+                  RESTTypeData.current_temperature = rawData[sensor].value.current_temperature;
+                }
+                RESTTypeData.linked_rcs_sensors.push(rawData[sensor].value.serial_number.toUpperCase());
+              }
+            });
+          }
+
+          // Get associated schedules
+          if (rawData?.['schedule.' + value.value.serial_number] !== undefined) {
+            Object.values(rawData['schedule.' + value.value.serial_number].value.days).forEach((schedules) => {
+              Object.values(schedules).forEach((schedule) => {
+                // Fix up temperatures in the schedule
+                if (isNaN(schedule['temp']) === false) {
+                  schedule.temp = adjustTemperature(Number(schedule.temp), 'C', 'C', true);
+                }
+                if (isNaN(schedule['temp-min']) === false) {
+                  schedule['temp-min'] = adjustTemperature(Number(schedule['temp-min']), 'C', 'C', true);
+                }
+                if (isNaN(schedule['temp-max']) === false) {
+                  schedule['temp-max'] = adjustTemperature(Number(schedule['temp-max']), 'C', 'C', true);
+                }
+              });
+            });
+            RESTTypeData.schedules = rawData['schedule.' + value.value.serial_number].value.days;
+            RESTTypeData.schedule_mode = rawData['schedule.' + value.value.serial_number].value.schedule_mode;
+          }
+
+          tempDevice = process_thermostat_data(object_key, RESTTypeData);
+        }
+        // eslint-disable-next-line no-unused-vars
+      } catch (error) {
+        // Empty
+      }
+
+      if (
+        Object.entries(tempDevice).length !== 0 &&
+        typeof devices[tempDevice.serialNumber] === 'undefined' &&
+        (deviceType === undefined || (typeof deviceType === 'string' && deviceType !== '' && tempDevice.type === deviceType))
+      ) {
+        let deviceOptions = config?.devices?.find(
+          (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+        );
+        // Insert any extra options we've read in from configuration file for this device
+        tempDevice.eveHistory = config.options.eveHistory === true || deviceOptions?.eveHistory === true;
+        tempDevice.humiditySensor = deviceOptions?.humiditySensor === true;
+        tempDevice.externalCool =
+          typeof deviceOptions?.externalCool === 'string' && deviceOptions.externalCool !== '' ? deviceOptions.externalCool : undefined; // Config option for external cooling source
+        tempDevice.externalHeat =
+          typeof deviceOptions?.externalHeat === 'string' && deviceOptions.externalHeat !== '' ? deviceOptions.externalHeat : undefined; // Config option for external heating source
+        tempDevice.externalFan =
+          typeof deviceOptions?.externalFan === 'string' && deviceOptions.externalFan !== '' ? deviceOptions.externalFan : undefined; // Config option for external fan source
+        tempDevice.externalDehumidifier =
+          typeof deviceOptions?.externalDehumidifier === 'string' && deviceOptions.externalDehumidifier !== ''
+            ? deviceOptions.externalDehumidifier
+            : undefined; // Config option for external dehumidifier source
+        devices[tempDevice.serialNumber] = tempDevice; // Store processed device
+      }
+    });
+
+  return devices;
 }

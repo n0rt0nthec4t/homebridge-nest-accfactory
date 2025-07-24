@@ -11,7 +11,6 @@ import { setTimeout, clearTimeout } from 'node:timers';
 import dgram from 'node:dgram';
 import fs from 'node:fs';
 import path from 'node:path';
-import url from 'node:url';
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
@@ -19,25 +18,24 @@ import Streamer from '../streamer.js';
 import NexusTalk from '../nexustalk.js';
 import WebRTC from '../webrtc.js';
 import FFmpeg from '../ffmpeg.js';
+import { getDeviceLocationName, processCommonData, parseDurationToSeconds, scaleValue } from '../utils.js';
 
 // Define constants
-const CAMERA_RESOURCE = {
-  OFFLINE: 'Nest_camera_offline.jpg',
-  OFF: 'Nest_camera_off.jpg',
-  TRANSFER: 'Nest_camera_transfer.jpg',
-};
-const MP4BOX = 'mp4box';
-const SNAPSHOT_CACHE_TIMEOUT = 30000; // Timeout for retaining snapshot image (in milliseconds)
-const STREAMING_PROTOCOL = {
-  WEBRTC: 'PROTOCOL_WEBRTC',
-  NEXUSTALK: 'PROTOCOL_NEXUSTALK',
-};
-const RESOURCE_PATH = '../res';
-const __dirname = path.dirname(url.fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
+import {
+  DATA_SOURCE,
+  PROTOBUF_CAMERA_DOORBELL_RESOURCES,
+  __dirname,
+  RESOURCE_PATH,
+  CAMERA_RESOURCE_IMAGES,
+  STREAMING_PROTOCOL,
+  MP4BOX,
+  SNAPSHOT_CACHE_TIMEOUT,
+  DEVICE_TYPE,
+} from '../consts.js';
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2025.07.22'; // Code version
+  static VERSION = '2025.07.24'; // Code version
 
   // For messaging back to parent class (Doorbell/Floodlight)
   static SET = HomeKitDevice.SET;
@@ -76,9 +74,9 @@ export default class NestCamera extends HomeKitDevice {
     };
 
     this.#cameraImages = {
-      offline: loadImageResource(CAMERA_RESOURCE.OFFLINE, 'offline'),
-      off: loadImageResource(CAMERA_RESOURCE.OFF, 'video off'),
-      transfer: loadImageResource(CAMERA_RESOURCE.TRANSFER, 'transferring'),
+      offline: loadImageResource(CAMERA_RESOURCE_IMAGES.OFFLINE, 'offline'),
+      off: loadImageResource(CAMERA_RESOURCE_IMAGES.OFF, 'video off'),
+      transfer: loadImageResource(CAMERA_RESOURCE_IMAGES.TRANSFER, 'transferring'),
     };
 
     // Create ffmpeg object if have been told valid binary
@@ -1361,4 +1359,221 @@ export default class NestCamera extends HomeKitDevice {
     };
     return controllerOptions;
   }
+}
+
+// Function to process our RAW Nest or Google for this device type
+export function processRawData(rawData, config, deviceType = undefined, deviceUUID = undefined) {
+  if (
+    rawData === null ||
+    typeof rawData !== 'object' ||
+    rawData?.constructor !== Object ||
+    typeof config !== 'object' ||
+    config?.constructor !== Object
+  ) {
+    return;
+  }
+
+  let devices = {};
+
+  // Process data for any camera/doorbell(s) we have in the raw data
+  Object.entries(rawData)
+    .filter(
+      ([key, value]) =>
+        (key.startsWith('quartz.') === true ||
+          (key.startsWith('DEVICE_') === true &&
+            PROTOBUF_CAMERA_DOORBELL_RESOURCES.includes(value.value?.device_info?.typeName) === true)) &&
+        (deviceUUID === undefined || deviceUUID === key),
+    )
+    .forEach(([object_key, value]) => {
+      let tempDevice = {};
+      try {
+        if (
+          value?.source === DATA_SOURCE.GOOGLE &&
+          config.options?.useGoogleAPI === true &&
+          Array.isArray(value.value?.streaming_protocol?.supportedProtocols) === true &&
+          value.value.streaming_protocol.supportedProtocols.includes('PROTOCOL_WEBRTC') === true &&
+          (value.value?.configuration_done?.deviceReady === true ||
+            value.value?.camera_migration_status?.state?.where === 'MIGRATED_TO_GOOGLE_HOME')
+        ) {
+          tempDevice = processCommonData(
+            object_key,
+            {
+              type: DEVICE_TYPE.CAMERA,
+              serialNumber: value.value.device_identity.serialNumber,
+              softwareVersion: value.value.device_identity.softwareVersion,
+              model:
+                value.value.device_info.typeName === 'google.resource.NeonQuartzResource' &&
+                value.value?.floodlight_settings === undefined &&
+                value.value?.floodlight_state === undefined
+                  ? 'Cam (battery)'
+                  : value.value.device_info.typeName === 'google.resource.GreenQuartzResource'
+                    ? 'Doorbell (2nd gen, battery)'
+                    : value.value.device_info.typeName === 'google.resource.SpencerResource'
+                      ? 'Cam (wired)'
+                      : value.value.device_info.typeName === 'google.resource.VenusResource'
+                        ? 'Doorbell (2nd gen, wired)'
+                        : value.value.device_info.typeName === 'nest.resource.NestCamOutdoorResource'
+                          ? 'Cam Outdoor (1st gen)'
+                          : value.value.device_info.typeName === 'nest.resource.NestCamIndoorResource'
+                            ? 'Cam Indoor (1st gen)'
+                            : value.value.device_info.typeName === 'nest.resource.NestCamIQResource'
+                              ? 'Cam IQ'
+                              : value.value.device_info.typeName === 'nest.resource.NestCamIQOutdoorResource'
+                                ? 'Cam Outdoor (1st gen)'
+                                : value.value.device_info.typeName === 'nest.resource.NestHelloResource'
+                                  ? 'Doorbell (1st gen, wired)'
+                                  : value.value.device_info.typeName === 'google.resource.NeonQuartzResource' &&
+                                      value.value?.floodlight_settings !== undefined &&
+                                      value.value?.floodlight_state !== undefined
+                                    ? 'Cam with Floodlight'
+                                    : 'Camera (unknown)',
+              online: value.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
+              description: value.value?.label?.label !== undefined ? value.value.label.label : '',
+              location: getDeviceLocationName(
+                rawData,
+                value.value?.device_info?.pairerId?.resourceId,
+                value.value?.device_located_settings?.whereAnnotationRid?.resourceId,
+              ),
+              audio_enabled: value.value?.microphone_settings?.enableMicrophone === true,
+              has_indoor_chime:
+                value.value?.doorbell_indoor_chime_settings?.chimeType === 'CHIME_TYPE_MECHANICAL' ||
+                value.value?.doorbell_indoor_chime_settings?.chimeType === 'CHIME_TYPE_ELECTRONIC',
+              indoor_chime_enabled: value.value?.doorbell_indoor_chime_settings?.chimeEnabled === true,
+              streaming_enabled: value.value?.recording_toggle?.currentCameraState === 'CAMERA_ON',
+              has_microphone: value.value?.microphone_settings?.enableMicrophone === true,
+              has_speaker: value.value?.speaker_volume?.volume !== undefined,
+              has_motion_detection: value.value?.observation_trigger_capabilities?.videoEventTypes?.motion?.value === true,
+              activity_zones: Array.isArray(value.value?.activity_zone_settings?.activityZones)
+                ? value.value.activity_zone_settings.activityZones.map((zone) => ({
+                    id: zone.zoneProperties?.zoneId !== undefined ? zone.zoneProperties.zoneId : zone.zoneProperties.internalIndex,
+                    name: HomeKitDevice.makeValidHKName(zone.zoneProperties?.name !== undefined ? zone.zoneProperties.name : ''),
+                    hidden: false,
+                    uri: '',
+                  }))
+                : [],
+              alerts: typeof value.value?.alerts === 'object' ? value.value.alerts : [],
+              quiet_time_enabled:
+                isNaN(value.value?.quiet_time_settings?.quietTimeEnds?.seconds) === false &&
+                Number(value.value.quiet_time_settings.quietTimeEnds.seconds) !== 0 &&
+                Math.floor(Date.now() / 1000) < Number(value.value.quiet_time_settings.quietTimeEnds.seconds),
+              camera_type: value.value.device_identity.vendorProductId,
+              streaming_protocols:
+                value.value?.streaming_protocol?.supportedProtocols !== undefined ? value.value.streaming_protocol.supportedProtocols : [],
+              streaming_host:
+                typeof value.value?.streaming_protocol?.directHost?.value === 'string'
+                  ? value.value.streaming_protocol.directHost.value
+                  : '',
+              has_light: value.value?.floodlight_settings !== undefined && value.value?.floodlight_state !== undefined,
+              light_enabled: value.value?.floodlight_state?.currentState === 'LIGHT_STATE_ON',
+              light_brightness:
+                isNaN(value.value?.floodlight_settings?.brightness) === false
+                  ? scaleValue(Number(value.value.floodlight_settings.brightness), 0, 10, 0, 100)
+                  : 0,
+              migrating:
+                value.value?.camera_migration_status?.state?.progress !== undefined &&
+                value.value.camera_migration_status.state.progress !== 'PROGRESS_COMPLETE' &&
+                value.value.camera_migration_status.state.progress !== 'PROGRESS_NONE',
+            },
+            config,
+          );
+          if (tempDevice.model.toUpperCase().includes('DOORBELL') === true) {
+            tempDevice.type = DEVICE_TYPE.DOORBELL;
+          }
+          if (tempDevice.model.toUpperCase().includes('FLOODLIGHT') === true) {
+            tempDevice.type = DEVICE_TYPE.FLOODLIGHT;
+          }
+        }
+
+        if (
+          value?.source === DATA_SOURCE.NEST &&
+          config.options?.useNestAPI === true &&
+          value.value?.where_id !== undefined &&
+          value.value?.structure_id !== undefined &&
+          value.value?.nexus_api_http_server_url !== undefined &&
+          (value.value?.properties?.['cc2migration.overview_state'] === 'NORMAL' ||
+            value.value?.properties?.['cc2migration.overview_state'] === 'REVERSE_MIGRATION_IN_PROGRESS')
+        ) {
+          // We'll only use the Nest API data for Camera's which have NOT been migrated to Google Home
+          tempDevice = processCommonData(
+            object_key,
+            {
+              type: DEVICE_TYPE.CAMERA,
+              serialNumber: value.value.serial_number,
+              softwareVersion: value.value.software_version,
+              model: value.value.model.replace(/nest\s*/gi, ''), // Use camera/doorbell model that Nest supplies
+              description: value.value?.description,
+              location: getDeviceLocationName(rawData, value.value.structure_id, value.value.where_id),
+              streaming_enabled: value.value.streaming_state.includes('enabled') === true,
+              nexus_api_http_server_url: value.value.nexus_api_http_server_url,
+              online: value.value.streaming_state.includes('offline') === false,
+              audio_enabled: value.value.audio_input_enabled === true,
+              has_indoor_chime: value.value?.capabilities.includes('indoor_chime') === true,
+              indoor_chime_enabled: value.value?.properties['doorbell.indoor_chime.enabled'] === true,
+              has_irled: value.value?.capabilities.includes('irled') === true,
+              irled_enabled: value.value?.properties['irled.state'] !== 'always_off',
+              has_statusled: value.value?.capabilities.includes('statusled') === true,
+              has_video_flip: value.value?.capabilities.includes('video.flip') === true,
+              video_flipped: value.value?.properties['video.flipped'] === true,
+              statusled_brightness:
+                isNaN(value.value?.properties?.['statusled.brightness']) === false
+                  ? Number(value.value.properties['statusled.brightness'])
+                  : 0,
+              has_microphone: value.value?.capabilities.includes('audio.microphone') === true,
+              has_speaker: value.value?.capabilities.includes('audio.speaker') === true,
+              has_motion_detection: value.value?.capabilities.includes('detectors.on_camera') === true,
+              activity_zones: value.value.activity_zones,
+              alerts: typeof value.value?.alerts === 'object' ? value.value.alerts : [],
+              streaming_protocols: ['PROTOCOL_NEXUSTALK'],
+              streaming_host: value.value.direct_nexustalk_host,
+              quiet_time_enabled: false,
+              camera_type: value.value.camera_type,
+              migrating:
+                value.value?.properties?.['cc2migration.overview_state'] !== undefined &&
+                value.value.properties['cc2migration.overview_state'] !== 'NORMAL',
+            },
+            config,
+          );
+          if (tempDevice.model.toUpperCase().includes('DOORBELL') === true) {
+            tempDevice.type = DEVICE_TYPE.DOORBELL;
+          }
+          if (tempDevice.model.toUpperCase().includes('FLOODLIGHT') === true) {
+            tempDevice.type = DEVICE_TYPE.FLOODLIGHT;
+          }
+        }
+        // eslint-disable-next-line no-unused-vars
+      } catch (error) {
+        // Empty
+      }
+
+      if (
+        Object.entries(tempDevice).length !== 0 &&
+        typeof devices[tempDevice.serialNumber] === 'undefined' &&
+        (deviceType === undefined || (typeof deviceType === 'string' && deviceType !== '' && tempDevice.type === deviceType))
+      ) {
+        let deviceOptions = config?.devices?.find(
+          (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+        );
+        // Insert any extra options we've read in from configuration file for this device
+        tempDevice.eveHistory = config.options.eveHistory === true || deviceOptions?.eveHistory === true;
+        tempDevice.hksv = (config.options?.hksv === true || deviceOptions?.hksv === true) && config.options?.ffmpeg?.valid === true;
+        tempDevice.doorbellCooldown = parseDurationToSeconds(deviceOptions?.doorbellCooldown, { defaultValue: 60, min: 0, max: 300 });
+        tempDevice.motionCooldown = parseDurationToSeconds(deviceOptions?.motionCooldown, { defaultValue: 60, min: 0, max: 300 });
+        tempDevice.personCooldown = parseDurationToSeconds(deviceOptions?.personCooldown, { defaultValue: 120, min: 0, max: 300 });
+        tempDevice.chimeSwitch = deviceOptions?.chimeSwitch === true; // Control 'indoor' chime by switch
+        tempDevice.localAccess = deviceOptions?.localAccess === true; // Local network video streaming rather than from cloud from camera/doorbells
+        tempDevice.ffmpeg = {
+          binary: config.options.ffmpeg.binary,
+          valid: config.options.ffmpeg.valid === true,
+          debug: deviceOptions?.ffmpegDebug === true || config.options?.ffmpeg.debug === true,
+          hwaccel:
+            (deviceOptions?.ffmpegHWaccel === true || config.options?.ffmpegHWaccel === true) &&
+            config.options.ffmpeg.valid === true &&
+            config.options.ffmpeg.hwaccel === true,
+        };
+        tempDevice.maxStreams = config.options.hksv === true || deviceOptions?.hksv === true ? 1 : 2;
+        devices[tempDevice.serialNumber] = tempDevice; // Store processed device
+      }
+    });
+
+  return devices;
 }
