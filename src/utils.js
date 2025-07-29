@@ -1,7 +1,7 @@
 // General helper functions
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.07.23
+// Code version 2025.07.27
 // Mark Hulskamp
 'use strict';
 
@@ -202,31 +202,6 @@ function parseDurationToSeconds(inputDuration, { defaultValue = null, min = 0, m
   return normalisedSeconds;
 }
 
-function getDeviceLocationName(rawData, structure_id, where_id) {
-  if (typeof rawData === 'object' && rawData?.constructor === Object) {
-    // Get the device(s) location from structure
-    // We'll test in both Nest and Protobuf API data
-    if (typeof structure_id === 'string' && structure_id !== '' && typeof where_id === 'string' && where_id !== '') {
-      // Check Protobuf data (combined predefined and custom)
-      let protobufWheres = [
-        ...Object.values(rawData?.[structure_id]?.value?.located_annotations?.predefinedWheres || {}),
-        ...Object.values(rawData?.[structure_id]?.value?.located_annotations?.customWheres || {}),
-      ];
-      let protoWhere = protobufWheres.find((value) => value?.whereId?.resourceId === where_id);
-      if (typeof protoWhere?.label?.literal === 'string') {
-        return protoWhere.label.literal; // Matched protobuf API location
-      }
-
-      // Fallback to Nest data
-      let nestWhere = rawData?.['where.' + structure_id]?.value?.wheres?.find((value) => value?.where_id === where_id);
-      if (typeof nestWhere?.name === 'string') {
-        return nestWhere.name; // Matched Nest API location
-      }
-    }
-  }
-  return '';
-}
-
 function processCommonData(deviceUUID, data, config) {
   if (
     typeof deviceUUID !== 'string' ||
@@ -331,5 +306,24 @@ function processCommonData(deviceUUID, data, config) {
   return processed;
 }
 
+function logJSONObject(log, object) {
+  if (typeof object !== 'object' || object.constructor !== Object) {
+    return;
+  }
+
+  Object.entries(object).forEach(([key, value]) => {
+    if (typeof value === 'object' && value !== null) {
+      log?.debug?.('  %s:', key);
+      String(JSON.stringify(value, null, 2))
+        .split('\n')
+        .forEach((line) => {
+          log?.debug?.('    %s', line);
+        });
+    } else {
+      log?.debug?.('  %s: %j', key, value);
+    }
+  });
+}
+
 // Define exports
-export { getDeviceLocationName, processCommonData, adjustTemperature, crc24, scaleValue, fetchWrapper, parseDurationToSeconds };
+export { processCommonData, adjustTemperature, crc24, scaleValue, fetchWrapper, parseDurationToSeconds, logJSONObject };

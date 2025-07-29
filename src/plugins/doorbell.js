@@ -20,6 +20,11 @@ export default class NestDoorbell extends NestCamera {
 
   // Class functions
   onAdd() {
+    // Setup motion services. This needs to be done before we setup the HomeKit doorbell controller
+    if (this.motionServices === undefined) {
+      this.createCameraMotionServices();
+    }
+
     // Setup HomeKit doorbell controller
     // Need to cleanup the CameraOperatingMode service. This is to allow seamless configuration
     // switching between enabling hksv or not
@@ -27,8 +32,8 @@ export default class NestDoorbell extends NestCamera {
     this.accessory.removeService(this.accessory.getService(this.hap.Service.CameraOperatingMode));
     if (this.controller === undefined) {
       // Establish the "camera" controller here as a doorbell specific one
-      this.controller = new this.hap.DoorbellController(this.generateControllerOptions());
       // when onAdd is called for the base camera class, this will cconfigure our camera controller established here
+      this.controller = new this.hap.DoorbellController(this.generateControllerOptions());
     }
 
     if (this.deviceData?.has_indoor_chime === true && this.deviceData?.chimeSwitch === true) {

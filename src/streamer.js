@@ -18,7 +18,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2025.07.22
+// Code version 2025.07.26
 // Mark Hulskamp
 'use strict';
 
@@ -33,9 +33,8 @@ import { PassThrough } from 'stream';
 import HomeKitDevice from './HomeKitDevice.js';
 
 // Define constants
-import { CAMERA_RESOURCE_FRAMES, RESOURCE_PATH, LOG_LEVELS, __dirname } from './consts.js';
+import { TIMERS, RESOURCE_FRAMES, RESOURCE_PATH, LOG_LEVELS, __dirname } from './consts.js';
 
-const TALKBACK_AUDIO_TIMEOUT = 1000;
 const MAX_BUFFER_AGE = 5000; // Keep last 5s of media in buffer
 const STREAM_FRAME_INTERVAL = 1000 / 30; // 30fps approx
 
@@ -154,9 +153,9 @@ export default class Streamer {
     };
 
     this.#cameraFrames = {
-      offline: loadFrameResource(CAMERA_RESOURCE_FRAMES.OFFLINE, 'offline'),
-      off: loadFrameResource(CAMERA_RESOURCE_FRAMES.OFF, 'video off'),
-      transfer: loadFrameResource(CAMERA_RESOURCE_FRAMES.TRANSFER, 'transferring'),
+      offline: loadFrameResource(RESOURCE_FRAMES.CAMERA_OFFLINE, 'offline'),
+      off: loadFrameResource(RESOURCE_FRAMES.CAMERA_OFF, 'video off'),
+      transfer: loadFrameResource(RESOURCE_FRAMES.CAMERA_TRANSFER, 'transferring'),
     };
 
     this.#outputLoop(); // Start the output loop to process media packets
@@ -422,7 +421,7 @@ export default class Streamer {
         this.#outputs[sessionID].talkbackTimeout = setTimeout(() => {
           // no audio received in 1000ms, so mark end of stream
           this.sendTalkback(Buffer.alloc(0));
-        }, TALKBACK_AUDIO_TIMEOUT);
+        }, TIMERS.TALKBACK_AUDIO);
       }
     });
     talkbackIn?.on?.('close', () => {

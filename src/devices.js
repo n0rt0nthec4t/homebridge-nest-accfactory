@@ -1,7 +1,7 @@
 // Device support loader
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.07.24
+// Code version 2025.07.25
 // Mark Hulskamp
 'use strict';
 
@@ -82,7 +82,7 @@ function getDeviceHKCategory(type) {
     category = 9; // Categories.THERMOSTAT
   }
 
-  if (type === DEVICE_TYPE.TEMPSENSOR || type === DEVICE_TYPE.SMOKESENSOR || type === DEVICE_TYPE.WEATHER) {
+  if (type === DEVICE_TYPE.TEMPSENSOR || type === DEVICE_TYPE.PROTECT || type === DEVICE_TYPE.WEATHER) {
     category = 10; // Categories.SENSOR
   }
 

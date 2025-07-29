@@ -18,24 +18,20 @@ import Streamer from '../streamer.js';
 import NexusTalk from '../nexustalk.js';
 import WebRTC from '../webrtc.js';
 import FFmpeg from '../ffmpeg.js';
-import { getDeviceLocationName, processCommonData, parseDurationToSeconds, scaleValue } from '../utils.js';
+import { processCommonData, parseDurationToSeconds, scaleValue } from '../utils.js';
 
 // Define constants
-import {
-  DATA_SOURCE,
-  PROTOBUF_CAMERA_DOORBELL_RESOURCES,
-  __dirname,
-  RESOURCE_PATH,
-  CAMERA_RESOURCE_IMAGES,
-  STREAMING_PROTOCOL,
-  MP4BOX,
-  SNAPSHOT_CACHE_TIMEOUT,
-  DEVICE_TYPE,
-} from '../consts.js';
+import { DATA_SOURCE, PROTOBUF_RESOURCES, __dirname, RESOURCE_PATH, RESOURCE_IMAGES, DEVICE_TYPE, TIMERS } from '../consts.js';
+
+const MP4BOX = 'mp4box';
+const STREAMING_PROTOCOL = {
+  WEBRTC: 'PROTOCOL_WEBRTC',
+  NEXUSTALK: 'PROTOCOL_NEXUSTALK',
+};
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2025.07.24'; // Code version
+  static VERSION = '2025.07.27'; // Code version
 
   // For messaging back to parent class (Doorbell/Floodlight)
   static SET = HomeKitDevice.SET;
@@ -74,9 +70,9 @@ export default class NestCamera extends HomeKitDevice {
     };
 
     this.#cameraImages = {
-      offline: loadImageResource(CAMERA_RESOURCE_IMAGES.OFFLINE, 'offline'),
-      off: loadImageResource(CAMERA_RESOURCE_IMAGES.OFF, 'video off'),
-      transfer: loadImageResource(CAMERA_RESOURCE_IMAGES.TRANSFER, 'transferring'),
+      offline: loadImageResource(RESOURCE_IMAGES.CAMERA_OFFLINE, 'offline'),
+      off: loadImageResource(RESOURCE_IMAGES.CAMERA_OFF, 'video off'),
+      transfer: loadImageResource(RESOURCE_IMAGES.CAMERA_TRANSFER, 'transferring'),
     };
 
     // Create ffmpeg object if have been told valid binary
@@ -87,8 +83,12 @@ export default class NestCamera extends HomeKitDevice {
 
   // Class functions
   onAdd() {
-    // Setup HomeKit camera controller
+    // Setup motion services. This needs to be done before we setup the HomeKit camera controller
+    if (this.motionServices === undefined) {
+      this.createCameraMotionServices();
+    }
 
+    // Setup HomeKit camera controller
     // Need to cleanup the CameraOperatingMode service. This is to allow seamless configuration
     // switching between enabling hksv or not
     // Thanks to @bcullman (Brad Ullman) for catching this
@@ -100,11 +100,6 @@ export default class NestCamera extends HomeKitDevice {
     if (this.controller !== undefined) {
       // Configure the controller thats been created
       this.accessory.configureController(this.controller);
-    }
-
-    // Setup motion services
-    if (this.motionServices === undefined) {
-      this.createCameraMotionServices();
     }
 
     // Setup additional services/characteristics after we have a controller created
@@ -838,7 +833,7 @@ export default class NestCamera extends HomeKitDevice {
         clearTimeout(this.#snapshotTimer);
         this.#snapshotTimer = setTimeout(() => {
           this.#lastSnapshotImage = undefined;
-        }, SNAPSHOT_CACHE_TIMEOUT);
+        }, TIMERS.SNAPSHOT);
       }
     }
 
@@ -1362,7 +1357,7 @@ export default class NestCamera extends HomeKitDevice {
 }
 
 // Function to process our RAW Nest or Google for this device type
-export function processRawData(rawData, config, deviceType = undefined, deviceUUID = undefined) {
+export function processRawData(log, rawData, config, deviceType = undefined, deviceUUID = undefined) {
   if (
     rawData === null ||
     typeof rawData !== 'object' ||
@@ -1380,8 +1375,7 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
     .filter(
       ([key, value]) =>
         (key.startsWith('quartz.') === true ||
-          (key.startsWith('DEVICE_') === true &&
-            PROTOBUF_CAMERA_DOORBELL_RESOURCES.includes(value.value?.device_info?.typeName) === true)) &&
+          (key.startsWith('DEVICE_') === true && PROTOBUF_RESOURCES.CAMERA.includes(value.value?.device_info?.typeName) === true)) &&
         (deviceUUID === undefined || deviceUUID === key),
     )
     .forEach(([object_key, value]) => {
@@ -1389,7 +1383,7 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
       try {
         if (
           value?.source === DATA_SOURCE.GOOGLE &&
-          config.options?.useGoogleAPI === true &&
+          rawData?.[value.value?.device_info?.pairerId?.resourceId] !== undefined &&
           Array.isArray(value.value?.streaming_protocol?.supportedProtocols) === true &&
           value.value.streaming_protocol.supportedProtocols.includes('PROTOCOL_WEBRTC') === true &&
           (value.value?.configuration_done?.deviceReady === true ||
@@ -1399,8 +1393,6 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
             object_key,
             {
               type: DEVICE_TYPE.CAMERA,
-              serialNumber: value.value.device_identity.serialNumber,
-              softwareVersion: value.value.device_identity.softwareVersion,
               model:
                 value.value.device_info.typeName === 'google.resource.NeonQuartzResource' &&
                 value.value?.floodlight_settings === undefined &&
@@ -1427,13 +1419,21 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
                                       value.value?.floodlight_state !== undefined
                                     ? 'Cam with Floodlight'
                                     : 'Camera (unknown)',
-              online: value.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
-              description: value.value?.label?.label !== undefined ? value.value.label.label : '',
-              location: getDeviceLocationName(
-                rawData,
-                value.value?.device_info?.pairerId?.resourceId,
-                value.value?.device_located_settings?.whereAnnotationRid?.resourceId,
+              softwareVersion: value.value.device_identity.softwareVersion,
+              serialNumber: value.value.device_identity.serialNumber,
+              description: String(value.value?.label?.label ?? ''),
+              location: String(
+                [
+                  ...Object.values(
+                    rawData?.[value.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {},
+                  ),
+                  ...Object.values(
+                    rawData?.[value.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {},
+                  ),
+                ].find((where) => where?.whereId?.resourceId === value.value?.device_located_settings?.whereAnnotationRid?.resourceId)
+                  ?.label?.literal ?? '',
               ),
+              online: value.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
               audio_enabled: value.value?.microphone_settings?.enableMicrophone === true,
               has_indoor_chime:
                 value.value?.doorbell_indoor_chime_settings?.chimeType === 'CHIME_TYPE_MECHANICAL' ||
@@ -1486,9 +1486,7 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
 
         if (
           value?.source === DATA_SOURCE.NEST &&
-          config.options?.useNestAPI === true &&
-          value.value?.where_id !== undefined &&
-          value.value?.structure_id !== undefined &&
+          rawData?.['where.' + value.value.structure_id] !== undefined &&
           value.value?.nexus_api_http_server_url !== undefined &&
           (value.value?.properties?.['cc2migration.overview_state'] === 'NORMAL' ||
             value.value?.properties?.['cc2migration.overview_state'] === 'REVERSE_MIGRATION_IN_PROGRESS')
@@ -1501,8 +1499,10 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
               serialNumber: value.value.serial_number,
               softwareVersion: value.value.software_version,
               model: value.value.model.replace(/nest\s*/gi, ''), // Use camera/doorbell model that Nest supplies
-              description: value.value?.description,
-              location: getDeviceLocationName(rawData, value.value.structure_id, value.value.where_id),
+              description: typeof value.value?.description === 'string' ? value.value.description : '',
+              location:
+                rawData?.['where.' + value.value.structure_id]?.value?.wheres?.find((where) => where?.where_id === value.value.where_id)
+                  ?.name ?? '',
               streaming_enabled: value.value.streaming_state.includes('enabled') === true,
               nexus_api_http_server_url: value.value.nexus_api_http_server_url,
               online: value.value.streaming_state.includes('offline') === false,
@@ -1542,7 +1542,7 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
         }
         // eslint-disable-next-line no-unused-vars
       } catch (error) {
-        // Empty
+        log?.debug?.('Error processing camera data for "%s"', object_key);
       }
 
       if (

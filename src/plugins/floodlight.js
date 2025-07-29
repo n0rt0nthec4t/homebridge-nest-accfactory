@@ -10,7 +10,7 @@ export { processRawData };
 
 export default class NestFloodlight extends NestCamera {
   static TYPE = 'FloodlightCamera';
-  static VERSION = '2025.07.24'; // Code version
+  static VERSION = '2025.07.25'; // Code version
 
   lightService = undefined; // HomeKit light
 
@@ -56,7 +56,7 @@ export default class NestFloodlight extends NestCamera {
     }
 
     // Extra setup details for output
-    this.lightService !== undefined && this.postSetupDetails('Light support');
+    this.lightService !== undefined && this.postSetupDetail('Light support');
   }
 
   onRemove() {

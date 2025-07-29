@@ -2,7 +2,7 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.3.2 (alpha.18)
+## v0.3.2 (alpha.20)
 
 - Now Homebridge Verified
 - Refactored core to use the updated base class
@@ -10,11 +10,12 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 - General code cleanup and improved stability
 - Improved camera streaming and HKSV recording
 - Initial support for video hardware acceleration during recording
+- Initial support for Nest x Yale locks
 - Fixed missing audio on newer Nest/Google cameras
 - Fixed missing Nest/Google cameras after Google Home migration
 - Fixed startup errors caused by invalid thermostat temperature settings
 - Fixed doorbell notifications
-- Improved EveHome integration (including history and custom characteristics)
+- Fixed EveHome integration (history recording)
 - Added support for hot water temperature control on compatible EU/UK thermostats [README](./README.md#devices)
 - Removed support for using Nest HeatLink devices as room temperature sensors
 

@@ -6,14 +6,14 @@
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
-import { getDeviceLocationName, processCommonData, adjustTemperature, scaleValue } from '../utils.js';
+import { processCommonData, adjustTemperature, scaleValue } from '../utils.js';
 
 // Define constants
-import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_THERMOSTAT_RESOURCES, DEVICE_TYPE } from '../consts.js';
+import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from '../consts.js';
 
 export default class NestTemperatureSensor extends HomeKitDevice {
   static TYPE = 'TemperatureSensor';
-  static VERSION = '2025.07.23'; // Code version
+  static VERSION = '2025.07.27'; // Code version
 
   batteryService = undefined;
   temperatureService = undefined;
@@ -27,6 +27,7 @@ export default class NestTemperatureSensor extends HomeKitDevice {
     // Setup battery service if not already present on the accessory
     this.batteryService = this.addHKService(this.hap.Service.Battery, '', 1);
     this.batteryService.setHiddenService(true);
+    this.temperatureService.addLinkedService(this.batteryService);
   }
 
   onRemove() {
@@ -82,7 +83,7 @@ export default class NestTemperatureSensor extends HomeKitDevice {
 }
 
 // Function to process our RAW Nest or Google for this device type
-export function processRawData(rawData, config, deviceType = undefined, deviceUUID = undefined) {
+export function processRawData(log, rawData, config, deviceType = undefined, deviceUUID = undefined) {
   if (
     rawData === null ||
     typeof rawData !== 'object' ||
@@ -100,13 +101,12 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
     .filter(
       ([key, value]) =>
         key.startsWith('device.') === true ||
-        (key.startsWith('DEVICE_') === true && PROTOBUF_THERMOSTAT_RESOURCES.includes(value.value?.device_info?.typeName) === true),
+        (key.startsWith('DEVICE_') === true && PROTOBUF_RESOURCES.THERMOSTAT.includes(value.value?.device_info?.typeName) === true),
     )
     .forEach(([object_key, value]) => {
       try {
         if (
           value?.source === DATA_SOURCE.GOOGLE &&
-          config.options?.useGoogleAPI === true &&
           value.value?.configuration_done?.deviceReady === true &&
           Array.isArray(value.value?.remote_comfort_sensing_settings?.associatedRcsSensors) === true
         ) {
@@ -123,6 +123,18 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
                   model: 'Temperature Sensor',
                   softwareVersion: '1.0.0',
                   serialNumber: sensorData.device_identity.serialNumber,
+                  description: String(sensorData?.label?.label ?? ''),
+                  location: String(
+                    [
+                      ...Object.values(
+                        rawData?.[sensorData?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {},
+                      ),
+                      ...Object.values(
+                        rawData?.[sensorData?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {},
+                      ),
+                    ].find((where) => where?.whereId?.resourceId === sensorData?.device_located_settings?.whereAnnotationRid?.resourceId)
+                      ?.label?.literal ?? '',
+                  ),
                   // Guessing battery minimum voltage is 2v??
                   battery_level: scaleValue(Number(sensorData.battery.assessedVoltage.value), 2.0, 3.0, 0, 100),
                   current_temperature: adjustTemperature(sensorData.current_temperature.temperatureValue.temperature.value, 'C', 'C', true),
@@ -130,12 +142,6 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
                     isNaN(sensorData?.last_updated_beacon?.lastBeaconTime?.seconds) === false &&
                     Math.floor(Date.now() / 1000) - Number(sensorData.last_updated_beacon.lastBeaconTime.seconds) < 3600 * 4,
                   associated_thermostat: object_key,
-                  description: typeof sensorData?.label?.label === 'string' ? sensorData.label.label : '',
-                  location: getDeviceLocationName(
-                    rawData,
-                    sensorData?.device_info?.pairerId?.resourceId,
-                    sensorData?.device_located_settings?.whereAnnotationRid?.resourceId,
-                  ),
                   active_sensor:
                     value.value?.remote_comfort_sensing_settings?.activeRcsSelection?.activeRcsSensor?.resourceId ===
                     sensor.deviceId.resourceId,
@@ -161,13 +167,13 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
 
         if (
           value?.source === DATA_SOURCE.NEST &&
-          config.options?.useNestAPI === true &&
-          value.value?.where_id !== undefined &&
-          value.value?.structure_id !== undefined &&
           Array.isArray(rawData?.['rcs_settings.' + value.value?.serial_number]?.value?.associated_rcs_sensors) === true
         ) {
           rawData['rcs_settings.' + value.value.serial_number].value.associated_rcs_sensors.forEach((sensor) => {
-            if (typeof rawData[sensor]?.value === 'object' && (deviceUUID === undefined || deviceUUID === sensor)) {
+            if (
+              typeof rawData[sensor]?.value === 'object' &&
+              rawData?.['where.' + rawData?.[sensor]?.value?.structure_id](deviceUUID === undefined || deviceUUID === sensor)
+            ) {
               let sensorData = rawData[sensor].value;
               let tempDevice = processCommonData(
                 sensor,
@@ -181,9 +187,11 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
                   online: Math.floor(Date.now() / 1000) - sensorData.last_updated_at < 3600 * 4,
                   associated_thermostat: object_key,
                   description: sensorData.description,
-                  location: getDeviceLocationName(rawData, sensorData.structure_id, sensorData.where_id),
+                  location:
+                    rawData?.['where.' + sensorData.structure_id]?.value?.wheres?.find((where) => where?.where_id === sensorData.where_id)
+                      ?.name ?? '',
                   active_sensor:
-                    rawData?.['rcs_settings.' + value.value.serial_number]?.value?.active_rcs_sensors?.includes(object_key) === true,
+                    rawData?.['rcs_settings.' + value.value.serial_number]?.value?.active_rcs_sensors?.includes?.(object_key) === true,
                 },
                 config,
               );
@@ -205,7 +213,7 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
         }
         // eslint-disable-next-line no-unused-vars
       } catch (error) {
-        // Empty
+        log?.debug?.('Error processing temperature sensor data for "%s"', object_key);
       }
     });
 

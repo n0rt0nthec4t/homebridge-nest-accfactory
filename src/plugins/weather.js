@@ -9,11 +9,11 @@ import HomeKitDevice from '../HomeKitDevice.js';
 import { processCommonData, adjustTemperature, crc24 } from '../utils.js';
 
 // Define constants
-import { DATA_SOURCE, DEVICE_TYPE } from '../consts.js';
+import { DATA_SOURCE, DEVICE_TYPE, NESTLABS_MAC_PREFIX } from '../consts.js';
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = 'Weather';
-  static VERSION = '2025.07.24'; // Code version
+  static VERSION = '2025.07.26'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -165,7 +165,7 @@ export default class NestWeather extends HomeKitDevice {
 }
 
 // Function to process our RAW Nest or Google for this device type
-export function processRawData(rawData, config, deviceType = undefined, deviceUUID = undefined) {
+export function processRawData(log, rawData, config, deviceType = undefined, deviceUUID = undefined) {
   if (
     rawData === null ||
     typeof rawData !== 'object' ||
@@ -191,10 +191,9 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
       try {
         if (
           value?.source === DATA_SOURCE.GOOGLE &&
-          config.options?.useGoogleAPI === true &&
-          value.value?.structure_location?.geoCoordinate?.latitude !== undefined &&
-          value.value?.structure_location?.geoCoordinate?.longitude !== undefined &&
-          value.value?.structure_info?.rtsStructureId !== undefined
+          value.value?.structure_location !== undefined &&
+          value.value?.structure_info?.rtsStructureId !== undefined &&
+          value.value?.weather !== undefined
         ) {
           tempDevice = processCommonData(
             object_key,
@@ -204,17 +203,18 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
               softwareVersion: '1.0.0',
               // Use the Nest API structure ID from the Protobuf structure. This will ensure we generate the same serial number
               // This should prevent two 'weather' objects being created
-              serialNumber: '18B430' + crc24(value.value.structure_info.rtsStructureId.toUpperCase()).toUpperCase(),
+              serialNumber: NESTLABS_MAC_PREFIX + crc24(value.value.structure_info.rtsStructureId.toUpperCase()).toUpperCase(),
+              description: String(
+                (value.value?.structure_location?.city?.value ?? '') !== '' && (value.value?.structure_location?.state?.value ?? '') !== ''
+                  ? value.value.structure_location.city.value + ' - ' + value.value.structure_location.state.value
+                  : value.value.structure_info.name,
+              ),
               postal_code: value.value?.structure_location?.postalCode.value ?? '',
               country_code: value.value?.structure_location?.countryCode.value ?? '',
               city: value.value?.structure_location?.city?.value ?? '',
               state: value.value?.structure_location?.state?.value ?? '',
               latitude: value.value?.structure_location?.geoCoordinate.latitude,
               longitude: value.value?.structure_location?.geoCoordinate.longitude,
-              description:
-                (value.value?.structure_location?.city?.value ?? '') !== '' && (value.value?.structure_location?.state?.value ?? '') !== ''
-                  ? value.value.structure_location.city.value + ' - ' + value.value.structure_location.state.value
-                  : value.value.structure_info.name,
               current_temperature: adjustTemperature(value.value.weather.current_temperature, 'C', 'C', true),
               current_humidity: value.value.weather.current_humidity,
               condition: value.value.weather.condition,
@@ -231,9 +231,9 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
 
         if (
           value?.source === DATA_SOURCE.NEST &&
-          config.options?.useNestAPI === true &&
           value.value?.latitude !== undefined &&
-          value.value?.longitude !== undefined
+          value.value?.longitude !== undefined &&
+          value.value?.weather !== undefined
         ) {
           tempDevice = processCommonData(
             object_key,
@@ -241,17 +241,18 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
               type: DEVICE_TYPE.WEATHER,
               model: 'Weather',
               softwareVersion: '1.0.0',
-              serialNumber: '18B430' + crc24(object_key.toUpperCase()).toUpperCase(),
+              serialNumber: NESTLABS_MAC_PREFIX + crc24(object_key.toUpperCase()).toUpperCase(),
+              description: String(
+                (value.value?.city ?? '') !== '' && (value.value?.state ?? '') !== ''
+                  ? value.value.city + ' - ' + value.value.state
+                  : value.value.name,
+              ),
               postal_code: value.value?.postal_code ?? '',
               country_code: value.value?.country_code ?? '',
               city: value.value?.city ?? '',
               state: value.value?.state ?? '',
               latitude: value.value.latitude,
               longitude: value.value.longitude,
-              description:
-                (value.value?.city ?? '') !== '' && (value.value?.state ?? '') !== ''
-                  ? value.value.city + ' - ' + value.value.state
-                  : value.value.name,
               current_temperature: adjustTemperature(value.value.weather.current_temperature, 'C', 'C', true),
               current_humidity: value.value.weather.current_humidity,
               condition: value.value.weather.condition,
@@ -267,7 +268,7 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
         }
         // eslint-disable-next-line no-unused-vars
       } catch (error) {
-        // Empty
+        log?.debug?.('Error processing weather data for "%s"', object_key);
       }
 
       if (

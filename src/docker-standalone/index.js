@@ -18,7 +18,7 @@
 //
 // Supports both Nest REST and Protobuf APIs for communication
 //
-// Code version 2025.06.18
+// Code version 2025.07.29
 // Mark Hulskamp
 'use strict';
 
@@ -41,7 +41,7 @@ HomeKitDevice.PLUGIN_NAME = 'Nest-accfactory';
 HomeKitDevice.PLATFORM_NAME = 'NestAccfactory';
 
 import HomeKitHistory from './HomeKitHistory.js';
-HomeKitDevice.HISTORY = HomeKitHistory;
+HomeKitDevice.EVEHOME = HomeKitHistory;
 
 import Logger from './logger.js';
 const log = Logger.withPrefix(HomeKitDevice.PLATFORM_NAME);

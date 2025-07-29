@@ -6,14 +6,14 @@
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
-import { getDeviceLocationName, processCommonData, adjustTemperature, parseDurationToSeconds } from '../utils.js';
+import { processCommonData, adjustTemperature, parseDurationToSeconds } from '../utils.js';
 
 // Define constants
-import { DATA_SOURCE, DEVICE_TYPE, HOTWATER_MAX_TEMPERATURE, HOTWATER_MIN_TEMPERATURE, PROTOBUF_THERMOSTAT_RESOURCES } from '../consts.js';
+import { DATA_SOURCE, DEVICE_TYPE, HOTWATER_MAX_TEMPERATURE, HOTWATER_MIN_TEMPERATURE, PROTOBUF_RESOURCES } from '../consts.js';
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = 'Heatlink';
-  static VERSION = '2025.07.24'; // Code version
+  static VERSION = '2025.07.27'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
@@ -221,7 +221,7 @@ export default class NestHeatlink extends HomeKitDevice {
 }
 
 // Function to process our RAW Nest or Google for this device type
-export function processRawData(rawData, config, deviceType = undefined, deviceUUID = undefined) {
+export function processRawData(log, rawData, config, deviceType = undefined, deviceUUID = undefined) {
   if (
     rawData === null ||
     typeof rawData !== 'object' ||
@@ -239,15 +239,15 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
     .filter(
       ([key, value]) =>
         key.startsWith('device.') === true ||
-        (key.startsWith('DEVICE_') === true && PROTOBUF_THERMOSTAT_RESOURCES.includes(value.value?.device_info?.typeName) === true),
+        (key.startsWith('DEVICE_') === true && PROTOBUF_RESOURCES.THERMOSTAT.includes(value.value?.device_info?.typeName) === true),
     )
     .forEach(([object_key, value]) => {
       let tempDevice = {};
       try {
         if (
           value?.source === DATA_SOURCE.GOOGLE &&
-          config.options?.useGoogleAPI === true &&
           value.value?.configuration_done?.deviceReady === true &&
+          rawData?.[value.value?.device_info?.pairerId?.resourceId] !== undefined &&
           value.value?.heat_link?.connectionStatus !== undefined &&
           value.value?.heat_link?.connectionStatus !== '' &&
           value.value?.heat_link?.connectionStatus !== 'HVAC_CONNECTION_STATE_UNSPECIFIED' &&
@@ -290,11 +290,17 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
                 isNaN(value.value?.hot_water_settings?.temperature?.value) === false
                   ? adjustTemperature(Number(value.value.hot_water_settings.temperature.value), 'C', 'C', true)
                   : 0.0,
-              description: typeof value.value?.label?.label === 'string' ? value.value.label.label : '',
-              location: getDeviceLocationName(
-                rawData,
-                value.value?.device_info?.pairerId?.resourceId,
-                value.value?.device_located_settings?.whereAnnotationRid?.resourceId,
+              description: String(value.value?.label?.label ?? ''),
+              location: String(
+                [
+                  ...Object.values(
+                    rawData?.[value.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {},
+                  ),
+                  ...Object.values(
+                    rawData?.[value.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {},
+                  ),
+                ].find((where) => where?.whereId?.resourceId === value.value?.device_located_settings?.whereAnnotationRid?.resourceId)
+                  ?.label?.literal ?? '',
               ),
             },
             config,
@@ -303,8 +309,10 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
 
         if (
           value?.source === DATA_SOURCE.NEST &&
-          config.options?.useNestAPI === true &&
-          value.value?.where_id !== undefined &&
+          rawData?.['track.' + value.value?.serial_number] !== undefined &&
+          rawData?.['link.' + value.value.serial_number] !== undefined &&
+          rawData?.['shared.' + value.value.serial_number] !== undefined &&
+          rawData?.['where.' + rawData?.['link.' + value.value?.serial_number]?.value?.structure?.split?.('.')[1]] !== undefined &&
           Object.keys(value?.value).some((key) => key.startsWith('heat_link_')) === true &&
           value.value?.heat_link_connection === 3 && // Think '3' means there is one connected. '1' seems to be not connected
           (deviceUUID === undefined || deviceUUID === object_key)
@@ -340,21 +348,20 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
                   ? adjustTemperature(Number(value.value.current_water_temperature), 'C', 'C', true)
                   : 0.0,
               description:
-                rawData?.['shared.' + value.value.serial_number]?.value?.name !== undefined
-                  ? HomeKitDevice.makeValidHKName(rawData['shared.' + value.value.serial_number].value.name)
+                typeof rawData?.['shared.' + value.value.serial_number]?.value?.name === 'string'
+                  ? rawData['shared.' + value.value.serial_number].value.name
                   : '',
-              location: getDeviceLocationName(
-                rawData,
-                rawData?.['link.' + value.value.serial_number]?.value?.structure?.split?.('.')[1],
-                value.value.where_id,
-              ),
+              location:
+                rawData?.[
+                  'where.' + rawData?.['link.' + value.value?.serial_number]?.value?.structure?.split?.('.')[1]
+                ]?.value?.wheres?.find((where) => where?.where_id === value.value.where_id)?.name ?? '',
             },
             config,
           );
         }
         // eslint-disable-next-line no-unused-vars
       } catch (error) {
-        // Empty
+        log?.debug?.('Error processing heatlink data for "%s"', object_key);
       }
 
       if (

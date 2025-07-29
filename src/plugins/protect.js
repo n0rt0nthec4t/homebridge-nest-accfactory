@@ -6,14 +6,14 @@
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
-import { getDeviceLocationName, processCommonData, scaleValue } from '../utils.js';
+import { processCommonData, scaleValue } from '../utils.js';
 
 // Define constants
-import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_PROTECT_RESOURCES, DEVICE_TYPE } from '../consts.js';
+import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from '../consts.js';
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = 'Protect';
-  static VERSION = '2025.07.24'; // Code version
+  static VERSION = '2025.07.27'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -192,7 +192,7 @@ export default class NestProtect extends HomeKitDevice {
 }
 
 // Function to process our RAW Nest or Google for this device type
-export function processRawData(rawData, config, deviceType = undefined, deviceUUID = undefined) {
+export function processRawData(log, rawData, config, deviceType = undefined, deviceUUID = undefined) {
   if (
     rawData === null ||
     typeof rawData !== 'object' ||
@@ -209,7 +209,7 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
     .filter(
       ([key, value]) =>
         (key.startsWith('topaz.') === true ||
-          (key.startsWith('DEVICE_') === true && PROTOBUF_PROTECT_RESOURCES.includes(value.value?.device_info?.typeName) === true)) &&
+          (key.startsWith('DEVICE_') === true && PROTOBUF_RESOURCES.PROTECT.includes(value.value?.device_info?.typeName) === true)) &&
         (deviceUUID === undefined || deviceUUID === key),
     )
     .forEach(([object_key, value]) => {
@@ -217,15 +217,13 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
       try {
         if (
           value?.source === DATA_SOURCE.GOOGLE &&
-          config.options?.useGoogleAPI === true &&
-          value.value?.configuration_done?.deviceReady === true
+          value.value?.configuration_done?.deviceReady === true &&
+          rawData?.[value.value?.device_info?.pairerId?.resourceId] !== undefined
         ) {
           tempDevice = processCommonData(
             object_key,
             {
-              type: DEVICE_TYPE.SMOKESENSOR,
-              serialNumber: value.value.device_identity.serialNumber,
-              softwareVersion: value.value.device_identity.softwareVersion,
+              type: DEVICE_TYPE.PROTECT,
               model:
                 value.value.device_info.typeName === 'nest.resource.NestProtect1LinePoweredResource'
                   ? 'Protect (1st gen, wired)'
@@ -236,6 +234,20 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
                       : value.value.device_info.typeName === 'nest.resource.NestProtect2BatteryPoweredResource'
                         ? 'Protect (2nd gen, battery)'
                         : 'Protect (unknown)',
+              softwareVersion: value.value.device_identity.softwareVersion,
+              serialNumber: value.value.device_identity.serialNumber,
+              description: String(value.value?.label?.label ?? ''),
+              location: String(
+                [
+                  ...Object.values(
+                    rawData?.[value.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {},
+                  ),
+                  ...Object.values(
+                    rawData?.[value.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {},
+                  ),
+                ].find((where) => where?.whereId?.resourceId === value.value?.device_located_settings?.whereAnnotationRid?.resourceId)
+                  ?.label?.literal ?? '',
+              ),
               online: value.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
               line_power_present: value.value?.wall_power?.status === 'POWER_SOURCE_STATUS_ACTIVE',
               wired_or_battery: typeof value.value?.wall_power?.status === 'string' ? 0 : 1,
@@ -278,28 +290,22 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
                   : '',
               detected_motion:
                 value.value?.legacy_protect_device_info?.autoAway !== true || value.value?.structure_mode?.occupancy === 'ACTIVITY_ACTIVE',
-              description: typeof value.value?.label?.label === 'string' ? value.value.label.label : '',
-              location: getDeviceLocationName(
-                rawData,
-                value.value?.device_info?.pairerId?.resourceId,
-                value.value?.device_located_settings?.whereAnnotationRid?.resourceId,
-              ),
             },
             config,
           );
         }
+
         if (
           value?.source === DATA_SOURCE.NEST &&
-          config.options?.useNestAPI === true &&
-          value.value?.where_id !== undefined &&
-          value.value?.structure_id !== undefined
+          rawData?.['where.' + value.value?.structure_id] !== undefined &&
+          rawData?.['safety.' + value.value?.structure_id] !== undefined &&
+          rawData?.['widget_track.' + value.value?.thread_mac_address?.toUpperCase()] !== undefined &&
+          rawData?.['safety.' + value.value?.structure_id] !== undefined
         ) {
           tempDevice = processCommonData(
             object_key,
             {
-              type: DEVICE_TYPE.SMOKESENSOR,
-              serialNumber: value.value.serial_number,
-              softwareVersion: value.value.software_version,
+              type: DEVICE_TYPE.PROTECT,
               model: (() => {
                 let model =
                   value.value.serial_number.substring(0, 2) === '06'
@@ -313,10 +319,14 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
                     ? model.replace(/\bgen\)/, 'gen, wired)')
                     : model;
               })(),
-              online:
-                typeof value?.value?.thread_mac_address === 'string'
-                  ? rawData?.['widget_track.' + value.value.thread_mac_address.toUpperCase()]?.value?.online === true
-                  : false,
+              softwareVersion: value.value.software_version,
+              serialNumber: value.value.serial_number,
+              description: String(value.value?.description ?? ''),
+              location: String(
+                rawData?.['where.' + value.value.structure_id]?.value?.wheres?.find((where) => where?.where_id === value.value.where_id)
+                  ?.name ?? '',
+              ),
+              online: rawData?.['widget_track.' + value.value.thread_mac_address.toUpperCase()]?.value?.online === true,
               line_power_present: value.value.line_power_present === true,
               wired_or_battery: value.value.wired_or_battery,
               battery_level: scaleValue(value.value.battery_level, 0, 5400, 0, 100),
@@ -336,15 +346,13 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
                   ? rawData['structure.' + value.value.structure_id].value.topaz_hush_key
                   : '',
               detected_motion: value.value.auto_away === false,
-              description: value.value?.description,
-              location: getDeviceLocationName(rawData, value.value.structure_id, value.value.where_id),
             },
             config,
           );
         }
         // eslint-disable-next-line no-unused-vars
       } catch (error) {
-        // Empty
+        log?.debug?.('Error processing protect data for "%s"', object_key);
       }
 
       if (

@@ -10,7 +10,7 @@ import fs from 'node:fs';
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
-import { getDeviceLocationName, processCommonData, scaleValue, adjustTemperature } from '../utils.js';
+import { processCommonData, scaleValue, adjustTemperature } from '../utils.js';
 
 // Define constants
 import {
@@ -18,7 +18,7 @@ import {
   THERMOSTAT_MIN_TEMPERATURE,
   THERMOSTAT_MAX_TEMPERATURE,
   LOW_BATTERY_LEVEL,
-  PROTOBUF_THERMOSTAT_RESOURCES,
+  PROTOBUF_RESOURCES,
   DAYS_OF_WEEK_FULL,
   DAYS_OF_WEEK_SHORT,
   __dirname,
@@ -27,7 +27,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2025.07.24'; // Code version
+  static VERSION = '2025.07.27'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -1024,7 +1024,7 @@ export default class NestThermostat extends HomeKitDevice {
 }
 
 // Function to process our RAW Nest or Google for this device type
-export function processRawData(rawData, config, deviceType = undefined, deviceUUID = undefined) {
+export function processRawData(log, rawData, config, deviceType = undefined, deviceUUID = undefined) {
   if (
     rawData === null ||
     typeof rawData !== 'object' ||
@@ -1065,7 +1065,7 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
     .filter(
       ([key, value]) =>
         (key.startsWith('device.') === true ||
-          (key.startsWith('DEVICE_') === true && PROTOBUF_THERMOSTAT_RESOURCES.includes(value.value?.device_info?.typeName) === true)) &&
+          (key.startsWith('DEVICE_') === true && PROTOBUF_RESOURCES.THERMOSTAT.includes(value.value?.device_info?.typeName) === true)) &&
         (deviceUUID === undefined || deviceUUID === key),
     )
     .forEach(([object_key, value]) => {
@@ -1073,13 +1073,11 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
       try {
         if (
           value?.source === DATA_SOURCE.GOOGLE &&
-          config.options?.useGoogleAPI === true &&
-          value.value?.configuration_done?.deviceReady === true
+          value.value?.configuration_done?.deviceReady === true &&
+          rawData?.[value.value?.device_info?.pairerId?.resourceId] !== undefined
         ) {
           let RESTTypeData = {};
           RESTTypeData.type = DEVICE_TYPE.THERMOSTAT;
-          RESTTypeData.serialNumber = value.value.device_identity.serialNumber;
-          RESTTypeData.softwareVersion = value.value.device_identity.softwareVersion;
           RESTTypeData.model = 'Thermostat (unknown)';
           if (value.value.device_info.typeName === 'nest.resource.NestLearningThermostat1Resource') {
             RESTTypeData.model = 'Learning Thermostat (1st gen)';
@@ -1108,6 +1106,18 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
           if (value.value.device_info.typeName === 'google.resource.GoogleZirconium1Resource') {
             RESTTypeData.model = 'Thermostat (2020)';
           }
+          RESTTypeData.softwareVersion = value.value.device_identity.softwareVersion;
+          RESTTypeData.serialNumber = value.value.device_identity.serialNumber;
+          RESTTypeData.description = String(value.value?.label?.label ?? '');
+          RESTTypeData.location = String(
+            [
+              ...Object.values(
+                rawData?.[value.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {},
+              ),
+              ...Object.values(rawData?.[value.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {}),
+            ].find((where) => where?.whereId?.resourceId === value.value?.device_located_settings?.whereAnnotationRid?.resourceId)?.label
+              ?.literal ?? '',
+          );
           RESTTypeData.current_humidity =
             isNaN(value.value?.current_humidity?.humidityValue?.humidity?.value) === false
               ? Number(value.value.current_humidity.humidityValue.humidity.value)
@@ -1135,12 +1145,6 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
           RESTTypeData.occupancy = value.value?.structure_mode?.structureMode === 'STRUCTURE_MODE_HOME';
           //RESTTypeData.occupancy = (value.value.structure_mode.occupancy.activity === 'ACTIVITY_ACTIVE');
           RESTTypeData.vacation_mode = value.value?.structure_mode?.structureMode === 'STRUCTURE_MODE_VACATION';
-          RESTTypeData.description = value.value.label?.label !== undefined ? value.value.label.label : '';
-          RESTTypeData.location = getDeviceLocationName(
-            rawData,
-            value.value?.device_info?.pairerId?.resourceId,
-            value.value?.device_located_settings?.whereAnnotationRid?.resourceId,
-          );
 
           // Work out current mode. ie: off, cool, heat, range and get temperature low/high and target
           RESTTypeData.hvac_mode =
@@ -1313,11 +1317,13 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
           tempDevice = process_thermostat_data(object_key, RESTTypeData);
         }
 
-        if (value?.source === DATA_SOURCE.NEST && config.options?.useNestAPI === true && value.value?.where_id !== undefined) {
+        if (
+          value?.source === DATA_SOURCE.NEST &&
+          rawData?.['shared.' + value.value?.serial_number] !== undefined &&
+          rawData?.['track.' + value.value.serial_number] !== undefined
+        ) {
           let RESTTypeData = {};
           RESTTypeData.type = DEVICE_TYPE.THERMOSTAT;
-          RESTTypeData.serialNumber = value.value.serial_number;
-          RESTTypeData.softwareVersion = value.value.current_version;
           RESTTypeData.model = 'Thermostat (unknown)';
           if (value.value.serial_number.substring(0, 2) === '15') {
             RESTTypeData.model = 'Thermostat E (1st gen)'; // Nest Thermostat E
@@ -1331,6 +1337,14 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
           if (value.value.serial_number.substring(0, 2) === '01') {
             RESTTypeData.model = 'Learning Thermostat (1st gen)'; // Nest Thermostat 1st gen
           }
+          RESTTypeData.softwareVersion = value.value.current_version;
+          RESTTypeData.serialNumber = value.value.serial_number;
+          RESTTypeData.description = String(rawData?.['shared.' + value.value.serial_number]?.value?.name ?? '');
+          RESTTypeData.location = String(
+            rawData?.['where.' + rawData?.['link.' + value.value.serial_number]?.value?.structure?.split?.('.')[1]]?.value?.wheres?.find(
+              (where) => where?.where_id === value.value.where_id,
+            )?.name ?? '',
+          );
           RESTTypeData.current_humidity = value.value.current_humidity;
           RESTTypeData.temperature_scale = value.value.temperature_scale.toUpperCase() === 'F' ? 'F' : 'C';
           RESTTypeData.removed_from_base = value.value.nlclient_state.toUpperCase() === 'BPD';
@@ -1362,16 +1376,6 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
               ?.vacation_mode === true ||
             rawData?.['structure.' + rawData?.['link.' + value.value.serial_number]?.value?.structure?.split?.('.')[1]]?.value
               ?.structure_mode?.structureMode === 'STRUCTURE_MODE_VACATION';
-
-          RESTTypeData.description =
-            rawData?.['shared.' + value.value.serial_number]?.value?.name !== undefined
-              ? HomeKitDevice.makeValidHKName(rawData['shared.' + value.value.serial_number].value.name)
-              : '';
-          RESTTypeData.location = getDeviceLocationName(
-            rawData,
-            rawData?.['link.' + value.value.serial_number]?.value?.structure?.split?.('.')[1],
-            value.value.where_id,
-          );
 
           // Work out current mode. ie: off, cool, heat, range and get temperature low (heat) and high (cool)
           RESTTypeData.hvac_mode =
@@ -1527,7 +1531,7 @@ export function processRawData(rawData, config, deviceType = undefined, deviceUU
         }
         // eslint-disable-next-line no-unused-vars
       } catch (error) {
-        // Empty
+        log?.debug?.('Error processing thermostat data for "%s"', object_key);
       }
 
       if (
