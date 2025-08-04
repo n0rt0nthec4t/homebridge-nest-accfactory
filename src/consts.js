@@ -1,7 +1,7 @@
 // Common defines
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.07.29
+// Code version 2025.07.30
 // Mark Hulskamp
 'use strict';
 
@@ -52,10 +52,9 @@ export const PROTOBUF_RESOURCES = {
     'nest.resource.NestProtect1BatteryPoweredResource',
     'nest.resource.NestProtect2LinePoweredResource',
     'nest.resource.NestProtect2BatteryPoweredResource',
-    'NestProtect2Resource',
+    'nest.resource.NestProtect2Resource',
   ],
   CAMERA: [
-    'google.resource.NeonQuartzResource',
     'google.resource.GreenQuartzResource',
     'google.resource.SpencerResource',
     'google.resource.VenusResource',
@@ -66,10 +65,44 @@ export const PROTOBUF_RESOURCES = {
     'nest.resource.NestHelloResource',
     'google.resource.GoogleNewmanResource',
   ],
+  DOORBELL: ['nest.resource.NestHelloResource', 'google.resource.GreenQuartzResource', 'google.resource.VenusResource'],
+  FLOODLIGHT: ['google.resource.NeonQuartzResource', 'google.resource.AzizResource'],
   CONNECT: ['nest.resource.NestConnectResource'],
+  DETECT: ['nest.resource.NestDetectResource'],
+  GUARD: ['nest.resource.NestHelloResource'],
 };
 
-export const NEST_API_BAD_OBJECTS = ['partner_programs', 'topaz_history', 'structure_metadata'];
+export const NEST_API_BUCKETS = [
+  'buckets',
+  'delayed_topaz',
+  'demand_response',
+  'device',
+  'device_alert_dialog',
+  'geofence_info',
+  'kryptonite',
+  'link',
+  'message',
+  'message_center',
+  'metadata',
+  'occupancy',
+  'quartz',
+  'safety',
+  'rcs_settings',
+  'safety_summary',
+  'schedule',
+  'shared',
+  'structure',
+  'structure_metadata',
+  'topaz',
+  'topaz_resource',
+  'track',
+  'trip',
+  'tuneups',
+  'user',
+  'user_settings',
+  'where',
+  'widget_track',
+];
 
 export const DEVICE_TYPE = {
   THERMOSTAT: 'Thermostat',

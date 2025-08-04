@@ -5,7 +5,7 @@
 //
 // Credit to https://github.com/Brandawg93/homebridge-nest-cam for the work on the Nest Camera comms code on which this is based
 //
-// Code version 2025.07.23
+// Code version 2025.07.30
 // Mark Hulskamp
 'use strict';
 
@@ -124,49 +124,53 @@ export default class NexusTalk extends Streamer {
       this.#host = host; // Update internal host name since we’re about to connect
 
       // Wrap tls.connect() in a Promise so we can await the TLS handshake
-      await new Promise((resolve, reject) => {
-        this.#socket = tls.connect({ host: host, port: 1443 }, () => {
-          // Opened connection to Nexus server, so now need to authenticate ourselves
-          this?.log?.debug?.('Connection established to "%s"', host);
+      try {
+        await new Promise((resolve, reject) => {
+          this.#socket = tls.connect({ host: host, port: 1443 }, () => {
+            // Opened connection to Nexus server, so now need to authenticate ourselves
+            this?.log?.debug?.('Connection established to "%s"', host);
 
-          this.#socket.setKeepAlive(true); // Keep socket connection alive
-          this.connected = true;
-          this.#Authenticate(false); // Send authentication request
-          resolve(); // Allow await connect() to continue
+            this.#socket.setKeepAlive(true); // Keep socket connection alive
+            this.connected = true;
+            this.#Authenticate(false); // Send authentication request
+            resolve(); // Allow await connect() to continue
+          });
+
+          this.#socket.on('error', (err) => {
+            // TLS error (could be refused, timeout, etc.)
+            this?.log?.warn?.('TLS error on connect to "%s": %s', host, err?.message || err);
+            this.connected = undefined;
+            reject(err);
+          });
+
+          this.#socket.on('end', () => {});
+
+          this.#socket.on('data', (data) => {
+            this.#handleNexusData(data);
+          });
+
+          this.#socket.on('close', (hadError) => {
+            this?.log?.debug?.('Connection closed to "%s"', host);
+
+            clearInterval(this.#pingTimer);
+            clearTimeout(this.#stalledTimer);
+            this.#pingTimer = undefined;
+            this.#stalledTimer = undefined;
+            this.#authorised = false; // Since connection closed, we can't be authorised anymore
+            this.#socket = undefined; // Clear socket object
+            this.connected = undefined;
+            this.#id = undefined; // Not an active session anymore
+
+            if (hadError === true && (this.isStreaming() === true || this.isBuffering() === true)) {
+              // We still have either active buffering occurring or output streams running
+              // so attempt to restart connection to existing host
+              this.connect(host);
+            }
+          });
         });
-
-        this.#socket.on('error', (err) => {
-          // TLS error (could be refused, timeout, etc.)
-          this?.log?.warn?.('TLS error on connect to "%s": %s', host, err?.message || err);
-          this.connected = undefined;
-          reject(err);
-        });
-
-        this.#socket.on('end', () => {});
-
-        this.#socket.on('data', (data) => {
-          this.#handleNexusData(data);
-        });
-
-        this.#socket.on('close', (hadError) => {
-          this?.log?.debug?.('Connection closed to "%s"', host);
-
-          clearInterval(this.#pingTimer);
-          clearTimeout(this.#stalledTimer);
-          this.#pingTimer = undefined;
-          this.#stalledTimer = undefined;
-          this.#authorised = false; // Since connection closed, we can't be authorised anymore
-          this.#socket = undefined; // Clear socket object
-          this.connected = undefined;
-          this.#id = undefined; // Not an active session anymore
-
-          if (hadError === true && (this.isStreaming() === true || this.isBuffering() === true)) {
-            // We still have either active buffering occurring or output streams running
-            // so attempt to restart connection to existing host
-            this.connect(host);
-          }
-        });
-      });
+      } catch (error) {
+        this?.log?.error?.('Failed to connect to "%s": %s', host, String(error));
+      }
     }
   }
 

@@ -13,7 +13,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = 'Protect';
-  static VERSION = '2025.07.27'; // Code version
+  static VERSION = '2025.08.04'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -192,7 +192,7 @@ export default class NestProtect extends HomeKitDevice {
 }
 
 // Function to process our RAW Nest or Google for this device type
-export function processRawData(log, rawData, config, deviceType = undefined, deviceUUID = undefined) {
+export function processRawData(log, rawData, config, deviceType = undefined) {
   if (
     rawData === null ||
     typeof rawData !== 'object' ||
@@ -208,9 +208,8 @@ export function processRawData(log, rawData, config, deviceType = undefined, dev
   Object.entries(rawData)
     .filter(
       ([key, value]) =>
-        (key.startsWith('topaz.') === true ||
-          (key.startsWith('DEVICE_') === true && PROTOBUF_RESOURCES.PROTECT.includes(value.value?.device_info?.typeName) === true)) &&
-        (deviceUUID === undefined || deviceUUID === key),
+        key.startsWith('topaz.') === true ||
+        (key.startsWith('DEVICE_') === true && PROTOBUF_RESOURCES.PROTECT.includes(value.value?.device_info?.typeName) === true),
     )
     .forEach(([object_key, value]) => {
       let tempDevice = {};

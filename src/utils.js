@@ -1,7 +1,7 @@
 // General helper functions
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.07.27
+// Code version 2025.08.02
 // Mark Hulskamp
 'use strict';
 
@@ -11,6 +11,12 @@ import { setTimeout } from 'node:timers';
 
 // Define our modules
 import HomeKitDevice from './HomeKitDevice.js';
+
+// Define external library requirements
+import { Agent } from 'undici';
+
+// Define constants
+const defaultFetchAgent = new Agent(); // shared across all requests
 
 function adjustTemperature(temperature, currentTemperatureUnit, targetTemperatureUnit, round) {
   currentTemperatureUnit = currentTemperatureUnit?.toUpperCase?.();
@@ -101,12 +107,25 @@ async function fetchWrapper(method, url, options, data) {
   options.method = method;
 
   if (method === 'post' && data !== undefined) {
-    options.body = data;
+    if (typeof data === 'object' && data !== null && data.constructor === Object) {
+      options.body = JSON.stringify(data);
+
+      // Set Content-Type header only if not already set
+      options.headers = options.headers || {};
+      if (options.headers['Content-Type'] === undefined) {
+        options.headers['Content-Type'] = 'application/json';
+      }
+    } else {
+      options.body = data;
+    }
   }
 
   try {
     // eslint-disable-next-line no-undef
-    let response = await fetch(url, options);
+    let response = await fetch(url, {
+      ...options,
+      dispatcher: options?.dispatcher ?? defaultFetchAgent, // Always use a secure default agent unless explicitly overridden
+    });
 
     if (response?.ok === false) {
       if (options.retry > 1) {
@@ -131,33 +150,38 @@ async function fetchWrapper(method, url, options, data) {
         body = '';
       }
 
-      let error = new Error(
-        'HTTP ' + response.status + ' on ' + method.toUpperCase() + ' ' + url + ': ' + (response.statusText || 'Unknown error'),
+      throw Object.assign(
+        new Error('HTTP ' + response.status + ' on ' + method.toUpperCase() + ' ' + url + ': ' + (response.statusText || 'Unknown error')),
+        { code: response.status, status: response.status, body },
       );
-      error.code = response.status;
-      error.status = response.status;
-      error.body = body;
-      throw error;
     }
 
     return response;
   } catch (error) {
-    if (options.retry > 1) {
+    if (
+      options.retry > 1 &&
+      (error?.cause?.code === 'UND_ERR_HEADERS_TIMEOUT' || error?.name === 'AbortError' || error?.name === 'TypeError')
+    ) {
       options.retry--;
       options._retryCount++;
 
       let delay = 500 * Math.pow(2, options._retryCount - 1);
-      await new Promise((resolve) => {
-        resolve = resolve;
-        setTimeout(resolve, delay);
-      });
-
-      return fetchWrapper(method, url, options, data);
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
 
-    error.message =
-      'Fetch failed for ' + method.toUpperCase() + ' ' + url + ' after ' + (options._retryCount + 1) + ' attempt(s): ' + error.message;
-    throw error;
+    throw new Error(
+      method.toUpperCase() +
+        ' ' +
+        url +
+        ' failed after ' +
+        (options._retryCount + 1) +
+        ' attempt' +
+        (options._retryCount + 1 > 1 ? 's' : '') +
+        ': ' +
+        (error?.message || String(error)) +
+        (error?.cause?.code ? ' (' + error.cause.code + ')' : ''),
+      { cause: error },
+    );
   }
 }
 
@@ -271,32 +295,6 @@ function processCommonData(deviceUUID, data, config) {
     }
     data.description = HomeKitDevice.makeValidHKName(location === '' ? description : description + ' - ' + location);
     delete data.location;
-
-    // Insert HomeKit pairing code for when using HAP-NodeJS library rather than Homebridge
-    // Validate the pairing code is in the format of "xxx-xx-xxx" or "xxxx-xxxx"
-    if (
-      typeof config?.options?.hkPairingCode === 'string' &&
-      (HomeKitDevice.HK_PIN_3_2_3.test(config.options.hkPairingCode) === true ||
-        HomeKitDevice.HK_PIN_4_4.test(config.options.hkPairingCode) === true)
-    ) {
-      data.hkPairingCode = config.options.hkPairingCode;
-    } else if (
-      typeof deviceOptions?.hkPairingCode === 'string' &&
-      (HomeKitDevice.HK_PIN_3_2_3.test(deviceOptions.hkPairingCode) === true ||
-        HomeKitDevice.HK_PIN_4_4.test(deviceOptions.hkPairingCode) === true)
-    ) {
-      data.hkPairingCode = deviceOptions.hkPairingCode;
-    }
-
-    // If we have a hkPairingCode defined, we need to generate a hkUsername also
-    if (data?.hkPairingCode !== undefined) {
-      // Use a Nest Labs prefix for first 6 digits, followed by a crc24 based off serial number for last 6 digits.
-      data.hkUsername = ('18B430' + crc24(data.serialNumber.toUpperCase()))
-        .toString('hex')
-        .split(/(..)/)
-        .filter((s) => s)
-        .join(':');
-    }
 
     processed = data;
     // eslint-disable-next-line no-unused-vars

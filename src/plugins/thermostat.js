@@ -27,7 +27,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2025.07.27'; // Code version
+  static VERSION = '2025.08.04'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -1024,7 +1024,7 @@ export default class NestThermostat extends HomeKitDevice {
 }
 
 // Function to process our RAW Nest or Google for this device type
-export function processRawData(log, rawData, config, deviceType = undefined, deviceUUID = undefined) {
+export function processRawData(log, rawData, config, deviceType = undefined) {
   if (
     rawData === null ||
     typeof rawData !== 'object' ||
@@ -1064,9 +1064,8 @@ export function processRawData(log, rawData, config, deviceType = undefined, dev
   Object.entries(rawData)
     .filter(
       ([key, value]) =>
-        (key.startsWith('device.') === true ||
-          (key.startsWith('DEVICE_') === true && PROTOBUF_RESOURCES.THERMOSTAT.includes(value.value?.device_info?.typeName) === true)) &&
-        (deviceUUID === undefined || deviceUUID === key),
+        key.startsWith('device.') === true ||
+        (key.startsWith('DEVICE_') === true && PROTOBUF_RESOURCES.THERMOSTAT.includes(value.value?.device_info?.typeName) === true),
     )
     .forEach(([object_key, value]) => {
       let tempDevice = {};
@@ -1319,8 +1318,10 @@ export function processRawData(log, rawData, config, deviceType = undefined, dev
 
         if (
           value?.source === DATA_SOURCE.NEST &&
+          rawData?.['track.' + value.value?.serial_number] !== undefined &&
+          rawData?.['link.' + value.value?.serial_number] !== undefined &&
           rawData?.['shared.' + value.value?.serial_number] !== undefined &&
-          rawData?.['track.' + value.value.serial_number] !== undefined
+          rawData?.['where.' + rawData?.['link.' + value.value?.serial_number]?.value?.structure?.split?.('.')[1]] !== undefined
         ) {
           let RESTTypeData = {};
           RESTTypeData.type = DEVICE_TYPE.THERMOSTAT;

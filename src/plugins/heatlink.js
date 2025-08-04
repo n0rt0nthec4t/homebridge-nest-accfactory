@@ -13,7 +13,7 @@ import { DATA_SOURCE, DEVICE_TYPE, HOTWATER_MAX_TEMPERATURE, HOTWATER_MIN_TEMPER
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = 'Heatlink';
-  static VERSION = '2025.07.27'; // Code version
+  static VERSION = '2025.08.04'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
@@ -221,7 +221,7 @@ export default class NestHeatlink extends HomeKitDevice {
 }
 
 // Function to process our RAW Nest or Google for this device type
-export function processRawData(log, rawData, config, deviceType = undefined, deviceUUID = undefined) {
+export function processRawData(log, rawData, config, deviceType = undefined) {
   if (
     rawData === null ||
     typeof rawData !== 'object' ||
@@ -247,30 +247,30 @@ export function processRawData(log, rawData, config, deviceType = undefined, dev
         if (
           value?.source === DATA_SOURCE.GOOGLE &&
           value.value?.configuration_done?.deviceReady === true &&
-          rawData?.[value.value?.device_info?.pairerId?.resourceId] !== undefined &&
-          value.value?.heat_link?.connectionStatus !== undefined &&
-          value.value?.heat_link?.connectionStatus !== '' &&
-          value.value?.heat_link?.connectionStatus !== 'HVAC_CONNECTION_STATE_UNSPECIFIED' &&
-          value.value?.heat_link?.connectionStatus !== 'HVAC_CONNECTION_STATE_DISCONNECTED' &&
-          value.value?.heat_link?.heatLinkModel?.value !== undefined &&
-          value.value?.heat_link?.heatLinkSerialNumber?.value !== undefined &&
-          value.value?.heat_link?.heatLinkSwVersion?.value !== undefined &&
-          (deviceUUID === undefined || deviceUUID === object_key)
+          typeof rawData?.[value.value?.device_info?.pairerId?.resourceId] === 'object' &&
+          ['HEAT_LINK_CONNECTION_TYPE_ON_OFF', 'HEAT_LINK_CONNECTION_TYPE_OPENTHERM'].some(
+            (type) =>
+              value.value?.heat_link_settings?.heatConnectionType === type ||
+              value.value?.heat_link_settings?.hotWaterConnectionType === type,
+          ) === true &&
+          (value.value?.heat_link?.heatLinkModel?.value?.trim?.() ?? '') !== '' &&
+          (value.value?.heat_link?.heatLinkSerialNumber?.value?.trim?.() ?? '') !== '' &&
+          (value.value?.heat_link?.heatLinkSwVersion?.value?.trim?.() ?? '') !== ''
         ) {
           tempDevice = processCommonData(
             object_key,
             {
               type: DEVICE_TYPE.HEATLINK,
               model:
-                value.value?.heat_link?.heatLinkModel.value.startsWith('Amber-2') === true
+                value.value.heat_link.heatLinkModel.value.startsWith('Amber-2') === true
                   ? 'Heatlink for Learning Thermostat (3rd gen, EU)'
-                  : value.value?.heat_link?.heatLinkModel.value.startsWith('Amber-1') === true
+                  : value.value.heat_link.heatLinkModel.value.startsWith('Amber-1') === true
                     ? 'Heatlink for Learning Thermostat (2nd gen, EU)'
-                    : value.value?.heat_link?.heatLinkModel.value.includes('Agate') === true
+                    : value.value.heat_link.heatLinkModel.value.includes('Agate') === true
                       ? 'Heatlink for Thermostat E (1st gen, EU)'
-                      : 'Heatlink (unknown)',
-              serialNumber: value.value?.heat_link.heatLinkSerialNumber.value,
-              softwareVersion: value.value?.heat_link.heatLinkSwVersion.value,
+                      : 'Heatlink (unknown - ' + value.value.heat_link.heatLinkModel + ')',
+              serialNumber: value.value.heat_link.heatLinkSerialNumber.value,
+              softwareVersion: value.value.heat_link.heatLinkSwVersion.value,
               associated_thermostat: object_key, // Thermostat linked to
               temperature_scale: value.value?.display_settings?.temperatureScale === 'TEMPERATURE_SCALE_F' ? 'F' : 'C',
               online: value.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE', // Use thermostat online status
@@ -309,13 +309,16 @@ export function processRawData(log, rawData, config, deviceType = undefined, dev
 
         if (
           value?.source === DATA_SOURCE.NEST &&
-          rawData?.['track.' + value.value?.serial_number] !== undefined &&
-          rawData?.['link.' + value.value.serial_number] !== undefined &&
-          rawData?.['shared.' + value.value.serial_number] !== undefined &&
-          rawData?.['where.' + rawData?.['link.' + value.value?.serial_number]?.value?.structure?.split?.('.')[1]] !== undefined &&
-          Object.keys(value?.value).some((key) => key.startsWith('heat_link_')) === true &&
-          value.value?.heat_link_connection === 3 && // Think '3' means there is one connected. '1' seems to be not connected
-          (deviceUUID === undefined || deviceUUID === object_key)
+          typeof rawData?.['track.' + value.value?.serial_number] === 'object' &&
+          typeof rawData?.['link.' + value.value?.serial_number] === 'object' &&
+          typeof rawData?.['shared.' + value.value?.serial_number] === 'object' &&
+          typeof rawData?.['where.' + rawData?.['link.' + value.value?.serial_number]?.value?.structure?.split?.('.')[1]] === 'object' &&
+          ['onoff', 'opentherm'].some(
+            (type) => value?.value?.heat_link_heat_type === type || value?.value?.heat_link_hot_water_type === type,
+          ) === true &&
+          (value.value?.heat_link_model?.trim?.() ?? '') !== '' &&
+          (value.value?.heat_link_serial_number?.trim?.() ?? '') !== '' &&
+          (value.value?.heat_link_sw_version?.trim?.() ?? '') !== ''
         ) {
           tempDevice = processCommonData(
             object_key,
@@ -328,7 +331,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, dev
                     ? 'Heatlink for Learning Thermostat (2nd gen, EU)'
                     : value.value.heat_link_model.includes('Agate') === true
                       ? 'Heatlink for Thermostat E (1st gen, EU)'
-                      : 'Heatlink (unknown)',
+                      : 'Heatlink (unknown - ' + value.value.heat_link_model + ')',
               serialNumber: value.value.heat_link_serial_number,
               softwareVersion: value.value.heat_link_sw_version,
               associated_thermostat: object_key, // Thermostat linked to
@@ -347,14 +350,12 @@ export function processRawData(log, rawData, config, deviceType = undefined, dev
                 isNaN(value.value?.current_water_temperature) === false
                   ? adjustTemperature(Number(value.value.current_water_temperature), 'C', 'C', true)
                   : 0.0,
-              description:
-                typeof rawData?.['shared.' + value.value.serial_number]?.value?.name === 'string'
-                  ? rawData['shared.' + value.value.serial_number].value.name
-                  : '',
-              location:
+              description: String(rawData?.['shared.' + value.value.serial_number]?.value?.name ?? ''),
+              location: String(
                 rawData?.[
-                  'where.' + rawData?.['link.' + value.value?.serial_number]?.value?.structure?.split?.('.')[1]
+                  'where.' + rawData?.['link.' + value.value.serial_number]?.value?.structure?.split?.('.')[1]
                 ]?.value?.wheres?.find((where) => where?.where_id === value.value.where_id)?.name ?? '',
+              ),
             },
             config,
           );

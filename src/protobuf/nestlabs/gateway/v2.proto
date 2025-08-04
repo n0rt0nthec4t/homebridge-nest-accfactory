@@ -100,5 +100,5 @@ message ObserveResponse {
 }
 
 service GatewayService {
-    rpc Observe(ObserveRequest) returns (ObserveResponse);
+  rpc Observe (ObserveRequest) returns (stream ObserveResponse);
 }

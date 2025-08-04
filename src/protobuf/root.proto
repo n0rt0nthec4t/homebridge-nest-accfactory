@@ -37,5 +37,6 @@ import "weave/trait/power.proto";
 import "weave/trait/schedule.proto";
 import "weave/trait/security.proto";
 import "weave/trait/time.proto";
+import "nest/services/apigateway.proto";
 import "nestlabs/gateway/v2.proto";
 import "nestlabs/history/v1.proto";

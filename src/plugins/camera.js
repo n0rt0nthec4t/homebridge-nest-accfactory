@@ -31,7 +31,7 @@ const STREAMING_PROTOCOL = {
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2025.07.27'; // Code version
+  static VERSION = '2025.08.04'; // Code version
 
   // For messaging back to parent class (Doorbell/Floodlight)
   static SET = HomeKitDevice.SET;
@@ -820,7 +820,7 @@ export default class NestCamera extends HomeKitDevice {
     if (this.deviceData.migrating === false && this.deviceData.streaming_enabled === true && this.deviceData.online === true) {
       // Call the camera/doorbell to get a snapshot image.
       // Prefer onGet() result if implemented; fallback to static handler
-      let response = await this.get({ uuid: this.deviceData.nest_google_uuid, camera_snapshot: '' });
+      let response = await this.get({ uuid: this.deviceData.nest_google_uuid, camera_snapshot: Buffer.alloc(0) });
       if (
         Buffer.isBuffer(response?.camera_snapshot) === true &&
         response.camera_snapshot.length > 0 &&
@@ -1357,7 +1357,7 @@ export default class NestCamera extends HomeKitDevice {
 }
 
 // Function to process our RAW Nest or Google for this device type
-export function processRawData(log, rawData, config, deviceType = undefined, deviceUUID = undefined) {
+export function processRawData(log, rawData, config, deviceType = undefined) {
   if (
     rawData === null ||
     typeof rawData !== 'object' ||
@@ -1374,9 +1374,8 @@ export function processRawData(log, rawData, config, deviceType = undefined, dev
   Object.entries(rawData)
     .filter(
       ([key, value]) =>
-        (key.startsWith('quartz.') === true ||
-          (key.startsWith('DEVICE_') === true && PROTOBUF_RESOURCES.CAMERA.includes(value.value?.device_info?.typeName) === true)) &&
-        (deviceUUID === undefined || deviceUUID === key),
+        key.startsWith('quartz.') === true ||
+        (key.startsWith('DEVICE_') === true && PROTOBUF_RESOURCES.CAMERA.includes(value.value?.device_info?.typeName) === true),
     )
     .forEach(([object_key, value]) => {
       let tempDevice = {};

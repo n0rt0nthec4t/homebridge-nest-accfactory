@@ -13,7 +13,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestTemperatureSensor extends HomeKitDevice {
   static TYPE = 'TemperatureSensor';
-  static VERSION = '2025.07.27'; // Code version
+  static VERSION = '2025.08.04'; // Code version
 
   batteryService = undefined;
   temperatureService = undefined;
@@ -83,7 +83,7 @@ export default class NestTemperatureSensor extends HomeKitDevice {
 }
 
 // Function to process our RAW Nest or Google for this device type
-export function processRawData(log, rawData, config, deviceType = undefined, deviceUUID = undefined) {
+export function processRawData(log, rawData, config, deviceType = undefined) {
   if (
     rawData === null ||
     typeof rawData !== 'object' ||
@@ -111,17 +111,14 @@ export function processRawData(log, rawData, config, deviceType = undefined, dev
           Array.isArray(value.value?.remote_comfort_sensing_settings?.associatedRcsSensors) === true
         ) {
           value.value.remote_comfort_sensing_settings.associatedRcsSensors.forEach((sensor) => {
-            if (
-              typeof rawData?.[sensor?.deviceId?.resourceId]?.value === 'object' &&
-              (deviceUUID === undefined || deviceUUID === sensor.deviceId.resourceId)
-            ) {
+            if (typeof rawData?.[sensor?.deviceId?.resourceId]?.value === 'object') {
               let sensorData = rawData[sensor.deviceId.resourceId].value;
               let tempDevice = processCommonData(
                 sensor.deviceId.resourceId,
                 {
                   type: DEVICE_TYPE.TEMPSENSOR,
                   model: 'Temperature Sensor',
-                  softwareVersion: '1.0.0',
+                  softwareVersion: NestTemperatureSensor.VERSION, // We'll use our class version here now
                   serialNumber: sensorData.device_identity.serialNumber,
                   description: String(sensorData?.label?.label ?? ''),
                   location: String(
@@ -172,7 +169,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, dev
           rawData['rcs_settings.' + value.value.serial_number].value.associated_rcs_sensors.forEach((sensor) => {
             if (
               typeof rawData[sensor]?.value === 'object' &&
-              rawData?.['where.' + rawData?.[sensor]?.value?.structure_id](deviceUUID === undefined || deviceUUID === sensor)
+              typeof rawData?.['where.' + rawData?.[sensor]?.value?.structure_id] === 'object'
             ) {
               let sensorData = rawData[sensor].value;
               let tempDevice = processCommonData(
@@ -180,16 +177,17 @@ export function processRawData(log, rawData, config, deviceType = undefined, dev
                 {
                   type: DEVICE_TYPE.TEMPSENSOR,
                   model: 'Temperature Sensor',
-                  softwareVersion: '1.0.0',
+                  softwareVersion: NestTemperatureSensor.VERSION, // We'll use our class version here now
                   serialNumber: sensorData.serial_number,
                   battery_level: scaleValue(Number(sensorData.battery_level), 0, 100, 0, 100),
                   current_temperature: adjustTemperature(sensorData.current_temperature, 'C', 'C', true),
                   online: Math.floor(Date.now() / 1000) - sensorData.last_updated_at < 3600 * 4,
                   associated_thermostat: object_key,
-                  description: sensorData.description,
-                  location:
+                  description: String(sensorData.description?.trim() ?? ''),
+                  location: String(
                     rawData?.['where.' + sensorData.structure_id]?.value?.wheres?.find((where) => where?.where_id === sensorData.where_id)
                       ?.name ?? '',
+                  ),
                   active_sensor:
                     rawData?.['rcs_settings.' + value.value.serial_number]?.value?.active_rcs_sensors?.includes?.(object_key) === true,
                 },

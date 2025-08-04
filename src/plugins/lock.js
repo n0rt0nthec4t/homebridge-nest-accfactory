@@ -6,14 +6,14 @@
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
-import { logJSONObject, processCommonData, scaleValue } from '../utils.js';
+import { processCommonData, scaleValue } from '../utils.js';
 
 // Define constants
 import { DATA_SOURCE, DEVICE_TYPE, PROTOBUF_RESOURCES, LOW_BATTERY_LEVEL } from '../consts.js';
 
 export default class NestLock extends HomeKitDevice {
   static TYPE = 'Lock';
-  static VERSION = '2025.07.29'; // Code version
+  static VERSION = '2025.08.04'; // Code version
 
   // Define lock bolt states
   static STATE = {
@@ -191,7 +191,7 @@ export default class NestLock extends HomeKitDevice {
 }
 
 // Function to process our RAW Nest or Google for this device type
-export function processRawData(log, rawData, config, deviceType = undefined, deviceUUID = undefined) {
+export function processRawData(log, rawData, config, deviceType = undefined) {
   if (
     rawData === null ||
     typeof rawData !== 'object' ||
@@ -206,10 +206,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, dev
   let devices = {};
   Object.entries(rawData)
     .filter(
-      ([key, value]) =>
-        (key.startsWith('yale.') === true ||
-          (key.startsWith('DEVICE_') === true && PROTOBUF_RESOURCES.LOCK.includes(value.value?.device_info?.typeName) === true)) &&
-        (deviceUUID === undefined || deviceUUID === key),
+      ([key, value]) => key.startsWith('DEVICE_') === true && PROTOBUF_RESOURCES.LOCK.includes(value.value?.device_info?.typeName) === true,
     )
     .forEach(([object_key, value]) => {
       let tempDevice = {};
@@ -286,12 +283,6 @@ export function processRawData(log, rawData, config, deviceType = undefined, dev
             },
             config,
           );
-        }
-
-        if (value?.source === DATA_SOURCE.NEST) {
-          log?.debug?.('Contact developer with this output');
-          log?.debug?.('Nest API data [%s]', object_key);
-          logJSONObject(log, value);
         }
         // eslint-disable-next-line no-unused-vars
       } catch (error) {

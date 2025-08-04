@@ -13,7 +13,7 @@ import { DATA_SOURCE, DEVICE_TYPE, NESTLABS_MAC_PREFIX } from '../consts.js';
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = 'Weather';
-  static VERSION = '2025.07.26'; // Code version
+  static VERSION = '2025.08.04'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -29,7 +29,7 @@ export default class NestWeather extends HomeKitDevice {
     // Setup humidity service if not already present on the accessory
     this.humidityService = this.addHKService(this.hap.Service.HumiditySensor, '', 1);
 
-    // Setup battery service if not already present on the accessory
+    // Setup battery service if not already present on the accessory (required for EveHome support)
     this.batteryService = this.addHKService(this.hap.Service.Battery, '', 1);
     this.batteryService.setHiddenService(true);
 
@@ -165,7 +165,7 @@ export default class NestWeather extends HomeKitDevice {
 }
 
 // Function to process our RAW Nest or Google for this device type
-export function processRawData(log, rawData, config, deviceType = undefined, deviceUUID = undefined) {
+export function processRawData(log, rawData, config, deviceType = undefined) {
   if (
     rawData === null ||
     typeof rawData !== 'object' ||
@@ -181,87 +181,60 @@ export function processRawData(log, rawData, config, deviceType = undefined, dev
   let devices = {};
   Object.entries(rawData)
     .filter(
-      ([key]) =>
-        (key.startsWith('structure.') === true || key.startsWith('STRUCTURE_') === true) &&
-        (deviceUUID === undefined || deviceUUID === key) &&
-        config?.options?.weather === true, // Only if weather enabled
+      ([key]) => (key.startsWith('structure.') === true || key.startsWith('STRUCTURE_') === true) && config?.options?.weather === true, // Only if weather enabled
     )
     .forEach(([object_key, value]) => {
       let tempDevice = {};
       try {
-        if (
+        // For a Google API source data, we use the Nest API structure ID. This will ensure we generate the same serial number
+        // This should prevent two 'wether' objects from being created
+        // Nest API uses the structure id only
+        let serialNumber =
           value?.source === DATA_SOURCE.GOOGLE &&
-          value.value?.structure_location !== undefined &&
-          value.value?.structure_info?.rtsStructureId !== undefined &&
-          value.value?.weather !== undefined
-        ) {
-          tempDevice = processCommonData(
-            object_key,
-            {
-              type: DEVICE_TYPE.WEATHER,
-              model: 'Weather',
-              softwareVersion: '1.0.0',
-              // Use the Nest API structure ID from the Protobuf structure. This will ensure we generate the same serial number
-              // This should prevent two 'weather' objects being created
-              serialNumber: NESTLABS_MAC_PREFIX + crc24(value.value.structure_info.rtsStructureId.toUpperCase()).toUpperCase(),
-              description: String(
-                (value.value?.structure_location?.city?.value ?? '') !== '' && (value.value?.structure_location?.state?.value ?? '') !== ''
-                  ? value.value.structure_location.city.value + ' - ' + value.value.structure_location.state.value
-                  : value.value.structure_info.name,
-              ),
-              postal_code: value.value?.structure_location?.postalCode.value ?? '',
-              country_code: value.value?.structure_location?.countryCode.value ?? '',
-              city: value.value?.structure_location?.city?.value ?? '',
-              state: value.value?.structure_location?.state?.value ?? '',
-              latitude: value.value?.structure_location?.geoCoordinate.latitude,
-              longitude: value.value?.structure_location?.geoCoordinate.longitude,
-              current_temperature: adjustTemperature(value.value.weather.current_temperature, 'C', 'C', true),
-              current_humidity: value.value.weather.current_humidity,
-              condition: value.value.weather.condition,
-              wind_direction: value.value.weather.wind_direction,
-              wind_speed: value.value.weather.wind_speed,
-              sunrise: value.value.weather.sunrise,
-              sunset: value.value.weather.sunset,
-              station: value.value.weather.station,
-              forecast: value.value.weather.forecast,
-            },
-            config,
-          );
-        }
+          typeof value.value?.structure_info?.rtsStructureId === 'string' &&
+          value.value.structure_info.rtsStructureId !== ''
+            ? value.value.structure_info.rtsStructureId.trim() // Google API STRUCTURE_xxx, translated Nest API structure.xxx
+            : value?.source === DATA_SOURCE.NEST
+              ? object_key // Nest API structure.xxx
+              : undefined;
 
-        if (
-          value?.source === DATA_SOURCE.NEST &&
-          value.value?.latitude !== undefined &&
-          value.value?.longitude !== undefined &&
-          value.value?.weather !== undefined
-        ) {
+        let description =
+          value?.source === DATA_SOURCE.GOOGLE
+            ? (value.value?.structure_location?.city?.value?.trim() ?? '') !== '' &&
+              (value.value?.structure_location?.state?.value?.trim() ?? '') !== ''
+                ? value.value.structure_location.city.value.trim() + ' - ' + value.value.structure_location.state.value.trim()
+                : (value.value?.structure_info?.name?.trim() ?? '') !== ''
+                    ? value.value.structure_info.name.trim()
+                    : undefined
+            : value?.source === DATA_SOURCE.NEST
+              ? (value.value?.city?.trim() ?? '') !== '' && (value.value?.state?.trim() ?? '') !== ''
+                  ? value.value.city.trim() + ' - ' + value.value.state.trim()
+                  : (value.value?.name?.trim() ?? '') !== ''
+                      ? value.value.name.trim()
+                      : undefined
+              : undefined;
+
+        if (serialNumber !== undefined && description !== undefined) {
           tempDevice = processCommonData(
             object_key,
             {
               type: DEVICE_TYPE.WEATHER,
               model: 'Weather',
-              softwareVersion: '1.0.0',
-              serialNumber: NESTLABS_MAC_PREFIX + crc24(object_key.toUpperCase()).toUpperCase(),
-              description: String(
-                (value.value?.city ?? '') !== '' && (value.value?.state ?? '') !== ''
-                  ? value.value.city + ' - ' + value.value.state
-                  : value.value.name,
-              ),
-              postal_code: value.value?.postal_code ?? '',
-              country_code: value.value?.country_code ?? '',
-              city: value.value?.city ?? '',
-              state: value.value?.state ?? '',
-              latitude: value.value.latitude,
-              longitude: value.value.longitude,
-              current_temperature: adjustTemperature(value.value.weather.current_temperature, 'C', 'C', true),
-              current_humidity: value.value.weather.current_humidity,
-              condition: value.value.weather.condition,
-              wind_direction: value.value.weather.wind_direction,
-              wind_speed: value.value.weather.wind_speed,
-              sunrise: value.value.weather.sunrise,
-              sunset: value.value.weather.sunset,
-              station: value.value.weather.station,
-              forecast: value.value.weather.forecast,
+              softwareVersion: NestWeather.VERSION, // We'll use our class version here now
+              serialNumber: NESTLABS_MAC_PREFIX + crc24(serialNumber.toUpperCase()).toUpperCase(),
+              description: description,
+              current_temperature:
+                isNaN(value.value?.weather?.current_temperature) === false
+                  ? adjustTemperature(Number(value.value.weather.current_temperature), 'C', 'C', true)
+                  : 0.0,
+              current_humidity: isNaN(value.value?.weather?.current_humidity) === false ? Number(value.value.weather.current_humidity) : 0,
+              condition: value.value?.weather?.condition?.trim() ?? '',
+              wind_direction: value.value?.weather?.wind_direction?.trim() ?? '',
+              wind_speed: isNaN(value.value?.weather?.wind_speed) === false ? Number(value.value.weather.wind_speed) : 0,
+              sunrise: isNaN(value.value?.weather?.sunrise) === false ? Number(value.value.weather.sunrise) : '---',
+              sunset: isNaN(value.value?.weather?.sunset) === false ? Number(value.value.weather.sunset) : '---',
+              station: value.value?.weather?.station?.trim() ?? '',
+              forecast: value.value?.weather?.forecast?.trim() ?? '',
             },
             config,
           );

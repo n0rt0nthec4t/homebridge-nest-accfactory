@@ -2,7 +2,7 @@
     "name": "homebridge-nest-accfactory",
     "displayName": "Nest Accfactory",
     "type": "module",
-    "version": "0.3.2-alpha.20",
+    "version": "0.3.2-alpha.25",
     "description": "Homebridge support for Nest/Google devices including HomeKit Secure Video (HKSV) support for doorbells and cameras",
     "author": "n0rt0nthec4t",
     "license": "Apache-2.0",
@@ -29,7 +29,9 @@
         "temperature",
         "smoke",
         "sensor",
-        "floodlight"
+        "floodlight",
+        "hotwater",
+        "lock"
     ],
     "main": "dist/index.js",
     "engines": {
@@ -65,6 +67,7 @@
     "dependencies": {
         "@evan/opus": "^1.0.3",
         "protobufjs": "^7.5.3",
-        "werift": "^0.22.2"
+        "werift": "^0.22.2",
+        "undici": "7.13.0"
     }
 }
