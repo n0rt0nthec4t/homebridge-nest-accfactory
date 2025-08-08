@@ -20,7 +20,7 @@ import {
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = 'Heatlink';
-  static VERSION = '2025.08.07'; // Code version
+  static VERSION = '2025.08.08'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
@@ -389,7 +389,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         });
 
         tempDevice.hotwaterBoostTime = HOTWATER_BOOST_TIMES.reduce((a, b) =>
-          Math.abs(HOTWATER_BOOST_TIMES - a) < Math.abs(HOTWATER_BOOST_TIMES - b) ? a : b,
+          Math.abs(tempDevice.hotwaterBoostTime - a) < Math.abs(tempDevice.hotwaterBoostTime - b) ? a : b,
         );
 
         tempDevice.hotwaterMinTemp =
