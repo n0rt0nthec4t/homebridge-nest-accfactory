@@ -9,11 +9,18 @@ import HomeKitDevice from '../HomeKitDevice.js';
 import { processCommonData, adjustTemperature, parseDurationToSeconds } from '../utils.js';
 
 // Define constants
-import { DATA_SOURCE, DEVICE_TYPE, HOTWATER_MAX_TEMPERATURE, HOTWATER_MIN_TEMPERATURE, PROTOBUF_RESOURCES } from '../consts.js';
+import {
+  DATA_SOURCE,
+  DEVICE_TYPE,
+  HOTWATER_MAX_TEMPERATURE,
+  HOTWATER_MIN_TEMPERATURE,
+  PROTOBUF_RESOURCES,
+  HOTWATER_BOOST_TIMES,
+} from '../consts.js';
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = 'Heatlink';
-  static VERSION = '2025.08.04'; // Code version
+  static VERSION = '2025.08.07'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
@@ -279,9 +286,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               hot_water_boost_active:
                 isNaN(value.value?.hot_water_settings?.boostTimerEnd?.seconds) === false &&
                 Number(value.value.hot_water_settings.boostTimerEnd.seconds) > 0,
-              has_hot_water_temperature:
-                isNaN(value.value?.hot_water_trait?.temperature?.value) === false &&
-                isNaN(value.value?.hot_water_settings?.temperature?.value) === false,
+              has_hot_water_temperature: value.value?.hvac_equipment_capabilities?.hasHotWaterTemperature === true,
               current_water_temperature:
                 isNaN(value.value?.hot_water_trait?.temperature?.value) === false
                   ? adjustTemperature(Number(value.value.hot_water_trait.temperature.value), 'C', 'C', true)
@@ -375,11 +380,18 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         );
         // Insert any extra options we've read in from configuration file for this device
         tempDevice.eveHistory = config.options.eveHistory === true || deviceOptions?.eveHistory === true;
+
+        // Process hotwater boost time.. we only allow values matching app
         tempDevice.hotwaterBoostTime = parseDurationToSeconds(deviceOptions?.hotwaterBoostTime, {
-          defaultValue: 30 * 60, // 30mins
-          min: 60, // 1min
-          max: 7200, // 2hrs
+          defaultValue: 1800, // 30 mins
+          min: 1800, // 30 mins
+          max: 7200, // 2 hrs
         });
+
+        tempDevice.hotwaterBoostTime = HOTWATER_BOOST_TIMES.reduce((a, b) =>
+          Math.abs(HOTWATER_BOOST_TIMES - a) < Math.abs(HOTWATER_BOOST_TIMES - b) ? a : b,
+        );
+
         tempDevice.hotwaterMinTemp =
           isNaN(deviceOptions?.hotwaterMinTemp) === false
             ? adjustTemperature(deviceOptions.hotwaterMinTemp, 'C', 'C', true)

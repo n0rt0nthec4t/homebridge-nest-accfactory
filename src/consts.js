@@ -1,7 +1,7 @@
 // Common defines
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.07.30
+// Code version 2025.08.07
 // Mark Hulskamp
 'use strict';
 
@@ -133,6 +133,8 @@ export const THERMOSTAT_MAX_TEMPERATURE = 32; // Maximum temperature for Nest Th
 export const HOTWATER_MIN_TEMPERATURE = 30; // Minimum temperature for hotwater heating
 
 export const HOTWATER_MAX_TEMPERATURE = 70; // Maximum temperature for hotwater heating
+
+export const HOTWATER_BOOST_TIMES = [1800, 3600, 7200]; // Valid hotwater boost times
 
 export const RESOURCE_PATH = './res';
 export const RESOURCE_IMAGES = {

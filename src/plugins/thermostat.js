@@ -27,7 +27,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2025.08.04'; // Code version
+  static VERSION = '2025.08.07'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -615,12 +615,11 @@ export default class NestThermostat extends HomeKitDevice {
       return;
     }
 
-    if (type === HomeKitDevice?.HISTORY?.GET) {
+    if (type === HomeKitDevice?.EVEHOME?.GET) {
       // Extend Eve Thermo GET payload with device state
       message.enableschedule = this.deviceData.schedule_mode === 'heat';
       message.attached = this.deviceData.online === true && this.deviceData.removed_from_base === false;
       message.vacation = this.deviceData.vacation_mode === true;
-      message.vacationtemp = this.deviceData.vacation_mode === true ? message.vacationtemp : null;
       message.programs = [];
 
       if (['HEAT', 'RANGE'].includes(this.deviceData.schedule_mode?.toUpperCase?.()) === true) {
@@ -667,8 +666,8 @@ export default class NestThermostat extends HomeKitDevice {
       return message;
     }
 
-    if (type === HomeKitDevice?.HISTORY?.SET) {
-      if (typeof message?.vacation === 'boolean') {
+    if (type === HomeKitDevice?.EVEHOME?.SET) {
+      if (typeof message?.vacation?.status === 'boolean') {
         this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, vacation_mode: message.vacation.status });
       }
 
@@ -1259,13 +1258,6 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           RESTTypeData.has_air_filter = value.value?.hvac_equipment_capabilities?.hasAirFilter === true;
           RESTTypeData.filter_replacement_needed = value.value?.filter_reminder?.filterReplacementNeeded?.value === true;
 
-          // Hotwater details
-          RESTTypeData.has_hot_water_control = value.value?.hvac_equipment_capabilities?.hasHotWaterControl === true;
-          RESTTypeData.hot_water_active = value.value?.hot_water?.boilerActive === true;
-          RESTTypeData.hot_water_boost_active =
-            isNaN(value.value?.hot_water_settings?.boostTimerEnd?.seconds) === false &&
-            Number(value.value.hot_water_settings.boostTimerEnd.seconds) > 0;
-
           // Process any temperature sensors associated with this thermostat
           RESTTypeData.active_rcs_sensor =
             value.value?.remote_comfort_sensing_settings?.activeRcsSelection?.activeRcsSensor !== undefined
@@ -1361,22 +1353,10 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           RESTTypeData.can_heat = rawData?.['shared.' + value.value.serial_number]?.value?.can_heat === true;
           RESTTypeData.temperature_lock = value.value.temperature_lock === true;
           RESTTypeData.temperature_lock_pin_hash = value.value.temperature_lock_pin_hash;
-
-          // Look in two possible locations for away status
-          RESTTypeData.away =
-            rawData?.['structure.' + rawData?.['link.' + value.value.serial_number]?.value?.structure?.split?.('.')[1]]?.value?.away ===
-              true ||
-            rawData?.['structure.' + rawData?.['link.' + value.value.serial_number]?.value?.structure?.split?.('.')[1]]?.value
-              ?.structure_mode?.structureMode === 'STRUCTURE_MODE_AWAY';
-
+          RESTTypeData.away = rawData?.[rawData?.['link.' + value.value.serial_number]?.value?.structure]?.value?.away === true;
           RESTTypeData.occupancy = RESTTypeData.away === false; // Occupancy is opposite of away status ie: away is false, then occupied
-
-          // Look in two possible locations for vacation status
           RESTTypeData.vacation_mode =
-            rawData['structure.' + rawData?.['link.' + value.value.serial_number]?.value?.structure?.split?.('.')[1]]?.value
-              ?.vacation_mode === true ||
-            rawData?.['structure.' + rawData?.['link.' + value.value.serial_number]?.value?.structure?.split?.('.')[1]]?.value
-              ?.structure_mode?.structureMode === 'STRUCTURE_MODE_VACATION';
+            rawData[rawData?.['link.' + value.value.serial_number]?.value?.structure]?.value?.vacation_mode === true;
 
           // Work out current mode. ie: off, cool, heat, range and get temperature low (heat) and high (cool)
           RESTTypeData.hvac_mode =
@@ -1480,12 +1460,6 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           // Air filter details
           RESTTypeData.has_air_filter = value.value.has_air_filter === true;
           RESTTypeData.filter_replacement_needed = value.value.filter_replacement_needed === true;
-
-          // Hotwater details
-          RESTTypeData.has_hot_water_control = value.value.has_hot_water_control === true;
-          RESTTypeData.hot_water_active = value.value?.hot_water_active === true;
-          RESTTypeData.hot_water_boost_active =
-            isNaN(value.value?.hot_water_boost_time_to_end) === false && Number(value.value.hot_water_boost_time_to_end) > 0;
 
           // Process any temperature sensors associated with this thermostat
           RESTTypeData.active_rcs_sensor = '';

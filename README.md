@@ -25,7 +25,7 @@ The following Nest devices are known to be supported
 * Nest Cameras (Cam Indoor, IQ Indoor, Outdoor, IQ Outdoor, Cam with Floodlight)
 * Nest Doorbells (wired 1st gen)
 * Nest HeatLinks
-* Nest x Yale Locks
+* Nest x Yale Locks (more testers required)
 
 **Note:** Google has announced it will discontinue support for 1st and 2nd generation Nest Thermostats as of **October 25, 2025**.  
 Based on their stated intentions, these models are expected to stop functioning with this Homebridge plugin after that date.
@@ -127,7 +127,7 @@ The following options are available on a per-device level in the `config.json` `
 | ffmpegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                | false          |
 | ffmpegHWaccel      | Enable video hardware acceleration for supported camera(s) and doorbell(s)                   | false          |
 | hksv               | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                          | false          |
-| hotwaterBoostTime  | Time in seconds for hotwater boost heating                                                   | 1800           |
+| hotwaterBoostTime  | Time in seconds for hotwater boost heating (30, 160, 120mins)                                | 30mins         |
 | hotwaterMaxTemp    | Maximum supported temperature for hotwater heating                                           | 70c            |
 | hotwaterMinTemp    | Minimum supported temperature for hotwater heating                                           | 30c            |
 | humiditySensor     | Create a seperate humidity sensor for supported thermostat(s)                                | false          |

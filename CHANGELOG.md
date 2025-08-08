@@ -2,35 +2,32 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.3.2 (alpha.25)
+## v0.3.2 (alpha.27)
 
 - Now Homebridge Verified
-- Removed support for standalone docker version
 - Refactored core to use the updated base class
-- Refactored plugins for more code base seperation
+- Refactored plugins for better codebase separation
 - General code cleanup and improved stability
 - Improved camera streaming and HKSV recording
 - Initial support for video hardware acceleration during recording
-- Initial support for Nest x Yale locks (experimental)
+- Initial support for Nest x Yale locks (more testing needed)
 - Fixed missing audio on newer Nest/Google cameras
 - Fixed missing Nest/Google cameras after Google Home migration
 - Fixed startup errors caused by invalid thermostat temperature settings
 - Fixed doorbell notifications
 - Fixed EveHome integration (history recording)
-- Fixed interference from other undici/fetch instances in Homebridge
-- Fixed issue with setting device properties via Nest API
-- Added support for hot water temperature control on compatible EU/UK thermostats [README](./README.md#devices)
-- Removed support for using Nest HeatLink devices as room temperature sensors
-
-### Deprecation Notice
-- Support for the standalone Docker version of this plugin is depreicated with this release.
+- Fixed interference from other `undici`/`fetch` instances in Homebridge
+- Fixed issue when setting device properties via Nest API
+- Added support for hot water temperature control on compatible EU/UK thermostats — [see README](./README.md#devices)
+- Removed support for using Nest Heat Link devices as room temperature sensors
+- Removed standalone Docker version
 
 ### Known Issues
 
 - The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
 
 ### Thanks
-Special thanks to [@Daniel](https://github.com/no1knows), [@Matthew](https://github.com/mphyde), [@Erik](https://github.com/esille) and [@Guy](https://github.com/grhall) for testing and feedback on this release!
+Special thanks to [@Daniel](https://github.com/no1knows), [@Matthew](https://github.com/mphyde), [@Erik](https://github.com/esille), [#Neil](https://github.com/BertrumUK) and [@Guy](https://github.com/grhall) for testing and feedback on this release!
  
 ## v0.3.1 (2025/06/16)
 
