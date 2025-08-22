@@ -2,7 +2,7 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.3.3 (alpha.5)
+## v0.3.3 (2025/08/23)
 
 - Refined timeout warnings for camera and doorbell snapshot capture  
 - Fixed video feed on/off control for HKSV-enabled cameras  
