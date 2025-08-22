@@ -174,25 +174,28 @@
                         "externalHeat": {
                             "type": "string"
                         },
+                        "externalHumidifier": {
+                            "type": "string"
+                        },
+                        "fanDuration": {
+                            "type": "boolean"
+                        },
                         "ffmpegDebug": {
                             "type": "boolean"
                         },
                         "ffmpegHWAccel": {
                             "type": "boolean"
                         },
-                        "hkPairingCode": {
-                            "type": "string"
-                        },
                         "hksv": {
                             "type": "boolean"
                         },
-                        "hotWaterBoostTime": {
+                        "hotwaterBoostTime": {
                             "type": "number"
                         },
-                        "hotWaterMaxTemp": {
+                        "hotwaterMaxTemp": {
                             "type": "string"
                         },
-                        "hotWaterMinTemp": {
+                        "hotwaterMinTemp": {
                             "type": "string"
                         },
                         "humiditySensor": {

@@ -1,7 +1,7 @@
 // FFmpeg manager for binary probing + session tracking
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.07.07
+// Code version 2025.08.11
 // Mark Hulskamp
 'use strict';
 
@@ -23,7 +23,13 @@ export default class FFmpeg {
   constructor(binaryPath = undefined, log = undefined) {
     this.#log = log;
 
-    if (typeof binaryPath === 'string' && binaryPath !== '') {
+    if ((binaryPath.trim() ?? '') !== '') {
+      // If path starts with '~' expand to user home directory
+      binaryPath = binaryPath.trim();
+      if (binaryPath.startsWith('~') === true) {
+        binaryPath = path.join(os.homedir(), binaryPath.slice(1));
+      }
+
       let resolved = path.resolve(binaryPath);
       if (resolved.endsWith('/ffmpeg') === false) {
         resolved += '/ffmpeg';
@@ -171,29 +177,29 @@ export default class FFmpeg {
       return false;
     }
 
-    let enc = this.#features.encoders || [];
-    let dec = this.#features.decoders || [];
-    let mux = this.#features.muxers || [];
+    let encoders = this.#features.encoders || [];
+    let decoders = this.#features.decoders || [];
+    let muxers = this.#features.muxers || [];
 
     if (Array.isArray(min?.encoders) === true) {
-      for (let e of min.encoders) {
-        if (enc.includes(e) === false) {
+      for (let encoder of min.encoders) {
+        if (encoders.includes(encoder) === false) {
           return false;
         }
       }
     }
 
     if (Array.isArray(min?.decoders) === true) {
-      for (let d of min.decoders) {
-        if (dec.includes(d) === false) {
+      for (let decoder of min.decoders) {
+        if (decoders.includes(decoder) === false) {
           return false;
         }
       }
     }
 
     if (Array.isArray(min?.muxers) === true) {
-      for (let m of min.muxers) {
-        if (mux.includes(m) === false) {
+      for (let muxer of min.muxers) {
+        if (muxers.includes(muxer) === false) {
           return false;
         }
       }

@@ -1,7 +1,7 @@
 // General helper functions
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.08.02
+// Code version 2025.08.20
 // Mark Hulskamp
 'use strict';
 
@@ -195,19 +195,27 @@ function parseDurationToSeconds(inputDuration, { defaultValue = null, min = 0, m
     if (/^\d+$/.test(inputDuration) === true) {
       normalisedSeconds = Number(inputDuration);
     } else {
-      // Process input into normalised units. We'll convert in standard h (hours), m (minutes), s (seconds)
+      // Normalise all known unit types to single characters
       inputDuration = inputDuration
-        .replace(/hrs?|hours?/g, 'h')
-        .replace(/mins?|minutes?/g, 'm')
-        .replace(/secs?|s\b/g, 's')
+        .replace(/\b(weeks?|w)\b/g, 'w')
+        .replace(/\b(days?|d)\b/g, 'd')
+        .replace(/\b(hours?|hrs?|hr|h)\b/g, 'h')
+        .replace(/\b(minutes?|mins?|min|m)\b/g, 'm')
+        .replace(/\b(seconds?|secs?|sec|s)\b/g, 's')
         .replace(/ +/g, '');
 
-      // Match duration format like "1h30m15s"
-      let match = inputDuration.match(/^((\d+)h)?((\d+)m)?((\d+)s?)?$/);
+      // Match format like "1w3d2h15m30s"
+      let match = inputDuration.match(/^((\d+)w)?((\d+)d)?((\d+)h)?((\d+)m)?((\d+)s?)?$/);
 
       if (Array.isArray(match) === true) {
-        let total = Number(match[2] || 0) * 3600 + Number(match[4] || 0) * 60 + Number(match[6] || 0);
-        normalisedSeconds = Math.floor(total / 3600) * 3600 + Math.floor((total % 3600) / 60) * 60 + (total % 60);
+        let total =
+          Number(match[2] || 0) * 604800 + // weeks
+          Number(match[4] || 0) * 86400 + // days
+          Number(match[6] || 0) * 3600 + // hours
+          Number(match[8] || 0) * 60 + // minutes
+          Number(match[10] || 0); // seconds
+
+        normalisedSeconds = total;
       }
     }
 
@@ -281,7 +289,7 @@ function processCommonData(deviceUUID, data, config) {
     let deviceOptions = config?.devices?.find((device) => device?.serialNumber?.toUpperCase?.() === data?.serialNumber?.toUpperCase?.());
     data.nest_google_uuid = deviceUUID;
     data.serialNumber = data.serialNumber.toUpperCase(); // ensure serial numbers are in upper case
-    data.excluded = this?.config?.options?.exclude === true ? deviceOptions?.exclude !== false : deviceOptions?.exclude === true;
+    data.excluded = config?.options?.exclude === true ? deviceOptions?.exclude !== false : deviceOptions?.exclude === true;
     data.manufacturer = typeof data?.manufacturer === 'string' && data.manufacturer !== '' ? data.manufacturer : 'Nest';
     data.softwareVersion = process_software_version(data.softwareVersion);
     let description = typeof data?.description === 'string' ? data.description : '';

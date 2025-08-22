@@ -13,7 +13,7 @@ export { processRawData };
 
 export default class NestDoorbell extends NestCamera {
   static TYPE = 'Doorbell';
-  static VERSION = '2025.07.24'; // Code version
+  static VERSION = '2025.08.12'; // Code version
 
   doorbellTimer = undefined; // Cooldown timer for doorbell events
   switchService = undefined; // HomeKit switch for enabling/disabling chime
@@ -26,10 +26,6 @@ export default class NestDoorbell extends NestCamera {
     }
 
     // Setup HomeKit doorbell controller
-    // Need to cleanup the CameraOperatingMode service. This is to allow seamless configuration
-    // switching between enabling hksv or not
-    // Thanks to @bcullman (Brad Ullman) for catching this
-    this.accessory.removeService(this.accessory.getService(this.hap.Service.CameraOperatingMode));
     if (this.controller === undefined) {
       // Establish the "camera" controller here as a doorbell specific one
       // when onAdd is called for the base camera class, this will cconfigure our camera controller established here

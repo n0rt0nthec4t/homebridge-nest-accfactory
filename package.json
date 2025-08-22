@@ -2,7 +2,7 @@
     "name": "homebridge-nest-accfactory",
     "displayName": "Nest Accfactory",
     "type": "module",
-    "version": "0.3.2",
+    "version": "0.3.3-alpha.5",
     "description": "Homebridge support for Nest/Google devices including HomeKit Secure Video (HKSV) support for doorbells and cameras",
     "author": "n0rt0nthec4t",
     "license": "Apache-2.0",
@@ -16,6 +16,7 @@
     },
     "funding": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory?sponsor=1",
     "keywords": [
+        "apple home",
         "homekit",
         "homebridge-plugin",
         "homebridge",
@@ -47,17 +48,17 @@
     ],
     "scripts": {
         "clean": "rimraf ./dist*",
-        "format": "prettier --write \"src/**/*.{js,mjs}\"",
+        "format": "prettier --write \"src/**/*.{js,mjs}\" && eslint --fix \"src/**/*.{js,mjs}\"",
         "lint": "eslint \"src/**/*.{js,mjs}\" --fix --max-warnings=20",
         "build": "npm run clean && copyfiles -u 1 src/*.js dist && copyfiles -u 2 src/HomeKitDevice/*.js dist && copyfiles -u 2 src/HomeKitHistory/*.js dist && copyfiles -u 1 src/res/*.h264 dist && copyfiles -u 1 src/res/*.jpg dist && copyfiles -u 1 'src/protobuf/**/*.proto' dist && copyfiles -u 1 src/plugins/*.js dist",
         "prepublishOnly": "npm run lint && npm run build"
     },
     "devDependencies": {
-        "@eslint/js": "^9.32.0",
-        "eslint": "^9.32.0",
-        "@stylistic/eslint-plugin": "^5.2.2",
-        "@types/node": "^24.2.0",
-        "@typescript-eslint/parser": "^8.39.0",
+        "@eslint/js": "^9.33.0",
+        "eslint": "^9.33.0",
+        "@stylistic/eslint-plugin": "^5.2.3",
+        "@types/node": "^24.3.0",
+        "@typescript-eslint/parser": "^8.40.0",
         "prettier": "^3.6.2",
         "prettier-eslint": "^16.4.2",
         "copyfiles": "^2.4.1",
@@ -66,8 +67,8 @@
     },
     "dependencies": {
         "@evan/opus": "^1.0.3",
-        "protobufjs": "^7.5.3",
+        "protobufjs": "^7.5.4",
         "werift": "^0.22.2",
-        "undici": "7.13.0"
+        "undici": "7.14.0"
     }
 }

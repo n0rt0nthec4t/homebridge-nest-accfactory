@@ -13,7 +13,7 @@ import { DATA_SOURCE, DEVICE_TYPE, PROTOBUF_RESOURCES, LOW_BATTERY_LEVEL } from 
 
 export default class NestLock extends HomeKitDevice {
   static TYPE = 'Lock';
-  static VERSION = '2025.08.04'; // Code version
+  static VERSION = '2025.08.13'; // Code version
 
   // Define lock bolt states
   static STATE = {
@@ -50,16 +50,18 @@ export default class NestLock extends HomeKitDevice {
 
     this.addHKCharacteristic(this.lockService, this.hap.Characteristic.LockTargetState, {
       onSet: (value) => {
-        let locked = value === this.hap.Characteristic.LockTargetState.SECURED;
+        if (value !== this.lockService.getCharacteristic(this.hap.Characteristic.LockTargetState).value) {
+          let locked = value === this.hap.Characteristic.LockTargetState.SECURED;
 
-        this.message(HomeKitDevice.SET, {
-          uuid: this.deviceData.nest_google_uuid,
-          bolt_lock: locked,
-        });
+          this.message(HomeKitDevice.SET, {
+            uuid: this.deviceData.nest_google_uuid,
+            bolt_lock: locked,
+          });
 
-        this.lockService.updateCharacteristic(this.hap.Characteristic.LockTargetState, value);
+          this.lockService.updateCharacteristic(this.hap.Characteristic.LockTargetState, value);
 
-        this?.log?.info?.('Setting lock on "%s" to "%s"', this.deviceData.description, locked ? 'Locked' : 'Unlocked');
+          this?.log?.info?.('Setting lock on "%s" to "%s"', this.deviceData.description, locked ? 'Locked' : 'Unlocked');
+        }
       },
       onGet: () => {
         return this.#targetState(this.deviceData);
@@ -152,17 +154,19 @@ export default class NestLock extends HomeKitDevice {
     );
 
     // Log lock status to history only if changed to previous recording
-    this.history(this.lockService, {
-      status: deviceData.bolt_state === NestLock.STATE.LOCKED ? 0 : 1, // 0 = locked, 1 = unlocked
-    });
+    if (deviceData.bolt_state === NestLock.STATE.LOCKED || deviceData.bolt_state === NestLock.STATE.UNLOCKED) {
+      this.history(this.lockService, {
+        status: deviceData.bolt_state === NestLock.STATE.LOCKED ? 0 : 1, // 0 = locked, 1 = unlocked
+      });
+    }
   }
 
   #currentState(deviceData) {
     return deviceData.bolt_state === NestLock.STATE.JAMMED
       ? this.hap.Characteristic.LockCurrentState.JAMMED
-      : deviceData.bolt_state === NestLock.STATE.LOCKED
+      : deviceData.bolt_state === NestLock.STATE.LOCKED || deviceData.bolt_state === NestLock.STATE.UNLOCKING
         ? this.hap.Characteristic.LockCurrentState.SECURED
-        : deviceData.bolt_state === NestLock.STATE.UNLOCKED
+        : deviceData.bolt_state === NestLock.STATE.UNLOCKED || deviceData.bolt_state === NestLock.STATE.LOCKING
           ? this.hap.Characteristic.LockCurrentState.UNSECURED
           : this.hap.Characteristic.LockCurrentState.UNKNOWN;
   }
@@ -269,8 +273,8 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
                               ? NestLock.LAST_ACTION.IMPLICIT
                               : NestLock.LAST_ACTION.PHYSICAL,
               battery_level:
-                isNaN(value.value?.battery_power_source?.remaining?.remainingPercent) === false
-                  ? scaleValue(Number(value.value?.battery_power_source?.remaining?.remainingPercent), 0, 1, 0, 100)
+                isNaN(value.value?.battery_power_source?.remaining?.remainingPercent?.value) === false
+                  ? scaleValue(Number(value.value?.battery_power_source?.remaining?.remainingPercent?.value), 0, 1, 0, 100)
                   : 0,
               auto_relock_duration:
                 isNaN(value.value?.bolt_lock_settings?.autoRelockDuration?.seconds) === false

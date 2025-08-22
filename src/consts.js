@@ -1,7 +1,7 @@
 // Common defines
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.08.07
+// Code version 2025.08.20
 // Mark Hulskamp
 'use strict';
 
@@ -55,14 +55,11 @@ export const PROTOBUF_RESOURCES = {
     'nest.resource.NestProtect2Resource',
   ],
   CAMERA: [
-    'google.resource.GreenQuartzResource',
     'google.resource.SpencerResource',
-    'google.resource.VenusResource',
     'nest.resource.NestCamIndoorResource',
     'nest.resource.NestCamIQResource',
     'nest.resource.NestCamIQOutdoorResource',
     'nest.resource.NestCamOutdoorResource',
-    'nest.resource.NestHelloResource',
     'google.resource.GoogleNewmanResource',
   ],
   DOORBELL: ['nest.resource.NestHelloResource', 'google.resource.GreenQuartzResource', 'google.resource.VenusResource'],
@@ -134,7 +131,26 @@ export const HOTWATER_MIN_TEMPERATURE = 30; // Minimum temperature for hotwater 
 
 export const HOTWATER_MAX_TEMPERATURE = 70; // Maximum temperature for hotwater heating
 
-export const HOTWATER_BOOST_TIMES = [1800, 3600, 7200]; // Valid hotwater boost times
+export const HOTWATER_BOOST_TIMES = [
+  1800, // 30m
+  3600, // 1h
+  7200, // 2h
+];
+
+export const FAN_DURATION_TIMES = [
+  900, // 15m
+  1800, // 30m
+  2700, // 45m
+  3600, // 1h
+  7200, // 2h
+  14400, // 4h
+  28800, // 8h
+  43200, // 12h
+  86400, // 1d
+  259200, // 3d
+  432000, // 5d
+  604800, // 1w
+];
 
 export const RESOURCE_PATH = './res';
 export const RESOURCE_IMAGES = {

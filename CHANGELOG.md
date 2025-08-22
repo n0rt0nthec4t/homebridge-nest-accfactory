@@ -2,6 +2,24 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.3.3 (alpha.5)
+
+- Refined timeout warnings for camera and doorbell snapshot capture  
+- Fixed video feed on/off control for HKSV-enabled cameras  
+- Fixed battery percentage and transition state reporting for Nest × Yale Locks  
+- Fixed handling of the global `exclude` device setting  
+- Fixed support for `~` (home directory) in the `ffmpegPath` option  
+- Fixed fan-related errors for Nest Thermostats  
+- Improved authorisation handling: Nest/Google login will no longer retry repeatedly on `Unauthorized` or `Forbidden` responses  
+- Fans that support only a single speed will now expose **only On/Off**, without the `RotationSpeed` control
+
+### Known Issues
+
+- The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
+
+### Thanks
+Special thanks to [@Edwin](https://github.com/DigitalFokus) for testing and feedback on refinements to Nest X Yale support!
+
 ## v0.3.2 (2025/08/09)
 
 - Now Homebridge Verified
@@ -27,7 +45,7 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 - The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
 
 ### Thanks
-Special thanks to [@Daniel](https://github.com/no1knows), [@Matthew](https://github.com/mphyde), [@Erik](https://github.com/esille), [#Neil](https://github.com/BertrumUK) and [@Guy](https://github.com/grhall) for testing and feedback on this release!
+Special thanks to [@Daniel](https://github.com/no1knows), [@Matthew](https://github.com/mphyde), [@Erik](https://github.com/esille), [@Neil](https://github.com/BertrumUK) and [@Guy](https://github.com/grhall) for testing and feedback on this release!
  
 ## v0.3.1 (2025/06/16)
 

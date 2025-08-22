@@ -32,7 +32,6 @@ export default [{
     '@stylistic/no-trailing-spaces': ['warn'],
     '@stylistic/lines-between-class-members': ['warn', 'always', {exceptAfterSingleLine: true}],
     '@stylistic/explicit-function-return-type': 'off',
-    '@stylistic/no-non-null-assertion': 'off',
     '@stylistic/explicit-module-boundary-types': 'off',
     '@stylistic/member-delimiter-style': ['warn'],
     'no-undef': ['error'],

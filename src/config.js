@@ -1,12 +1,11 @@
 // Configuration validation and processing
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.06.30
+// Code version 2025.08.18
 // Mark Hulskamp
 'use strict';
 
 // Define nodejs module requirements
-import path from 'node:path';
 import crypto from 'node:crypto';
 
 // Import our modules
@@ -44,15 +43,12 @@ function processConfig(config, log) {
   };
 
   let ffmpegPath =
-    typeof config.options?.ffmpegPath === 'string' && config.options.ffmpegPath !== '' ? config.options.ffmpegPath : '/usr/local/bin';
-
-  let resolvedPath = path.resolve(ffmpegPath);
-  if (resolvedPath.endsWith('/ffmpeg') === false) {
-    resolvedPath += '/ffmpeg';
-  }
+    typeof config.options?.ffmpegPath === 'string' && config.options.ffmpegPath.trim() !== ''
+      ? config.options.ffmpegPath.trim()
+      : '/usr/local/bin';
 
   // Create FFmpeg probe
-  let ffmpeg = new FFmpeg(resolvedPath, log);
+  let ffmpeg = new FFmpeg(ffmpegPath, log);
 
   if (typeof ffmpeg.version !== 'string') {
     log?.warn?.('ffmpeg binary "%s" not found or not executable, camera/doorbell streaming will be unavailable', ffmpeg.binary);
@@ -151,6 +147,7 @@ function buildConnections(config) {
         name: key,
         type: ACCOUNT_TYPE.NEST,
         authorised: false,
+        allowRetry: true,
         access_token: section.access_token,
         fieldTest,
         referer: fieldTest ? 'home.ft.nest.com' : 'home.nest.com',
@@ -171,6 +168,7 @@ function buildConnections(config) {
         name: key,
         type: ACCOUNT_TYPE.GOOGLE,
         authorised: false,
+        allowRetry: true,
         issuetoken: section.issuetoken,
         cookie: section.cookie,
         fieldTest,

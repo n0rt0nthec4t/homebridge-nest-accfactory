@@ -50,7 +50,7 @@ There may be other keys labelled access_token further along in the string - plea
 
 Google Accounts require an "issueToken" and "cookie". The values of "issueToken" and "cookies" are specific to your Google Account. To get them, follow these steps (only needs to be done once, as long as you stay logged into your Google Account).
 
-1. Open a Chrome browser tab in Incognito Mode (or clear your cache).
+1. Open a Chrome browser tab in Incognito Mode
 2. Open Developer Tools (View/Developer/Developer Tools).
 3. Click on 'Network' tab. Make sure 'Preserve Log' is checked.
 4. In the 'Filter' box, enter issueToken
@@ -109,7 +109,7 @@ The following options are available in the config.json options object. These app
 | exclude            | Exclude ALL devices                                                                          | false          |
 | ffmpegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                | false          |
 | ffmpegHWaccel      | Enable video hardware acceleration for supported camera(s) and doorbell(s)                   | false          |  
-| ffmegPath          | Path to an ffmpeg binary for us to use                                                       | /usr/local/bin |
+| ffmegPath          | Path to an ffmpeg binary (looks for binary named `ffmpeg` in path)                           | /usr/local/bin |
 | hksv               | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                          | false          |
 | weather            | Virtual weather station for each Nest/Google home we discover                                | false          |
 
@@ -124,6 +124,7 @@ The following options are available on a per-device level in the `config.json` `
 | elevation          | Height above sea level for the specific weather station                                      | 0              |
 | eveHistory         | Provide history in EveHome application where applicable for the specific device              | true           |
 | exclude            | Exclude the device                                                                           | false          |
+| fanDuration        | Override fan runtime duration                                                                |                |
 | ffmpegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                | false          |
 | ffmpegHWaccel      | Enable video hardware acceleration for supported camera(s) and doorbell(s)                   | false          |
 | hksv               | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                          | false          |

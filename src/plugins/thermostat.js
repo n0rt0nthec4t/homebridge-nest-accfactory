@@ -10,7 +10,7 @@ import fs from 'node:fs';
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
-import { processCommonData, scaleValue, adjustTemperature } from '../utils.js';
+import { processCommonData, scaleValue, adjustTemperature, parseDurationToSeconds } from '../utils.js';
 
 // Define constants
 import {
@@ -23,28 +23,36 @@ import {
   DAYS_OF_WEEK_SHORT,
   __dirname,
   DEVICE_TYPE,
+  FAN_DURATION_TIMES,
 } from '../consts.js';
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2025.08.07'; // Code version
+  static VERSION = '2025.08.21'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
   occupancyService = undefined;
   humidityService = undefined;
   fanService = undefined; // Fan control
-  dehumidifierService = undefined; // dehumidifier (only) control
+  dehumidifierService = undefined; // dehumidifier control
+  humidifierService = undefined; // humidifier control
   externalCool = undefined; // External module function
   externalHeat = undefined; // External module function
   externalFan = undefined; // External module function
   externalDehumidifier = undefined; // External module function
+  externalHumidifier = undefined; // External module function
 
   // Class functions
   async onAdd() {
     // Setup the thermostat service if not already present on the accessory, and link it to the Eve app if configured to do so
     this.thermostatService = this.addHKService(this.hap.Service.Thermostat, '', 1, { messages: this.message.bind(this) });
     this.thermostatService.setPrimaryService();
+
+    // Fix for coding error with versions below 2025.08.20 where fan specific characteristics were added directly to the thermostat service
+    // Thanks to @gizmotronic for raising this issue
+    this.thermostatService.removeCharacteristic(this.hap.Characteristic.RotationSpeed);
+    this.thermostatService.removeCharacteristic(this.hap.Characteristic.Active);
 
     // Setup set characteristics
 
@@ -231,19 +239,21 @@ export default class NestThermostat extends HomeKitDevice {
     }
 
     // Attempt to load any external modules for this thermostat
-    // We support external cool/heat/fan/dehumidifier module functions
+    // We support external cool/heat/fan/dehumidifier/humdifier module functions
     // This is all undocumented on how to use, as its for my specific use case :-)
     this.externalCool = await this.#loadExternalModule(this.deviceData?.externalCool, ['cool', 'off']);
     this.externalHeat = await this.#loadExternalModule(this.deviceData?.externalHeat, ['heat', 'off']);
     this.externalFan = await this.#loadExternalModule(this.deviceData?.externalFan, ['fan', 'off']);
     this.externalDehumidifier = await this.#loadExternalModule(this.deviceData?.externalDehumidifier, ['dehumidifier', 'off']);
+    this.externalHumidifier = await this.#loadExternalModule(this.deviceData?.externalHumidifier, ['humidifier', 'off']);
 
     // Extra setup details for output
     this.humidityService !== undefined && this.postSetupDetail('Seperate humidity sensor');
     this.externalCool !== undefined && this.postSetupDetail('Using external cooling module');
     this.externalHeat !== undefined && this.postSetupDetail('Using external heating module');
     this.externalFan !== undefined && this.postSetupDetail('Using external fan module');
-    this.externalDehumidifier !== undefined && this.postSetupDetail('Using external dehumidification module');
+    this.externalDehumidifier !== undefined && this.postSetupDetail('Using external dehumidifier module');
+    this.externalHumidifier !== undefined && this.postSetupDetail('Using external humidifier module');
   }
 
   onRemove() {
@@ -259,10 +269,12 @@ export default class NestThermostat extends HomeKitDevice {
     this.humidityService = undefined;
     this.fanService = undefined;
     this.dehumidifierService = undefined;
+    this.humidifierService = undefined;
     this.externalCool = undefined;
     this.externalHeat = undefined;
     this.externalFan = undefined;
     this.externalDehumidifier = undefined;
+    this.externalHumidifier = undefined;
   }
 
   onUpdate(deviceData) {
@@ -344,7 +356,7 @@ export default class NestThermostat extends HomeKitDevice {
       this.humidityService.updateCharacteristic(this.hap.Characteristic.CurrentRelativeHumidity, deviceData.current_humidity);
     }
 
-    // Update humity on thermostat
+    // Update humidity on thermostat
     this.thermostatService.updateCharacteristic(this.hap.Characteristic.CurrentRelativeHumidity, deviceData.current_humidity);
 
     // Check for fan setup change on thermostat
@@ -542,10 +554,13 @@ export default class NestThermostat extends HomeKitDevice {
         this.externalFan.off();
       }
 
-      this.fanService.updateCharacteristic(
-        this.hap.Characteristic.RotationSpeed,
-        deviceData.fan_state === true ? (deviceData.fan_timer_speed / deviceData.fan_max_speed) * 100 : 0,
-      );
+      if (deviceData.fan_max_speed > 1) {
+        // Only update rotation speed if fan supports more than one speed
+        this.fanService.updateCharacteristic(
+          this.hap.Characteristic.RotationSpeed,
+          deviceData.fan_state === true ? (deviceData.fan_timer_speed / deviceData.fan_max_speed) * 100 : 0,
+        );
+      }
 
       this.fanService.updateCharacteristic(
         this.hap.Characteristic.Active,
@@ -680,7 +695,14 @@ export default class NestThermostat extends HomeKitDevice {
 
   setFan(fanState, speed) {
     let currentState = this.fanService.getCharacteristic(this.hap.Characteristic.Active).value;
-    let currentSpeed = this.fanService.getCharacteristic(this.hap.Characteristic.RotationSpeed).value;
+
+    // If we have a rotation speed characteristic, use that get the current fan speed, otherwise we us ethe current fan state to determine
+    let currentSpeed =
+      this.fanService.testCharacteristic(this.hap.Characteristic.RotationSpeed) === true
+        ? this.fanService.getCharacteristic(this.hap.Characteristic.RotationSpeed).value
+        : currentState === true
+          ? 100
+          : 0;
 
     if (fanState !== currentState || speed !== currentSpeed) {
       let isActive = fanState === this.hap.Characteristic.Active.ACTIVE;
@@ -689,16 +711,47 @@ export default class NestThermostat extends HomeKitDevice {
       this.message(HomeKitDevice.SET, {
         uuid: this.deviceData.nest_google_uuid,
         fan_state: isActive,
+        fan_duration: this.deviceData.fan_duration,
         fan_timer_speed: scaledSpeed,
       });
 
       this.fanService.updateCharacteristic(this.hap.Characteristic.Active, fanState);
-      this.fanService.updateCharacteristic(this.hap.Characteristic.RotationSpeed, speed);
+
+      if (this.fanService.testCharacteristic(this.hap.Characteristic.RotationSpeed) === true) {
+        this.fanService.updateCharacteristic(this.hap.Characteristic.RotationSpeed, speed);
+      }
 
       this?.log?.info?.(
         'Set fan on thermostat "%s" to "%s"',
         this.deviceData.description,
-        isActive ? 'On with fan speed of ' + speed + '%' : 'Off',
+        isActive
+          ? 'On with fan speed of ' +
+              speed +
+              '%' +
+              (this.deviceData.fan_duration > 0
+                ? ' for ' +
+                  (Math.floor(this.deviceData.fan_duration / 604800) > 0
+                    ? Math.floor(this.deviceData.fan_duration / 604800) +
+                      ' wk' +
+                      (Math.floor(this.deviceData.fan_duration / 604800) > 1 ? 's ' : ' ')
+                    : '') +
+                  (Math.floor((this.deviceData.fan_duration % 604800) / 86400) > 0
+                    ? Math.floor((this.deviceData.fan_duration % 604800) / 86400) +
+                      ' day' +
+                      (Math.floor((this.deviceData.fan_duration % 604800) / 86400) > 1 ? 's ' : ' ')
+                    : '') +
+                  (Math.floor((this.deviceData.fan_duration % 86400) / 3600) > 0
+                    ? Math.floor((this.deviceData.fan_duration % 86400) / 3600) +
+                      ' hr' +
+                      (Math.floor((this.deviceData.fan_duration % 86400) / 3600) > 1 ? 's ' : ' ')
+                    : '') +
+                  (Math.floor((this.deviceData.fan_duration % 3600) / 60) > 0
+                    ? Math.floor((this.deviceData.fan_duration % 3600) / 60) +
+                      ' min' +
+                      (Math.floor((this.deviceData.fan_duration % 3600) / 60) > 1 ? 's' : '')
+                    : '')
+                : '')
+          : 'Off',
       );
     }
   }
@@ -918,10 +971,9 @@ export default class NestThermostat extends HomeKitDevice {
 
   #setupFan() {
     this.fanService = this.addHKService(this.hap.Service.Fanv2, '', 1);
-    this.addHKCharacteristic(this.hap.Service.Fanv2, this.hap.Characteristic.RotationSpeed);
     this.thermostatService.addLinkedService(this.fanService);
 
-    this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.Active, {
+    this.addHKCharacteristic(this.fanService, this.hap.Characteristic.Active, {
       onSet: (value) =>
         this.setFan(
           value,
@@ -932,13 +984,18 @@ export default class NestThermostat extends HomeKitDevice {
       },
     });
 
-    this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.RotationSpeed, {
-      props: { minStep: 100 / this.deviceData.fan_max_speed },
-      onSet: (value) => this.setFan(value !== 0 ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE, value),
-      onGet: () => {
-        return (this.deviceData.fan_timer_speed / this.deviceData.fan_max_speed) * 100;
-      },
-    });
+    if (this.deviceData.fan_max_speed > 1) {
+      this.addHKCharacteristic(this.fanService, this.hap.Characteristic.RotationSpeed, {
+        props: { minStep: 100 / this.deviceData.fan_max_speed },
+        onSet: (value) => this.setFan(value !== 0 ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE, value),
+        onGet: () => {
+          return this.deviceData.fanState === true ? (this.deviceData.fan_timer_speed / this.deviceData.fan_max_speed) * 100 : 0;
+        },
+      });
+    } else {
+      // No rotation speed setting as we only support a single fan speed
+      this.fanService.removeCharacteristic(this.hap.Characteristic.RotationSpeed);
+    }
   }
 
   #setupDehumidifier() {
@@ -1243,6 +1300,10 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
             isNaN(value.value.fan_control_capabilities.maxAvailableSpeed.split('FAN_SPEED_SETTING_STAGE')[1]) === false
               ? Number(value.value.fan_control_capabilities.maxAvailableSpeed.split('FAN_SPEED_SETTING_STAGE')[1])
               : 0;
+          RESTTypeData.fan_duration =
+            isNaN(value.value?.fan_control_settings?.timerDuration?.seconds) === false
+              ? Number(value.value.fan_control_settings.timerDuration.seconds)
+              : 0;
 
           // Humidifier/dehumidifier details
           RESTTypeData.has_humidifier = value.value?.hvac_equipment_capabilities?.hasHumidifier === true;
@@ -1451,6 +1512,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
             value.value?.fan_capabilities?.includes?.('stage') === true && isNaN(value.value.fan_capabilities.split('stage')[1]) === false
               ? Number(value.value.fan_capabilities.split('stage')[1])
               : 0;
+          RESTTypeData.fan_duration = isNaN(value.value?.fan_duration) === false ? Number(value.value.fan_duration) : 0;
 
           // Humidifier/dehumidifier details
           RESTTypeData.target_humidity = isNaN(value.value?.target_humidity) === false ? Number(value.value.target_humidity) : 0.0;
@@ -1520,6 +1582,19 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         // Insert any extra options we've read in from configuration file for this device
         tempDevice.eveHistory = config.options.eveHistory === true || deviceOptions?.eveHistory === true;
         tempDevice.humiditySensor = deviceOptions?.humiditySensor === true;
+
+        // Process fan running duration.. we only allow values matching app
+        tempDevice.fan_duration = parseDurationToSeconds(deviceOptions?.fanDuration, {
+          defaultValue: tempDevice.fan_duration, // Use configured default if not overidden in configuration
+          min: 900, // 15mins
+          max: 604800, // 1week
+        });
+
+        tempDevice.fan_duration = FAN_DURATION_TIMES.reduce((a, b) =>
+          Math.abs(tempDevice.fan_duration - a) < Math.abs(tempDevice.fan_duration - b) ? a : b,
+        );
+
+        // Do we have "external" code modules for some thermostat functions
         tempDevice.externalCool =
           typeof deviceOptions?.externalCool === 'string' && deviceOptions.externalCool !== '' ? deviceOptions.externalCool : undefined; // Config option for external cooling source
         tempDevice.externalHeat =
@@ -1530,6 +1605,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           typeof deviceOptions?.externalDehumidifier === 'string' && deviceOptions.externalDehumidifier !== ''
             ? deviceOptions.externalDehumidifier
             : undefined; // Config option for external dehumidifier source
+
         devices[tempDevice.serialNumber] = tempDevice; // Store processed device
       }
     });

@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.08.08
+// Code version 2025.08.21
 // Mark Hulskamp
 'use strict';
 
@@ -52,7 +52,7 @@ export default class NestAccfactory {
     }
 
     api?.on?.('didFinishLaunching', async () => {
-      // We got notified that Homebridge (or Docker) has finished loading
+      // We got notified that Homebridge has finished loading
 
       // Load device support modules from the plugins folder if not already done
       this.#deviceModules = await loadDeviceModules(this.log, 'plugins');
@@ -61,12 +61,12 @@ export default class NestAccfactory {
       this.#loadProtobufRoot();
 
       // Start reconnect loop per connection with backoff for failed tries
-      // This also initiates both Nest and Protobuf subscribes
+      // This also initiates both Nest API subscribes and Google API observes
       for (const uuid of Object.keys(this.#connections)) {
         let reconnectDelay = 15000;
 
         const reconnectLoop = async () => {
-          if (this.#connections?.[uuid]?.authorised !== true) {
+          if (this.#connections?.[uuid]?.authorised !== true && this.#connections?.[uuid]?.allowRetry === true) {
             try {
               await this.#connect(uuid);
               this.#subscribeNestAPI(uuid);
@@ -148,10 +148,17 @@ export default class NestAccfactory {
         });
 
         let tokenData = await tokenResponse.json();
-        if ((tokenData?.access_token?.trim?.() ?? '') === '') {
-          this?.log?.debug?.('OAuth reponse object', tokenData);
-          throw new Error('Missing access_token in OAuth response');
+
+        if (typeof tokenData?.error === 'string') {
+          let error = new Error(
+            (tokenData?.detail ? String(tokenData.detail) : '') + (tokenData?.error ? ' (' + String(tokenData.error) + ')' : ''),
+          );
+          error.name = 'GoogleAuthError';
+          error.code = tokenData.error;
+          error.statusText = tokenData.detail || 'OAuth error';
+          throw error;
         }
+
         let googleOAuth2Token = tokenData.access_token.trim();
 
         let jwtResponse = await fetchWrapper(
@@ -178,7 +185,7 @@ export default class NestAccfactory {
 
         let jwtData = await jwtResponse.json();
         if ((jwtData?.jwt?.trim?.() ?? '') === '') {
-          this?.log?.debug?.('JWT reponse object', jwtData);
+          this?.log?.debug?.('JWT response object', jwtData);
           throw new Error('Missing jwt in JWT response');
         }
 
@@ -194,14 +201,16 @@ export default class NestAccfactory {
         });
 
         let sessionData = await sessionResponse.json();
+
         if ((sessionData?.access_token?.trim?.() ?? '') === '') {
-          this?.log?.debug?.('Nest session reponse object', sessionData);
+          this?.log?.debug?.('Nest session response object', sessionData);
           throw new Error('Missing access_token in session response');
         }
 
         // Store authorised session details
         Object.assign(this.#connections[uuid], {
           authorised: true,
+          allowRetry: true,
           userID: sessionData.userid,
           transport_url: sessionData.urls.transport_url,
           weather_url: sessionData.urls.weather_url,
@@ -230,10 +239,19 @@ export default class NestAccfactory {
           this?.log?.debug?.('Successfully performed token refesh using Google account for connection "%s"', this.#connections[uuid].name);
         }
       } catch (error) {
+        // Attempt to extract HTTP status code from error cause or error object
+        let statusCode = error && error.code !== null ? error.code : error && error.status !== null ? error.status : undefined;
+
+        if (statusCode === 'USER_LOGGED_OUT' || statusCode === 401 || statusCode === 403) {
+          // If unauthorised or forbidden, we won't continue to retry
+          this.#connections[uuid].allowRetry = false;
+        }
+
         this.#connections[uuid].authorised = false;
         this?.log?.debug?.(
-          'Failed to connect using Google credentials for connection "%s": %s',
+          'Failed to connect using Google credentials for connection "%s" %s: Error was "%s"',
           this.#connections[uuid].name,
+          this.#connections[uuid].allowRetry === true ? 'will retry' : 'will not retry',
           typeof error?.message === 'string' ? error.message : String(error),
         );
         if (refresh !== true) {
@@ -266,10 +284,18 @@ export default class NestAccfactory {
         );
 
         let loginData = await loginResponse.json();
-        if ((loginData?.items?.[0]?.session_token?.trim?.() ?? '') === '') {
-          this?.log?.debug?.('Nest login reponse object', loginData);
-          throw new Error('Missing session_token in login response');
+        if (typeof loginData?.status === 'number' && (loginData?.items?.[0]?.session_token.trim?.() ?? '') === '') {
+          let error = new Error(
+            (loginData?.status_detail ? String(loginData.status_detail) : '') +
+              (loginData?.status_description ? ' (' + String(loginData.status_description) + ')' : '') +
+              (loginData?.status_detail || loginData?.status_description ? '' : 'Nest login failed with status ' + loginData.status),
+          );
+          error.name = 'NestAuthError';
+          error.code = loginData.status;
+          error.message = loginData?.status_description || 'Error';
+          throw error;
         }
+
         let nestToken = loginData.items[0].session_token;
 
         // Once we have session token, get further details we need
@@ -285,14 +311,11 @@ export default class NestAccfactory {
         });
 
         let sessionData = await sessionResponse.json();
-        if ((sessionData?.access_token?.trim?.() ?? '') === '') {
-          this?.log?.debug?.('Nest session reponse object', sessionData);
-          throw new Error('Missing access_token in session response');
-        }
 
         // Store authorised session details
         Object.assign(this.#connections[uuid], {
           authorised: true,
+          allowRetry: true,
           userID: sessionData.userid,
           transport_url: sessionData.urls.transport_url,
           weather_url: sessionData.urls.weather_url,
@@ -320,10 +343,19 @@ export default class NestAccfactory {
           this?.log?.debug?.('Successfully performed token refresh using Nest account for connection "%s"', this.#connections[uuid].name);
         }
       } catch (error) {
+        // Attempt to extract HTTP status code from error cause or error object
+        let statusCode = error && error.code !== null ? error.code : error && error.status !== null ? error.status : undefined;
+
+        if (statusCode === 401 || statusCode === 403) {
+          // If unauthorised or forbidden, we won't continue to retry
+          this.#connections[uuid].allowRetry = false;
+        }
+
         this.#connections[uuid].authorised = false;
         this?.log?.debug?.(
-          'Failed to connect using Nest credentials for connection "%s": %s',
+          'Failed to connect using Nest credentials for connection "%s" %s: Error was "%s"',
           this.#connections[uuid].name,
+          this.#connections[uuid].allowRetry === true ? 'will retry' : 'will not retry',
           typeof error?.message === 'string' ? error.message : String(error),
         );
         if (refresh !== true) {
@@ -421,7 +453,7 @@ export default class NestAccfactory {
 
           if (value.object_key.startsWith('quartz.') === true) {
             // Get camera/doorbell additional properties we require
-            let properties = await this.#getCameraProperties(uuid, value.object_key);
+            let properties = await this.#getCameraProperties(uuid, value.object_key, value.value.nexus_api_http_server_url);
             value.value.properties =
               typeof properties === 'object' && properties.constructor === Object
                 ? properties
@@ -503,7 +535,8 @@ export default class NestAccfactory {
 
         // Dump the the raw data if configured todo so
         // This can be used for user support, rather than specific build to dump this :-)
-        if (this?.config?.options?.rawdump === true) {
+        if (this?.config?.options?.rawdump === true && this.#connections[uuid]?.doneNestRawDump !== true) {
+          this.#connections[uuid].doneNestRawDump = true; // Done once
           Object.entries(this.#rawData)
             .filter(([, data]) => data?.source === DATA_SOURCE.NEST)
             .forEach(([serial, data]) => {
@@ -518,9 +551,9 @@ export default class NestAccfactory {
         // Attempt to extract HTTP status code from error cause or error object
         let statusCode = error && error.code !== null ? error.code : error && error.status !== null ? error.status : undefined;
 
-        // If we get a 401 Unauthorized and the connection was previously authorised,
+        // If we get a 401 Unauthorized or 403 Forbidden and the connection was previously authorised,
         // mark it as unauthorised so the reconnect loop will handle it
-        if (statusCode === 401 && this.#connections?.[uuid]?.authorised === true) {
+        if ((statusCode === 401 || statusCode === 403) && this.#connections?.[uuid]?.authorised === true) {
           this?.log?.debug?.(
             'Connection "' + this.#connections[uuid].name + '" is no longer authorised with the Nest API, will attempt to reconnect',
           );
@@ -542,7 +575,7 @@ export default class NestAccfactory {
         }
       })
       .finally(() => {
-        // Only continue the subscription loop if still authorised
+        // Only continue the subscription loop if the connection is still authorised
         if (this.#connections?.[uuid]?.authorised === true) {
           setTimeout(() => this.#subscribeNestAPI(uuid, false, fullRead), 1000);
         }
@@ -683,7 +716,8 @@ export default class NestAccfactory {
 
           // Dump the the raw data if configured todo so
           // This can be used for user support, rather than specific build to dump this :-)
-          if (this?.config?.options?.rawdump === true) {
+          if (this?.config?.options?.rawdump === true && this.#connections[uuid]?.doneGoogleRawDump !== true) {
+            this.#connections[uuid].doneGoogleRawDump = true; // Done once
             Object.entries(this.#rawData)
               .filter(([, data]) => data?.source === DATA_SOURCE.GOOGLE)
               .forEach(([serial, data]) => {
@@ -696,7 +730,7 @@ export default class NestAccfactory {
         }
       },
     ).finally(() => {
-      // Only continue the observe loop if still authorised
+      // Only continue the observe loop if the connection is still authorised
       if (this.#connections?.[uuid]?.authorised === true) {
         setTimeout(() => this.#observeGoogleAPI(uuid, false), 1000);
       }
@@ -1063,16 +1097,16 @@ export default class NestAccfactory {
           updateElement.state.value.enabled = value === true;
         }
 
-        if (key === 'fan_state' && typeof value === 'boolean') {
-          // Set fan mode on the target thermostat
+        if (key === 'fan_state' && typeof value === 'boolean' && isNaN(values?.fan_duration) === false) {
+          // Set fan mode on the target thermostat, including runtime if turning on
           updateElement.traitRequest.traitLabel = 'fan_control_settings';
           updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.FanControlSettingsTrait';
           updateElement.state.value = this.#rawData[nest_google_uuid].value.fan_control_settings;
           updateElement.state.value.timerEnd =
             value === true
               ? {
-                  seconds: Number(Math.floor(Date.now() / 1000) + Number(updateElement.state.value.timerDuration.seconds)),
-                  nanos: Number(((Math.floor(Date.now() / 1000) + Number(updateElement.state.value.timerDuration.seconds)) % 1000) * 1e6),
+                  seconds: Number(Math.floor(Date.now() / 1000) + Number(values.fan_duration)),
+                  nanos: Number(((Math.floor(Date.now() / 1000) + Number(values.fan_duration)) % 1000) * 1e6),
                 }
               : { seconds: 0, nanos: 0 };
           if (values?.fan_timer_speed !== undefined) {
@@ -1413,15 +1447,16 @@ export default class NestAccfactory {
           if (
             key === 'fan_state' &&
             typeof value === 'boolean' &&
-            isNaN(this.#rawData?.[nest_google_uuid]?.value?.fan_duration) === false &&
+            isNaN(values?.fan_duration) === false &&
             nest_google_uuid.startsWith('device.') === true
           ) {
             // Set fan on/off on thermostat
+            // Duration also needs to be passed in
             subscribeJSONData.objects.push({
               object_key: nest_google_uuid,
               op: 'MERGE',
               value: {
-                fan_timer_timeout: value === true ? this.#rawData[nest_google_uuid].value.fan_duration + Math.floor(Date.now() / 1000) : 0,
+                fan_timer_timeout: value === true ? values.fan_duration + Math.floor(Date.now() / 1000) : 0,
               },
             });
           }
@@ -1582,7 +1617,8 @@ export default class NestAccfactory {
     if (
       typeof this.#connections?.[uuid] !== 'object' ||
       this.#connections[uuid]?.authorised !== true ||
-      (nest_google_uuid?.trim?.() ?? '') === ''
+      (nest_google_uuid?.trim?.() ?? '') === '' ||
+      (nexus_api_url?.trim?.() ?? '') === ''
     ) {
       // Not a valid connection object and/or we're not authorised
       return;
@@ -1590,11 +1626,7 @@ export default class NestAccfactory {
 
     let snapshot = undefined;
 
-    if (
-      this.config?.options?.useNestAPI === true &&
-      nest_google_uuid.startsWith('quartz.') === true &&
-      (nexus_api_url?.trim?.() ?? '') !== ''
-    ) {
+    if (this.config?.options?.useNestAPI === true && nest_google_uuid.startsWith('quartz.') === true) {
       // Attempt to retrieve snapshot from camera via Nest API
       try {
         let response = await fetchWrapper('get', new URL('/get_image?uuid=' + nest_google_uuid.trim().split('.')[1], nexus_api_url).href, {
@@ -1606,17 +1638,23 @@ export default class NestAccfactory {
             'Sec-Fetch-Mode': 'cors',
             'Sec-Fetch-Site': 'same-origin',
           },
-          retry: 3,
-          timeout: 5000, // 5 seconds to get snapshot
+          retry: 2,
+          timeout: 10000, // 10 seconds to get snapshot
         });
         snapshot = Buffer.from(await response.arrayBuffer());
       } catch (error) {
         // Log unexpected errors (excluding timeouts) for debugging
-        this?.log?.debug?.(
-          'Nest API camera snapshot failed with error for device uuid "%s". Error was "%s"',
-          nest_google_uuid,
-          typeof error?.message === 'string' ? error.message : String(error),
-        );
+        if (
+          error?.cause === undefined ||
+          (error.cause?.message?.toUpperCase?.()?.includes('TIMEOUT') === false &&
+            error.cause?.code?.toUpperCase?.()?.includes('TIMEOUT') === false)
+        ) {
+          this?.log?.debug?.(
+            'Nest API camera snapshot failed with error for device uuid "%s". Error was "%s"',
+            nest_google_uuid,
+            typeof error?.message === 'string' ? error.message : String(error),
+          );
+        }
       }
     }
 
@@ -1625,8 +1663,7 @@ export default class NestAccfactory {
       nest_google_uuid.startsWith('DEVICE_') === true &&
       (PROTOBUF_RESOURCES.CAMERA.includes(this.#rawData?.[nest_google_uuid]?.value?.device_info?.typeName) === true ||
         PROTOBUF_RESOURCES.DOORBELL.includes(this.#rawData?.[nest_google_uuid]?.value?.device_info?.typeName) === true ||
-        PROTOBUF_RESOURCES.FLOODLIGHT.includes(this.#rawData?.[nest_google_uuid]?.value?.device_info?.typeName) === true) &&
-      (nexus_api_url?.trim?.() ?? '') !== ''
+        PROTOBUF_RESOURCES.FLOODLIGHT.includes(this.#rawData?.[nest_google_uuid]?.value?.device_info?.typeName) === true)
     ) {
       // Attempt to retrieve snapshot from camera via Google API
       // First, request to get the snapshot url image updated
@@ -1658,16 +1695,23 @@ export default class NestAccfactory {
               'Sec-Fetch-Mode': 'cors',
               'Sec-Fetch-Site': 'same-origin',
             },
-            retry: 3,
+            retry: 2,
+            timeout: 10000, // 10 seconds to get snapshot
           });
           snapshot = Buffer.from(await response.arrayBuffer());
         } catch (error) {
           // Log unexpected errors (excluding timeouts) for debugging
-          this?.log?.debug?.(
-            'Google API camera snapshot failed with error for device uuid "%s". Error was "%s"',
-            nest_google_uuid,
-            typeof error?.message === 'string' ? error.message : String(error),
-          );
+          if (
+            error?.cause === undefined ||
+            (error.cause?.message?.toUpperCase?.()?.includes('TIMEOUT') === false &&
+              error.cause?.code?.toUpperCase?.()?.includes('TIMEOUT') === false)
+          ) {
+            this?.log?.debug?.(
+              'Google API camera snapshot failed with error for device uuid "%s". Error was "%s"',
+              nest_google_uuid,
+              typeof error?.message === 'string' ? error.message : String(error),
+            );
+          }
         }
       }
     }
