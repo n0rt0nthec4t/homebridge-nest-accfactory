@@ -104,7 +104,7 @@ export default class NestCamera extends HomeKitDevice {
         onSet: (value) => {
           if (this.deviceData.streaming_enabled !== value) {
             this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, streaming_enabled: value });
-            this?.log?.info?.('Streaming for "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
+            this?.log?.info?.('Streaming for "%s" was turned %s', this.deviceData.description, value === true ? 'on' : 'off');
           }
         },
         onGet: () => {
