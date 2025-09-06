@@ -94,25 +94,31 @@ export default class NestCamera extends HomeKitDevice {
     this.accessory.context.hksv = this.deviceData.hksv;
 
     // Handle streaming switch
-    if (this.deviceData.streamingSwitch === false) {
-      // Option is disabled, remove the service if it exists
-      if (this.accessory.getServiceById(this.hap.Service.Switch, 'Streaming')) {
-        this.accessory.removeService(this.accessory.getServiceById(this.hap.Service.Switch, 'Streaming'));
-      }
-    } else if (this.streamingSwitchService === undefined) {
-      // Option is enabled, create the service if it doesn't exist
-      this.streamingSwitchService = this.addHKService(this.hap.Service.Switch, 'Streaming', 'Streaming');
+    if (this.deviceData?.streamingSwitch === true) {
+      // Add service to allow automation and enabling/disabling camera streaming.
+      // This needs to be explicitly enabled via a configuration option for the device
+      this.streamingSwitchService = this.addHKService(this.hap.Service.Switch, 'Streaming', 1);
+
+      // Setup set callback for this switch service
       this.addHKCharacteristic(this.streamingSwitchService, this.hap.Characteristic.On, {
         onSet: (value) => {
           if (this.deviceData.streaming_enabled !== value) {
             this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, streaming_enabled: value });
-            this?.log?.info?.('Streaming for "%s" was turned %s', this.deviceData.description, value === true ? 'on' : 'off');
+            this?.log?.info?.('Streaming for "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
           }
         },
         onGet: () => {
-          return this.deviceData.streaming_enabled;
+          return this.deviceData.streaming_enabled === true;
         },
       });
+    } else {
+      // No longer required to have the switch service
+      // This is to handle Homebridge cached restored accessories if configuration options have changed
+      this.streamingSwitchService = this.accessory.getService(this.hap.Service.Switch);
+      if (this.streamingSwitchService !== undefined) {
+        this.accessory.removeService(this.streamingSwitchService);
+      }
+      this.streamingSwitchService = undefined;
     }
 
     // Setup motion services. This needs to be done before we setup the HomeKit camera controller
