@@ -1329,7 +1329,7 @@ export default class NestCamera extends HomeKitDevice {
           continue;
         }
 
-        let zoneName = zone.id === 1 ? 'Motion' : zone.name;
+        let zoneName = zone.id === 1 ? '' : zone.name;
         let eveOptions = zone.id === 1 ? {} : undefined; // Only link EveHome for zone 1
 
         let service = this.addHKService(this.hap.Service.MotionSensor, zoneName, zone.id, eveOptions);
