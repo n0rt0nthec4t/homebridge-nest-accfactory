@@ -279,9 +279,10 @@ export default class NestCamera extends HomeKitDevice {
     });
 
     // Remove any motion services we created
-    Object.values(this.motionServices).forEach((service) => {
-      service.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
-      this.accessory.removeService(service);
+    Object.values(this.motionServices || {}).forEach((motionObject) => {
+      clearTimeout(motionObject.timer);
+      motionObject.service.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
+      this.accessory.removeService(motionObject.service);
     });
 
     // Remove the camera controller
