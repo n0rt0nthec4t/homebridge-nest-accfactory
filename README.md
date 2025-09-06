@@ -90,8 +90,9 @@ Sample config.json entries below
             "serialNumber": "XXXXXXXX",
             "exclude": false
         },
+        {
             "serialNumber": "YYYYYYYY",
-            "hksv" : true
+            "hksv": true
         }
     ],
     "platform": "NestAccfactory"
@@ -135,7 +136,9 @@ The following options are available on a per-device level in the `config.json` `
 | localAccess        | Use direct access to supported camera(s) and doorbell(s) for video streaming and recording   | false          |    
 | motionCooldown     | Time in seconds between detected motion events                                               | 60             |
 | personCooldown     | Time in seconds between detected person events                                               | 120            |
-| serialNumber       | Device serial number to which these settings belong too                                      |                |
+| personSensor       | Create a separate motion sensor for person detection for supported camera(s) and doorbell(s) | false          |
+| serialNumber       | Device serial number to which these settings belong to                                       |                |
+| streamingSwitch    | Create a switch for supported camera(s) and doorbell(s) to turn streaming on/off             | false          |
 
 ## ffmpeg
 

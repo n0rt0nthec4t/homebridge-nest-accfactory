@@ -40,6 +40,7 @@ export default class NestCamera extends HomeKitDevice {
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
   motionServices = undefined; // Object of Camera/Doorbell motion sensor(s)
+  streamingSwitchService = undefined; // Switch to control camera streaming
   batteryService = undefined; // If a camera has a battery <-- todo
   personTimer = undefined; // Cooldown timer for person/face events
   motionTimer = undefined; // Cooldown timer for motion events
@@ -91,6 +92,28 @@ export default class NestCamera extends HomeKitDevice {
       }
     }
     this.accessory.context.hksv = this.deviceData.hksv;
+
+    // Handle streaming switch
+    if (this.deviceData.streamingSwitch === false) {
+      // Option is disabled, remove the service if it exists
+      if (this.accessory.getServiceById(this.hap.Service.Switch, 'Streaming')) {
+        this.accessory.removeService(this.accessory.getServiceById(this.hap.Service.Switch, 'Streaming'));
+      }
+    } else if (this.streamingSwitchService === undefined) {
+      // Option is enabled, create the service if it doesn't exist
+      this.streamingSwitchService = this.addHKService(this.hap.Service.Switch, 'Streaming', 'Streaming');
+      this.addHKCharacteristic(this.streamingSwitchService, this.hap.Characteristic.On, {
+        onSet: (value) => {
+          if (this.deviceData.streaming_enabled !== value) {
+            this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, streaming_enabled: value });
+            this?.log?.info?.('Streaming for "%s" was turned %s', this.deviceData.description, value === true ? 'on' : 'off');
+          }
+        },
+        onGet: () => {
+          return this.deviceData.streaming_enabled;
+        },
+      });
+    }
 
     // Setup motion services. This needs to be done before we setup the HomeKit camera controller
     if (this.motionServices === undefined) {
@@ -278,10 +301,17 @@ export default class NestCamera extends HomeKitDevice {
       session?.rtpSplitter?.close?.();
     });
 
+    // Remove streaming switch service
+    if (this.streamingSwitchService) {
+      this.accessory.removeService(this.streamingSwitchService);
+      this.streamingSwitchService = undefined;
+    }
+
     // Remove any motion services we created
-    Object.values(this.motionServices).forEach((service) => {
-      service.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
-      this.accessory.removeService(service);
+    Object.values(this.motionServices || {}).forEach((motionObject) => {
+      clearTimeout(motionObject.timer);
+      motionObject.service.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
+      this.accessory.removeService(motionObject.service);
     });
 
     // Remove the camera controller
@@ -298,6 +328,11 @@ export default class NestCamera extends HomeKitDevice {
   async onUpdate(deviceData) {
     if (typeof deviceData !== 'object' || this.controller === undefined) {
       return;
+    }
+
+    // Update streaming switch status
+    if (this.streamingSwitchService !== undefined) {
+      this.streamingSwitchService.updateCharacteristic(this.hap.Characteristic.On, deviceData.streaming_enabled);
     }
 
     if (this.deviceData.migrating === false && deviceData.migrating === true) {
@@ -382,9 +417,10 @@ export default class NestCamera extends HomeKitDevice {
         deviceData.online === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE,
       );
 
-      // Handle deleted zones (excluding zone ID 1 for HKSV)
+      // Handle deleted zones (excluding zone ID 1 for HKSV and the person sensor)
       if (
         zoneID !== '1' &&
+        zoneID !== 'person' &&
         Array.isArray(deviceData.activity_zones) === true &&
         deviceData.activity_zones.findIndex(({ id }) => id === Number(zoneID)) === -1
       ) {
@@ -534,6 +570,23 @@ export default class NestCamera extends HomeKitDevice {
             if (this.deviceData.hksv === false || this.ffmpeg instanceof FFmpeg === false || this.streamer === undefined) {
               // We'll only log a person detected event if HKSV is disabled
               this?.log?.info?.('Person detected at "%s"', deviceData.description);
+            }
+
+            // Handle the person motion sensor if it exists
+            if (this.motionServices?.['person']?.service) {
+              if (this.motionServices['person'].service.getCharacteristic(this.hap.Characteristic.MotionDetected).value !== true) {
+                this.motionServices['person'].service.updateCharacteristic(this.hap.Characteristic.MotionDetected, true);
+                this.history(this.motionServices['person'].service, { status: 1 });
+              }
+              // Reset the cooldown timer
+              clearTimeout(this.motionServices['person'].timer);
+              this.motionServices['person'].timer = setTimeout(() => {
+                if (this.motionServices?.['person']?.service) {
+                  this.motionServices['person'].service.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
+                  this.history(this.motionServices['person'].service, { status: 0 });
+                }
+                this.motionServices['person'].timer = undefined;
+              }, this.deviceData.personCooldown * 1000);
             }
 
             // Cooldown for person being detected
@@ -1270,7 +1323,7 @@ export default class NestCamera extends HomeKitDevice {
           continue;
         }
 
-        let zoneName = zone.id === 1 ? '' : zone.name;
+        let zoneName = zone.id === 1 ? 'Motion' : zone.name;
         let eveOptions = zone.id === 1 ? {} : undefined; // Only link EveHome for zone 1
 
         let service = this.addHKService(this.hap.Service.MotionSensor, zoneName, zone.id, eveOptions);
@@ -1280,6 +1333,15 @@ export default class NestCamera extends HomeKitDevice {
 
         this.motionServices[zone.id] = { service, timer: undefined };
       }
+    }
+
+    // Create person motion sensor if enabled
+    if (this.deviceData.personSensor === true) {
+      let service = this.addHKService(this.hap.Service.MotionSensor, 'Person', 'person');
+      this.addHKCharacteristic(service, this.hap.Characteristic.Active);
+      service.updateCharacteristic(this.hap.Characteristic.Name, 'Person');
+      service.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
+      this.motionServices['person'] = { service, timer: undefined };
     }
   }
 
@@ -1603,6 +1665,8 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         tempDevice.motionCooldown = parseDurationToSeconds(deviceOptions?.motionCooldown, { defaultValue: 60, min: 0, max: 300 });
         tempDevice.personCooldown = parseDurationToSeconds(deviceOptions?.personCooldown, { defaultValue: 120, min: 0, max: 300 });
         tempDevice.chimeSwitch = deviceOptions?.chimeSwitch === true; // Control 'indoor' chime by switch
+        tempDevice.streamingSwitch = deviceOptions?.streamingSwitch === true;
+        tempDevice.personSensor = deviceOptions?.personSensor === true;
         tempDevice.localAccess = deviceOptions?.localAccess === true; // Local network video streaming rather than from cloud
         tempDevice.ffmpeg = {
           binary: config.options.ffmpeg.binary,
