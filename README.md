@@ -59,7 +59,7 @@ Google Accounts require an "issueToken" and "cookie". The values of "issueToken"
 7. In the Headers tab, under General, copy the entire Request URL (beginning with https://accounts.google.com). This is your "Issue Token" which can be entered into the plugin-configuration within Homebridge.
 8. In the 'Filter' box, enter oauth2/iframe
 9. Several network calls will appear in the Dev Tools window. Click on the last iframe call.
-10. In the Headers tab, under Request Headers, copy the entire cookie (include the whole string which is several lines long and has many field/value pairs - do not include the cookie: name). This is your "Cookie" which can be entered into the plugin configuration within Homebridge.
+10. In the Headers tab, under Request Headers, copy the entire cookie (include the whole string which is several lines long and has many field/value pairs - do not include the cookie: name). This is your "Cookie" which can be entered into the plugin-configuration within Homebridge.
 
 **Do not log out of home.nest.com, as this will invalidate your credentials. Just close the browser tab**
 
