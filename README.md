@@ -48,7 +48,7 @@ There may be other keys labelled access_token further along in the string - plea
 
 ### Obtaining a Google cookie token for a Google Account
 
-Google Accounts require an "issueToken" and "cookie". The values of "issueToken" and "cookies" are specific to your Google Account. To get them, follow these steps (only needs to be done once, as long as you stay logged into your Google Account).
+Google Accounts require an "issueToken" and "cookie". The values of "issueToken" and "cookie" are specific to your Google Account. To get them, follow these steps (only needs to be done once, as long as you stay logged into your Google Account).
 
 1. Open a Chrome browser tab in Incognito Mode
 2. Open Developer Tools (View/Developer/Developer Tools).
@@ -57,15 +57,15 @@ Google Accounts require an "issueToken" and "cookie". The values of "issueToken"
 5. Go to home.nest.com, and click 'Sign in with Google'. Log into your account.
 6. One network call (beginning with iframerpc) will appear in the Dev Tools window. Click on it.
 7. In the Headers tab, under General, copy the entire Request URL (beginning with https://accounts.google.com). This is your "Issue Token" which can be entered into the plugin-configuration within Homebridge.
-9. In the 'Filter' box, enter oauth2/iframe
-10. Several network calls will appear in the Dev Tools window. Click on the last iframe call.
-11. In the Headers tab, under Request Headers, copy the entire cookie (include the whole string which is several lines long and has many field/value pairs - do not include the cookie: name). This is your "Cookie" which can be entered into the plugin-configuration within Homebridge.
+8. In the 'Filter' box, enter oauth2/iframe
+9. Several network calls will appear in the Dev Tools window. Click on the last iframe call.
+10. In the Headers tab, under Request Headers, copy the entire cookie (include the whole string which is several lines long and has many field/value pairs - do not include the cookie: name). This is your "Cookie" which can be entered into the plugin configuration within Homebridge.
 
 **Do not log out of home.nest.com, as this will invalidate your credentials. Just close the browser tab**
 
 ## config.json configuration
 
-When using the plugin configuration using [homebridge-config-ui-x](https://github.com/homebridge/homebridge-config-ui-x), the config.json will be updated/generated with the configuration options available via the web-form. Additional options can be specified in the config.json directly.
+When using the plugin configuration with [homebridge-config-ui-x](https://github.com/homebridge/homebridge-config-ui-x), the config.json will be updated/generated with the configuration options available via the web-form. Additional options can be specified in the config.json directly.
 
 Sample config.json entries below
 ```
@@ -90,8 +90,9 @@ Sample config.json entries below
             "serialNumber": "XXXXXXXX",
             "exclude": false
         },
+        {
             "serialNumber": "YYYYYYYY",
-            "hksv" : true
+            "hksv": true
         }
     ],
     "platform": "NestAccfactory"
@@ -107,9 +108,9 @@ The following options are available in the config.json options object. These app
 | elevation          | Height above sea level for the weather station                                               | 0              |
 | eveHistory         | Provide history in EveHome application where applicable                                      | true           |
 | exclude            | Exclude ALL devices                                                                          | false          |
-| ffmpegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                | false          |
+| ffmpegDebug        | Turns on specific debugging output for when ffmpeg is invoked                                | false          |
 | ffmpegHWaccel      | Enable video hardware acceleration for supported camera(s) and doorbell(s)                   | false          |  
-| ffmegPath          | Path to an ffmpeg binary (looks for binary named `ffmpeg` in path)                           | /usr/local/bin |
+| ffmpegPath         | Path to an ffmpeg binary (looks for binary named `ffmpeg` in path)                           | /usr/local/bin |
 | hksv               | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                          | false          |
 | weather            | Virtual weather station for each Nest/Google home we discover                                | false          |
 
@@ -120,22 +121,22 @@ The following options are available on a per-device level in the `config.json` `
 | Name               | Description                                                                                  | Default        |
 |--------------------|----------------------------------------------------------------------------------------------|----------------|
 | chimeSwitch        | Create a switch for supported doorbell(s) which allows the indoor chime to be turned on/off  | false          |
-| doorbellCooldown   | Time in seconds between doorbell press events                                                | 60             | 
+| doorbellCooldown   | Time in seconds between doorbell press events                                                | 60             |
 | elevation          | Height above sea level for the specific weather station                                      | 0              |
 | eveHistory         | Provide history in EveHome application where applicable for the specific device              | true           |
 | exclude            | Exclude the device                                                                           | false          |
 | fanDuration        | Override fan runtime duration                                                                |                |
-| ffmpegDebug        | Turns on specific debugging output for when ffmpeg is envoked                                | false          |
+| ffmpegDebug        | Turns on specific debugging output for when ffmpeg is invoked                                | false          |
 | ffmpegHWaccel      | Enable video hardware acceleration for supported camera(s) and doorbell(s)                   | false          |
 | hksv               | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                          | false          |
 | hotwaterBoostTime  | Time in seconds for hotwater boost heating (30, 160, 120mins)                                | 30mins         |
 | hotwaterMaxTemp    | Maximum supported temperature for hotwater heating                                           | 70c            |
 | hotwaterMinTemp    | Minimum supported temperature for hotwater heating                                           | 30c            |
-| humiditySensor     | Create a seperate humidity sensor for supported thermostat(s)                                | false          |
-| localAccess        | Use direct access to supported camera(s) and doorbell(s) for video streaming and recording   | false          |    
+| humiditySensor     | Create a separate humidity sensor for supported thermostat(s)                                | false          |
+| localAccess        | Use direct access to supported camera(s) and doorbell(s) for video streaming and recording   | false          |
 | motionCooldown     | Time in seconds between detected motion events                                               | 60             |
 | personCooldown     | Time in seconds between detected person events                                               | 120            |
-| serialNumber       | Device serial number to which these settings belong too                                      |                |
+| serialNumber       | Device serial number to which these settings belong to                                       |                |
 
 ## ffmpeg
 
