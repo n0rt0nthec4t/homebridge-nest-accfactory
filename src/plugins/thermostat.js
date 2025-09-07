@@ -989,7 +989,7 @@ export default class NestThermostat extends HomeKitDevice {
         props: { minStep: 100 / this.deviceData.fan_max_speed },
         onSet: (value) => this.setFan(value !== 0 ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE, value),
         onGet: () => {
-          return this.deviceData.fanState === true ? (this.deviceData.fan_timer_speed / this.deviceData.fan_max_speed) * 100 : 0;
+          return this.deviceData.fan_state === true ? (this.deviceData.fan_timer_speed / this.deviceData.fan_max_speed) * 100 : 0;
         },
       });
     } else {
