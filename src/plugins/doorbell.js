@@ -28,13 +28,13 @@ export default class NestDoorbell extends NestCamera {
     // Setup HomeKit doorbell controller
     if (this.controller === undefined) {
       // Establish the "camera" controller here as a doorbell specific one
-      // when onAdd is called for the base camera class, this will cconfigure our camera controller established here
+      // when onAdd is called for the base camera class, this will configure our camera controller established here
       this.controller = new this.hap.DoorbellController(this.generateControllerOptions());
     }
 
     if (this.deviceData?.has_indoor_chime === true && this.deviceData?.chimeSwitch === true) {
       // Add service to allow automation and enabling/disabling indoor chiming.
-      // This needs to be explically enabled via a configuration option for the device
+      // This needs to be explicitly enabled via a configuration option for the device
       this.switchService = this.addHKService(this.hap.Service.Switch, '', 1);
 
       // Setup set callback for this switch service

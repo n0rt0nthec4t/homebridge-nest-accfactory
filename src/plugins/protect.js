@@ -109,7 +109,7 @@ export default class NestProtect extends HomeKitDevice {
     }
 
     if (deviceData.smoke_status === false && this.deviceData.smoke_status === true) {
-      this?.log?.info?.('Smoke is nolonger detected in "%s"', deviceData.description);
+      this?.log?.info?.('Smoke is no longer detected in "%s"', deviceData.description);
     }
 
     // Update carbon monoxide details
