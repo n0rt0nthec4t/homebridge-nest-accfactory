@@ -13,7 +13,7 @@ import { DATA_SOURCE, DEVICE_TYPE, NESTLABS_MAC_PREFIX } from '../consts.js';
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = 'Weather';
-  static VERSION = '2025.08.04'; // Code version
+  static VERSION = '2025.09.08'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;

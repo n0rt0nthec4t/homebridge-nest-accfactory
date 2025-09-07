@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.08.21
+// Code version 2025.09.08
 // Mark Hulskamp
 'use strict';
 

@@ -5,7 +5,7 @@
 //
 // Credit to https://github.com/Brandawg93/homebridge-nest-cam for the work on the Nest Camera comms code on which this is based
 //
-// Code version 2025.07.30
+// Code version 2025.09.08
 // Mark Hulskamp
 'use strict';
 

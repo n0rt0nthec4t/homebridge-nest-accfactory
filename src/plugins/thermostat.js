@@ -28,7 +28,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2025.08.21'; // Code version
+  static VERSION = '2025.09.08'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;

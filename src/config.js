@@ -1,7 +1,7 @@
 // Configuration validation and processing
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.08.18
+// Code version 2025.09.08
 // Mark Hulskamp
 'use strict';
 
@@ -127,7 +127,9 @@ function processConfig(config, log) {
     log?.warn?.('');
     log?.warn?.('NOTICE');
     log?.warn?.('> The per device configuration contains legacy options. Please review the readme at the link below');
-    log?.warn?.('> Consider updating your configuration file as the mapping from legacy to current per device configuration may be removed');
+    log?.warn?.(
+      '> Consider updating your configuration file as the mapping from legacy to current per device configuration may be removed',
+    );
     log?.warn?.('> https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/blob/main/src/README.md');
     log?.warn?.('');
   }

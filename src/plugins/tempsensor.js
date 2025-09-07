@@ -13,7 +13,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestTemperatureSensor extends HomeKitDevice {
   static TYPE = 'TemperatureSensor';
-  static VERSION = '2025.08.04'; // Code version
+  static VERSION = '2025.09.08'; // Code version
 
   batteryService = undefined;
   temperatureService = undefined;

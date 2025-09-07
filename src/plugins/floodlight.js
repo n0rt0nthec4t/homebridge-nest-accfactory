@@ -10,7 +10,7 @@ export { processRawData };
 
 export default class NestFloodlight extends NestCamera {
   static TYPE = 'FloodlightCamera';
-  static VERSION = '2025.07.25'; // Code version
+  static VERSION = '2025.09.08'; // Code version
 
   lightService = undefined; // HomeKit light
 

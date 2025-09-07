@@ -4,7 +4,7 @@
 // Handles connection and data from Google WebRTC systems
 // Currently a "work in progress"
 //
-// Code version 2025.07.23
+// Code version 2025.09.08
 // Mark Hulskamp
 'use strict';
 
