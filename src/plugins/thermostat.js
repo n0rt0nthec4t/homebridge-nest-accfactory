@@ -1265,7 +1265,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           if (
             value.value?.hvac_control?.hvacState?.coolStage1Active === true ||
             value.value?.hvac_control?.hvacState?.coolStage2Active === true ||
-            value.value?.hvac_control?.hvacState?.coolStage2Active === true
+            value.value?.hvac_control?.hvacState?.coolStage3Active === true
           ) {
             // A cooling source is on, so we're in cooling mode
             RESTTypeData.hvac_state = 'cooling';
