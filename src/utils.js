@@ -134,7 +134,6 @@ async function fetchWrapper(method, url, options, data) {
 
         let delay = 500 * Math.pow(2, options._retryCount - 1);
         await new Promise((resolve) => {
-          resolve = resolve;
           setTimeout(resolve, delay);
         });
 
