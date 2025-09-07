@@ -186,7 +186,7 @@ export default class NestLock extends HomeKitDevice {
         ? deviceData.bolt_state === NestLock.STATE.LOCKED || deviceData.bolt_state === NestLock.STATE.LOCKING
           ? this.hap.Characteristic.LockLastKnownAction.SECURED_BY_KEYPAD
           : this.hap.Characteristic.LockLastKnownAction.UNSECURED_BY_KEYPAD
-        : deviceData.bolt_actor === NestLock.LAST_ACTION.REMOTE || deviceData.LAST_ACTION === NestLock.LAST_ACTION.VOICE
+        : deviceData.bolt_actor === NestLock.LAST_ACTION.REMOTE || deviceData.bolt_actor === NestLock.LAST_ACTION.VOICE
           ? deviceData.bolt_state === NestLock.STATE.LOCKED || deviceData.bolt_state === NestLock.STATE.LOCKING
             ? this.hap.Characteristic.LockLastKnownAction.SECURED_REMOTELY
             : this.hap.Characteristic.LockLastKnownAction.UNSECURED_REMOTELY
