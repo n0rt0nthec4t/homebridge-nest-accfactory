@@ -689,9 +689,9 @@ export default class NestCamera extends HomeKitDevice {
     // video is pipe #1
     // audio is pipe #3 if including audio
     this?.log?.debug?.(
-      'ffmpeg process for recording stream from "%s" will be called using the following commandline',
+      'ffmpeg process for recording stream from "%s" will be called using the following commandline: %s',
       this.deviceData.description,
-      commandLine.join(' ').toString(),
+      commandLine.join(' '),
     );
 
     let ffmpegStream = this.ffmpeg.createSession(
@@ -1099,9 +1099,9 @@ export default class NestCamera extends HomeKitDevice {
       ];
 
       this?.log?.debug?.(
-        'ffmpeg process for live streaming from "%s" will be called using the following commandline',
+        'ffmpeg process for live streaming from "%s" will be called using the following commandline: %s',
         this.deviceData.description,
-        commandLine.join(' ').toString(),
+        commandLine.join(' '),
       );
 
       // Launch the ffmpeg process for streaming and connect it to streamer input/output
@@ -1169,7 +1169,7 @@ export default class NestCamera extends HomeKitDevice {
         ];
 
         this?.log?.debug?.(
-          'ffmpeg process for talkback on "%s" will be called using the following commandline',
+          'ffmpeg process for talkback on "%s" will be called using the following commandline: %s',
           this.deviceData.description,
           talkbackCommandLine.join(' '),
         );
