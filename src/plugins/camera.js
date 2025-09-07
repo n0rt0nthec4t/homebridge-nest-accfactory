@@ -130,7 +130,7 @@ export default class NestCamera extends HomeKitDevice {
               (value === false && this.deviceData.statusled_brightness !== 1)
             ) {
               this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, statusled_brightness: value === true ? 0 : 1 });
-              this?.log?.info?.('Recording status LED on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
+              this?.log?.info?.('Recording status LED on "%s" was turned %s', this.deviceData.description, value === true ? 'on' : 'off');
             }
           },
           onGet: () => {
@@ -150,7 +150,7 @@ export default class NestCamera extends HomeKitDevice {
               irled_enabled: value === true ? 'auto_on' : 'always_off',
             });
 
-            this?.log?.info?.('Night vision on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
+            this?.log?.info?.('Night vision on "%s" was turned %s', this.deviceData.description, value === true ? 'on' : 'off');
           }
         },
         onGet: () => {
@@ -176,7 +176,7 @@ export default class NestCamera extends HomeKitDevice {
               streaming_enabled: value === this.hap.Characteristic.HomeKitCameraActive.ON ? true : false,
             });
             this?.log?.info?.(
-              'Camera on "%s" was turned',
+              'Camera on "%s" was turned %s',
               this.deviceData.description,
               value === this.hap.Characteristic.HomeKitCameraActive.ON ? 'on' : 'off',
             );
@@ -213,7 +213,7 @@ export default class NestCamera extends HomeKitDevice {
                 audio_enabled: value === this.hap.Characteristic.RecordingAudioActive.ENABLE ? true : false,
               });
               this?.log?.info?.(
-                'Audio recording on "%s" was turned',
+                'Audio recording on "%s" was turned %s',
                 this.deviceData.description,
                 value === this.hap.Characteristic.RecordingAudioActive.ENABLE ? 'on' : 'off',
               );

@@ -38,7 +38,7 @@ export default class NestFloodlight extends NestCamera {
           if (value !== this.deviceData.light_enabled) {
             this.message(NestFloodlight.SET, { uuid: this.deviceData.nest_google_uuid, light_enabled: value });
 
-            this?.log?.info?.('Floodlight on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
+            this?.log?.info?.('Floodlight on "%s" was turned %s', this.deviceData.description, value === true ? 'on' : 'off');
           }
         },
         onGet: () => {

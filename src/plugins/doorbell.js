@@ -44,7 +44,7 @@ export default class NestDoorbell extends NestCamera {
             // only change indoor chime status value if different than on-device
             this.message(NestDoorbell.SET, { uuid: this.deviceData.nest_google_uuid, indoor_chime_enabled: value });
 
-            this?.log?.info?.('Indoor chime on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
+            this?.log?.info?.('Indoor chime on "%s" was turned %s', this.deviceData.description, value === true ? 'on' : 'off');
           }
         },
         onGet: () => {
