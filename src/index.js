@@ -1,5 +1,5 @@
 // Homebridge platform allowing Nest devices to be used with HomeKit
-// This is a port from my standalone project, Nest_accfactory to Homebridge
+// This is a port from my standalone project, NestAccfactory to Homebridge
 //
 // This includes having support for HomeKit Secure Video (HKSV) on doorbells and cameras
 //

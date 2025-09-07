@@ -50,7 +50,7 @@ export default class NestTemperatureSensor extends HomeKitDevice {
 
     this.temperatureService.updateCharacteristic(this.hap.Characteristic.StatusActive, deviceData.online === true);
     if (typeof deviceData?.associated_thermostat === 'string' && deviceData.associated_thermostat !== '') {
-      // This temperature sensor is assocated with a thermostat
+      // This temperature sensor is associated with a thermostat
       // Update status if providing active temperature for the thermostats
       this.temperatureService.updateCharacteristic(
         this.hap.Characteristic.StatusActive,

@@ -236,7 +236,7 @@ export default class NestAccfactory {
         if (refresh !== true) {
           this?.log?.success?.('Successfully authorised using Google account for connection "%s"', this.#connections[uuid].name);
         } else {
-          this?.log?.debug?.('Successfully performed token refesh using Google account for connection "%s"', this.#connections[uuid].name);
+          this?.log?.debug?.('Successfully performed token refresh using Google account for connection "%s"', this.#connections[uuid].name);
         }
       } catch (error) {
         // Attempt to extract HTTP status code from error cause or error object
@@ -533,7 +533,7 @@ export default class NestAccfactory {
           };
         }
 
-        // Dump the the raw data if configured todo so
+        // Dump the raw data if configured to do so
         // This can be used for user support, rather than specific build to dump this :-)
         if (this?.config?.options?.rawdump === true && this.#connections[uuid]?.doneNestRawDump !== true) {
           this.#connections[uuid].doneNestRawDump = true; // Done once
@@ -714,7 +714,7 @@ export default class NestAccfactory {
             }
           }
 
-          // Dump the the raw data if configured todo so
+          // Dump the raw data if configured to do so
           // This can be used for user support, rather than specific build to dump this :-)
           if (this?.config?.options?.rawdump === true && this.#connections[uuid]?.doneGoogleRawDump !== true) {
             this.#connections[uuid].doneGoogleRawDump = true; // Done once
@@ -1323,7 +1323,7 @@ export default class NestAccfactory {
           commandTraits.push(structuredClone(commandElement));
         }
 
-        // Perform any direct trait updates we have todo. This can be done via a single call in a batch
+        // Perform any direct trait updates we have to do. This can be done via a single call in a batch
         if (updatedTraits.length !== 0) {
           let commandResponse = await this.#protobufCommand(uuid, 'nestlabs.gateway.v1.TraitBatchApi', 'BatchUpdateState', {
             batchUpdateStateRequest: updatedTraits,
@@ -1335,7 +1335,7 @@ export default class NestAccfactory {
             this?.log?.debug?.('Google API had error updating traits for device uuid "%s"', nest_google_uuid);
           }
         }
-        // Perform any trait updates required via resource commands. Each one is done seperately
+        // Perform any trait updates required via resource commands. Each one is done separately
         if (commandTraits.length !== 0) {
           for (let command of commandTraits) {
             let commandResponse = await this.#protobufCommand(uuid, 'nestlabs.gateway.v1.ResourceApi', 'SendCommand', command);
@@ -2065,7 +2065,7 @@ export default class NestAccfactory {
       }
     };
 
-    // Retrieve both 'Request' and 'Reponse' traits for the associated service and command
+    // Retrieve both 'Request' and 'Response' traits for the associated service and command
     service = service.trim();
     command = command.trim();
     let TraitMapService = this.#protobufRoot.lookup(service);
@@ -2191,7 +2191,7 @@ export default class NestAccfactory {
       return;
     }
 
-    // Attempt to load in requifred protobuf files
+    // Attempt to load in required protobuf files
     if (fs.existsSync(path.join(__dirname, 'protobuf/root.proto')) === true) {
       protobuf.util.Long = null;
       protobuf.configure();
@@ -2203,7 +2203,7 @@ export default class NestAccfactory {
 
     if (this.#protobufRoot === null) {
       this?.log?.warn?.(
-        'Failed to loaded protobuf support files for Google API. This will cause certain Nest/Google devices to be un-supported',
+        'Failed to load protobuf support files for Google API. This will cause certain Nest/Google devices to be unsupported',
       );
     }
   }

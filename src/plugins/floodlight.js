@@ -17,7 +17,7 @@ export default class NestFloodlight extends NestCamera {
   // Class functions
   onAdd() {
     if (this.deviceData.has_light === true) {
-      // Add service to for a light, including brightness control
+      // Add service for a light, including brightness control
       this.lightService = this.addHKService(this.hap.Service.Lightbulb, '', 1);
       this.addHKCharacteristic(this.lightService, this.hap.Characteristic.Brightness, {
         props: { minStep: 10 }, // Light only goes in 10% increments

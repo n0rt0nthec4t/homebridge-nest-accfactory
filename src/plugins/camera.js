@@ -84,7 +84,7 @@ export default class NestCamera extends HomeKitDevice {
   onAdd() {
     // Handle HKSV configuration change from enabled/disable states
     if (typeof this?.accessory?.context?.hksv === 'boolean' && this.accessory.context.hksv !== this.deviceData.hksv) {
-      // We need to remove the CameraOperaionMode service to avoid errors when setting up the HomeKit controller
+      // We need to remove the CameraOperatingMode service to avoid errors when setting up the HomeKit controller
       // Thanks to @bcullman (Brad Ullman) for catching this
       if (this.accessory.getService(this.hap.Service.CameraOperatingMode) !== undefined) {
         this.accessory.removeService(this.accessory.getService(this.hap.Service.CameraOperatingMode));
@@ -103,7 +103,7 @@ export default class NestCamera extends HomeKitDevice {
       this.controller = new this.hap.CameraController(this.generateControllerOptions());
     }
     if (this.controller !== undefined) {
-      // Configure the controller thats been created
+      // Configure the controller that's been created
       this.accessory.configureController(this.controller);
     }
 
@@ -499,7 +499,7 @@ export default class NestCamera extends HomeKitDevice {
               typeof this.motionServices?.[zoneID]?.service === 'object' &&
               this.motionServices[zoneID].service.getCharacteristic(this.hap.Characteristic.MotionDetected).value !== true
             ) {
-              // Trigger motion for matching zone of not aleady active
+              // Trigger motion for matching zone if not already active
               this.motionServices[zoneID].service.updateCharacteristic(this.hap.Characteristic.MotionDetected, true);
 
               // Log motion started into history
@@ -514,10 +514,10 @@ export default class NestCamera extends HomeKitDevice {
           this.motionTimer = setTimeout(() => {
             event.zone_ids.forEach((zoneID) => {
               if (typeof this.motionServices?.[zoneID]?.service === 'object') {
-                // Mark associted motion services as motion not detected
+                // Mark associated motion services as motion not detected
                 this.motionServices[zoneID].service.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
 
-                // Log motion started into history
+                // Log motion stopped into history
                 this.history(this.motionServices[zoneID].service, { status: 0 });
               }
             });
@@ -722,7 +722,7 @@ export default class NestCamera extends HomeKitDevice {
       while (buffer.length >= 8) {
         let boxSize = buffer.readUInt32BE(0);
         if (boxSize < 8 || buffer.length < boxSize) {
-          // We dont have enough data in the buffer yet to process the full mp4 box
+          // We don't have enough data in the buffer yet to process the full mp4 box
           // so, exit loop and await more data
           break;
         }
@@ -900,7 +900,7 @@ export default class NestCamera extends HomeKitDevice {
 
     if (imageBuffer === undefined) {
       // If we get here, we have no snapshot image
-      // We'll use the last success snapshop as long as its within a certain time period
+      // We'll use the last successful snapshot as long as its within a certain time period
       imageBuffer = this.#lastSnapshotImage;
     }
 
@@ -1024,7 +1024,7 @@ export default class NestCamera extends HomeKitDevice {
         '0:v:0',
         '-codec:v',
         'copy',
-        // Below is comment out as we don't use hardware acceleration for live streaming
+        // Below is commented out as we don't use hardware acceleration for live streaming
         //       ...(this.deviceData.ffmpeg.hwaccel === true && this.ffmpeg.hardwareH264Codec !== undefined
         //         ? ['-codec:v', this.ffmpeg.hardwareH264Codec]
         //         : ['-codec:v', 'copy']),
@@ -1534,7 +1534,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           (value.value?.properties?.['cc2migration.overview_state'] === 'NORMAL' ||
             value.value?.properties?.['cc2migration.overview_state'] === 'REVERSE_MIGRATION_IN_PROGRESS')
         ) {
-          // We'll only use the Nest API data for Camera's which have NOT been migrated to Google Home
+          // We'll only use the Nest API data for Cameras which have NOT been migrated to Google Home
           tempDevice = processCommonData(
             object_key,
             {
