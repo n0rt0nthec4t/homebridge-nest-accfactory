@@ -338,7 +338,7 @@ export default class NestThermostat extends HomeKitDevice {
     );
     this.batteryService.updateCharacteristic(
       this.hap.Characteristic.ChargingState,
-      (deviceData.battery_level > this.deviceData.battery_level && this.deviceData.battery_level !== 0 ? true : false)
+      (deviceData.battery_level > this.deviceData.battery_level && this.deviceData.battery_level !== 0)
         ? this.hap.Characteristic.ChargingState.CHARGING
         : this.hap.Characteristic.ChargingState.NOT_CHARGING,
     );
@@ -959,7 +959,7 @@ export default class NestThermostat extends HomeKitDevice {
     }
     this.message(HomeKitDevice.SET, {
       uuid: this.deviceData.nest_google_uuid,
-      temperature_lock: value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED ? true : false,
+      temperature_lock: value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED,
     });
 
     this?.log?.info?.(

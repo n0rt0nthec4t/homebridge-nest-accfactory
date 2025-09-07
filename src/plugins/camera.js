@@ -173,7 +173,7 @@ export default class NestCamera extends HomeKitDevice {
             // Camera state does not reflect requested state, so fix
             this.message(HomeKitDevice.SET, {
               uuid: this.deviceData.nest_google_uuid,
-              streaming_enabled: value === this.hap.Characteristic.HomeKitCameraActive.ON ? true : false,
+              streaming_enabled: value === this.hap.Characteristic.HomeKitCameraActive.ON,
             });
             this?.log?.info?.(
               'Camera on "%s" was turned',
@@ -210,7 +210,7 @@ export default class NestCamera extends HomeKitDevice {
             ) {
               this.message(HomeKitDevice.SET, {
                 uuid: this.deviceData.nest_google_uuid,
-                audio_enabled: value === this.hap.Characteristic.RecordingAudioActive.ENABLE ? true : false,
+                audio_enabled: value === this.hap.Characteristic.RecordingAudioActive.ENABLE,
               });
               this?.log?.info?.(
                 'Audio recording on "%s" was turned',
@@ -463,14 +463,14 @@ export default class NestCamera extends HomeKitDevice {
       //this.controller.microphoneService.updateCharacteristic(this.hap.Characteristic.Volume, deviceData.xxx);
 
       // if audio is disabled, we'll mute microphone
-      this.controller.setMicrophoneMuted(deviceData.audio_enabled === false ? true : false);
+      this.controller.setMicrophoneMuted(deviceData.audio_enabled === false);
     }
     if (this.controller?.speakerService !== undefined) {
       // Update speaker volume if specified
       //this.controller.speakerService.updateCharacteristic(this.hap.Characteristic.Volume, deviceData.xxx);
 
       // if audio is disabled, we'll mute speaker
-      this.controller.setSpeakerMuted(deviceData.audio_enabled === false ? true : false);
+      this.controller.setSpeakerMuted(deviceData.audio_enabled === false);
     }
 
     // Process alerts, the most recent alert is first
