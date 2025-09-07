@@ -700,7 +700,7 @@ export default class NestThermostat extends HomeKitDevice {
     let currentSpeed =
       this.fanService.testCharacteristic(this.hap.Characteristic.RotationSpeed) === true
         ? this.fanService.getCharacteristic(this.hap.Characteristic.RotationSpeed).value
-        : currentState === true
+        : currentState === this.hap.Characteristic.Active.ACTIVE
           ? 100
           : 0;
 
