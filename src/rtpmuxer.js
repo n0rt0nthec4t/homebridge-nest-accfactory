@@ -108,7 +108,7 @@ export default class RTPMuxer {
     return new Writable({
       write: (chunk, encoding, callback) => {
         if (type === RTPMuxer.STREAM_TYPE.BUFFER) {
-          this.#buffer.push({ time: Date.now(), data: chunk });
+          this.#buffer.push({ timestamp: Date.now(), packet: chunk });
         }
         for (let session of this.#outputSessions.values()) {
           if (session.kind === type || session.kind === undefined) {
