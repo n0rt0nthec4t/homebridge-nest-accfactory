@@ -25,7 +25,7 @@ export default class NestTemperatureSensor extends HomeKitDevice {
     this.temperatureService.setPrimaryService();
 
     // Setup battery service if not already present on the accessory
-    this.batteryService = this.addHKService(this.hap.Service.Battery, '', 1);
+    this.batteryService = this.addHKService(this.hap.Service.Battery, 'Battery', 1);
     this.batteryService.setHiddenService(true);
     this.temperatureService.addLinkedService(this.batteryService);
   }

@@ -109,7 +109,7 @@ export default class NestLock extends HomeKitDevice {
     });
 
     // Setup battery service if not already present on the accessory
-    this.batteryService = this.addHKService(this.hap.Service.Battery, '', 1);
+    this.batteryService = this.addHKService(this.hap.Service.Battery, 'Battery', 1);
     this.batteryService.setHiddenService(true);
   }
 

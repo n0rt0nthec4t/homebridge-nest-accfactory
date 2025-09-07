@@ -358,7 +358,7 @@ export default class NestCamera extends HomeKitDevice {
         if (this.deviceData.hksv === false || (this.deviceData.hksv === true && this.ffmpeg instanceof FFmpeg === true && zone.id === 1)) {
           if (this.motionServices?.[zone.id]?.service === undefined) {
             // Zone doesn't have an associated motion sensor, so add one
-            let zoneName = zone.id === 1 ? '' : zone.name;
+            let zoneName = zone.id === 1 ? 'Motion' : zone.name;
             let eveOptions = zone.id === 1 ? {} : undefined; // Only link EveHome for zone 1
 
             let tempService = this.addHKService(this.hap.Service.MotionSensor, zoneName, zone.id, eveOptions);
@@ -1270,7 +1270,7 @@ export default class NestCamera extends HomeKitDevice {
           continue;
         }
 
-        let zoneName = zone.id === 1 ? '' : zone.name;
+        let zoneName = zone.id === 1 ? 'Motion' : zone.name;
         let eveOptions = zone.id === 1 ? {} : undefined; // Only link EveHome for zone 1
 
         let service = this.addHKService(this.hap.Service.MotionSensor, zoneName, zone.id, eveOptions);

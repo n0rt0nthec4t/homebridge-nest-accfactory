@@ -23,7 +23,7 @@ export default class NestProtect extends HomeKitDevice {
   // Class functions
   onAdd() {
     // Setup the smoke sensor service if not already present on the accessory
-    this.smokeService = this.addHKService(this.hap.Service.SmokeSensor, '', 1, {
+    this.smokeService = this.addHKService(this.hap.Service.SmokeSensor, 'Smoke', 1, {
       messages: this.message.bind(this),
       EveSmoke_lastalarmtest: this.deviceData.latest_alarm_test,
       EveSmoke_alarmtest: this.deviceData.self_test_in_progress,
@@ -39,15 +39,15 @@ export default class NestProtect extends HomeKitDevice {
     this.addHKCharacteristic(this.smokeService, this.hap.Characteristic.StatusFault);
 
     // Setup the carbon monoxide service if not already present on the accessory
-    this.carbonMonoxideService = this.addHKService(this.hap.Service.CarbonMonoxideSensor, '', 1);
+    this.carbonMonoxideService = this.addHKService(this.hap.Service.CarbonMonoxideSensor, 'Carbon Monoxide', 1);
 
     // Setup battery service if not already present on the accessory
-    this.batteryService = this.addHKService(this.hap.Service.Battery, '', 1);
+    this.batteryService = this.addHKService(this.hap.Service.Battery, 'Battery', 1);
     this.batteryService.setHiddenService(true);
 
     // Setup motion service if not already present on the accessory and Nest protect is a wired version
     if (this.deviceData?.wired_or_battery === 0) {
-      this.motionService = this.addHKService(this.hap.Service.MotionSensor, '', 1);
+      this.motionService = this.addHKService(this.hap.Service.MotionSensor, 'Motion', 1);
       this.postSetupDetail('With motion sensor');
     }
   }

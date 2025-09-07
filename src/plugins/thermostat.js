@@ -184,11 +184,11 @@ export default class NestThermostat extends HomeKitDevice {
     }
 
     // Setup occupancy service if not already present on the accessory
-    this.occupancyService = this.addHKService(this.hap.Service.OccupancySensor, '', 1);
+    this.occupancyService = this.addHKService(this.hap.Service.OccupancySensor, 'Occupancy', 1);
     this.thermostatService.addLinkedService(this.occupancyService);
 
     // Setup battery service if not already present on the accessory
-    this.batteryService = this.addHKService(this.hap.Service.Battery, '', 1);
+    this.batteryService = this.addHKService(this.hap.Service.Battery, 'Battery', 1);
     this.batteryService.setHiddenService(true);
     this.thermostatService.addLinkedService(this.batteryService);
 
@@ -220,7 +220,7 @@ export default class NestThermostat extends HomeKitDevice {
 
     // Setup humdity service if configured to be seperate and not already present on the accessory
     if (this.deviceData?.humiditySensor === true) {
-      this.humidityService = this.addHKService(this.hap.Service.HumiditySensor, '', 1);
+      this.humidityService = this.addHKService(this.hap.Service.HumiditySensor, 'Humidity', 1);
       this.thermostatService.addLinkedService(this.humidityService);
 
       this.addHKCharacteristic(this.humidityService, this.hap.Characteristic.CurrentRelativeHumidity, {

@@ -35,7 +35,7 @@ export default class NestDoorbell extends NestCamera {
     if (this.deviceData?.has_indoor_chime === true && this.deviceData?.chimeSwitch === true) {
       // Add service to allow automation and enabling/disabling indoor chiming.
       // This needs to be explically enabled via a configuration option for the device
-      this.switchService = this.addHKService(this.hap.Service.Switch, '', 1);
+      this.switchService = this.addHKService(this.hap.Service.Switch, 'Chime', 1);
 
       // Setup set callback for this switch service
       this.addHKCharacteristic(this.switchService, this.hap.Characteristic.On, {
