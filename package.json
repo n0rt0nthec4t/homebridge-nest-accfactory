@@ -58,7 +58,7 @@
         "eslint": "^9.35.0",
         "@stylistic/eslint-plugin": "^5.3.1",
         "@types/node": "^24.3.1",
-        "@typescript-eslint/parser": "^8.42.0",
+        "@typescript-eslint/parser": "^8.43.0",
         "prettier": "^3.6.2",
         "prettier-eslint": "^16.4.2",
         "copyfiles": "^2.4.1",
