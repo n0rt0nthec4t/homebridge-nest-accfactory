@@ -183,11 +183,6 @@ export default class NestCamera extends HomeKitDevice {
           }
         }
       },
-      onGet: () => {
-        return this.deviceData.streaming_enabled === false
-          ? this.hap.Characteristic.HomeKitCameraActive.OFF
-          : this.hap.Characteristic.HomeKitCameraActive.ON;
-      },
     });
 
     if (this.deviceData?.has_video_flip === true) {
@@ -397,10 +392,10 @@ export default class NestCamera extends HomeKitDevice {
     if (this.controller?.recordingManagement?.operatingModeService !== undefined) {
       // Update camera off/on status
       this.controller.recordingManagement.operatingModeService.updateCharacteristic(
-        this.hap.Characteristic.HomeKitCameraActive,
+        this.hap.Characteristic.ManuallyDisabled,
         deviceData.streaming_enabled === true
-          ? this.hap.Characteristic.HomeKitCameraActive.ON
-          : this.hap.Characteristic.HomeKitCameraActive.OFF,
+          ? this.hap.Characteristic.ManuallyDisabled.ENABLED
+          : this.hap.Characteristic.ManuallyDisabled.DISABLED,
       );
 
       if (deviceData?.has_statusled === true) {
@@ -431,19 +426,15 @@ export default class NestCamera extends HomeKitDevice {
       }
 
       if (this.deviceData.hksv === false) {
-        // Update snapshot status for non-hksv in operating mode service
+        // Specific settings for non-HKSV camera's
         this.controller.recordingManagement.operatingModeService.updateCharacteristic(
-          this.hap.Characteristic.EventSnapshotsActive,
-          deviceData.streaming_enabled === true
-            ? this.hap.Characteristic.EventSnapshotsActive.ENABLE
-            : this.hap.Characteristic.EventSnapshotsActive.DISABLE,
+          this.hap.Characteristic.PeriodicSnapshotsActive,
+          this.hap.Characteristic.PeriodicSnapshotsActive.ENABLE,
         );
 
         this.controller.recordingManagement.operatingModeService.updateCharacteristic(
-          this.hap.Characteristic.PeriodicSnapshotsActive,
-          deviceData.streaming_enabled === true
-            ? this.hap.Characteristic.PeriodicSnapshotsActive.ENABLE
-            : this.hap.Characteristic.PeriodicSnapshotsActive.DISABLE,
+          this.hap.Characteristic.HomeKitCameraActive,
+          this.hap.Characteristic.HomeKitCameraActive.ON,
         );
       }
     }
@@ -1598,7 +1589,9 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         );
         // Insert any extra options we've read in from configuration file for this device
         tempDevice.eveHistory = config.options.eveHistory === true || deviceOptions?.eveHistory === true;
-        tempDevice.hksv = (config.options?.hksv === true || deviceOptions?.hksv === true) && config.options?.ffmpeg?.valid === true;
+        tempDevice.hksv =
+          (deviceOptions?.hksv === true || (deviceOptions?.hksv !== false && config.options?.hksv === true)) &&
+          config.options?.ffmpeg?.valid === true;
         tempDevice.doorbellCooldown = parseDurationToSeconds(deviceOptions?.doorbellCooldown, { defaultValue: 60, min: 0, max: 300 });
         tempDevice.motionCooldown = parseDurationToSeconds(deviceOptions?.motionCooldown, { defaultValue: 60, min: 0, max: 300 });
         tempDevice.personCooldown = parseDurationToSeconds(deviceOptions?.personCooldown, { defaultValue: 120, min: 0, max: 300 });
