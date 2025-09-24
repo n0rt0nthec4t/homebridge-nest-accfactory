@@ -1,5 +1,6 @@
 persist
 node_modules
+non-github
 dist*
 .vscode
 .DS_Store

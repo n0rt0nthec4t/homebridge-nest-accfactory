@@ -13,7 +13,7 @@ import { DATA_SOURCE, DEVICE_TYPE, NESTLABS_MAC_PREFIX } from '../consts.js';
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = 'Weather';
-  static VERSION = '2025.08.04'; // Code version
+  static VERSION = '2025.09.08'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -155,7 +155,7 @@ export default class NestWeather extends HomeKitDevice {
       this.temperatureService.updateCharacteristic(this.hap.Characteristic.SunsetTime, dateString);
     }
 
-    // If we have the history service running, record temperature and humity every 5mins
+    // If we have the history service running, record temperature and humidity every 5mins
     this.history(
       this.airPressureService,
       { temperature: deviceData.current_temperature, humidity: deviceData.current_humidity, pressure: 0 },
@@ -187,7 +187,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
       let tempDevice = {};
       try {
         // For a Google API source data, we use the Nest API structure ID. This will ensure we generate the same serial number
-        // This should prevent two 'wether' objects from being created
+        // This should prevent two 'weather' objects from being created
         // Nest API uses the structure id only
         let serialNumber =
           value?.source === DATA_SOURCE.GOOGLE &&

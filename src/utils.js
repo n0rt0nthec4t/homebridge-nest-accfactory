@@ -1,7 +1,7 @@
 // General helper functions
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.08.20
+// Code version 2025.09.08
 // Mark Hulskamp
 'use strict';
 
@@ -134,7 +134,6 @@ async function fetchWrapper(method, url, options, data) {
 
         let delay = 500 * Math.pow(2, options._retryCount - 1);
         await new Promise((resolve) => {
-          resolve = resolve;
           setTimeout(resolve, delay);
         });
 

@@ -2,6 +2,16 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.3.3-alpha.1 (yyyy/mm/dd)
+
+- General code cleanup and stability improvements  
+- General typo and grammar corrections  
+- Fixed handling of the per-device `hksv` setting  
+- Fixed thermostat cooling stage 3 checking  
+- Fixed thermostat fan state checking
+- Fixed periodic camera snapshots when camera is turned off
+- Updated camera resource assets
+
 ## v0.3.3 (2025/08/23)
 
 - Refined timeout warnings for camera and doorbell snapshot capture  

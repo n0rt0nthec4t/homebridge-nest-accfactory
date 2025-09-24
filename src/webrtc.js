@@ -4,7 +4,7 @@
 // Handles connection and data from Google WebRTC systems
 // Currently a "work in progress"
 //
-// Code version 2025.07.23
+// Code version 2025.09.08
 // Mark Hulskamp
 'use strict';
 
@@ -105,7 +105,7 @@ export default class WebRTC extends Streamer {
         });
 
         // Translate our uuid (DEVICE_xxxxxxxxxx) into the associated 'google id' from the Google Home Foyer
-        // We need this id for SOME calls to Google Home Foyer services. Gotta love consistancy :-)
+        // We need this id for SOME calls to Google Home Foyer services. Gotta love consistency :-)
         if (homeFoyerResponse?.data?.[0]?.homes !== undefined) {
           Object.values(homeFoyerResponse?.data?.[0]?.homes).forEach((home) => {
             Object.values(home.devices).forEach((device) => {
@@ -273,7 +273,7 @@ export default class WebRTC extends Streamer {
                 });
 
                 if (homeFoyerResponse?.data?.[0]?.streamExtensionStatus !== 'STATUS_STREAM_EXTENDED') {
-                  this?.log?.debug?.('Error occurred while requested stream extension for uuid "%s"', this.nest_google_uuid);
+                  this?.log?.debug?.('Error occurred while requesting stream extension for uuid "%s"', this.nest_google_uuid);
 
                   await this.#peerConnection?.close?.();
                 }
@@ -371,7 +371,7 @@ export default class WebRTC extends Streamer {
         }
         if (homeFoyerResponse?.status === 0) {
           this.audio.talking = true;
-          this?.log?.debug?.('Talking start on uuid "%s"', this.nest_google_uuid);
+          this?.log?.debug?.('Talking started on uuid "%s"', this.nest_google_uuid);
         }
       }
 
@@ -383,14 +383,14 @@ export default class WebRTC extends Streamer {
         rtpHeader.payloadOffset = RTP_PACKET_HEADER_SIZE;
         rtpHeader.payloadType = this.audio.id; // As the camera is send/recv, we use the same payload type id as the incoming audio
         rtpHeader.timestamp = Date.now() >>> 0; // Think the time stamp difference should be 960ms per audio packet?
-        rtpHeader.sequenceNumber = this.audio.talkSquenceNumber++ & 0xffff;
+        rtpHeader.sequenceNumber = this.audio.talkSequenceNumber++ & 0xffff;
         let rtpPacket = new werift.RtpPacket(rtpHeader, talkingBuffer);
         this.#audioTransceiver.sender.sendRtp(rtpPacket.serialize());
       }
     }
 
     if (talkingBuffer.length === 0 && this.audio?.talking === true) {
-      // Buffer length of zero, ised to signal no more talking data for the moment
+      // Buffer length of zero, used to signal no more talking data for the moment
       let homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'SendTalkback', {
         googleDeviceId: {
           value: this.#googleHomeDeviceUUID,
@@ -421,7 +421,7 @@ export default class WebRTC extends Streamer {
         baseTime: undefined,
         sampleRate: 48000,
         opus: undefined,
-        talkSquenceNumber: weriftTrack?.sender?.sequenceNumber === undefined ? 0 : weriftTrack.sender.sequenceNumber,
+        talkSequenceNumber: weriftTrack?.sender?.sequenceNumber === undefined ? 0 : weriftTrack.sender.sequenceNumber,
         talking: undefined,
       };
     }
@@ -450,7 +450,7 @@ export default class WebRTC extends Streamer {
       return;
     }
 
-    // Create timer for stalled  rtp output. Restart strem if so
+    // Create timer for stalled rtp output. Restart stream if so
     clearTimeout(this.#stalledTimer);
     this.#stalledTimer = setTimeout(async () => {
       await this.#peerConnection?.close?.();
@@ -604,7 +604,7 @@ export default class WebRTC extends Streamer {
       return;
     }
 
-    // Attempt to retrieve both 'Request' and 'Reponse' traits for the associated service and command
+    // Attempt to retrieve both 'Request' and 'Response' traits for the associated service and command
     let TraitMapRequest = this.#protobufFoyer.lookup(GOOGLE_HOME_FOYER_PREFIX + command + 'Request');
     let TraitMapResponse = this.#protobufFoyer.lookup(GOOGLE_HOME_FOYER_PREFIX + command + 'Response');
     let buffer = Buffer.alloc(0);
