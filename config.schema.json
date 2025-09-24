@@ -209,6 +209,12 @@
                         },
                         "personCooldown": {
                             "type": "number"
+                        },
+                        "personSensor": {
+                            "type": "boolean"
+                        },
+                        "streamingSwitch": {
+                            "type": "boolean"
                         }
                     }
                 }
