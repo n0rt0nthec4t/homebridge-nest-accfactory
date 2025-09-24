@@ -1,7 +1,7 @@
 // Common defines
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.08.20
+// Code version 2025.09.08
 // Mark Hulskamp
 'use strict';
 

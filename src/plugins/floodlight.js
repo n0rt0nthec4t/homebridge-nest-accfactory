@@ -10,14 +10,14 @@ export { processRawData };
 
 export default class NestFloodlight extends NestCamera {
   static TYPE = 'FloodlightCamera';
-  static VERSION = '2025.07.25'; // Code version
+  static VERSION = '2025.09.08'; // Code version
 
   lightService = undefined; // HomeKit light
 
   // Class functions
   onAdd() {
     if (this.deviceData.has_light === true) {
-      // Add service to for a light, including brightness control
+      // Add service for a light, including brightness control
       this.lightService = this.addHKService(this.hap.Service.Lightbulb, '', 1);
       this.addHKCharacteristic(this.lightService, this.hap.Characteristic.Brightness, {
         props: { minStep: 10 }, // Light only goes in 10% increments
@@ -38,7 +38,7 @@ export default class NestFloodlight extends NestCamera {
           if (value !== this.deviceData.light_enabled) {
             this.message(NestFloodlight.SET, { uuid: this.deviceData.nest_google_uuid, light_enabled: value });
 
-            this?.log?.info?.('Floodlight on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
+            this?.log?.info?.('Floodlight on "%s" was turned %s', this.deviceData.description, value === true ? 'on' : 'off');
           }
         },
         onGet: () => {

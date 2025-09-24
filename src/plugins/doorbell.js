@@ -13,7 +13,7 @@ export { processRawData };
 
 export default class NestDoorbell extends NestCamera {
   static TYPE = 'Doorbell';
-  static VERSION = '2025.08.12'; // Code version
+  static VERSION = '2025.09.08'; // Code version
 
   doorbellTimer = undefined; // Cooldown timer for doorbell events
   switchService = undefined; // HomeKit switch for enabling/disabling chime
@@ -28,13 +28,13 @@ export default class NestDoorbell extends NestCamera {
     // Setup HomeKit doorbell controller
     if (this.controller === undefined) {
       // Establish the "camera" controller here as a doorbell specific one
-      // when onAdd is called for the base camera class, this will cconfigure our camera controller established here
+      // when onAdd is called for the base camera class, this will configure our camera controller established here
       this.controller = new this.hap.DoorbellController(this.generateControllerOptions());
     }
 
     if (this.deviceData?.has_indoor_chime === true && this.deviceData?.chimeSwitch === true) {
       // Add service to allow automation and enabling/disabling indoor chiming.
-      // This needs to be explically enabled via a configuration option for the device
+      // This needs to be explicitly enabled via a configuration option for the device
       this.switchService = this.addHKService(this.hap.Service.Switch, '', 1);
 
       // Setup set callback for this switch service
@@ -44,7 +44,7 @@ export default class NestDoorbell extends NestCamera {
             // only change indoor chime status value if different than on-device
             this.message(NestDoorbell.SET, { uuid: this.deviceData.nest_google_uuid, indoor_chime_enabled: value });
 
-            this?.log?.info?.('Indoor chime on "%s" was turned', this.deviceData.description, value === true ? 'on' : 'off');
+            this?.log?.info?.('Indoor chime on "%s" was turned %s', this.deviceData.description, value === true ? 'on' : 'off');
           }
         },
         onGet: () => {

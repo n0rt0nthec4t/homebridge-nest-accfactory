@@ -28,7 +28,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2025.08.21'; // Code version
+  static VERSION = '2025.09.08'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -205,7 +205,7 @@ export default class NestThermostat extends HomeKitDevice {
       this.fanService = undefined;
     }
 
-    // Setup dehumifider service if supported by the thermostat and not already present on the accessory
+    // Setup dehumidifier service if supported by the thermostat and not already present on the accessory
     if (this.deviceData?.has_dehumidifier === true) {
       this.#setupDehumidifier();
     }
@@ -218,7 +218,7 @@ export default class NestThermostat extends HomeKitDevice {
       this.dehumidifierService = undefined;
     }
 
-    // Setup humdity service if configured to be seperate and not already present on the accessory
+    // Setup humidity service if configured to be separate and not already present on the accessory
     if (this.deviceData?.humiditySensor === true) {
       this.humidityService = this.addHKService(this.hap.Service.HumiditySensor, '', 1);
       this.thermostatService.addLinkedService(this.humidityService);
@@ -230,7 +230,7 @@ export default class NestThermostat extends HomeKitDevice {
       });
     }
     if (this.deviceData?.humiditySensor === false) {
-      // No longer have a seperate humidity sensor configure and service present, so removed it
+      // No longer have a separate humidity sensor configure and service present, so removed it
       this.humidityService = this.accessory.getService(this.hap.Service.HumiditySensor);
       if (this.humidityService !== undefined) {
         this.accessory.removeService(this.humidityService);
@@ -239,7 +239,7 @@ export default class NestThermostat extends HomeKitDevice {
     }
 
     // Attempt to load any external modules for this thermostat
-    // We support external cool/heat/fan/dehumidifier/humdifier module functions
+    // We support external cool/heat/fan/dehumidifier/humidifier module functions
     // This is all undocumented on how to use, as its for my specific use case :-)
     this.externalCool = await this.#loadExternalModule(this.deviceData?.externalCool, ['cool', 'off']);
     this.externalHeat = await this.#loadExternalModule(this.deviceData?.externalHeat, ['heat', 'off']);
@@ -248,7 +248,7 @@ export default class NestThermostat extends HomeKitDevice {
     this.externalHumidifier = await this.#loadExternalModule(this.deviceData?.externalHumidifier, ['humidifier', 'off']);
 
     // Extra setup details for output
-    this.humidityService !== undefined && this.postSetupDetail('Seperate humidity sensor');
+    this.humidityService !== undefined && this.postSetupDetail('Separate humidity sensor');
     this.externalCool !== undefined && this.postSetupDetail('Using external cooling module');
     this.externalHeat !== undefined && this.postSetupDetail('Using external heating module');
     this.externalFan !== undefined && this.postSetupDetail('Using external fan module');
@@ -351,7 +351,7 @@ export default class NestThermostat extends HomeKitDevice {
         : this.hap.Characteristic.OccupancyDetected.OCCUPANCY_NOT_DETECTED,
     );
 
-    // Update seperate humidity sensor if configured todo so
+    // Update separate humidity sensor if configured to do so
     if (this.humidityService !== undefined) {
       this.humidityService.updateCharacteristic(this.hap.Characteristic.CurrentRelativeHumidity, deviceData.current_humidity);
     }
@@ -378,14 +378,14 @@ export default class NestThermostat extends HomeKitDevice {
       );
     }
 
-    // Check for dehumidifer setup change on thermostat
+    // Check for dehumidifier setup change on thermostat
     if (deviceData.has_dehumidifier !== this.deviceData.has_dehumidifier) {
       if (deviceData.has_dehumidifier === true && this.deviceData.has_dehumidifier === false && this.dehumidifierService === undefined) {
         // Dehumidifier has been added
         this.#setupDehumidifier();
       }
       if (deviceData.has_dehumidifier === false && this.deviceData.has_dehumidifier === true && this.dehumidifierService !== undefined) {
-        // Dehumidifer has been removed
+        // Dehumidifier has been removed
         this.accessory.removeService(this.dehumidifierService);
         this.dehumidifierService = undefined;
       }
@@ -529,7 +529,7 @@ export default class NestThermostat extends HomeKitDevice {
     }
     if (deviceData.hvac_state.toUpperCase() === 'OFF') {
       if (this.deviceData.hvac_state.toUpperCase() === 'COOLING' && typeof this.externalCool?.off === 'function') {
-        // Switched to off mode and external cooling external code was being used, so stop cooling via cooling external code{
+        // Switched to off mode and external cooling external code was being used, so stop cooling via cooling external code
         this.externalCool.off();
       }
       if (this.deviceData.hvac_state.toUpperCase() === 'HEATING' && typeof this.externalHeat?.off === 'function') {
@@ -696,11 +696,11 @@ export default class NestThermostat extends HomeKitDevice {
   setFan(fanState, speed) {
     let currentState = this.fanService.getCharacteristic(this.hap.Characteristic.Active).value;
 
-    // If we have a rotation speed characteristic, use that get the current fan speed, otherwise we us ethe current fan state to determine
+    // If we have a rotation speed characteristic, use that get the current fan speed, otherwise we use the current fan state to determine
     let currentSpeed =
       this.fanService.testCharacteristic(this.hap.Characteristic.RotationSpeed) === true
         ? this.fanService.getCharacteristic(this.hap.Characteristic.RotationSpeed).value
-        : currentState === true
+        : currentState === this.hap.Characteristic.Active.ACTIVE
           ? 100
           : 0;
 
@@ -756,18 +756,18 @@ export default class NestThermostat extends HomeKitDevice {
     }
   }
 
-  setDehumidifier(dehumidiferState) {
-    let isActive = dehumidiferState === this.hap.Characteristic.Active.ACTIVE;
+  setDehumidifier(dehumidifierState) {
+    let isActive = dehumidifierState === this.hap.Characteristic.Active.ACTIVE;
 
     this.message(HomeKitDevice.SET, {
       uuid: this.deviceData.nest_google_uuid,
       dehumidifier_state: isActive,
     });
 
-    this.dehumidifierService.updateCharacteristic(this.hap.Characteristic.Active, dehumidiferState);
+    this.dehumidifierService.updateCharacteristic(this.hap.Characteristic.Active, dehumidifierState);
 
     this?.log?.info?.(
-      'Set dehumidifer on thermostat "%s" to "%s"',
+      'Set dehumidifier on thermostat "%s" to "%s"',
       this.deviceData.description,
       isActive ? 'On with target humidity level of ' + this.deviceData.target_humidity + '%' : 'Off',
     );
@@ -989,7 +989,7 @@ export default class NestThermostat extends HomeKitDevice {
         props: { minStep: 100 / this.deviceData.fan_max_speed },
         onSet: (value) => this.setFan(value !== 0 ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE, value),
         onGet: () => {
-          return this.deviceData.fanState === true ? (this.deviceData.fan_timer_speed / this.deviceData.fan_max_speed) * 100 : 0;
+          return this.deviceData.fan_state === true ? (this.deviceData.fan_timer_speed / this.deviceData.fan_max_speed) * 100 : 0;
         },
       });
     } else {

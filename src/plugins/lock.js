@@ -13,7 +13,7 @@ import { DATA_SOURCE, DEVICE_TYPE, PROTOBUF_RESOURCES, LOW_BATTERY_LEVEL } from 
 
 export default class NestLock extends HomeKitDevice {
   static TYPE = 'Lock';
-  static VERSION = '2025.08.13'; // Code version
+  static VERSION = '2025.09.08'; // Code version
 
   // Define lock bolt states
   static STATE = {

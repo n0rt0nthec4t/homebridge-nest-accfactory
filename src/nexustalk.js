@@ -5,7 +5,7 @@
 //
 // Credit to https://github.com/Brandawg93/homebridge-nest-cam for the work on the Nest Camera comms code on which this is based
 //
-// Code version 2025.07.30
+// Code version 2025.09.08
 // Mark Hulskamp
 'use strict';
 
@@ -98,7 +98,7 @@ export default class NexusTalk extends Streamer {
       this.#protobufNexusTalk = protobuf.loadSync(path.resolve(__dirname + '/protobuf/nest/nexustalk.proto'));
     }
 
-    // Store data we need from the device data passed it
+    // Store data we need from the device data passed in
     this.token = deviceData?.apiAccess?.token;
     this.streaming_host = deviceData?.streaming_host; // Host we'll connect to
     this.useGoogleAuth = typeof deviceData?.apiAccess?.oauth2 === 'string' && deviceData?.apiAccess?.oauth2 !== '';
@@ -175,10 +175,10 @@ export default class NexusTalk extends Streamer {
   }
 
   async close(stopStreamFirst) {
-    // Close an authenicated socket stream gracefully
+    // Close an authenticated socket stream gracefully
     if (this.#socket !== undefined) {
       if (stopStreamFirst === true) {
-        // Send a notifcation to nexus we're finished playback
+        // Send a notification to nexus that we've finished playback
         await this.#stopNexusData();
       }
       this.#socket.destroy();
@@ -288,7 +288,7 @@ export default class NexusTalk extends Streamer {
 
   #sendMessage(type, data) {
     if (this.#socket?.readyState !== 'open' || (type !== PACKET_TYPE.HELLO && this.#authorised === false)) {
-      // We're not connect and/or authorised yet, so 'cache' message for processing once this occurs
+      // We're not connected and/or authorised yet, so 'cache' message for processing once this occurs
       this.#messages.push({ type: type, data: data });
       return;
     }
@@ -314,7 +314,7 @@ export default class NexusTalk extends Streamer {
   #Authenticate(reauthorise) {
     // Authenticate over created socket connection
     if (this.#protobufNexusTalk !== undefined) {
-      this.#authorised = false; // We're nolonger authorised
+      this.#authorised = false; // We're no longer authorised
 
       let authoriseRequest = null;
       let TraitMap = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.AuthoriseRequest');
@@ -429,8 +429,8 @@ export default class NexusTalk extends Streamer {
     if (typeof payload === 'object' && this.#protobufNexusTalk !== undefined) {
       let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.PlaybackPacket').decode(payload).toJSON();
 
-      // Setup up a timeout to monitor for no packets recieved in a certain period
-      // If its trigger, we'll attempt to restart the stream and/or connection
+      // Set up a timeout to monitor for no packets received in a certain period
+      // If it's triggered, we'll attempt to restart the stream and/or connection
       // <-- testing to see how often this occurs first
       clearTimeout(this.#stalledTimer);
       this.#stalledTimer = setTimeout(() => {
@@ -464,7 +464,7 @@ export default class NexusTalk extends Streamer {
   }
 
   #handlePlaybackEnd(payload) {
-    // Decode playpack ended packet
+    // Decode playback ended packet
     if (typeof payload === 'object' && this.#protobufNexusTalk !== undefined) {
       let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.PlaybackEnd').decode(payload).toJSON();
 
@@ -519,7 +519,7 @@ export default class NexusTalk extends Streamer {
   }
 
   #handleNexusData(data) {
-    // Process the rawdata from our socket connection and convert into nexus packets to take action against
+    // Process the raw data from our socket connection and convert into nexus packets to take action against
     this.#packets = this.#packets.length === 0 ? data : Buffer.concat([this.#packets, data]);
 
     while (this.#packets.length >= 3) {
@@ -533,7 +533,7 @@ export default class NexusTalk extends Streamer {
       }
 
       if (this.#packets.length < headerSize + packetSize) {
-        // We dont have enough data in the buffer yet to process the full packet
+        // We don't have enough data in the buffer yet to process the full packet
         // so, exit loop and await more data
         break;
       }
