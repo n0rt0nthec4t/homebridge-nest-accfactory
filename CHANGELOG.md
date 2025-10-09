@@ -2,7 +2,7 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.3.3-alpha.1 (yyyy/mm/dd)
+## v0.3.4-alpha.1 (yyyy/mm/dd)
 
 - General code cleanup and stability improvements  
 - General typo and grammar corrections  
