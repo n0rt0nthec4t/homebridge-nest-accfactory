@@ -1,7 +1,7 @@
 // Configuration validation and processing
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.09.08
+// Code version 2025.10.21
 // Mark Hulskamp
 'use strict';
 
@@ -27,7 +27,7 @@ function processConfig(config, log) {
       ? Number(config.options.elevation)
       : 0;
 
-  // Controls what APIs we use, default is to use both Nest and protobuf APIs
+  // Controls what APIs we use, default is to use both Nest and Google APIs
   options.useNestAPI = config.options?.useNestAPI === true || config.options?.useNestAPI === undefined;
   options.useGoogleAPI = config.options?.useGoogleAPI === true || config.options?.useGoogleAPI === undefined;
 
@@ -143,15 +143,15 @@ function buildConnections(config) {
   Object.keys(config).forEach((key) => {
     let section = config[key];
 
-    if (typeof section?.access_token === 'string' && section.access_token !== '') {
+    if (typeof section?.access_token === 'string' && section.access_token.trim() !== '') {
       let fieldTest = section?.fieldTest === true;
       connections[crypto.randomUUID()] = {
         name: key,
         type: ACCOUNT_TYPE.NEST,
         authorised: false,
         allowRetry: true,
-        access_token: section.access_token,
-        fieldTest,
+        access_token: section.access_token.trim(),
+        fieldTest: fieldTest,
         referer: fieldTest ? 'home.ft.nest.com' : 'home.nest.com',
         restAPIHost: fieldTest ? 'home.ft.nest.com' : 'home.nest.com',
         cameraAPIHost: fieldTest ? 'camera.home.ft.nest.com' : 'camera.home.nest.com',
@@ -161,9 +161,9 @@ function buildConnections(config) {
 
     if (
       typeof section?.issuetoken === 'string' &&
-      section.issuetoken !== '' &&
+      section.issuetoken.trim() !== '' &&
       typeof section?.cookie === 'string' &&
-      section.cookie !== ''
+      section.cookie.trim() !== ''
     ) {
       let fieldTest = section?.fieldTest === true;
       connections[crypto.randomUUID()] = {
@@ -171,9 +171,9 @@ function buildConnections(config) {
         type: ACCOUNT_TYPE.GOOGLE,
         authorised: false,
         allowRetry: true,
-        issuetoken: section.issuetoken,
-        cookie: section.cookie,
-        fieldTest,
+        issuetoken: section.issuetoken.trim(),
+        cookie: section.cookie.trim(),
+        fieldTest: fieldTest,
         referer: fieldTest ? 'home.ft.nest.com' : 'home.nest.com',
         restAPIHost: fieldTest ? 'home.ft.nest.com' : 'home.nest.com',
         cameraAPIHost: fieldTest ? 'camera.home.ft.nest.com' : 'camera.home.nest.com',

@@ -36,32 +36,35 @@ The accessory supports connection to Nest using a Nest account AND/OR a Google (
 
 ### Nest Account
 
-If you have a Nest account, you will need to obtain an access token from the Nest web app. Simply go to https://home.nest.com in your browser and log in. Once that's done, go to https://home.nest.com/session in your browser, and you will see a long string that looks like this:
+If you have a **Nest Account**, you’ll need to obtain an **access token** from the Nest web app.
 
-{"2fa_state":"enrolled","access_token":"XXX", ...}
+1. Go to [home.nest.com](https://home.nest.com) and click **Sign in with Nest**.  
+2. After logging in, open [home.nest.com/session](https://home.nest.com/session).  
+3. You’ll see a JSON string similar to:  
+   ```json
+   {"2fa_state":"enrolled","access_token":"XXX", ...}
+4. Copy the value of **access_token** near the start (a long string beginning with `b`) and paste it into your Homebridge configuration.  
+   - Ignore any other `access_token` entries further down the string.
 
-The value of "access_token" near the start of the string (the XXX) (a long sequence of letters, numbers and punctuation beginning with b) can be entered into the plugin-configuration within Homebridge
+**Note:** Do **not** log out of [home.nest.com](https://home.nest.com), as this will invalidate your credentials.
 
-There may be other keys labelled access_token further along in the string - please ignore these.
+### Obtaining a Google cookie token for a Google Account (Safari)
 
-**Do not log out of home.nest.com, as this will invalidate your credentials. Just close the browser tab**
+Google Accounts require an **"issueToken"** and **"cookie"**, which are unique to your account. You only need to do this once as long as you stay logged into your Google Account.
 
-### Obtaining a Google cookie token for a Google Account
+1. Open Safari in a **Private Window**  
+2. Enable the **Develop Menu** (Safari ▸ Settings ▸ Advanced ▸ check *Show Develop menu in menu bar*)  
+3. Open **Develop ▸ Show Web Inspector**, then select the **Network** tab  
+4. Ensure **Preserve Log** is checked  
+5. In the filter box, type **issueToken**  
+6. Go to [home.nest.com](https://home.nest.com) and click **Sign in with Google**  
+7. After login, click the **iframerpc** network request  
+8. In **Headers**, copy:  
+   - **Request URL** - this is your **Issue Token**  
+   - **cookie:** value under *Request Headers* - this is your **Cookie**  
+9. Enter both into your Homebridge configuration  
 
-Google Accounts require an "issueToken" and "cookie". The values of "issueToken" and "cookie" are specific to your Google Account. To get them, follow these steps (only needs to be done once, as long as you stay logged into your Google Account).
-
-1. Open a Chrome browser tab in Incognito Mode
-2. Open Developer Tools (View/Developer/Developer Tools).
-3. Click on 'Network' tab. Make sure 'Preserve Log' is checked.
-4. In the 'Filter' box, enter issueToken
-5. Go to home.nest.com, and click 'Sign in with Google'. Log into your account.
-6. One network call (beginning with iframerpc) will appear in the Dev Tools window. Click on it.
-7. In the Headers tab, under General, copy the entire Request URL (beginning with https://accounts.google.com). This is your "Issue Token" which can be entered into the plugin-configuration within Homebridge.
-8. In the 'Filter' box, enter oauth2/iframe
-9. Several network calls will appear in the Dev Tools window. Click on the last iframe call.
-10. In the Headers tab, under Request Headers, copy the entire cookie (include the whole string which is several lines long and has many field/value pairs - do not include the cookie: name). This is your "Cookie" which can be entered into the plugin-configuration within Homebridge.
-
-**Do not log out of home.nest.com, as this will invalidate your credentials. Just close the browser tab**
+**Note:** Do **not** log out of [home.nest.com](https://home.nest.com), as this will invalidate your credentials.
 
 ## config.json configuration
 
@@ -154,4 +157,9 @@ By default, we look in /usr/local/bin for an ffmpeg binary, however, you can spe
 
 This is a personal hobby project, provided "as-is," with no warranty whatsoever, express or implied, including but not limited to warranties of merchantability or fitness for a particular purpose. Building and running this project is done entirely at your own risk.
 
-Please note that I am not affiliated with any companies, including but not limited to Google, Apple, or any other entities. The author of this project shall not be held liable for any damages or issues arising from its use. If you do encounter any problems with the source code, feel free to reach out, and we can discuss possible solutions
+This plugin is only supported when used with **official Homebridge installations**.  
+Other platforms or forks such as **HOOBS**, **Home Assistant**, or similar derivatives are **not officially supported** and may not function as intended.
+
+Please note that I am not affiliated with any companies, including but not limited to Google, Apple, or any other entities. The author of this project shall not be held liable for any damages or issues arising from its use.  
+
+If you encounter a problem with the source code, please [raise an issue](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issues) on the project's **GitHub repository** so it can be reviewed and investigated.

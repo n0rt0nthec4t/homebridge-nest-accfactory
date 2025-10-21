@@ -28,7 +28,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2025.09.08'; // Code version
+  static VERSION = '2025.10.21'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -434,7 +434,31 @@ export default class NestThermostat extends HomeKitDevice {
       this?.log?.info?.('Heating/cooling setup on thermostat on "%s" has changed', deviceData.description);
     }
 
-    // Update current mode temperatures
+    // Update current mode, temperatures and log any changes
+    if (deviceData.target_temperature_low !== this.deviceData.target_temperature_low) {
+      this.#logTemperatureChange(
+        'Thermostat',
+        'heating',
+        deviceData.target_temperature_low,
+        deviceData.hvac_mode?.toUpperCase?.().includes('ECO') === true,
+        deviceData.temperature_scale?.toUpperCase?.() === 'F' ? 'F' : 'C',
+      );
+    }
+
+    if (deviceData.target_temperature_high !== this.deviceData.target_temperature_high) {
+      this.#logTemperatureChange(
+        'Thermostat',
+        'cooling',
+        deviceData.target_temperature_high,
+        deviceData.hvac_mode?.toUpperCase?.().includes('ECO') === true,
+        deviceData.temperature_scale?.toUpperCase?.() === 'F' ? 'F' : 'C',
+      );
+    }
+
+    if (deviceData.hvac_mode.toUpperCase() !== this.deviceData.hvac_mode.toUpperCase()) {
+      this.#logModeChange('Thermostat', deviceData.hvac_mode);
+    }
+
     if (
       deviceData.can_heat === true &&
       (deviceData.hvac_mode.toUpperCase() === 'HEAT' || deviceData.hvac_mode.toUpperCase() === 'ECOHEAT')
@@ -786,7 +810,7 @@ export default class NestThermostat extends HomeKitDevice {
     this?.log?.info?.('Set temperature units on thermostat "%s" to "%s"', this.deviceData.description, unit === 'C' ? '°C' : '°F');
   }
 
-  setMode(thermostatMode) {
+  async setMode(thermostatMode) {
     if (thermostatMode !== this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).value) {
       // Work out based on the HomeKit requested mode, what can the thermostat really switch too
       // We may over-ride the requested HomeKit mode
@@ -847,9 +871,9 @@ export default class NestThermostat extends HomeKitDevice {
         mode = 'range';
       }
 
-      this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, hvac_mode: mode });
+      await this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, hvac_mode: mode });
 
-      this?.log?.info?.('Set mode on "%s" to "%s"', this.deviceData.description, mode);
+      this.#logModeChange('HomeKit', mode);
     }
   }
 
@@ -877,50 +901,49 @@ export default class NestThermostat extends HomeKitDevice {
     return currentMode;
   }
 
-  setTemperature(characteristic, temperature) {
+  async setTemperature(characteristic, temperature) {
     if (typeof characteristic !== 'function' || typeof characteristic?.UUID !== 'string') {
       return;
     }
 
     let mode = this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).value;
-    let isEco = this.deviceData.hvac_mode?.toUpperCase?.().includes('ECO') === true;
-    let scale = this.deviceData.temperature_scale?.toUpperCase?.() === 'F' ? 'F' : 'C';
-    let tempDisplay = (scale === 'F' ? (temperature * 9) / 5 + 32 : temperature).toFixed(1);
-    let tempUnit = scale === 'F' ? '°F' : '°C';
-    let ecoPrefix = isEco ? 'eco mode ' : '';
-
     let targetKey = undefined;
     let modeLabel = '';
 
     if (
       characteristic.UUID === this.hap.Characteristic.TargetTemperature.UUID &&
-      mode !== this.hap.Characteristic.TargetHeatingCoolingState.AUTO
+      mode === this.hap.Characteristic.TargetHeatingCoolingState.HEAT
     ) {
-      targetKey = 'target_temperature';
-      modeLabel = mode === this.hap.Characteristic.TargetHeatingCoolingState.HEAT ? 'heating' : 'cooling';
+      targetKey = 'target_temperature_low';
+      modeLabel = 'heating';
+    } else if (
+      characteristic.UUID === this.hap.Characteristic.TargetTemperature.UUID &&
+      mode === this.hap.Characteristic.TargetHeatingCoolingState.COOL
+    ) {
+      targetKey = 'target_temperature_high';
+      modeLabel = 'cooling';
     } else if (
       characteristic.UUID === this.hap.Characteristic.HeatingThresholdTemperature.UUID &&
-      mode === this.hap.Characteristic.TargetHeatingCoolingState.AUTO
+      (mode === this.hap.Characteristic.TargetHeatingCoolingState.HEAT || mode === this.hap.Characteristic.TargetHeatingCoolingState.AUTO)
     ) {
       targetKey = 'target_temperature_low';
       modeLabel = 'heating';
     } else if (
       characteristic.UUID === this.hap.Characteristic.CoolingThresholdTemperature.UUID &&
-      mode === this.hap.Characteristic.TargetHeatingCoolingState.AUTO
+      (mode === this.hap.Characteristic.TargetHeatingCoolingState.COOL || mode === this.hap.Characteristic.TargetHeatingCoolingState.AUTO)
     ) {
       targetKey = 'target_temperature_high';
       modeLabel = 'cooling';
     }
 
     if (targetKey !== undefined) {
-      this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, [targetKey]: temperature });
-      this?.log?.info?.(
-        'Set %s%s temperature on "%s" to "%s %s"',
-        ecoPrefix,
+      await this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, [targetKey]: temperature });
+      this.#logTemperatureChange(
+        'HomeKit',
         modeLabel,
-        this.deviceData.description,
-        tempDisplay,
-        tempUnit,
+        temperature,
+        this.deviceData.hvac_mode?.toUpperCase?.().includes('ECO') === true,
+        this.deviceData.temperature_scale?.toUpperCase?.() === 'F' ? 'F' : 'C',
       );
     }
 
@@ -1076,6 +1099,41 @@ export default class NestThermostat extends HomeKitDevice {
     }
 
     return loadedModule;
+  }
+
+  #logTemperatureChange(source, modeLabel, temperature, isEco, scale) {
+    if (typeof temperature !== 'number') {
+      return;
+    }
+
+    var unitScale = typeof scale === 'string' ? scale.toUpperCase() : this.deviceData.temperature_scale?.toUpperCase?.();
+    var isFahrenheit = unitScale === 'F';
+    var tempDisplay = (isFahrenheit ? (temperature * 9) / 5 + 32 : temperature).toFixed(1);
+    var tempUnit = isFahrenheit ? '°F' : '°C';
+    var ecoPrefix = isEco === true ? 'eco mode ' : '';
+
+    this?.log?.info?.(
+      source === 'Thermostat' ? '%s%s temperature on "%s" changed to "%s %s"' : 'Set %s%s temperature on "%s" to "%s %s"',
+      ecoPrefix,
+      modeLabel.charAt(0).toUpperCase() + modeLabel.slice(1).toLowerCase(),
+      this.deviceData.description,
+      tempDisplay,
+      tempUnit,
+    );
+  }
+
+  #logModeChange(source, modeLabel) {
+    if (typeof modeLabel !== 'string' || modeLabel.trim() === '') {
+      return;
+    }
+
+    this?.log?.info?.(
+      source === 'Thermostat' ? 'Mode on "%s" changed to "%s"' : 'Set mode on "%s" to "%s"',
+      this.deviceData.description,
+      modeLabel.toLowerCase().includes('range') === true
+        ? 'Heat/Cool'
+        : modeLabel.charAt(0).toUpperCase() + modeLabel.slice(1).toLowerCase(),
+    );
   }
 }
 

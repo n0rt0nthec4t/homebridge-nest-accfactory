@@ -2,6 +2,18 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.3.5-alpha.1 (xxxx/xx/xx)
+
+- General code cleanup and stability improvements  
+- Updated instructions for obtaining access token for Nest accounts
+- Updated instructions for obtaining issue token and cookie for Google accounts  
+- Updated disclaimer in `README.md` to clarify support for official Homebridge installations only
+- Added logging for thermostat mode and temperature changes received from outside of HomeKit [@MorelloCherry](https://github.com/MorelloCherry)
+
+### Known Issues
+
+- The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
+
 ## v0.3.4 (2025/10/17)
 
 - General code cleanup and stability improvements  
@@ -11,6 +23,10 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 - Fixed thermostat fan state checking
 - Fixed periodic camera snapshots when camera is turned off
 - Updated camera resource assets
+
+### Known Issues
+
+- The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
 
 ## v0.3.3 (2025/08/23)
 
