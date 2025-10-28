@@ -28,7 +28,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2025.10.21'; // Code version
+  static VERSION = '2025.10.29'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -1106,20 +1106,33 @@ export default class NestThermostat extends HomeKitDevice {
       return;
     }
 
-    var unitScale = typeof scale === 'string' ? scale.toUpperCase() : this.deviceData.temperature_scale?.toUpperCase?.();
-    var isFahrenheit = unitScale === 'F';
-    var tempDisplay = (isFahrenheit ? (temperature * 9) / 5 + 32 : temperature).toFixed(1);
-    var tempUnit = isFahrenheit ? '°F' : '°C';
-    var ecoPrefix = isEco === true ? 'eco mode ' : '';
+    let unitScale = typeof scale === 'string' ? scale.toUpperCase() : this.deviceData.temperature_scale?.toUpperCase?.();
+    let isFahrenheit = unitScale === 'F';
+    let tempDisplay = (isFahrenheit ? (temperature * 9) / 5 + 32 : temperature).toFixed(1);
+    let tempUnit = isFahrenheit ? '°F' : '°C';
+    let ecoPrefix = isEco === true ? 'eco mode ' : '';
 
-    this?.log?.info?.(
-      source === 'Thermostat' ? '%s%s temperature on "%s" changed to "%s %s"' : 'Set %s%s temperature on "%s" to "%s %s"',
-      ecoPrefix,
-      modeLabel.charAt(0).toUpperCase() + modeLabel.slice(1).toLowerCase(),
-      this.deviceData.description,
-      tempDisplay,
-      tempUnit,
-    );
+    modeLabel = modeLabel.charAt(0).toUpperCase() + modeLabel.slice(1).toLowerCase();
+
+    if (source === 'Thermostat') {
+      this?.log?.debug?.(
+        '%s%s temperature on "%s" changed to "%s %s"',
+        ecoPrefix,
+        modeLabel,
+        this.deviceData.description,
+        tempDisplay,
+        tempUnit,
+      );
+    } else {
+      this?.log?.info?.(
+        'Set %s%s temperature on "%s" to "%s %s"',
+        ecoPrefix,
+        modeLabel,
+        this.deviceData.description,
+        tempDisplay,
+        tempUnit,
+      );
+    }
   }
 
   #logModeChange(source, modeLabel) {
@@ -1127,13 +1140,25 @@ export default class NestThermostat extends HomeKitDevice {
       return;
     }
 
-    this?.log?.info?.(
-      source === 'Thermostat' ? 'Mode on "%s" changed to "%s"' : 'Set mode on "%s" to "%s"',
-      this.deviceData.description,
-      modeLabel.toLowerCase().includes('range') === true
-        ? 'Heat/Cool'
-        : modeLabel.charAt(0).toUpperCase() + modeLabel.slice(1).toLowerCase(),
-    );
+    modeLabel = modeLabel.charAt(0).toUpperCase() + modeLabel.slice(1).toLowerCase();
+
+    if (source === 'Thermostat') {
+      this?.log?.debug?.(
+        'Mode on "%s" changed to "%s"',
+        this.deviceData.description,
+        modeLabel.toLowerCase().includes('range') === true
+          ? 'Heat/Cool'
+          : modeLabel,
+      );
+    } else {
+      this?.log?.info?.(
+        'Set mode on "%s" to "%s"',
+        this.deviceData.description,
+        modeLabel.toLowerCase().includes('range') === true
+          ? 'Heat/Cool'
+          : modeLabel,
+      );
+    }
   }
 }
 

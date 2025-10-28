@@ -2,7 +2,7 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.3.5-alpha.1 (xxxx/xx/xx)
+## v0.3.5 (xxxx/xx/xx)
 
 - General code cleanup and stability improvements  
 - Updated instructions for obtaining access token for Nest accounts
