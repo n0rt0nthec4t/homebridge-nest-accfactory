@@ -63,7 +63,7 @@
         "prettier-eslint": "^16.4.2",
         "copyfiles": "^2.4.1",
         "rimraf": "^6.0.1",
-        "homebridge": "^2.0.0-beta.0"
+        "homebridge": "^2.0.0-beta.41"
     },
     "dependencies": {
         "@evan/opus": "^1.0.3",
