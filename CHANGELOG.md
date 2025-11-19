@@ -4,7 +4,8 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 ## v0.3.5 (xxxx/xx/xx)
 
-- General code cleanup and stability improvements  
+- General code cleanup and stability improvements
+- Fixed battery level reporting for Nest Thermostat (2020) 
 - Updated instructions for obtaining access token for Nest accounts
 - Updated instructions for obtaining issue token and cookie for Google accounts  
 - Updated disclaimer in `README.md` to clarify support for official Homebridge installations only

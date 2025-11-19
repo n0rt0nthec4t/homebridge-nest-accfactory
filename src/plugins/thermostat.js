@@ -28,7 +28,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2025.10.29'; // Code version
+  static VERSION = '2025.11.20'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -263,6 +263,7 @@ export default class NestThermostat extends HomeKitDevice {
     this.accessory.removeService(this.humidityService);
     this.accessory.removeService(this.fanService);
     this.accessory.removeService(this.dehumidifierService);
+    this.accessory.removeService(this.humidifierService);
     this.thermostatService = undefined;
     this.batteryService = undefined;
     this.occupancyService = undefined;
@@ -1146,17 +1147,13 @@ export default class NestThermostat extends HomeKitDevice {
       this?.log?.debug?.(
         'Mode on "%s" changed to "%s"',
         this.deviceData.description,
-        modeLabel.toLowerCase().includes('range') === true
-          ? 'Heat/Cool'
-          : modeLabel,
+        modeLabel.toLowerCase().includes('range') === true ? 'Heat/Cool' : modeLabel,
       );
     } else {
       this?.log?.info?.(
         'Set mode on "%s" to "%s"',
         this.deviceData.description,
-        modeLabel.toLowerCase().includes('range') === true
-          ? 'Heat/Cool'
-          : modeLabel,
+        modeLabel.toLowerCase().includes('range') === true ? 'Heat/Cool' : modeLabel,
       );
     }
   }
@@ -1188,7 +1185,6 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
       data.target_temperature = adjustTemperature(data.target_temperature, 'C', 'C', true);
       data.backplate_temperature = adjustTemperature(data.backplate_temperature, 'C', 'C', true);
       data.current_temperature = adjustTemperature(data.current_temperature, 'C', 'C', true);
-      data.battery_level = scaleValue(data.battery_level, 3.6, 3.9, 0, 100);
 
       processed = data;
       // eslint-disable-next-line no-unused-vars
@@ -1265,7 +1261,23 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
             Array.isArray(value.value?.display?.thermostatState) === true && value.value.display.thermostatState.includes('bpd') === true;
           RESTTypeData.backplate_temperature = parseFloat(value.value.backplate_temperature.temperatureValue.temperature.value);
           RESTTypeData.current_temperature = parseFloat(value.value.current_temperature.temperatureValue.temperature.value);
-          RESTTypeData.battery_level = parseFloat(value.value.battery_voltage.batteryValue.batteryVoltage.value);
+          if (value.value.device_info.typeName === 'google.resource.GoogleZirconium1Resource') {
+            RESTTypeData.battery_level = scaleValue(
+              parseFloat(value.value.battery_voltage.batteryValue.batteryVoltage.value),
+              2.9,
+              3.2,
+              0,
+              100,
+            );
+          } else {
+            RESTTypeData.battery_level = scaleValue(
+              parseFloat(value.value.battery_voltage.batteryValue.batteryVoltage.value),
+              3.6,
+              3.9,
+              0,
+              100,
+            );
+          }
           RESTTypeData.online = value.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE';
           RESTTypeData.leaf = value.value?.leaf?.active === true;
           RESTTypeData.can_cool =
@@ -1487,7 +1499,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           RESTTypeData.removed_from_base = value.value.nlclient_state.toUpperCase() === 'BPD';
           RESTTypeData.backplate_temperature = value.value.backplate_temperature;
           RESTTypeData.current_temperature = value.value.backplate_temperature;
-          RESTTypeData.battery_level = value.value.battery_level;
+          RESTTypeData.battery_level = scaleValue(value.value.battery_level, 3.6, 3.9, 0, 100);
           RESTTypeData.online = rawData?.['track.' + value.value.serial_number]?.value?.online === true;
           RESTTypeData.leaf = value.value.leaf === true;
           RESTTypeData.has_humidifier = value.value.has_humidifier === true;
