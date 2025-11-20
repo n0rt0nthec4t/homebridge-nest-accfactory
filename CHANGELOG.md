@@ -2,14 +2,14 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.3.5 (xxxx/xx/xx)
+## v0.3.5 (2025/11/21)
 
 - General code cleanup and stability improvements
 - Fixed battery level reporting for Nest Thermostat (2020) 
 - Updated instructions for obtaining access token for Nest accounts
 - Updated instructions for obtaining issue token and cookie for Google accounts  
 - Updated disclaimer in `README.md` to clarify support for official Homebridge installations only
-- Added logging for thermostat mode and temperature changes received from outside of HomeKit [@MorelloCherry](https://github.com/MorelloCherry)
+- Added debug logging for thermostat mode and temperature changes received from outside of HomeKit [@MorelloCherry](https://github.com/MorelloCherry)
 
 ### Known Issues
 

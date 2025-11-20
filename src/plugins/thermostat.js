@@ -1262,10 +1262,11 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           RESTTypeData.backplate_temperature = parseFloat(value.value.backplate_temperature.temperatureValue.temperature.value);
           RESTTypeData.current_temperature = parseFloat(value.value.current_temperature.temperatureValue.temperature.value);
           if (value.value.device_info.typeName === 'google.resource.GoogleZirconium1Resource') {
+            // Lower battery voltages for the "2020" mirror thermostat. Levels are a "guestimate" :-)
             RESTTypeData.battery_level = scaleValue(
               parseFloat(value.value.battery_voltage.batteryValue.batteryVoltage.value),
               2.9,
-              3.2,
+              3.15,
               0,
               100,
             );
