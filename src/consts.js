@@ -1,7 +1,7 @@
 // Common defines
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.09.08
+// Code version 2025.11.22
 // Mark Hulskamp
 'use strict';
 
@@ -174,3 +174,7 @@ export const LOG_LEVELS = {
 };
 
 export const NESTLABS_MAC_PREFIX = '18B430';
+
+export const MIN_ELEVATION = 0;
+
+export const MAX_ELEVATION = 8848;

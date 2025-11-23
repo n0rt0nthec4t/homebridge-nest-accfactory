@@ -2,6 +2,17 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.3.6-alpha.1 (xxxx/xx/xx)
+
+- General code cleanup and stability improvements for HomeBridge 2.0
+- Added support for a new `homes` section in `config.json` to enable per-home options
+- Updated `README.md` detailing new `homes` section
+- Remove device specific `"elevation"` option from configuration
+
+### Known Issues
+
+- The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
+
 ## v0.3.5 (2025/11/21)
 
 - General code cleanup and stability improvements

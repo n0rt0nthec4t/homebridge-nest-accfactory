@@ -31,7 +31,7 @@ const STREAMING_PROTOCOL = {
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2025.09.08'; // Code version
+  static VERSION = '2025.11.23'; // Code version
 
   // For messaging back to parent class (Doorbell/Floodlight)
   static SET = HomeKitDevice.SET;
@@ -129,7 +129,10 @@ export default class NestCamera extends HomeKitDevice {
               (value === true && this.deviceData.statusled_brightness !== 0) ||
               (value === false && this.deviceData.statusled_brightness !== 1)
             ) {
-              this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, statusled_brightness: value === true ? 0 : 1 });
+              this.message(HomeKitDevice.SET, {
+                uuid: this.deviceData.nest_google_device_uuid,
+                statusled_brightness: value === true ? 0 : 1,
+              });
               this?.log?.info?.('Recording status LED on "%s" was turned %s', this.deviceData.description, value === true ? 'on' : 'off');
             }
           },
@@ -146,7 +149,7 @@ export default class NestCamera extends HomeKitDevice {
           // only change IRLed status value if different than on-device
           if ((value === false && this.deviceData.irled_enabled === true) || (value === true && this.deviceData.irled_enabled === false)) {
             this.message(HomeKitDevice.SET, {
-              uuid: this.deviceData.nest_google_uuid,
+              uuid: this.deviceData.nest_google_device_uuid,
               irled_enabled: value === true ? 'auto_on' : 'always_off',
             });
 
@@ -172,7 +175,7 @@ export default class NestCamera extends HomeKitDevice {
           ) {
             // Camera state does not reflect requested state, so fix
             this.message(HomeKitDevice.SET, {
-              uuid: this.deviceData.nest_google_uuid,
+              uuid: this.deviceData.nest_google_device_uuid,
               streaming_enabled: value === this.hap.Characteristic.HomeKitCameraActive.ON ? true : false,
             });
             this?.log?.info?.(
@@ -204,7 +207,7 @@ export default class NestCamera extends HomeKitDevice {
               (this.deviceData.audio_enabled === false && value === this.hap.Characteristic.RecordingAudioActive.ENABLE)
             ) {
               this.message(HomeKitDevice.SET, {
-                uuid: this.deviceData.nest_google_uuid,
+                uuid: this.deviceData.nest_google_device_uuid,
                 audio_enabled: value === this.hap.Characteristic.RecordingAudioActive.ENABLE ? true : false,
               });
               this?.log?.info?.(
@@ -852,7 +855,7 @@ export default class NestCamera extends HomeKitDevice {
     if (this.deviceData.migrating === false && this.deviceData.streaming_enabled === true && this.deviceData.online === true) {
       // Call the camera/doorbell to get a snapshot image.
       // Prefer onGet() result if implemented; fallback to static handler
-      let response = await this.get({ uuid: this.deviceData.nest_google_uuid, camera_snapshot: Buffer.alloc(0) });
+      let response = await this.get({ uuid: this.deviceData.nest_google_device_uuid, camera_snapshot: Buffer.alloc(0) });
       if (
         Buffer.isBuffer(response?.camera_snapshot) === true &&
         response.camera_snapshot.length > 0 &&
@@ -1425,6 +1428,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         ) {
           tempDevice = processCommonData(
             object_key,
+            value.value.device_info.pairerId.resourceId,
             {
               type: DEVICE_TYPE.CAMERA,
               model:
@@ -1528,6 +1532,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           // We'll only use the Nest API data for Cameras which have NOT been migrated to Google Home
           tempDevice = processCommonData(
             object_key,
+            'structure.' + value.value.structure_id,
             {
               type: DEVICE_TYPE.CAMERA,
               serialNumber: value.value.serial_number,
@@ -1587,8 +1592,19 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         let deviceOptions = config?.devices?.find(
           (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
         );
+        let homeOptions = config?.homes?.find(
+          (home) =>
+            home?.nest_home_uuid?.toUpperCase?.() === 'structure.' + value?.value?.structure_id?.toUpperCase?.() ||
+            home?.google_home_uuid?.toUpperCase?.() === value?.value?.device_info?.pairerId?.resourceId?.toUpperCase?.(),
+        );
+
         // Insert any extra options we've read in from configuration file for this device
-        tempDevice.eveHistory = config.options.eveHistory === true || deviceOptions?.eveHistory === true;
+        tempDevice.eveHistory =
+          deviceOptions?.eveHistory !== undefined
+            ? deviceOptions.eveHistory === true
+            : homeOptions?.eveHistory !== undefined
+              ? homeOptions.eveHistory === true
+              : config.options?.eveHistory === true;
         tempDevice.hksv =
           (deviceOptions?.hksv === true || (deviceOptions?.hksv !== false && config.options?.hksv === true)) &&
           config.options?.ffmpeg?.valid === true;
@@ -1607,6 +1623,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
             config.options.ffmpeg.hwaccel === true,
         };
         tempDevice.maxStreams = config.options.hksv === true || deviceOptions?.hksv === true ? 1 : 2;
+
         devices[tempDevice.serialNumber] = tempDevice; // Store processed device
       }
     });

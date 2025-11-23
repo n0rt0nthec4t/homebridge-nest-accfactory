@@ -28,7 +28,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2025.11.20'; // Code version
+  static VERSION = '2025.11.23'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -708,7 +708,7 @@ export default class NestThermostat extends HomeKitDevice {
 
     if (type === HomeKitDevice?.EVEHOME?.SET) {
       if (typeof message?.vacation?.status === 'boolean') {
-        this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, vacation_mode: message.vacation.status });
+        this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_device_uuid, vacation_mode: message.vacation.status });
       }
 
       if (typeof message?.programs === 'object') {
@@ -734,7 +734,7 @@ export default class NestThermostat extends HomeKitDevice {
       let scaledSpeed = Math.round((speed / 100) * this.deviceData.fan_max_speed);
 
       this.message(HomeKitDevice.SET, {
-        uuid: this.deviceData.nest_google_uuid,
+        uuid: this.deviceData.nest_google_device_uuid,
         fan_state: isActive,
         fan_duration: this.deviceData.fan_duration,
         fan_timer_speed: scaledSpeed,
@@ -785,7 +785,7 @@ export default class NestThermostat extends HomeKitDevice {
     let isActive = dehumidifierState === this.hap.Characteristic.Active.ACTIVE;
 
     this.message(HomeKitDevice.SET, {
-      uuid: this.deviceData.nest_google_uuid,
+      uuid: this.deviceData.nest_google_device_uuid,
       dehumidifier_state: isActive,
     });
 
@@ -802,7 +802,7 @@ export default class NestThermostat extends HomeKitDevice {
     let unit = temperatureUnit === this.hap.Characteristic.TemperatureDisplayUnits.CELSIUS ? 'C' : 'F';
 
     this.message(HomeKitDevice.SET, {
-      uuid: this.deviceData.nest_google_uuid,
+      uuid: this.deviceData.nest_google_device_uuid,
       temperature_scale: unit,
     });
 
@@ -872,7 +872,7 @@ export default class NestThermostat extends HomeKitDevice {
         mode = 'range';
       }
 
-      await this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, hvac_mode: mode });
+      await this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_device_uuid, hvac_mode: mode });
 
       this.#logModeChange('HomeKit', mode);
     }
@@ -938,7 +938,7 @@ export default class NestThermostat extends HomeKitDevice {
     }
 
     if (targetKey !== undefined) {
-      await this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, [targetKey]: temperature });
+      await this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_device_uuid, [targetKey]: temperature });
       this.#logTemperatureChange(
         'HomeKit',
         modeLabel,
@@ -982,7 +982,7 @@ export default class NestThermostat extends HomeKitDevice {
       // Clear pin hash????
     }
     this.message(HomeKitDevice.SET, {
-      uuid: this.deviceData.nest_google_uuid,
+      uuid: this.deviceData.nest_google_device_uuid,
       temperature_lock: value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED ? true : false,
     });
 
@@ -1171,7 +1171,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
     return;
   }
 
-  const process_thermostat_data = (object_key, data) => {
+  const process_thermostat_data = (object_key, structure_id, data) => {
     let processed = {};
     try {
       // Fix up data we need to
@@ -1179,7 +1179,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
       // If we have hot water control, it should be a 'UK/EU' model, so add that after the 'gen' tag in the model name
       data.model = data.has_hot_water_control === true ? data.model.replace(/\bgen\)/, 'gen, EU)') : data.model;
 
-      data = processCommonData(object_key, data, config);
+      data = processCommonData(object_key, structure_id, data, config);
       data.target_temperature_high = adjustTemperature(data.target_temperature_high, 'C', 'C', true);
       data.target_temperature_low = adjustTemperature(data.target_temperature_low, 'C', 'C', true);
       data.target_temperature = adjustTemperature(data.target_temperature, 'C', 'C', true);
@@ -1462,15 +1462,15 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
             });
           }
 
-          tempDevice = process_thermostat_data(object_key, RESTTypeData);
+          tempDevice = process_thermostat_data(object_key, value.value.device_info.pairerId.resourceId, RESTTypeData);
         }
 
         if (
           value?.source === DATA_SOURCE.NEST &&
-          rawData?.['track.' + value.value?.serial_number] !== undefined &&
-          rawData?.['link.' + value.value?.serial_number] !== undefined &&
-          rawData?.['shared.' + value.value?.serial_number] !== undefined &&
-          rawData?.['where.' + rawData?.['link.' + value.value?.serial_number]?.value?.structure?.split?.('.')[1]] !== undefined
+          typeof rawData?.['track.' + value.value?.serial_number] === 'object' &&
+          (rawData?.['link.' + value.value?.serial_number]?.value?.structure?.trim() ?? '') !== '' &&
+          typeof rawData?.['shared.' + value.value?.serial_number] === 'object' &&
+          typeof rawData?.['where.' + rawData['link.' + value.value.serial_number].value.structure.split?.('.')[1]] === 'object'
         ) {
           let RESTTypeData = {};
           RESTTypeData.type = DEVICE_TYPE.THERMOSTAT;
@@ -1660,7 +1660,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
             RESTTypeData.schedule_mode = rawData['schedule.' + value.value.serial_number].value.schedule_mode;
           }
 
-          tempDevice = process_thermostat_data(object_key, RESTTypeData);
+          tempDevice = process_thermostat_data(object_key, rawData['link.' + value.value.serial_number].value.structure, RESTTypeData);
         }
         // eslint-disable-next-line no-unused-vars
       } catch (error) {
@@ -1675,8 +1675,20 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         let deviceOptions = config?.devices?.find(
           (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
         );
+        let homeOptions = config?.homes?.find(
+          (home) =>
+            home?.nest_home_uuid?.toUpperCase?.() === rawData?.['link.' + value?.value?.serial_number]?.value?.structure?.toUpperCase?.() ||
+            home?.google_home_uuid?.toUpperCase?.() === value?.value?.device_info?.pairerId?.resourceId?.toUpperCase?.(),
+        );
+
         // Insert any extra options we've read in from configuration file for this device
-        tempDevice.eveHistory = config.options.eveHistory === true || deviceOptions?.eveHistory === true;
+        tempDevice.eveHistory =
+          deviceOptions?.eveHistory !== undefined
+            ? deviceOptions.eveHistory === true
+            : homeOptions?.eveHistory !== undefined
+              ? homeOptions.eveHistory === true
+              : config.options?.eveHistory === true;
+
         tempDevice.humiditySensor = deviceOptions?.humiditySensor === true;
 
         // Process fan running duration.. we only allow values matching app

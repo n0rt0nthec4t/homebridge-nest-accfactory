@@ -1,7 +1,7 @@
 // Configuration validation and processing
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.10.21
+// Code version 2025.11.22
 // Mark Hulskamp
 'use strict';
 
@@ -12,7 +12,7 @@ import crypto from 'node:crypto';
 import FFmpeg from './ffmpeg.js';
 
 // Define constants
-import { FFMPEG_VERSION, ACCOUNT_TYPE } from './consts.js';
+import { FFMPEG_VERSION, ACCOUNT_TYPE, MIN_ELEVATION, MAX_ELEVATION } from './consts.js';
 
 function processConfig(config, log) {
   let options = (config.options = typeof config?.options === 'object' ? config.options : {});
@@ -23,9 +23,11 @@ function processConfig(config, log) {
   options.exclude = config.options?.exclude === true;
 
   options.elevation =
-    isNaN(config.options?.elevation) === false && Number(config.options.elevation) >= 0 && Number(config.options.elevation) <= 8848
+    isNaN(config.options?.elevation) === false &&
+    Number(config.options.elevation) >= MIN_ELEVATION &&
+    Number(config.options.elevation) <= MAX_ELEVATION
       ? Number(config.options.elevation)
-      : 0;
+      : MIN_ELEVATION;
 
   // Controls what APIs we use, default is to use both Nest and Google APIs
   options.useNestAPI = config.options?.useNestAPI === true || config.options?.useNestAPI === undefined;
@@ -42,10 +44,7 @@ function processConfig(config, log) {
     hwaccel: false,
   };
 
-  let ffmpegPath =
-    typeof config.options?.ffmpegPath === 'string' && config.options.ffmpegPath.trim() !== ''
-      ? config.options.ffmpegPath.trim()
-      : '/usr/local/bin';
+  let ffmpegPath = (config?.options?.ffmpegPath?.trim?.() ?? '') !== '' ? config.options.ffmpegPath.trim() : '/usr/local/bin';
 
   // Create FFmpeg probe
   let ffmpeg = new FFmpeg(ffmpegPath, log);
@@ -132,6 +131,11 @@ function processConfig(config, log) {
     );
     log?.warn?.('> https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/blob/main/src/README.md');
     log?.warn?.('');
+  }
+
+  // Per home configuration(s)
+  if (Array.isArray(config.homes) === false) {
+    config.homes = [];
   }
 
   return config;

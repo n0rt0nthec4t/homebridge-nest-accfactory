@@ -20,7 +20,7 @@ import {
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = 'Heatlink';
-  static VERSION = '2025.08.08'; // Code version
+  static VERSION = '2025.11.23'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
@@ -266,6 +266,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         ) {
           tempDevice = processCommonData(
             object_key,
+            value.value.device_info.pairerId.resourceId,
             {
               type: DEVICE_TYPE.HEATLINK,
               model:
@@ -315,7 +316,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         if (
           value?.source === DATA_SOURCE.NEST &&
           typeof rawData?.['track.' + value.value?.serial_number] === 'object' &&
-          typeof rawData?.['link.' + value.value?.serial_number] === 'object' &&
+          typeof rawData?.['link.' + value.value?.serial_number]?.value?.structure === 'string' &&
           typeof rawData?.['shared.' + value.value?.serial_number] === 'object' &&
           typeof rawData?.['where.' + rawData?.['link.' + value.value?.serial_number]?.value?.structure?.split?.('.')[1]] === 'object' &&
           ['onoff', 'opentherm'].some(
@@ -327,6 +328,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         ) {
           tempDevice = processCommonData(
             object_key,
+            rawData['link.' + value.value.serial_number].value.structure,
             {
               type: DEVICE_TYPE.HEATLINK,
               model:
@@ -378,8 +380,19 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         let deviceOptions = config?.devices?.find(
           (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
         );
+        let homeOptions = config?.homes?.find(
+          (home) =>
+            home?.nest_home_uuid?.toUpperCase?.() === rawData?.['link.' + value?.value?.serial_number]?.value?.structure?.toUpperCase?.() ||
+            home?.google_home_uuid?.toUpperCase?.() === value?.value?.device_info?.pairerId?.resourceId?.toUpperCase?.(),
+        );
+
         // Insert any extra options we've read in from configuration file for this device
-        tempDevice.eveHistory = config.options.eveHistory === true || deviceOptions?.eveHistory === true;
+        tempDevice.eveHistory =
+          deviceOptions?.eveHistory !== undefined
+            ? deviceOptions.eveHistory === true
+            : homeOptions?.eveHistory !== undefined
+              ? homeOptions.eveHistory === true
+              : config.options?.eveHistory === true;
 
         // Process hotwater boost time.. we only allow values matching app
         tempDevice.hotwaterBoostTime = parseDurationToSeconds(deviceOptions?.hotwaterBoostTime, {

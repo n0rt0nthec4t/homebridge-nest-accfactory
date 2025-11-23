@@ -9,11 +9,11 @@ import HomeKitDevice from '../HomeKitDevice.js';
 import { processCommonData, adjustTemperature, crc24 } from '../utils.js';
 
 // Define constants
-import { DATA_SOURCE, DEVICE_TYPE, NESTLABS_MAC_PREFIX } from '../consts.js';
+import { DATA_SOURCE, DEVICE_TYPE, MAX_ELEVATION, MIN_ELEVATION, NESTLABS_MAC_PREFIX } from '../consts.js';
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = 'Weather';
-  static VERSION = '2025.09.08'; // Code version
+  static VERSION = '2025.11.24'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -180,9 +180,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
   // We use this to created virtual weather station(s) for each structure that has location data
   let devices = {};
   Object.entries(rawData)
-    .filter(
-      ([key]) => (key.startsWith('structure.') === true || key.startsWith('STRUCTURE_') === true) && config?.options?.weather === true, // Only if weather enabled
-    )
+    .filter(([key]) => key.startsWith('structure.') === true || key.startsWith('STRUCTURE_') === true)
     .forEach(([object_key, value]) => {
       let tempDevice = {};
       try {
@@ -216,6 +214,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
 
         if (serialNumber !== undefined && description !== undefined) {
           tempDevice = processCommonData(
+            object_key,
             object_key,
             {
               type: DEVICE_TYPE.WEATHER,
@@ -252,12 +251,29 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         let deviceOptions = config?.devices?.find(
           (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
         );
-        // Insert any extra options we've read in from configuration file for this device
-        tempDevice.eveHistory = config.options.eveHistory === true || deviceOptions?.eveHistory === true;
+        let homeOptions = config?.homes?.find(
+          (home) =>
+            home?.nest_home_uuid?.toUpperCase?.() === object_key?.toUpperCase?.() ||
+            home?.google_home_uuid?.toUpperCase?.() === object_key?.toUpperCase?.(),
+        );
+
+        // Insert any extra options we've read in from configuration file for this device or its associated home
+        tempDevice.eveHistory =
+          deviceOptions?.eveHistory !== undefined
+            ? deviceOptions.eveHistory === true
+            : homeOptions?.eveHistory !== undefined
+              ? homeOptions.eveHistory === true
+              : config.options.eveHistory === true;
         tempDevice.elevation =
-          isNaN(deviceOptions?.elevation) === false && Number(deviceOptions?.elevation) >= 0 && Number(deviceOptions?.elevation) <= 8848
-            ? Number(deviceOptions?.elevation)
+          isNaN(homeOptions?.elevation) === false &&
+          Number(homeOptions.elevation) >= MIN_ELEVATION &&
+          Number(homeOptions.elevation) <= MAX_ELEVATION
+            ? Number(homeOptions.elevation)
             : config.options.elevation;
+
+        // Process additional exclusion details based on weather station setting
+        tempDevice.excluded = tempDevice.excluded === true || config.options?.weather !== true || homeOptions?.weather === false;
+
         devices[tempDevice.serialNumber] = tempDevice; // Store processed device
       }
     });

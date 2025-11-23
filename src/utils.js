@@ -1,7 +1,7 @@
 // General helper functions
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.09.08
+// Code version 2025.11.23
 // Mark Hulskamp
 'use strict';
 
@@ -148,7 +148,6 @@ async function fetchWrapper(method, url, options, data) {
       } catch (error) {
         body = '';
       }
-
       throw Object.assign(
         new Error('HTTP ' + response.status + ' on ' + method.toUpperCase() + ' ' + url + ': ' + (response.statusText || 'Unknown error')),
         { code: response.status, status: response.status, body },
@@ -157,29 +156,41 @@ async function fetchWrapper(method, url, options, data) {
 
     return response;
   } catch (error) {
+    let original = error?.cause ?? error;
+
+    // Detect invalid URL and rethrow immediately
+    if (original?.code === 'ERR_INVALID_URL') {
+      throw Object.assign(new Error('Invalid URL: ' + url), { code: 'ERR_INVALID_URL', cause: original });
+    }
+
+    // Retry only on retry-eligible errors
     if (
       options.retry > 1 &&
-      (error?.cause?.code === 'UND_ERR_HEADERS_TIMEOUT' || error?.name === 'AbortError' || error?.name === 'TypeError')
+      (original?.code === 'UND_ERR_HEADERS_TIMEOUT' || original?.name === 'AbortError' || original?.name === 'TypeError')
     ) {
       options.retry--;
       options._retryCount++;
 
       let delay = 500 * Math.pow(2, options._retryCount - 1);
       await new Promise((resolve) => setTimeout(resolve, delay));
+
+      return fetchWrapper(method, url, options, data);
     }
 
-    throw new Error(
-      method.toUpperCase() +
-        ' ' +
-        url +
-        ' failed after ' +
-        (options._retryCount + 1) +
-        ' attempt' +
-        (options._retryCount + 1 > 1 ? 's' : '') +
-        ': ' +
-        (error?.message || String(error)) +
-        (error?.cause?.code ? ' (' + error.cause.code + ')' : ''),
-      { cause: error },
+    // Final error wrap
+    throw Object.assign(
+      new Error(
+        method.toUpperCase() +
+          ' ' +
+          url +
+          ' failed after ' +
+          (options._retryCount + 1) +
+          ' attempt' +
+          (options._retryCount + 1 > 1 ? 's' : '') +
+          ': ' +
+          (original?.message || String(original)),
+      ),
+      { code: original?.code, cause: original },
     );
   }
 }
@@ -233,10 +244,12 @@ function parseDurationToSeconds(inputDuration, { defaultValue = null, min = 0, m
   return normalisedSeconds;
 }
 
-function processCommonData(deviceUUID, data, config) {
+function processCommonData(deviceUUID, homeUUID, data, config) {
   if (
     typeof deviceUUID !== 'string' ||
     deviceUUID === '' ||
+    typeof homeUUID !== 'string' ||
+    homeUUID === '' ||
     data === null ||
     typeof data !== 'object' ||
     data?.constructor !== Object ||
@@ -285,10 +298,22 @@ function processCommonData(deviceUUID, data, config) {
   let processed = {};
   try {
     // Fix up data we need to
+
+    // Device and home-level configurations if present
     let deviceOptions = config?.devices?.find((device) => device?.serialNumber?.toUpperCase?.() === data?.serialNumber?.toUpperCase?.());
-    data.nest_google_uuid = deviceUUID;
+    let homeOptions = config?.homes?.find(
+      (home) =>
+        home?.nest_home_uuid?.toUpperCase?.() === homeUUID?.toUpperCase?.() ||
+        home?.google_home_uuid?.toUpperCase?.() === homeUUID?.toUpperCase?.(),
+    );
+
+    data.nest_google_device_uuid = deviceUUID;
+    data.nest_google_home_uuid = homeUUID;
     data.serialNumber = data.serialNumber.toUpperCase(); // ensure serial numbers are in upper case
-    data.excluded = config?.options?.exclude === true ? deviceOptions?.exclude !== false : deviceOptions?.exclude === true;
+    data.excluded =
+      deviceOptions?.exclude === true ||
+      (homeOptions?.exclude === true && deviceOptions?.exclude !== false) ||
+      (config?.options?.exclude === true && deviceOptions?.exclude !== false && homeOptions?.exclude !== false);
     data.manufacturer = typeof data?.manufacturer === 'string' && data.manufacturer !== '' ? data.manufacturer : 'Nest';
     data.softwareVersion = process_software_version(data.softwareVersion);
     let description = typeof data?.description === 'string' ? data.description : '';

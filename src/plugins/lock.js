@@ -13,7 +13,7 @@ import { DATA_SOURCE, DEVICE_TYPE, PROTOBUF_RESOURCES, LOW_BATTERY_LEVEL } from 
 
 export default class NestLock extends HomeKitDevice {
   static TYPE = 'Lock';
-  static VERSION = '2025.09.08'; // Code version
+  static VERSION = '2025.11.23'; // Code version
 
   // Define lock bolt states
   static STATE = {
@@ -54,7 +54,7 @@ export default class NestLock extends HomeKitDevice {
           let locked = value === this.hap.Characteristic.LockTargetState.SECURED;
 
           this.message(HomeKitDevice.SET, {
-            uuid: this.deviceData.nest_google_uuid,
+            uuid: this.deviceData.nest_google_device_uuid,
             bolt_lock: locked,
           });
 
@@ -78,7 +78,7 @@ export default class NestLock extends HomeKitDevice {
 
         if (value !== this.deviceData.auto_relock_duration) {
           this.message(HomeKitDevice.SET, {
-            uuid: this.deviceData.nest_google_uuid,
+            uuid: this.deviceData.nest_google_device_uuid,
             auto_relock_duration: value,
           });
 
@@ -222,6 +222,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         ) {
           tempDevice = processCommonData(
             object_key,
+            value.value.device_info.pairerId.resourceId,
             {
               type: DEVICE_TYPE.LOCK,
               model: 'x Yale Lock',
@@ -301,9 +302,17 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         let deviceOptions = config?.devices?.find(
           (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
         );
+        let homeOptions = config?.homes?.find(
+          (home) => home?.google_home_uuid?.toUpperCase?.() === value?.value?.device_info?.pairerId?.resourceId?.toUpperCase?.(),
+        );
 
         // Insert any extra options we've read in from configuration file for this device
-        tempDevice.eveHistory = config.options.eveHistory === true || deviceOptions?.eveHistory === true;
+        tempDevice.eveHistory =
+          deviceOptions?.eveHistory !== undefined
+            ? deviceOptions.eveHistory === true
+            : homeOptions?.eveHistory !== undefined
+              ? homeOptions.eveHistory === true
+              : config.options?.eveHistory === true;
 
         devices[tempDevice.serialNumber] = tempDevice; // Store processed device
       }

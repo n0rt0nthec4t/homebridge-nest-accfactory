@@ -18,7 +18,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2025.07.26
+// Code version 2025.11.22
 // Mark Hulskamp
 'use strict';
 
@@ -97,7 +97,7 @@ export default class Streamer {
   videoEnabled = undefined; // Video stream on camera enabled or not
   audioEnabled = undefined; // Audio from camera enabled or not
   online = undefined; // Camera online or not
-  nest_google_uuid = undefined; // Nest/Google UUID of the device connecting
+  nest_google_device_uuid = undefined; // Nest/Google UUID of the device connecting
   connected = undefined; // Stream endpoint connection: undefined = not connected , false = connecting , true = connected and streaming
   blankAudio = undefined; // Blank audio 'frame'
 
@@ -133,7 +133,7 @@ export default class Streamer {
     this.online = deviceData?.online === true;
     this.videoEnabled = deviceData?.streaming_enabled === true;
     this.audioEnabled = deviceData?.audio_enabled === true;
-    this.nest_google_uuid = deviceData?.nest_google_uuid;
+    this.nest_google_device_uuid = deviceData?.nest_google_device_uuid;
 
     // Load support video frame files as required
     const loadFrameResource = (filename, label) => {
@@ -172,8 +172,8 @@ export default class Streamer {
       this.migrating = deviceData.migrating;
     }
 
-    if (deviceData?.nest_google_uuid !== undefined && this.nest_google_uuid !== deviceData?.nest_google_uuid) {
-      this.nest_google_uuid = deviceData?.nest_google_uuid;
+    if (deviceData?.nest_google_device_uuid !== undefined && this.nest_google_device_uuid !== deviceData?.nest_google_device_uuid) {
+      this.nest_google_device_uuid = deviceData?.nest_google_device_uuid;
 
       if (this.isStreaming() === true || this.isBuffering() === true) {
         // Since the Nest/Google device uuid has changed if there any any active outputs, close and connect again
@@ -257,7 +257,7 @@ export default class Streamer {
 
   stopEverything() {
     if (this.isStreaming() === true || this.isBuffering() === true) {
-      this?.log?.debug?.('Stopped buffering, live and recording from device uuid "%s"', this.nest_google_uuid);
+      this?.log?.debug?.('Stopped buffering, live and recording from device uuid "%s"', this.nest_google_device_uuid);
       this.#outputs = {}; // Remove all outputs (live, record, buffer)
       this.#sequenceCounters = {}; // Reset sequence tracking
       this.#h264Video = {}; // Reset cached SPS/PPS and keyframe flag
@@ -366,7 +366,7 @@ export default class Streamer {
         buffer: [],
       };
 
-      this.log?.debug?.('Started buffering from device uuid "%s"', this.nest_google_uuid);
+      this.log?.debug?.('Started buffering from device uuid "%s"', this.nest_google_device_uuid);
 
       if (this.connected !== true) {
         this.#doConnect();
@@ -377,7 +377,7 @@ export default class Streamer {
   #stopBuffering() {
     if (this.#outputs?.__BUFFER !== undefined) {
       delete this.#outputs.__BUFFER;
-      this.log?.debug?.('Stopped buffering from device uuid "%s"', this.nest_google_uuid);
+      this.log?.debug?.('Stopped buffering from device uuid "%s"', this.nest_google_device_uuid);
 
       // If we have no more output streams active, we'll close the connection
       if (this.isStreaming() === false) {
@@ -392,7 +392,7 @@ export default class Streamer {
     }
 
     if (this.#outputs?.[sessionID] !== undefined) {
-      this?.log?.warn?.('Live stream already exists for uuid "%s" and session id "%s"', this.nest_google_uuid, sessionID);
+      this?.log?.warn?.('Live stream already exists for uuid "%s" and session id "%s"', this.nest_google_device_uuid, sessionID);
       return {
         video: this.#outputs[sessionID].video,
         audio: this.#outputs[sessionID].audio,
@@ -440,7 +440,7 @@ export default class Streamer {
       buffer: [],
     };
 
-    this?.log?.debug?.('Started live stream from device uuid "%s" and session id "%s"', this.nest_google_uuid, sessionID);
+    this?.log?.debug?.('Started live stream from device uuid "%s" and session id "%s"', this.nest_google_device_uuid, sessionID);
 
     return { video: videoOut, audio: audioOut, talkback: talkbackIn };
   }
@@ -448,7 +448,7 @@ export default class Streamer {
   #stopLiveStream(sessionID) {
     let output = this.#outputs?.[sessionID];
     if (output !== undefined) {
-      this?.log?.debug?.('Stopped live stream from device uuid "%s" and session id "%s"', this.nest_google_uuid, sessionID);
+      this?.log?.debug?.('Stopped live stream from device uuid "%s" and session id "%s"', this.nest_google_device_uuid, sessionID);
 
       // Gracefully end output streams
       output.video?.end?.(); // Video output stream
@@ -471,7 +471,7 @@ export default class Streamer {
 
     // Prevent duplicate recording sessions
     if (this.#outputs?.[sessionID] !== undefined) {
-      this?.log?.warn?.('Recording stream already exists for uuid "%s" and session id "%s"', this.nest_google_uuid, sessionID);
+      this?.log?.warn?.('Recording stream already exists for uuid "%s" and session id "%s"', this.nest_google_device_uuid, sessionID);
       return {
         video: this.#outputs[sessionID].video,
         audio: this.#outputs[sessionID].audio,
@@ -498,7 +498,7 @@ export default class Streamer {
       buffer: undefined,
     };
 
-    this?.log?.debug?.('Started recording stream from device uuid "%s" with session id of "%s"', this.nest_google_uuid, sessionID);
+    this?.log?.debug?.('Started recording stream from device uuid "%s" with session id of "%s"', this.nest_google_device_uuid, sessionID);
 
     // Return stream objects for ffmpeg to consume
     return { video: videoOut, audio: audioOut };
@@ -507,7 +507,7 @@ export default class Streamer {
   #stopRecording(sessionID) {
     let output = this.#outputs?.[sessionID];
     if (output !== undefined) {
-      this?.log?.debug?.('Stopped recording stream from device uuid "%s"', this.nest_google_uuid);
+      this?.log?.debug?.('Stopped recording stream from device uuid "%s"', this.nest_google_device_uuid);
 
       // Gracefully end output streams
       output.video?.end?.(); // Video output stream

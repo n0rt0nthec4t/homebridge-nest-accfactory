@@ -13,7 +13,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = 'Protect';
-  static VERSION = '2025.09.08'; // Code version
+  static VERSION = '2025.11.23'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -185,7 +185,7 @@ export default class NestProtect extends HomeKitDevice {
         //this?.log?.info?.('Eve Smoke Alarm test', (message.alarmtest === true ? 'start' : 'stop'));
       }
       if (typeof message?.statusled === 'boolean') {
-        this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_uuid, ntp_green_led_enable: message.statusled });
+        this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_device_uuid, ntp_green_led_enable: message.statusled });
       }
     }
   }
@@ -221,6 +221,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         ) {
           tempDevice = processCommonData(
             object_key,
+            value.value.device_info.pairerId.resourceId,
             {
               type: DEVICE_TYPE.PROTECT,
               model:
@@ -303,6 +304,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         ) {
           tempDevice = processCommonData(
             object_key,
+            'structure.' + value.value.structure_id,
             {
               type: DEVICE_TYPE.PROTECT,
               model: (() => {
@@ -362,8 +364,20 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         let deviceOptions = config?.devices?.find(
           (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
         );
+        let homeOptions = config?.homes?.find(
+          (home) =>
+            home?.nest_home_uuid?.toUpperCase?.() === 'structure.' + value?.value?.structure_id?.toUpperCase?.() ||
+            home?.google_home_uuid?.toUpperCase?.() === value?.value?.device_info?.pairerId?.resourceId?.toUpperCase?.(),
+        );
+
         // Insert any extra options we've read in from configuration file for this device
-        tempDevice.eveHistory = config.options.eveHistory === true || deviceOptions?.eveHistory === true;
+        tempDevice.eveHistory =
+          deviceOptions?.eveHistory !== undefined
+            ? deviceOptions.eveHistory === true
+            : homeOptions?.eveHistory !== undefined
+              ? homeOptions.eveHistory === true
+              : config.options?.eveHistory === true;
+
         devices[tempDevice.serialNumber] = tempDevice; // Store processed device
       }
     });

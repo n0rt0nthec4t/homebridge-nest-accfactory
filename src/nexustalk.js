@@ -5,7 +5,7 @@
 //
 // Credit to https://github.com/Brandawg93/homebridge-nest-cam for the work on the Nest Camera comms code on which this is based
 //
-// Code version 2025.09.08
+// Code version 2025.11.22
 // Mark Hulskamp
 'use strict';
 
@@ -201,7 +201,7 @@ export default class NexusTalk extends Streamer {
 
     if (deviceData?.apiAccess?.token !== undefined && deviceData.apiAccess.token !== this.token) {
       // access token has changed so re-authorise
-      this?.log?.debug?.('Access token has changed for uuid "%s". Updating token', this.nest_google_uuid);
+      this?.log?.debug?.('Access token has changed for uuid "%s". Updating token', this.nest_google_device_uuid);
       this.token = deviceData.apiAccess.token;
 
       if (this.#socket !== undefined) {
@@ -339,7 +339,7 @@ export default class NexusTalk extends Streamer {
           let encodedData = TraitMap.encode(
             TraitMap.fromObject({
               protocolVersion: 'VERSION_3',
-              uuid: this.nest_google_uuid.split(/[._]+/)[1],
+              uuid: this.nest_google_device_uuid.split(/[._]+/)[1],
               requireConnectedCamera: false,
               USER_AGENT: USER_AGENT,
               deviceId: crypto.randomUUID(),
@@ -437,7 +437,7 @@ export default class NexusTalk extends Streamer {
         this?.log?.debug?.(
           'We have not received any data from nexus in the past "%s" seconds for uuid "%s". Attempting restart',
           10,
-          this.nest_google_uuid,
+          this.nest_google_device_uuid,
         );
 
         // Setup listener for socket close event. Once socket is closed, we'll perform the re-connection
@@ -505,7 +505,7 @@ export default class NexusTalk extends Streamer {
     if (typeof payload === 'object' && this.#protobufNexusTalk !== undefined) {
       //let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.TalkbackBegin').decode(payload).toJSON();
       this.audio.talking = true;
-      this?.log?.debug?.('Talking started on uuid "%s"', this.nest_google_uuid);
+      this?.log?.debug?.('Talking started on uuid "%s"', this.nest_google_device_uuid);
     }
   }
 
@@ -514,7 +514,7 @@ export default class NexusTalk extends Streamer {
     if (typeof payload === 'object' && this.#protobufNexusTalk !== undefined) {
       //let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.TalkbackEnd').decode(payload).toJSON();
       this.audio.talking = false;
-      this?.log?.debug?.('Talking ended on uuid "%s"', this.nest_google_uuid);
+      this?.log?.debug?.('Talking ended on uuid "%s"', this.nest_google_device_uuid);
     }
   }
 

@@ -153,9 +153,6 @@
                         "doorbellCooldown": {
                             "type": "number"
                         },
-                        "elevation": {
-                            "type": "number"
-                        },
                         "eveHistory": {
                             "type": "boolean"
                         },
@@ -209,6 +206,33 @@
                         },
                         "personCooldown": {
                             "type": "number"
+                        }
+                    }
+                }
+            },
+            "homes": {
+                "title": "Per home configuration options",
+                "type": "array",
+                "items": {
+                    "title": "Home",
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "title": "Home name",
+                            "type": "string",
+                            "required": true
+                        },
+                        "elevation": {
+                            "type": "number"
+                        },
+                        "eveHistory": {
+                            "type": "boolean"
+                        },
+                        "exclude": {
+                            "type": "boolean"
+                        },
+                        "weather": {
+                            "type": "boolean"
                         }
                     }
                 }
