@@ -1,7 +1,7 @@
 // Configuration validation and processing
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.11.22
+// Code version 2025.11.24
 // Mark Hulskamp
 'use strict';
 
@@ -134,7 +134,7 @@ function processConfig(config, log) {
   }
 
   // Per home configuration(s)
-  if (Array.isArray(config.homes) === false) {
+  if (Array.isArray(config?.homes) === false) {
     config.homes = [];
   }
 
