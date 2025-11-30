@@ -61,7 +61,7 @@ Google Accounts require an **"issueToken"** and **"cookie"**, which are unique t
 7. After login, click the **iframerpc** network request  
 8. In **Headers**, copy:  
    - **Request URL** - this is your **Issue Token**  
-   - **cookie:** value under *Request Headers* - this is your **Cookie**  
+   - **cookie:** value under *Request Headers* — this is your **Cookie**, which must include a key starting with **`SIDCC=`** (if `SIDCC` is missing, the cookie is incomplete and authentication will fail)
 9. Enter both into your Homebridge configuration  
 
 **Note:** Do **not** log out of [home.nest.com](https://home.nest.com), as this will invalidate your credentials.

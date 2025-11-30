@@ -2,13 +2,14 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.3.6-alpha.2 (xxxx/xx/xx)
+## v0.3.6 (2025/12/01)
 
 - General code cleanup and stability improvements for Homebridge 2.0 compatibility
-- Fixed an issue where hot water temperature control was not exposed for certain Nest Heatlink configurations
-- Added support for a new `homes` section in `config.json` to allow per-home configuration options
-- Updated `README.md` with documentation for the new `homes` configuration section
-- Removed the deprecated `"elevation"` device-specific option from configuration
+- Fixed an issue where hot water temperature control was not exposed for certain Nest Heatlink configurations [@josdegroot] (https://github.com/josdegroot)
+- Added support for a new `homes` section in `config.json` to enable per-home configuration options
+- Updated `README.md` with documentation for the new `homes` configuration section (`./README.md#homes`)
+- Updated `README.md` to clarify Google authentication requirements, including that the required cookie **should start with `SIDCC=`**
+- Removed the deprecated `"elevation"` device-specific configuration option
 
 ### Known Issues
 
