@@ -5,6 +5,10 @@ on:
     types: [published]
   workflow_dispatch:
 
+permissions:
+  id-token: write  # Required for OIDC
+  contents: read
+
 env:
   NODE_VERSION: 20
   
@@ -19,8 +23,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+      - run: npm install -g npm@latest
       - run: npm ci
-      #- run: npm test
 
   publish-npm:
     needs: build
@@ -41,7 +45,8 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: https://registry.npmjs.org/
-  
+
+      - run: npm install -g npm@latest
       - run: npm ci
       - run: |
           TAG=$(echo ${{env.VERSION}} | grep -oP '^\d+\.\d+\.\d+-?\K(\w+)?')
