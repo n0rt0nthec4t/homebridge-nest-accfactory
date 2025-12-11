@@ -2,6 +2,15 @@
 
 All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+### Known Issues
+
+- The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
+
+## v0.3.7 (xxxx/xx/xx)
+
+- Fixed parsing of time values in the configuration file [@currybeast](https://github.com/currybeast)
+- Updated `README.md` with instructions to obtain Google issueToken and cookie using Safari
+
 ## v0.3.6 (2025/12/01)
 
 - General code cleanup and stability improvements for Homebridge 2.0 compatibility
@@ -11,10 +20,6 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 - Updated `README.md` to clarify Google authentication requirements, including that the required cookie **should start with `SIDCC=`**
 - Removed the deprecated `"elevation"` device-specific configuration option
 
-### Known Issues
-
-- The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
-
 ## v0.3.5 (2025/11/21)
 
 - General code cleanup and stability improvements
@@ -23,10 +28,6 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 - Updated instructions for obtaining issue token and cookie for Google accounts  
 - Updated disclaimer in `README.md` to clarify support for official Homebridge installations only
 - Added debug logging for thermostat mode and temperature changes received from outside of HomeKit [@MorelloCherry](https://github.com/MorelloCherry)
-
-### Known Issues
-
-- The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
 
 ## v0.3.4 (2025/10/17)
 
@@ -38,10 +39,6 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 - Fixed periodic camera snapshots when camera is turned off
 - Updated camera resource assets
 
-### Known Issues
-
-- The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
-
 ## v0.3.3 (2025/08/23)
 
 - Refined timeout warnings for camera and doorbell snapshot capture  
@@ -52,10 +49,6 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 - Fixed fan-related errors for Nest Thermostats  
 - Improved authorisation handling: Nest/Google login will no longer retry repeatedly on `Unauthorized` or `Forbidden` responses  
 - Fans that support only a single speed will now expose **only On/Off**, without the `RotationSpeed` control
-
-### Known Issues
-
-- The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
 
 ### Thanks
 Special thanks to [@Edwin](https://github.com/DigitalFokus) for testing and feedback on refinements to Nest X Yale support!
@@ -79,10 +72,6 @@ Special thanks to [@Edwin](https://github.com/DigitalFokus) for testing and feed
 - Added support for hot water temperature control on compatible EU/UK thermostats — [see README](./README.md#devices)
 - Removed support for using Nest Heat Link devices as room temperature sensors
 - Removed standalone Docker version
-
-### Known Issues
-
-- The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
 
 ### Thanks
 Special thanks to [@Daniel](https://github.com/no1knows), [@Matthew](https://github.com/mphyde), [@Erik](https://github.com/esille), [@Neil](https://github.com/BertrumUK) and [@Guy](https://github.com/grhall) for testing and feedback on this release!

@@ -20,7 +20,7 @@ import {
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = 'Heatlink';
-  static VERSION = '2025.11.25'; // Code version
+  static VERSION = '2025.12.10'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
@@ -63,6 +63,7 @@ export default class NestHeatlink extends HomeKitDevice {
     }
 
     // Extra setup details for output
+    this.switchService !== undefined && this.postSetupDetail('Boost time ' + this.#logHotwaterBoostTime(this.deviceData.hotwaterBoostTime));
     this.thermostatService !== undefined &&
       this.postSetupDetail('Temperature control (' + this.deviceData.hotwaterMinTemp + '–' + this.deviceData.hotwaterMaxTemp + '°C)');
   }
@@ -206,17 +207,7 @@ export default class NestHeatlink extends HomeKitDevice {
           this?.log?.info?.(
             'Set hotwater boost heating on heatlink "%s" to "%s"',
             this.deviceData.description,
-            value === true
-              ? 'On for ' +
-                  (this.deviceData.hotwaterBoostTime >= 3600
-                    ? Math.floor(this.deviceData.hotwaterBoostTime / 3600) +
-                      ' hr' +
-                      (Math.floor(this.deviceData.hotwaterBoostTime / 3600) > 1 ? 's ' : ' ')
-                    : '') +
-                  Math.floor((this.deviceData.hotwaterBoostTime % 3600) / 60) +
-                  ' min' +
-                  (Math.floor((this.deviceData.hotwaterBoostTime % 3600) / 60) !== 1 ? 's' : '')
-              : 'Off',
+            value === true ? 'On for ' + this.#logHotwaterBoostTime(this.deviceData.hotwaterBoostTime) : 'Off',
           );
         }
       },
@@ -224,6 +215,19 @@ export default class NestHeatlink extends HomeKitDevice {
         return this.deviceData?.hot_water_boost_active === true;
       },
     });
+  }
+
+  #logHotwaterBoostTime(time) {
+    let output = '';
+
+    if (isNaN(time) === false) {
+      output =
+        (time >= 3600 ? Math.floor(time / 3600) + ' hr' + (Math.floor(time / 3600) > 1 ? 's ' : ' ') : '') +
+        Math.floor((time % 3600) / 60) +
+        ' min' +
+        (Math.floor((time % 3600) / 60) !== 1 ? 's' : '');
+    }
+    return output;
   }
 }
 
