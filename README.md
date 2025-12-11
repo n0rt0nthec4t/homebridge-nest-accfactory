@@ -53,15 +53,15 @@ If you have a **Nest Account**, you’ll need to obtain an **access token** from
 Google Accounts require an **"issueToken"** and **"cookie"**, which are unique to your account. You only need to do this once as long as you stay logged into your Google Account.
 
 1. Open Safari in a **Private Window**  
-2. Enable the **Develop Menu** (Safari ▸ Settings ▸ Advanced ▸ check *Show features for web developers*)  
+2. Enable the **Develop Menu** (Safari ▸ Settings ▸ Advanced ▸ check *Show Develop menu in menu bar*)  
 3. Open **Develop ▸ Show Web Inspector**, then select the **Network** tab  
 4. Ensure **Preserve Log** is checked  
 5. In the filter box, type **issueToken**  
 6. Go to [home.nest.com](https://home.nest.com) and click **Sign in with Google**  
 7. After login, click the **iframerpc** network request  
 8. In **Headers**, copy:  
-   - **Summary ▸ URL** this is your **issueToken**  
-   - **Request ▸ Cookie:** this is your **cookie**, which must include a key starting with **`SIDCC=`** (if `SIDCC` is missing, the cookie is incomplete and authentication will fail)
+   - **Request URL** - this is your **Issue Token**  
+   - **cookie:** value under *Request Headers* — this is your **Cookie**, which must include a key starting with **`SIDCC=`** (if `SIDCC` is missing, the cookie is incomplete and authentication will fail)
 9. Enter both into your Homebridge configuration  
 
 **Note:** Do **not** log out of [home.nest.com](https://home.nest.com), as this will invalidate your credentials.
@@ -123,21 +123,21 @@ The following options are available on a per-device level in the `config.json` `
 
 | Name               | Description                                                                                  | Default        |
 |--------------------|----------------------------------------------------------------------------------------------|----------------|
-| chimeSwitch        | Create a switch for supported doorbell(s) which allows the indoor chime to be turned on/off  | false          |
-| doorbellCooldown   | Time in seconds between doorbell press events                                                | 60             |
+| chimeSwitch        | Switch to allow the indoor doorbell chime to be turned on/off                                | false          |
+| doorbellCooldown   | Time between doorbell press events                                                           | 60s            |
 | eveHistory         | Provide history in EveHome application where applicable for this device                      | true           |
 | exclude            | Exclude this device                                                                          | false          |
-| fanDuration        | Override fan runtime duration                                                                |                |
+| fanDuration        | Fan runtime duration                                                                         |                |
 | ffmpegDebug        | Turns on specific debugging output for when ffmpeg is invoked                                | false          |
 | ffmpegHWaccel      | Enable video hardware acceleration for supported camera(s) and doorbell(s)                   | false          |
 | hksv               | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                          | false          |
-| hotwaterBoostTime  | Time in minutes for hotwater boost heating (30, 160, 120mins)                                | 30mins         |
+| hotwaterBoostTime  | Time for hotwater boost heating (30, 160, 120mins)                                           | 30mins         |
 | hotwaterMaxTemp    | Maximum supported temperature for hotwater heating                                           | 70c            |
 | hotwaterMinTemp    | Minimum supported temperature for hotwater heating                                           | 30c            |
-| humiditySensor     | Create a separate humidity sensor for supported thermostat(s)                                | false          |
+| humiditySensor     | Separate humidity sensor for supported thermostat(s)                                         | false          |
 | localAccess        | Use direct access to supported camera(s) and doorbell(s) for video streaming and recording   | false          |
-| motionCooldown     | Time in seconds between detected motion events                                               | 60             |
-| personCooldown     | Time in seconds between detected person events                                               | 120            |
+| motionCooldown     | Time between detected motion events                                                          | 60s            |
+| personCooldown     | Time between detected person events                                                          | 120s           |
 | serialNumber       | Device serial number to which these settings belong to                                       |                |
 
 #### homes
