@@ -1,7 +1,7 @@
 // General helper functions
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.11.23
+// Code version 2025.12.12
 // Mark Hulskamp
 'use strict';
 
@@ -207,11 +207,11 @@ function parseDurationToSeconds(inputDuration, { defaultValue = null, min = 0, m
     } else {
       // Normalise all known unit types to single characters
       inputDuration = inputDuration
-        .replace(/\b(weeks?|w)\b/g, 'w')
-        .replace(/\b(days?|d)\b/g, 'd')
-        .replace(/\b(hours?|hrs?|hr|h)\b/g, 'h')
-        .replace(/\b(minutes?|mins?|min|m)\b/g, 'm')
-        .replace(/\b(seconds?|secs?|sec|s)\b/g, 's')
+        .replace(/(?<=\d)\s*(weeks?|w)(?=\D|$)/gi, 'w')
+        .replace(/(?<=\d)\s*(days?|d)(?=\D|$)/gi, 'd')
+        .replace(/(?<=\d)\s*(hours?|hrs?|hr|h)(?=\D|$)/gi, 'h')
+        .replace(/(?<=\d)\s*(minutes?|mins?|min|m)(?=\D|$)/gi, 'm')
+        .replace(/(?<=\d)\s*(seconds?|secs?|sec|s)(?=\D|$)/gi, 's')
         .replace(/ +/g, '');
 
       // Match format like "1w3d2h15m30s"

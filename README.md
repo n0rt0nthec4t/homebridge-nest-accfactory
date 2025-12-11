@@ -172,4 +172,4 @@ Other platforms or forks such as **HOOBS**, **Home Assistant**, or similar deriv
 
 Please note that I am not affiliated with any companies, including but not limited to Google, Apple, or any other entities. The author of this project shall not be held liable for any damages or issues arising from its use.  
 
-If you encounter a problem with the source code, please [raise an issue](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issues) on the project's **GitHub repository** so it can be reviewed and investigated.
+If you encounter a problem, please [raise an issue](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issues) on the project's **GitHub repository**. Providing diagnostic details and being available to assist with followup testing is appreciated and helps ensure the issue can be resolved effectively. 
