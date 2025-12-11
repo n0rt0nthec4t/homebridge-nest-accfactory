@@ -34,7 +34,7 @@ The accessory supports connection to Nest using a Nest account AND/OR a Google (
 
 ## Configuration
 
-### Nest Account
+### Obtaining an **access token** for Nest Accounts
 
 If you have a **Nest Account**, you’ll need to obtain an **access token** from the Nest web app.
 
@@ -43,12 +43,13 @@ If you have a **Nest Account**, you’ll need to obtain an **access token** from
 3. You’ll see a JSON string similar to:  
    ```json
    {"2fa_state":"enrolled","access_token":"XXX", ...}
+   ```
 4. Copy the value of **access_token** near the start (a long string beginning with `b`) and paste it into your Homebridge configuration.  
    - Ignore any other `access_token` entries further down the string.
 
 **Note:** Do **not** log out of [home.nest.com](https://home.nest.com), as this will invalidate your credentials.
 
-### Obtaining a Google cookie token for a Google Account (Safari)
+### Obtaining an **issueToken and cookie token** for Google Accounts (Safari method)
 
 Google Accounts require an **"issueToken"** and **"cookie"**, which are unique to your account. You only need to do this once as long as you stay logged into your Google Account.
 
