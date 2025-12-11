@@ -53,15 +53,15 @@ If you have a **Nest Account**, you’ll need to obtain an **access token** from
 Google Accounts require an **"issueToken"** and **"cookie"**, which are unique to your account. You only need to do this once as long as you stay logged into your Google Account.
 
 1. Open Safari in a **Private Window**  
-2. Enable the **Develop Menu** (Safari ▸ Settings ▸ Advanced ▸ check *Show Develop menu in menu bar*)  
+2. Enable the **Develop Menu** (Safari ▸ Settings ▸ Advanced ▸ check *Show features for web developers*)  
 3. Open **Develop ▸ Show Web Inspector**, then select the **Network** tab  
 4. Ensure **Preserve Log** is checked  
 5. In the filter box, type **issueToken**  
 6. Go to [home.nest.com](https://home.nest.com) and click **Sign in with Google**  
 7. After login, click the **iframerpc** network request  
 8. In **Headers**, copy:  
-   - **Request URL** - this is your **Issue Token**  
-   - **cookie:** value under *Request Headers* — this is your **Cookie**, which must include a key starting with **`SIDCC=`** (if `SIDCC` is missing, the cookie is incomplete and authentication will fail)
+   - **Summary ▸ URL** this is your **issueToken**  
+   - **Request ▸ Cookie:** this is your **cookie**, which must include a key starting with **`SIDCC=`** (if `SIDCC` is missing, the cookie is incomplete and authentication will fail)
 9. Enter both into your Homebridge configuration  
 
 **Note:** Do **not** log out of [home.nest.com](https://home.nest.com), as this will invalidate your credentials.
