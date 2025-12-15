@@ -65,6 +65,9 @@ Google Accounts require an **"issueToken"** and **"cookie"**, which are unique t
    - **Request ▸ Cookie:** this is your **cookie**, which must include a key starting with **`SIDCC=`** (if `SIDCC` is missing, the cookie is incomplete and authentication will fail)
 9. Enter both into your Homebridge configuration  
 
+**Important:** Tokens **must** be obtained using **Safari**. Other browsers (Chrome, Edge, Firefox, etc.) do not reliably generate valid or non-expiring `issueToken` and `cookie` values and will often result in authentication failures or token expiry.  
+If you did not use Safari, re-capture the tokens using Safari.
+
 **Note:** Do **not** log out of [home.nest.com](https://home.nest.com), as this will invalidate your credentials.
 
 ## config.json configuration

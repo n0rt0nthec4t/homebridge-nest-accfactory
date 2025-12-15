@@ -9,6 +9,8 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 ## v0.3.7 (xxxx/xx/xx)
 
 - Fixed parsing of time values in the configuration file [@currybeast](https://github.com/currybeast)
+- Added support for Nest Cam Indoor (3rd Gen, wired)
+- Added support for Nest Doorbell (2nd gen, wired)
 - Updated `README.md` with instructions to obtain Google issueToken and cookie using Safari
 
 ## v0.3.6 (2025/12/01)

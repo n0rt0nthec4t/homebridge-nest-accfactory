@@ -1,7 +1,7 @@
 // Common defines
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.11.22
+// Code version 2025.12.15
 // Mark Hulskamp
 'use strict';
 
@@ -56,6 +56,8 @@ export const PROTOBUF_RESOURCES = {
   ],
   CAMERA: [
     'google.resource.SpencerResource',
+    'google.resource.VenusResource',
+    'google.resource.UsticaResource',
     'nest.resource.NestCamIndoorResource',
     'nest.resource.NestCamIQResource',
     'nest.resource.NestCamIQOutdoorResource',

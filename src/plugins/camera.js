@@ -31,7 +31,7 @@ const STREAMING_PROTOCOL = {
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2025.11.23'; // Code version
+  static VERSION = '2025.12.15'; // Code version
 
   // For messaging back to parent class (Doorbell/Floodlight)
   static SET = HomeKitDevice.SET;
@@ -1438,25 +1438,27 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
                   ? 'Cam (battery)'
                   : value.value.device_info.typeName === 'google.resource.GreenQuartzResource'
                     ? 'Doorbell (2nd gen, battery)'
-                    : value.value.device_info.typeName === 'google.resource.SpencerResource'
-                      ? 'Cam (wired)'
-                      : value.value.device_info.typeName === 'google.resource.VenusResource'
-                        ? 'Doorbell (2nd gen, wired)'
-                        : value.value.device_info.typeName === 'nest.resource.NestCamOutdoorResource'
-                          ? 'Cam Outdoor (1st gen)'
-                          : value.value.device_info.typeName === 'nest.resource.NestCamIndoorResource'
-                            ? 'Cam Indoor (1st gen)'
-                            : value.value.device_info.typeName === 'nest.resource.NestCamIQResource'
-                              ? 'Cam IQ'
-                              : value.value.device_info.typeName === 'nest.resource.NestCamIQOutdoorResource'
-                                ? 'Cam Outdoor (1st gen)'
-                                : value.value.device_info.typeName === 'nest.resource.NestHelloResource'
-                                  ? 'Doorbell (1st gen, wired)'
-                                  : value.value.device_info.typeName === 'google.resource.NeonQuartzResource' &&
-                                      value.value?.floodlight_settings !== undefined &&
-                                      value.value?.floodlight_state !== undefined
-                                    ? 'Cam with Floodlight'
-                                    : 'Camera (unknown)',
+                    : value.value.device_info.typeName === 'google.resource.UsticaResource'
+                      ? 'Cam Indoor (3rd gen, wired)'
+                      : value.value.device_info.typeName === 'google.resource.SpencerResource'
+                        ? 'Cam (wired)'
+                        : value.value.device_info.typeName === 'google.resource.VenusResource'
+                          ? 'Doorbell (2nd gen, wired)'
+                          : value.value.device_info.typeName === 'nest.resource.NestCamOutdoorResource'
+                            ? 'Cam Outdoor (1st gen)'
+                            : value.value.device_info.typeName === 'nest.resource.NestCamIndoorResource'
+                              ? 'Cam Indoor (1st gen)'
+                              : value.value.device_info.typeName === 'nest.resource.NestCamIQResource'
+                                ? 'Cam IQ'
+                                : value.value.device_info.typeName === 'nest.resource.NestCamIQOutdoorResource'
+                                  ? 'Cam IQ Outdoor (1st gen)'
+                                  : value.value.device_info.typeName === 'nest.resource.NestHelloResource'
+                                    ? 'Doorbell (1st gen, wired)'
+                                    : value.value.device_info.typeName === 'google.resource.NeonQuartzResource' &&
+                                        value.value?.floodlight_settings !== undefined &&
+                                        value.value?.floodlight_state !== undefined
+                                      ? 'Cam with Floodlight'
+                                      : 'Camera (unknown)',
               softwareVersion: value.value.device_identity.softwareVersion,
               serialNumber: value.value.device_identity.serialNumber,
               description: String(value.value?.label?.label ?? ''),
