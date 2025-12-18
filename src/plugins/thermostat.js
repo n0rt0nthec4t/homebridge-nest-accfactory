@@ -28,7 +28,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2025.11.23'; // Code version
+  static VERSION = '2025.12.17'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -1224,6 +1224,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           }
           if (
             value.value.device_info.typeName === 'nest.resource.NestLearningThermostat3Resource' ||
+            value.value.device_info.typeName === 'nest.resource.NestLearningThermostat3v2Resource' ||
             value.value.device_info.typeName === 'nest.resource.NestAmber2DisplayResource'
           ) {
             RESTTypeData.model = 'Learning Thermostat (3rd gen)';

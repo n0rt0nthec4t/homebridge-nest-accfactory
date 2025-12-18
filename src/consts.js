@@ -1,7 +1,7 @@
 // Common defines
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.12.15
+// Code version 2025.12.17
 // Mark Hulskamp
 'use strict';
 
@@ -39,6 +39,7 @@ export const PROTOBUF_RESOURCES = {
     'nest.resource.NestLearningThermostat1Resource',
     'nest.resource.NestLearningThermostat2Resource',
     'nest.resource.NestLearningThermostat3Resource',
+    'nest.resource.NestLearningThermostat3v2Resource',
     'nest.resource.NestAgateDisplayResource',
     'nest.resource.NestOnyxResource',
     'google.resource.GoogleZirconium1Resource',

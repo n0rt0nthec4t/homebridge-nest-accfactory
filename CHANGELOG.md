@@ -6,13 +6,16 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 - The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
 
-## v0.3.7 (xxxx/xx/xx)
+## v0.3.7 (2025/12/17)
+
+This marks the final release of 2025. A huge thank you to everyone who’s used the plugin, reported issues, tested changes, and contributed feedback throughout the year. Your support genuinely helps shape the project.
 
 - Fixed parsing of time values in the configuration file [@currybeast](https://github.com/currybeast)
 - Added support for Nest Cam Indoor (3rd gen, wired)
 - Added support for Nest Doorbell (2nd gen, wired)
+- Added support for Nest Thermostat (3rd gen v2)
 - Updated `README.md` with instructions to obtain Google issueToken and cookie using Safari (the only supported method)
-- Refined repetitive connection status logging to only appear in debug mode
+- Refined repetitive connection status logging to only appear in debug mode [@MorelloCherry](https://github.com/MorelloCherry)
 
 ## v0.3.6 (2025/12/01)
 
