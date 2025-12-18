@@ -20,7 +20,7 @@ import {
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = 'Heatlink';
-  static VERSION = '2025.12.10'; // Code version
+  static VERSION = '2025.12.15'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
@@ -149,7 +149,7 @@ export default class NestHeatlink extends HomeKitDevice {
 
         this.thermostatService.updateCharacteristic(this.hap.Characteristic.TemperatureDisplayUnits, value);
 
-        this?.log?.info?.('Set temperature units on heatlink "%s" to "%s"', this.deviceData.description, unit === 'C' ? '°C' : '°F');
+        this?.log?.info?.('Set temperature units on heat link "%s" to "%s"', this.deviceData.description, unit === 'C' ? '°C' : '°F');
       },
       onGet: () => {
         return this.deviceData.temperature_scale.toUpperCase() === 'C'
@@ -175,7 +175,7 @@ export default class NestHeatlink extends HomeKitDevice {
         if (value !== this.deviceData.hot_water_temperature) {
           this.message(HomeKitDevice.SET, { uuid: this.deviceData.associated_thermostat, hot_water_temperature: value });
 
-          this?.log?.info?.('Set hotwater boiler temperature on heatlink "%s" to "%s °C"', this.deviceData.description, value);
+          this?.log?.info?.('Set hotwater boiler temperature on heat link "%s" to "%s °C"', this.deviceData.description, value);
         }
       },
       onGet: () => {
@@ -205,7 +205,7 @@ export default class NestHeatlink extends HomeKitDevice {
           this.switchService.updateCharacteristic(this.hap.Characteristic.On, value);
 
           this?.log?.info?.(
-            'Set hotwater boost heating on heatlink "%s" to "%s"',
+            'Set hotwater boost heating on heat link "%s" to "%s"',
             this.deviceData.description,
             value === true ? 'On for ' + this.#logHotwaterBoostTime(this.deviceData.hotwaterBoostTime) : 'Off',
           );
@@ -275,12 +275,12 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               type: DEVICE_TYPE.HEATLINK,
               model:
                 value.value.heat_link.heatLinkModel.value.startsWith('Amber-2') === true
-                  ? 'Heatlink for Learning Thermostat (3rd gen, EU)'
+                  ? 'Heat Link for Learning Thermostat (3rd gen, EU)'
                   : value.value.heat_link.heatLinkModel.value.startsWith('Amber-1') === true
-                    ? 'Heatlink for Learning Thermostat (2nd gen, EU)'
+                    ? 'Heat Link for Learning Thermostat (2nd gen, EU)'
                     : value.value.heat_link.heatLinkModel.value.includes('Agate') === true
-                      ? 'Heatlink for Thermostat E (1st gen, EU)'
-                      : 'Heatlink (unknown - ' + value.value.heat_link.heatLinkModel + ')',
+                      ? 'Heat Link for Thermostat E (1st gen, EU)'
+                      : 'Heat Link (unknown - ' + value.value.heat_link.heatLinkModel + ')',
               serialNumber: value.value.heat_link.heatLinkSerialNumber.value,
               softwareVersion: value.value.heat_link.heatLinkSwVersion.value,
               associated_thermostat: object_key, // Thermostat linked to
@@ -337,12 +337,12 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               type: DEVICE_TYPE.HEATLINK,
               model:
                 value.value.heat_link_model.startsWith('Amber-2') === true
-                  ? 'Heatlink for Learning Thermostat (3rd gen, EU)'
+                  ? 'Heat Link for Learning Thermostat (3rd gen, EU)'
                   : value.value.heat_link_model.startsWith('Amber-1') === true
-                    ? 'Heatlink for Learning Thermostat (2nd gen, EU)'
+                    ? 'Heat Link for Learning Thermostat (2nd gen, EU)'
                     : value.value.heat_link_model.includes('Agate') === true
-                      ? 'Heatlink for Thermostat E (1st gen, EU)'
-                      : 'Heatlink (unknown - ' + value.value.heat_link_model + ')',
+                      ? 'Heat Link for Thermostat E (1st gen, EU)'
+                      : 'Heat Link (unknown - ' + value.value.heat_link_model + ')',
               serialNumber: value.value.heat_link_serial_number,
               softwareVersion: value.value.heat_link_sw_version,
               associated_thermostat: object_key, // Thermostat linked to
@@ -373,7 +373,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         }
         // eslint-disable-next-line no-unused-vars
       } catch (error) {
-        log?.debug?.('Error processing heatlink data for "%s"', object_key);
+        log?.debug?.('Error processing heat link data for "%s"', object_key);
       }
 
       if (

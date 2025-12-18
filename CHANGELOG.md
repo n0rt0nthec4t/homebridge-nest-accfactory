@@ -9,16 +9,17 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 ## v0.3.7 (xxxx/xx/xx)
 
 - Fixed parsing of time values in the configuration file [@currybeast](https://github.com/currybeast)
-- Added support for Nest Cam Indoor (3rd Gen, wired)
+- Added support for Nest Cam Indoor (3rd gen, wired)
 - Added support for Nest Doorbell (2nd gen, wired)
-- Updated `README.md` with instructions to obtain Google issueToken and cookie using Safari
+- Updated `README.md` with instructions to obtain Google issueToken and cookie using Safari (the only supported method)
+- Refined repetitive connection status logging to only appear in debug mode
 
 ## v0.3.6 (2025/12/01)
 
 - General code cleanup and stability improvements for Homebridge 2.0 compatibility
-- Fixed an issue where hot water temperature control was not exposed for certain Nest Heatlink configurations [@josdegroot] (https://github.com/josdegroot)
-- Added support for a new `homes` section in `config.json` to enable per-home configuration options
-- Updated `README.md` with documentation for the new `homes` configuration section (`./README.md#homes`)
+- Fixed an issue where hot water temperature control was not exposed for certain Nest Heat Link configurations [@josdegroot] (https://github.com/josdegroot)
+- Added support for a new `"homes"` section in `config.json` to enable per-home configuration options
+- Updated `README.md` with documentation for the new `"homes"` configuration section (`./README.md#homes`)
 - Updated `README.md` to clarify Google authentication requirements, including that the required cookie **should start with `SIDCC=`**
 - Removed the deprecated `"elevation"` device-specific configuration option
 
@@ -35,7 +36,7 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 - General code cleanup and stability improvements  
 - General typo and grammar corrections  
-- Fixed handling of the per-device `hksv` setting  
+- Fixed handling of the per-device `"hksv"` setting  
 - Fixed thermostat cooling stage 3 checking  
 - Fixed thermostat fan state checking
 - Fixed periodic camera snapshots when camera is turned off
@@ -46,8 +47,8 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 - Refined timeout warnings for camera and doorbell snapshot capture  
 - Fixed video feed on/off control for HKSV-enabled cameras  
 - Fixed battery percentage and transition state reporting for Nest × Yale Locks  
-- Fixed handling of the global `exclude` device setting  
-- Fixed support for `~` (home directory) in the `ffmpegPath` option  
+- Fixed handling of the global `"exclude"` device setting  
+- Fixed support for `~` (home directory) in the `"ffmpegPath"` option  
 - Fixed fan-related errors for Nest Thermostats  
 - Improved authorisation handling: Nest/Google login will no longer retry repeatedly on `Unauthorized` or `Forbidden` responses  
 - Fans that support only a single speed will now expose **only On/Off**, without the `RotationSpeed` control
@@ -86,7 +87,7 @@ Special thanks to [@Daniel](https://github.com/no1knows), [@Matthew](https://git
 
 - General code cleanup and stability improvements
 - Introduced plugin-style architecture for Nest/Google devices
-- Updated README.md to reflect changes to the devices section in configuration
+- Updated `README.md` to reflect changes to the `"devices"` section in configuration
 - Prevent excluded devices from being restored from Homebridge cache
 - Added internal support for selecting active temperature sensor (not yet exposed to HomeKit)
 - Fixed loss of custom devices section when using the plugin config UI
@@ -114,7 +115,7 @@ Special thanks to [@Daniel](https://github.com/no1knows) and [@Brad](https://git
 
 - General code cleanup and bug fixes
 - Support for Nest Protect(s) in Google Home app
-- Default location to check for ffmpeg binary is now /usr/local/bin
+- Default location to check for ffmpeg binary is now `/usr/local/bin`
 - Logs Nest Protect(s) self testing status
 
 ## v0.2.5 (2024/12/10)

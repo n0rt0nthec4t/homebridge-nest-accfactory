@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.11.23
+// Code version 2025.12.18
 // Mark Hulskamp
 'use strict';
 
@@ -66,7 +66,7 @@ export default class NestAccfactory {
         let reconnectDelay = 15000;
 
         const reconnectLoop = async () => {
-          if (this.#connections?.[uuid]?.authorised !== true && this.#connections?.[uuid]?.allowRetry === true) {
+          if (this.#connections?.[uuid]?.authorised !== true && this.#connections?.[uuid]?.allowRetry !== false) {
             try {
               await this.#connect(uuid);
               this.#subscribeNestAPI(uuid);
@@ -120,18 +120,18 @@ export default class NestAccfactory {
     this.cachedAccessories.push(accessory);
   }
 
-  async #connect(uuid, refresh = false) {
+  async #connect(uuid) {
     if (typeof this.#connections?.[uuid] !== 'object') {
       return;
     }
 
-    if (refresh !== true) {
-      this?.log?.info?.(
-        'Performing authorisation for connection "%s" %s',
-        this.#connections[uuid].name,
-        this.#connections[uuid].fieldTest === true ? 'using field test endpoints' : '',
-      );
-    }
+    // If allowRety is true, we assume this is NOT the first connection attempyt, so we'll only use debug level logging
+    // Other wise, we'll use info level
+    this?.log?.[this.#connections[uuid].allowRetry === true ? 'debug' : 'info']?.(
+      'Performing authorisation for connection "%s" %s',
+      this.#connections[uuid].name,
+      this.#connections[uuid].fieldTest === true ? 'using field test endpoints' : '',
+    );
 
     if (this.#connections[uuid].type === ACCOUNT_TYPE.GOOGLE) {
       // Authorisation using Google account (cookie-based since 2022)
@@ -207,6 +207,13 @@ export default class NestAccfactory {
           throw new Error('Missing access_token in session response');
         }
 
+        this?.log?.[this.#connections[uuid].allowRetry === true ? 'debug' : 'success']?.(
+          this.#connections[uuid].allowRetry === true
+            ? 'Successfully performed token refresh using Google account for connection "%s"'
+            : 'Successfully authorised using Google account for connection "%s"',
+          this.#connections[uuid].name,
+        );
+
         // Store authorised session details
         Object.assign(this.#connections[uuid], {
           authorised: true,
@@ -228,16 +235,11 @@ export default class NestAccfactory {
         this.#connections[uuid].timer = setTimeout(
           () => {
             this?.log?.debug?.('Performing periodic token refresh using Google account for connection "%s"', this.#connections[uuid].name);
-            this.#connect(uuid, true);
+            this.#connections[uuid].allowRetry = true;
+            this.#connect(uuid);
           },
           (tokenData.expires_in - 300) * 1000, // Refresh Google token, 5mins before expires
         );
-
-        if (refresh !== true) {
-          this?.log?.success?.('Successfully authorised using Google account for connection "%s"', this.#connections[uuid].name);
-        } else {
-          this?.log?.debug?.('Successfully performed token refresh using Google account for connection "%s"', this.#connections[uuid].name);
-        }
       } catch (error) {
         // Attempt to extract HTTP status code from error cause or error object
         let statusCode = error && error.code !== null ? error.code : error && error.status !== null ? error.status : undefined;
@@ -253,11 +255,13 @@ export default class NestAccfactory {
           this.#connections[uuid].allowRetry === true ? 'will retry' : 'will not retry',
           typeof error?.message === 'string' ? error.message : String(error),
         );
-        if (refresh !== true) {
-          this?.log?.error?.('Authorisation failed using Google account for connection "%s"', this.#connections[uuid].name);
-        } else {
-          this?.log?.error?.('Token refresh failed using Google account for connection "%s"', this.#connections[uuid].name);
-        }
+
+        this?.log?.error?.(
+          this.#connections[uuid].allowRetry === true
+            ? 'Token refresh failed using Google account for connection "%s"'
+            : 'Authorisation failed using Google account for connection "%s"',
+          this.#connections[uuid].name,
+        );
       }
     }
 
@@ -311,6 +315,13 @@ export default class NestAccfactory {
 
         let sessionData = await sessionResponse.json();
 
+        this?.log?.[this.#connections[uuid].allowRetry === true ? 'debug' : 'success']?.(
+          this.#connections[uuid].allowRetry === true
+            ? 'Successfully performed token refresh using Nest account for connection "%s"'
+            : 'Successfully authorised using Nest account for connection "%s"',
+          this.#connections[uuid].name,
+        );
+
         // Store authorised session details
         Object.assign(this.#connections[uuid], {
           authorised: true,
@@ -332,15 +343,11 @@ export default class NestAccfactory {
         this.#connections[uuid].timer = setTimeout(
           () => {
             this?.log?.debug?.('Performing periodic token refresh using Nest account for connection "%s"', this.#connections[uuid].name);
-            this.#connect(uuid, true);
+            this.#connections[uuid].allowRetry = true;
+            this.#connect(uuid);
           },
           1000 * 3600 * 24, // Refresh Nest session token every 24hrs
         );
-        if (refresh !== true) {
-          this?.log?.success?.('Successfully authorised using Nest account for connection "%s"', this.#connections[uuid].name);
-        } else {
-          this?.log?.debug?.('Successfully performed token refresh using Nest account for connection "%s"', this.#connections[uuid].name);
-        }
       } catch (error) {
         // Attempt to extract HTTP status code from error cause or error object
         let statusCode = error && error.code !== null ? error.code : error && error.status !== null ? error.status : undefined;
@@ -356,11 +363,13 @@ export default class NestAccfactory {
           this.#connections[uuid].allowRetry === true ? 'will retry' : 'will not retry',
           typeof error?.message === 'string' ? error.message : String(error),
         );
-        if (refresh !== true) {
-          this?.log?.error?.('Authorisation failed using Nest account for connection "%s"', this.#connections[uuid].name);
-        } else {
-          this?.log?.error?.('Token refresh failed using Nest account for connection "%s"', this.#connections[uuid].name);
-        }
+
+        this?.log?.error?.(
+          this.#connections[uuid].allowRetry === true
+            ? 'Token refresh failed using Nest account for connection "%s"'
+            : 'Authorisation failed using Nest account for connection "%s"',
+          this.#connections[uuid].name,
+        );
       }
     }
   }
@@ -562,6 +571,7 @@ export default class NestAccfactory {
             'Connection "' + this.#connections[uuid].name + '" is no longer authorised with the Nest API, will attempt to reconnect',
           );
           this.#connections[uuid].authorised = false;
+          this.#connections[uuid].allowRetry = true;
           return;
         }
 

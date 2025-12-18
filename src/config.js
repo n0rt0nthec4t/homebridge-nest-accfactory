@@ -1,7 +1,7 @@
 // Configuration validation and processing
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.11.24
+// Code version 2025.12.18
 // Mark Hulskamp
 'use strict';
 
@@ -153,7 +153,7 @@ function buildConnections(config) {
         name: key,
         type: ACCOUNT_TYPE.NEST,
         authorised: false,
-        allowRetry: true,
+        allowRetry: undefined, // On purpose having this as undefined
         access_token: section.access_token.trim(),
         fieldTest: fieldTest,
         referer: fieldTest ? 'home.ft.nest.com' : 'home.nest.com',
@@ -174,7 +174,7 @@ function buildConnections(config) {
         name: key,
         type: ACCOUNT_TYPE.GOOGLE,
         authorised: false,
-        allowRetry: true,
+        allowRetry: undefined, // On purpose having this as undefined
         issuetoken: section.issuetoken.trim(),
         cookie: section.cookie.trim(),
         fieldTest: fieldTest,

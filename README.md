@@ -17,15 +17,15 @@ Building and maintaining this project takes time, effort, and resources. If you 
 
 ## Supported Devices
 
-The following Nest devices are known to be supported
+The following Nest devices are known to be supported by this Homebridge plugin:
 
-* Nest Thermostats (1st gen, 2nd gen, 3rd gen, E, 2020 mirror edition, 4th gen)
-* Nest Protects (1st and 2nd gen)
-* Nest Temp Sensors (1st gen)
-* Nest Cameras (Cam Indoor, IQ Indoor, Outdoor, IQ Outdoor, Cam with Floodlight)
-* Nest Doorbells (wired 1st gen)
-* Nest HeatLinks
-* Nest x Yale Locks (more testers required)
+- Nest Thermostats
+- Nest Protects
+- Nest Temperature Sensors
+- Nest Cameras
+- Nest Doorbells
+- Nest Heat Links
+- Nest × Yale Locks
 
 **Note:** Google has discontinued support for 1st and 2nd generation Nest Thermostats as of **October 25, 2025**.  
 Based on their stated intentions, these models are expected to stop functioning with this Homebridge plugin after that date.
