@@ -69,6 +69,6 @@
         "@evan/opus": "^1.0.3",
         "protobufjs": "^8.0.0",
         "werift": "^0.22.2",
-        "undici": "7.16.0"
+        "undici": "7.18.2"
     }
 }
