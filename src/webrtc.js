@@ -108,11 +108,11 @@ export default class WebRTC extends Streamer {
         // We need this id for SOME calls to Google Home Foyer services. Gotta love consistency :-)
         if (homeFoyerResponse?.data?.[0]?.homes !== undefined) {
           Object.values(homeFoyerResponse?.data?.[0]?.homes).forEach((home) => {
-            Object.values(home.devices).forEach((device) => {
+            Object.values(home?.devices || {}).forEach((device) => {
               if (device?.id?.googleUuid !== undefined && device?.otherIds?.otherThirdPartyId !== undefined) {
                 // Test to see if our uuid matches here
                 let currentGoogleUuid = device?.id?.googleUuid;
-                Object.values(device.otherIds.otherThirdPartyId).forEach((other) => {
+                Object.values(device?.otherIds?.otherThirdPartyId || {}).forEach((other) => {
                   if (other?.id === this.nest_google_device_uuid) {
                     this.#googleHomeDeviceUUID = currentGoogleUuid;
                   }
