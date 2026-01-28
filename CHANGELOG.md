@@ -6,6 +6,11 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 - The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
 
+## v0.3.8 (xxxx/xx/xx)
+
+- Fixed WebRTC streaming issues when a home does not contain any devices [@benbean303](https://github.com/benbean303)
+- Added support for Nest Cam Outdoor (2nd gen, wired)
+
 ## v0.3.7 (2025/12/17)
 
 This marks the final release of 2025. A huge thank you to everyone who’s used the plugin, reported issues, tested changes, and contributed feedback throughout the year. Your support genuinely helps shape the project.

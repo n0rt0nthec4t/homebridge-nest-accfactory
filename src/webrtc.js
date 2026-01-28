@@ -4,7 +4,7 @@
 // Handles connection and data from Google WebRTC systems
 // Currently a "work in progress"
 //
-// Code version 2026.01.24
+// Code version 2026.01.28
 // Mark Hulskamp
 'use strict';
 
@@ -107,7 +107,7 @@ export default class WebRTC extends Streamer {
         // Translate our uuid (DEVICE_xxxxxxxxxx) into the associated 'google id' from the Google Home Foyer
         // We need this id for SOME calls to Google Home Foyer services. Gotta love consistency :-)
         if (homeFoyerResponse?.data?.[0]?.homes !== undefined) {
-          Object.values(homeFoyerResponse?.data?.[0]?.homes).forEach((home) => {
+          Object.values(homeFoyerResponse?.data?.[0]?.homes || {}).forEach((home) => {
             Object.values(home?.devices || {}).forEach((device) => {
               if (device?.id?.googleUuid !== undefined && device?.otherIds?.otherThirdPartyId !== undefined) {
                 // Test to see if our uuid matches here

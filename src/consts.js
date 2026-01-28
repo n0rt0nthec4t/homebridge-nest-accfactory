@@ -1,7 +1,7 @@
 // Common defines
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.12.17
+// Code version 2025.12.23
 // Mark Hulskamp
 'use strict';
 
@@ -59,6 +59,7 @@ export const PROTOBUF_RESOURCES = {
     'google.resource.SpencerResource',
     'google.resource.VenusResource',
     'google.resource.UsticaResource',
+    'google.resource.LinosaResource',
     'nest.resource.NestCamIndoorResource',
     'nest.resource.NestCamIQResource',
     'nest.resource.NestCamIQOutdoorResource',
@@ -69,7 +70,7 @@ export const PROTOBUF_RESOURCES = {
   FLOODLIGHT: ['google.resource.NeonQuartzResource', 'google.resource.AzizResource'],
   CONNECT: ['nest.resource.NestConnectResource'],
   DETECT: ['nest.resource.NestDetectResource'],
-  GUARD: ['nest.resource.NestHelloResource'],
+  GUARD: ['nest.resource.NestGuardResource'],
 };
 
 export const NEST_API_BUCKETS = [
