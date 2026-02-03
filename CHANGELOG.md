@@ -10,6 +10,7 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 - Fixed WebRTC streaming issues when a home does not contain any devices [@benbean303](https://github.com/benbean303)
 - Added support for Nest Cam Outdoor (2nd gen, wired)
+- Added support for Nest Doorbell (3rd gen, wired)
 
 ## v0.3.7 (2025/12/17)
 

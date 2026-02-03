@@ -1,7 +1,7 @@
 // Common defines
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.12.23
+// Code version 2026.02.03
 // Mark Hulskamp
 'use strict';
 
@@ -60,6 +60,7 @@ export const PROTOBUF_RESOURCES = {
     'google.resource.VenusResource',
     'google.resource.UsticaResource',
     'google.resource.LinosaResource',
+    'google.resource.RhodesResource',
     'nest.resource.NestCamIndoorResource',
     'nest.resource.NestCamIQResource',
     'nest.resource.NestCamIQOutdoorResource',
