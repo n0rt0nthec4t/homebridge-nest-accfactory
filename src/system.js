@@ -1646,7 +1646,7 @@ export default class NestAccfactory {
           uuid,
           nest_google_device_uuid,
           this.#rawData?.[nest_google_device_uuid]?.value?.nexus_api_http_server_url ?? // Nest API
-            this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image?.liveImageUrl, // Google API
+            this.#rawData?.[nest_google_device_uuid]?.value?.loading_image?.liveUrl, // Google API
         );
       }
     }
@@ -1654,12 +1654,12 @@ export default class NestAccfactory {
     return values;
   }
 
-  async #getCameraSnapshot(uuid, nest_google_device_uuid, nexus_api_url) {
+  async #getCameraSnapshot(uuid, nest_google_device_uuid, snapshotURL) {
     if (
       typeof this.#connections?.[uuid] !== 'object' ||
       this.#connections[uuid]?.authorised !== true ||
       (nest_google_device_uuid?.trim?.() ?? '') === '' ||
-      (nexus_api_url?.trim?.() ?? '') === ''
+      (snapshotURL?.trim?.() ?? '') === ''
     ) {
       // Not a valid connection object and/or we're not authorised
       return;
@@ -1672,7 +1672,7 @@ export default class NestAccfactory {
       try {
         let response = await fetchWrapper(
           'get',
-          new URL('/get_image?uuid=' + nest_google_device_uuid.trim().split('.')[1], nexus_api_url).href,
+          new URL('/get_image?uuid=' + nest_google_device_uuid.trim().split('.')[1], snapshotURL).href,
           {
             headers: {
               Referer: 'https://' + this.#connections[uuid].referer,
@@ -1710,53 +1710,33 @@ export default class NestAccfactory {
         PROTOBUF_RESOURCES.DOORBELL.includes(this.#rawData?.[nest_google_device_uuid]?.value?.device_info?.typeName) === true ||
         PROTOBUF_RESOURCES.FLOODLIGHT.includes(this.#rawData?.[nest_google_device_uuid]?.value?.device_info?.typeName) === true)
     ) {
-      // Attempt to retrieve snapshot from camera via Google API
-      // First, request to get the snapshot url image updated
-      let commandResponse = await this.#protobufCommand(uuid, 'nestlabs.gateway.v1.ResourceApi', 'SendCommand', {
-        resourceRequest: {
-          resourceId: nest_google_device_uuid,
-          requestId: crypto.randomUUID(),
-        },
-        resourceCommands: [
-          {
-            traitLabel: 'upload_live_image',
-            command: {
-              type_url: 'type.nestlabs.com/nest.trait.product.camera.UploadLiveImageTrait.UploadLiveImageRequest',
-              value: {},
-            },
+      // Attempt to retrieve live image from camera via Google API
+      try {
+        let response = await fetchWrapper('get', snapshotURL, {
+          headers: {
+            Referer: 'https://' + this.#connections[uuid].referer,
+            Origin: 'https://' + this.#connections[uuid].referer,
+            Authorization: 'Basic ' + this.#connections[uuid].token,
+            'User-Agent': USER_AGENT,
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin',
           },
-        ],
-      });
-
-      if (commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.progress === 'COMPLETE') {
-        // Snapshot url image has been updated, so now retrieve the returned image
-        try {
-          let response = await fetchWrapper('get', nexus_api_url, {
-            headers: {
-              Referer: 'https://' + this.#connections[uuid].referer,
-              Origin: 'https://' + this.#connections[uuid].referer,
-              Authorization: 'Basic ' + this.#connections[uuid].token,
-              'User-Agent': USER_AGENT,
-              'Sec-Fetch-Mode': 'cors',
-              'Sec-Fetch-Site': 'same-origin',
-            },
-            retry: 2,
-            timeout: 10000, // 10 seconds to get snapshot
-          });
-          snapshot = Buffer.from(await response.arrayBuffer());
-        } catch (error) {
-          // Log unexpected errors (excluding timeouts) for debugging
-          if (
-            error?.cause === undefined ||
-            (error.cause?.message?.toUpperCase?.()?.includes('TIMEOUT') === false &&
-              error.cause?.code?.toUpperCase?.()?.includes('TIMEOUT') === false)
-          ) {
-            this?.log?.debug?.(
-              'Google API camera snapshot failed with error for device uuid "%s". Error was "%s"',
-              nest_google_device_uuid,
-              typeof error?.message === 'string' ? error.message : String(error),
-            );
-          }
+          retry: 2,
+          timeout: 10000, // 10 seconds to get snapshot
+        });
+        snapshot = Buffer.from(await response.arrayBuffer());
+      } catch (error) {
+        // Log unexpected errors (excluding timeouts) for debugging
+        if (
+          error?.cause === undefined ||
+          (error.cause?.message?.toUpperCase?.()?.includes('TIMEOUT') === false &&
+            error.cause?.code?.toUpperCase?.()?.includes('TIMEOUT') === false)
+        ) {
+          this?.log?.debug?.(
+            'Google API camera snapshot failed with error for device uuid "%s". Error was "%s"',
+            nest_google_device_uuid,
+            typeof error?.message === 'string' ? error.message : String(error),
+          );
         }
       }
     }

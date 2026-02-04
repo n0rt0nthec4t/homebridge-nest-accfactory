@@ -8,9 +8,17 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 ## v0.3.8 (xxxx/xx/xx)
 
+- General code cleanup and stability improvements
 - Fixed WebRTC streaming issues when a home does not contain any devices [@benbean303](https://github.com/benbean303)
+- Fixed an issue where snapshots could appear empty on some Nest/Google cameras.
 - Added support for Nest Cam Outdoor (2nd gen, wired)
 - Added support for Nest Doorbell (3rd gen, wired)
+
+## Known Issues
+
+- Battery percentage is not currently reported for battery powered Nest/Google cameras
+- Some newer Nest/Google cameras may use different video sizes or shapes, causing the video to look slightly cropped or not fill the screen correctly.
+- HomeKit Secure Video (HKSV) can be enabled on battery powered cameras, which can significantly reduce battery life
 
 ## v0.3.7 (2025/12/17)
 
