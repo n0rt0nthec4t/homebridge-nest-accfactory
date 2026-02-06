@@ -6,7 +6,7 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 - The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
 
-## v0.3.8 (xxxx/xx/xx)
+## v0.3.8 (2026/02/06)
 
 - General code cleanup and stability improvements
 - Fixed WebRTC streaming issues when a home does not contain any devices [@benbean303](https://github.com/benbean303)
@@ -18,7 +18,7 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 - Battery percentage is not currently reported for battery powered Nest/Google cameras
 - Some newer Nest/Google cameras may use different video sizes or shapes, causing the video to look slightly cropped or not fill the screen correctly.
-- HomeKit Secure Video (HKSV) can be enabled on battery powered cameras, which can significantly reduce battery life
+- HomeKit Secure Video (HKSV) can be enabled on battery powered cameras, which will significantly reduce battery life
 
 ## v0.3.7 (2025/12/17)
 
