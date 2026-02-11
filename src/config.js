@@ -1,7 +1,7 @@
 // Configuration validation and processing
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.12.18
+// Code version 2026.02.11
 // Mark Hulskamp
 'use strict';
 
@@ -60,7 +60,7 @@ function processConfig(config, log) {
     });
     if (options.ffmpeg.valid === false) {
       log?.warn?.('ffmpeg binary "%s" does not meet the minimum support requirements', ffmpeg.binary);
-
+      log?.warn?.('Stream video/recording from camera/doorbells will be unavailable');
       if (
         ffmpeg.version?.localeCompare(FFMPEG_VERSION, undefined, {
           numeric: true,
@@ -69,30 +69,22 @@ function processConfig(config, log) {
         }) === -1
       ) {
         log?.warn?.('Minimum binary version is "%s", however the installed version is "%s"', FFMPEG_VERSION, ffmpeg.version);
-        log?.warn?.('Stream video/recording from camera/doorbells will be unavailable');
       }
 
       if ((ffmpeg.features?.decoders || []).includes('libspeex') === false) {
-        log?.warn?.('Missing speex decoder in ffmpeg, talkback on certain camera/doorbells will be unavailable');
-      }
-
-      if (
-        (ffmpeg.features?.encoders || []).includes('libfdk_aac') === false &&
-        (ffmpeg.features?.encoders || []).includes('libopus') === false
-      ) {
-        log?.warn?.('Missing fdk_aac and opus encoders in ffmpeg, audio from camera/doorbells will be unavailable');
+        log?.warn?.('Missing speex decoder in ffmpeg');
       }
 
       if ((ffmpeg.features?.encoders || []).includes('libfdk_aac') === false) {
-        log?.warn?.('Missing fdk_aac encoder in ffmpeg, audio from camera/doorbells will be unavailable');
+        log?.warn?.('Missing fdk_aac encoder in ffmpeg');
       }
 
       if ((ffmpeg.features?.encoders || []).includes('libopus') === false) {
-        log?.warn?.('Missing opus encoder in ffmpeg, talkback on certain camera/doorbells will be unavailable');
+        log?.warn?.('Missing opus encoder in ffmpeg');
       }
 
       if ((ffmpeg.features?.encoders || []).includes('libx264') === false) {
-        log?.warn?.('Missing libx264 encoder in ffmpeg, stream video/recording from camera/doorbells will be unavailable');
+        log?.warn?.('Missing libx264 encoder in ffmpeg');
       }
     }
 

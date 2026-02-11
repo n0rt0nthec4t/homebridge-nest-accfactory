@@ -2,7 +2,7 @@
     "name": "homebridge-nest-accfactory",
     "displayName": "Nest Accfactory",
     "type": "module",
-    "version": "0.3.8",
+    "version": "0.3.9-alpha.1",
     "description": "Homebridge support for Nest/Google devices including HomeKit Secure Video (HKSV) support for doorbells and cameras",
     "author": "n0rt0nthec4t",
     "license": "Apache-2.0",
@@ -56,9 +56,9 @@
     "devDependencies": {
         "@eslint/js": "^9.39.2",
         "eslint": "^9.39.2",
-        "@stylistic/eslint-plugin": "^5.7.1",
-        "@types/node": "^25.2.1",
-        "@typescript-eslint/parser": "^8.54.0",
+        "@stylistic/eslint-plugin": "^5.8.0",
+        "@types/node": "^25.2.3",
+        "@typescript-eslint/parser": "^8.55.0",
         "prettier": "^3.8.1",
         "prettier-eslint": "^16.4.2",
         "copyfiles": "^2.4.1",
@@ -69,6 +69,6 @@
         "@evan/opus": "^1.0.3",
         "protobufjs": "^8.0.0",
         "werift": "^0.22.4",
-        "undici": "^7.20.0"
+        "undici": "^7.21.0"
     }
 }
