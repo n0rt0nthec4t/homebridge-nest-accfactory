@@ -21,7 +21,16 @@ import FFmpeg from '../ffmpeg.js';
 import { processCommonData, parseDurationToSeconds, scaleValue } from '../utils.js';
 
 // Define constants
-import { DATA_SOURCE, PROTOBUF_RESOURCES, __dirname, RESOURCE_PATH, RESOURCE_IMAGES, DEVICE_TYPE, TIMERS } from '../consts.js';
+import {
+  DATA_SOURCE,
+  PROTOBUF_RESOURCES,
+  __dirname,
+  RESOURCE_PATH,
+  RESOURCE_IMAGES,
+  DEVICE_TYPE,
+  TIMERS,
+  LOW_BATTERY_LEVEL,
+} from '../consts.js';
 
 const MP4BOX = 'mp4box';
 const STREAMING_PROTOCOL = {
@@ -31,7 +40,7 @@ const STREAMING_PROTOCOL = {
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2026.02.03'; // Code version
+  static VERSION = '2026.02.12'; // Code version
 
   // For messaging back to parent class (Doorbell/Floodlight)
   static SET = HomeKitDevice.SET;
@@ -40,7 +49,7 @@ export default class NestCamera extends HomeKitDevice {
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
   motionServices = undefined; // Object of Camera/Doorbell motion sensor(s)
-  batteryService = undefined; // If a camera has a battery <-- todo
+  batteryService = undefined; // If a camera has a battery
   personTimer = undefined; // Cooldown timer for person/face events
   motionTimer = undefined; // Cooldown timer for motion events
   snapshotEvent = undefined; // Event for which to get snapshot for
@@ -114,6 +123,12 @@ export default class NestCamera extends HomeKitDevice {
       this.controller.recordingManagement = {
         operatingModeService: this.addHKService(this.hap.Service.CameraOperatingMode, '', 1),
       };
+    }
+
+    // Setup battery service if required and not already present on the accessory
+    if (this.deviceData.model.includes('battery') === true && isNaN(this.deviceData?.battery_level) === false) {
+      this.batteryService = this.addHKService(this.hap.Service.Battery, '', 1);
+      this.batteryService.setHiddenService(true);
     }
 
     // Setup set characteristics
@@ -296,6 +311,23 @@ export default class NestCamera extends HomeKitDevice {
   async onUpdate(deviceData) {
     if (typeof deviceData !== 'object' || this.controller === undefined) {
       return;
+    }
+
+    // Update battery status
+    if (this.batteryService !== undefined) {
+      this.batteryService.updateCharacteristic(this.hap.Characteristic.BatteryLevel, deviceData.battery_level);
+      this.batteryService.updateCharacteristic(
+        this.hap.Characteristic.StatusLowBattery,
+        deviceData.battery_level > LOW_BATTERY_LEVEL
+          ? this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
+          : this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW,
+      );
+      this.batteryService.updateCharacteristic(
+        this.hap.Characteristic.ChargingState,
+        (deviceData.battery_level > this.deviceData.battery_level && this.deviceData.battery_level !== 0 ? true : false)
+          ? this.hap.Characteristic.ChargingState.CHARGING
+          : this.hap.Characteristic.ChargingState.NOT_CHARGING,
+      );
     }
 
     if (this.deviceData.migrating === false && deviceData.migrating === true) {
@@ -1437,7 +1469,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
                   : value.value.device_info.typeName === 'google.resource.UsticaResource'
                     ? 'Cam Indoor (3rd gen, wired)'
                     : value.value.device_info.typeName === 'google.resource.SpencerResource'
-                      ? 'Cam (wired)'
+                      ? 'Cam (2nd gen, wired)'
                       : value.value.device_info.typeName === 'google.resource.VenusResource'
                         ? 'Doorbell (2nd gen, wired)'
                         : value.value.device_info.typeName === 'google.resource.RhodesResource'
@@ -1449,7 +1481,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
                               : value.value.device_info.typeName === 'nest.resource.NestCamIndoorResource'
                                 ? 'Cam Indoor (1st gen)'
                                 : value.value.device_info.typeName === 'nest.resource.NestCamIQResource'
-                                  ? 'Cam IQ'
+                                  ? 'Cam IQ Indoor (1st gen)'
                                   : value.value.device_info.typeName === 'nest.resource.NestCamIQOutdoorResource'
                                     ? 'Cam IQ Outdoor (1st gen, wired)'
                                     : value.value.device_info.typeName === 'nest.resource.NestHelloResource'
@@ -1481,7 +1513,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               has_microphone: value.value?.microphone_settings?.enableMicrophone === true,
               has_speaker: value.value?.speaker_volume?.volume !== undefined,
               has_motion_detection: value.value?.observation_trigger_capabilities?.videoEventTypes?.motion?.value === true,
-              activity_zones: Array.isArray(value.value?.activity_zone_settings?.activityZones)
+              activity_zones: Array.isArray(value.value?.activity_zone_settings?.activityZones) === true
                 ? value.value.activity_zone_settings.activityZones.map((zone) => ({
                     id: zone.zoneProperties?.zoneId !== undefined ? zone.zoneProperties.zoneId : zone.zoneProperties.internalIndex,
                     name: HomeKitDevice.makeValidHKName(zone.zoneProperties?.name !== undefined ? zone.zoneProperties.name : ''),
@@ -1511,6 +1543,10 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
                 value.value?.camera_migration_status?.state?.progress !== undefined &&
                 value.value.camera_migration_status.state.progress !== 'PROGRESS_COMPLETE' &&
                 value.value.camera_migration_status.state.progress !== 'PROGRESS_NONE',
+              battery_level:
+                isNaN(value.value?.battery_power_source?.remaining?.remainingPercent?.value) === false
+                  ? scaleValue(Number(value.value?.battery_power_source?.remaining?.remainingPercent?.value), 0, 1, 0, 100)
+                  : 0,
             },
             config,
           );
@@ -1569,6 +1605,10 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               migrating:
                 value.value?.properties?.['cc2migration.overview_state'] !== undefined &&
                 value.value.properties['cc2migration.overview_state'] !== 'NORMAL',
+              /*   battery_level:
+                isNaN(value.value?.properties['rq_battery_battery_volt']) === false
+                  ? scaleValue(Number(value.value?.properties['rq_battery_battery_volt']), 0, 5.4, 0, 100)
+                  : 0, */
             },
             config,
           );

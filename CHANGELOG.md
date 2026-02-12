@@ -5,7 +5,6 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 ### Known Issues
 
 - The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
-- Battery percentage is not currently reported for battery powered Nest/Google cameras
 - Some newer Nest/Google cameras may use different video sizes or shapes, causing the video to look slightly cropped or not fill the screen correctly.
 - HomeKit Secure Video (HKSV) can be enabled on battery powered cameras, which will significantly reduce battery life
 
@@ -13,7 +12,9 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 - Fixed remaining issues with snapshot handling on some Nest/Google cameras
 - Added strict checks to ensure the ffmpeg binary includes all supported libraries for streaming from Nest/Google cameras, as per `README.md`
+- Added battery level reporting for Nest/Google battery powered cameras (experimental)
 - Updated `README.md` with a recommendation for a pre-built ffmpeg binary option
+- Refined thermostat mode and temperature adjustments from the Home app
 
 ## v0.3.8 (2026/02/06)
 

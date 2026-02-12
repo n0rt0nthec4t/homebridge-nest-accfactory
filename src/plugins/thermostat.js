@@ -28,7 +28,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2025.12.17'; // Code version
+  static VERSION = '2026.02.12'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -36,7 +36,7 @@ export default class NestThermostat extends HomeKitDevice {
   humidityService = undefined;
   fanService = undefined; // Fan control
   dehumidifierService = undefined; // dehumidifier control
-  humidifierService = undefined; // humidifier control
+  humidifierService = undefined; // humidifier control <- TODO
   externalCool = undefined; // External module function
   externalHeat = undefined; // External module function
   externalFan = undefined; // External module function
@@ -718,7 +718,7 @@ export default class NestThermostat extends HomeKitDevice {
     }
   }
 
-  setFan(fanState, speed) {
+  async setFan(fanState, speed) {
     let currentState = this.fanService.getCharacteristic(this.hap.Characteristic.Active).value;
 
     // If we have a rotation speed characteristic, use that get the current fan speed, otherwise we use the current fan state to determine
@@ -733,14 +733,14 @@ export default class NestThermostat extends HomeKitDevice {
       let isActive = fanState === this.hap.Characteristic.Active.ACTIVE;
       let scaledSpeed = Math.round((speed / 100) * this.deviceData.fan_max_speed);
 
-      this.message(HomeKitDevice.SET, {
+      this.fanService.updateCharacteristic(this.hap.Characteristic.Active, fanState);
+
+      await this.message(HomeKitDevice.SET, {
         uuid: this.deviceData.nest_google_device_uuid,
         fan_state: isActive,
         fan_duration: this.deviceData.fan_duration,
         fan_timer_speed: scaledSpeed,
       });
-
-      this.fanService.updateCharacteristic(this.hap.Characteristic.Active, fanState);
 
       if (this.fanService.testCharacteristic(this.hap.Characteristic.RotationSpeed) === true) {
         this.fanService.updateCharacteristic(this.hap.Characteristic.RotationSpeed, speed);
@@ -781,15 +781,15 @@ export default class NestThermostat extends HomeKitDevice {
     }
   }
 
-  setDehumidifier(dehumidifierState) {
+  async setDehumidifier(dehumidifierState) {
     let isActive = dehumidifierState === this.hap.Characteristic.Active.ACTIVE;
 
-    this.message(HomeKitDevice.SET, {
+    this.dehumidifierService.updateCharacteristic(this.hap.Characteristic.Active, dehumidifierState);
+
+    await this.message(HomeKitDevice.SET, {
       uuid: this.deviceData.nest_google_device_uuid,
       dehumidifier_state: isActive,
     });
-
-    this.dehumidifierService.updateCharacteristic(this.hap.Characteristic.Active, dehumidifierState);
 
     this?.log?.info?.(
       'Set dehumidifier on thermostat "%s" to "%s"',
@@ -798,15 +798,15 @@ export default class NestThermostat extends HomeKitDevice {
     );
   }
 
-  setDisplayUnit(temperatureUnit) {
+  async setDisplayUnit(temperatureUnit) {
     let unit = temperatureUnit === this.hap.Characteristic.TemperatureDisplayUnits.CELSIUS ? 'C' : 'F';
 
-    this.message(HomeKitDevice.SET, {
+    this.thermostatService.updateCharacteristic(this.hap.Characteristic.TemperatureDisplayUnits, temperatureUnit);
+
+    await this.message(HomeKitDevice.SET, {
       uuid: this.deviceData.nest_google_device_uuid,
       temperature_scale: unit,
     });
-
-    this.thermostatService.updateCharacteristic(this.hap.Characteristic.TemperatureDisplayUnits, temperatureUnit);
 
     this?.log?.info?.('Set temperature units on thermostat "%s" to "%s"', this.deviceData.description, unit === 'C' ? '°C' : '°F');
   }
@@ -873,7 +873,6 @@ export default class NestThermostat extends HomeKitDevice {
       }
 
       await this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_device_uuid, hvac_mode: mode });
-
       this.#logModeChange('HomeKit', mode);
     }
   }
@@ -938,6 +937,7 @@ export default class NestThermostat extends HomeKitDevice {
     }
 
     if (targetKey !== undefined) {
+      this.thermostatService.updateCharacteristic(characteristic, temperature);
       await this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_device_uuid, [targetKey]: temperature });
       this.#logTemperatureChange(
         'HomeKit',
@@ -947,8 +947,6 @@ export default class NestThermostat extends HomeKitDevice {
         this.deviceData.temperature_scale?.toUpperCase?.() === 'F' ? 'F' : 'C',
       );
     }
-
-    this.thermostatService.updateCharacteristic(characteristic, temperature);
   }
 
   getTemperature(characteristic) {
