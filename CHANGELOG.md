@@ -10,8 +10,9 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 ## v0.3.9 (xxxx/xx/xx)
 
+- General code cleanup and stability improvements
 - Fixed remaining issues with snapshot handling on some Nest/Google cameras
-- Added strict checks to ensure the ffmpeg binary includes all supported libraries for streaming from Nest/Google cameras, as per `README.md`
+- Added strict checks to ensure the ffmpeg binary includes all required libraries for streaming from Nest/Google cameras, as per `README.md`
 - Added battery level reporting for Nest/Google battery powered cameras (experimental)
 - Updated `README.md` with a recommendation for a pre-built ffmpeg binary option
 - Refined thermostat mode and temperature adjustments from the Home app

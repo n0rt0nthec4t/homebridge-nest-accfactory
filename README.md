@@ -28,7 +28,7 @@ The following Nest devices are known to be supported by this Homebridge plugin:
 - Nest × Yale Locks
 
 **Note:** Google has discontinued support for 1st and 2nd generation Nest Thermostats as of **October 25, 2025**.  
-Based on their stated intentions, these models are expected to stop functioning with this Homebridge plugin after that date.
+Based on this, these models are expected to stop functioning with this Homebridge plugin.
 
 The accessory supports connection to Nest using a Nest account AND/OR a Google (migrated Nest account) account.
 

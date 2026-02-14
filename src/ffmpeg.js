@@ -1,7 +1,7 @@
 // FFmpeg manager for binary probing + session tracking
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.08.11
+// Code version 2026.02.14
 // Mark Hulskamp
 'use strict';
 
@@ -56,7 +56,7 @@ export default class FFmpeg {
     }
 
     let stdout = String(versionOutput.stdout);
-    let match = stdout.match(/^ffmpeg version ([^\s]+)/);
+    let match = stdout.match(/^ffmpeg version (\d+(?:\.\d+)*)(?=[-\s])/);
     if (match !== null) {
       this.#version = match[1];
     }

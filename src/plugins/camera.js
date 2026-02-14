@@ -1513,14 +1513,15 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               has_microphone: value.value?.microphone_settings?.enableMicrophone === true,
               has_speaker: value.value?.speaker_volume?.volume !== undefined,
               has_motion_detection: value.value?.observation_trigger_capabilities?.videoEventTypes?.motion?.value === true,
-              activity_zones: Array.isArray(value.value?.activity_zone_settings?.activityZones) === true
-                ? value.value.activity_zone_settings.activityZones.map((zone) => ({
-                    id: zone.zoneProperties?.zoneId !== undefined ? zone.zoneProperties.zoneId : zone.zoneProperties.internalIndex,
-                    name: HomeKitDevice.makeValidHKName(zone.zoneProperties?.name !== undefined ? zone.zoneProperties.name : ''),
-                    hidden: false,
-                    uri: '',
-                  }))
-                : [],
+              activity_zones:
+                Array.isArray(value.value?.activity_zone_settings?.activityZones) === true
+                  ? value.value.activity_zone_settings.activityZones.map((zone) => ({
+                      id: zone.zoneProperties?.zoneId !== undefined ? zone.zoneProperties.zoneId : zone.zoneProperties.internalIndex,
+                      name: HomeKitDevice.makeValidHKName(zone.zoneProperties?.name !== undefined ? zone.zoneProperties.name : ''),
+                      hidden: false,
+                      uri: '',
+                    }))
+                  : [],
               alerts: typeof value.value?.alerts === 'object' ? value.value.alerts : [],
               quiet_time_enabled:
                 isNaN(value.value?.quiet_time_settings?.quietTimeEnds?.seconds) === false &&

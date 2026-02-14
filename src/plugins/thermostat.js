@@ -28,7 +28,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2026.02.12'; // Code version
+  static VERSION = '2026.02.14'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -912,32 +912,28 @@ export default class NestThermostat extends HomeKitDevice {
 
     if (
       characteristic.UUID === this.hap.Characteristic.TargetTemperature.UUID &&
-      mode === this.hap.Characteristic.TargetHeatingCoolingState.HEAT
+      mode !== this.hap.Characteristic.TargetHeatingCoolingState.AUTO
     ) {
-      targetKey = 'target_temperature_low';
-      modeLabel = 'heating';
-    } else if (
-      characteristic.UUID === this.hap.Characteristic.TargetTemperature.UUID &&
-      mode === this.hap.Characteristic.TargetHeatingCoolingState.COOL
-    ) {
-      targetKey = 'target_temperature_high';
-      modeLabel = 'cooling';
+      targetKey = 'target_temperature';
+      modeLabel = mode === this.hap.Characteristic.TargetHeatingCoolingState.HEAT ? 'heating' : 'cooling';
     } else if (
       characteristic.UUID === this.hap.Characteristic.HeatingThresholdTemperature.UUID &&
-      (mode === this.hap.Characteristic.TargetHeatingCoolingState.HEAT || mode === this.hap.Characteristic.TargetHeatingCoolingState.AUTO)
+      mode === this.hap.Characteristic.TargetHeatingCoolingState.AUTO
     ) {
       targetKey = 'target_temperature_low';
       modeLabel = 'heating';
     } else if (
       characteristic.UUID === this.hap.Characteristic.CoolingThresholdTemperature.UUID &&
-      (mode === this.hap.Characteristic.TargetHeatingCoolingState.COOL || mode === this.hap.Characteristic.TargetHeatingCoolingState.AUTO)
+      mode === this.hap.Characteristic.TargetHeatingCoolingState.AUTO
     ) {
       targetKey = 'target_temperature_high';
       modeLabel = 'cooling';
     }
 
+    this.thermostatService.updateCharacteristic(characteristic, temperature);
+
     if (targetKey !== undefined) {
-      this.thermostatService.updateCharacteristic(characteristic, temperature);
+      // Only set a target temperature if we've determined whicb Nest/Google data key to change
       await this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_device_uuid, [targetKey]: temperature });
       this.#logTemperatureChange(
         'HomeKit',
