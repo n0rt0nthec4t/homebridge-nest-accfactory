@@ -8,7 +8,7 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 - Some newer Nest/Google cameras may use different video sizes or shapes, causing the video to look slightly cropped or not fill the screen correctly.
 - HomeKit Secure Video (HKSV) can be enabled on battery powered cameras, which will significantly reduce battery life
 
-## v0.3.9 (xxxx/xx/xx)
+## v0.3.9 (2026/02/18)
 
 - General code cleanup and stability improvements
 - Fixed remaining issues with snapshot handling on some Nest/Google cameras

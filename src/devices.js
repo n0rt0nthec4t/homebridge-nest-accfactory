@@ -1,7 +1,7 @@
 // Device support loader
 // Part of homebridge-nest-accfactory
 //
-// Code version 2026.02.14
+// Code version 2026.02.15
 // Mark Hulskamp
 'use strict';
 
@@ -21,7 +21,7 @@ async function loadDeviceModules(log, pluginDir = '') {
   let deviceMap = new Map();
   let files = (await fs.readdir(baseDir)).sort();
 
-  log?.debug?.('Base module "v%s"', HomeKitDevice.VERSION);
+  log?.debug?.('Base module - %s', HomeKitDevice.VERSION);
 
   for (const file of files) {
     if (file.endsWith('.js') === false) {
@@ -37,7 +37,7 @@ async function loadDeviceModules(log, pluginDir = '') {
       for (const exported of Object.values(module)) {
         if (
           typeof exported === 'function' &&
-          HomeKitDevice.prototype.isPrototypeOf(exported.prototype) &&
+          HomeKitDevice.prototype.isPrototypeOf(exported.prototype) === true &&
           typeof exported.TYPE === 'string' &&
           typeof exported.VERSION === 'string'
         ) {
@@ -57,10 +57,10 @@ async function loadDeviceModules(log, pluginDir = '') {
         }
 
         deviceMap.set(chosenClass.TYPE, entry);
-        log?.info?.('Loaded %s module "v%s"', chosenClass.TYPE, chosenClass.VERSION);
+        log?.debug?.('%s module - %s', chosenClass.TYPE, chosenClass.VERSION);
       }
     } catch (error) {
-      log?.warn?.('Failed to load device support file "%s": %s', file, error.message);
+      log?.warn?.('Failed to load device support module "%s": %s', file, error.message);
     }
   }
 

@@ -1,7 +1,7 @@
 // FFmpeg manager for binary probing + session tracking
 // Part of homebridge-nest-accfactory
 //
-// Code version 2026.02.14
+// Code version 2026.02.15
 // Mark Hulskamp
 'use strict';
 
@@ -57,7 +57,7 @@ export default class FFmpeg {
 
     let stdout = String(versionOutput.stdout);
     let match = stdout.match(/^ffmpeg version (\d+(?:\.\d+)*)(?=[-\s])/);
-    if (match !== null) {
+    if ((match?.[1] ?? '') !== '') {
       this.#version = match[1];
     }
 
@@ -72,7 +72,7 @@ export default class FFmpeg {
       this.#features.encoders = [];
       for (let line of encoders.split('\n')) {
         let match = line.match(/^\s*[A-Z.]+\s+([^\s]+)/);
-        if (match !== null) {
+        if ((match?.[1] ?? '') !== '') {
           this.#features.encoders.push(match[1]);
         }
       }
@@ -128,7 +128,7 @@ export default class FFmpeg {
       let lines = String(decoderOutput.stdout).split('\n');
       for (let line of lines) {
         let match = line.match(/^\s*[A-Z.]+\s+([^\s]+)/);
-        if (match !== null) {
+        if ((match?.[1] ?? '') !== '') {
           this.#features.decoders.push(match[1]);
         }
       }
@@ -141,7 +141,7 @@ export default class FFmpeg {
       let lines = String(muxerOutput.stdout).split('\n');
       for (let line of lines) {
         let match = line.match(/^\s*[E][A-Z.]*\s+([^\s]+)/);
-        if (match !== null) {
+        if ((match?.[1] ?? '') !== '') {
           this.#features.muxers.push(match[1]);
         }
       }
@@ -154,7 +154,7 @@ export default class FFmpeg {
       let lines = String(demuxerOutput.stdout).split('\n');
       for (let line of lines) {
         let match = line.match(/^\s*[D][A-Z.]*\s+([^\s]+)/);
-        if (match !== null) {
+        if ((match?.[1] ?? '') !== '') {
           this.#features.demuxers.push(match[1]);
         }
       }

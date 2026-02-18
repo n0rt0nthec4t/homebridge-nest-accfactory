@@ -1,7 +1,7 @@
 // Configuration validation and processing
 // Part of homebridge-nest-accfactory
 //
-// Code version 2026.02.14
+// Code version 2026.02.15
 // Mark Hulskamp
 'use strict';
 
@@ -91,7 +91,7 @@ function processConfig(config, log) {
     if (options.ffmpeg.valid === true) {
       log?.success?.('Valid ffmpeg found for camera/doorbell streaming support');
       log?.debug?.('Binary "%s"', ffmpeg.binary);
-      log?.debug?.('Version "v%s"', ffmpeg.version);
+      log?.debug?.('Version "%s"', ffmpeg.version);
       options.ffmpeg.binary = ffmpeg.binary;
       options.ffmpeg.version = ffmpeg.version;
       options.ffmpeg.hwaccel = ffmpeg.supportsHardwareH264 === true;
