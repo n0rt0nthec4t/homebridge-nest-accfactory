@@ -169,6 +169,22 @@ By default, we look in /usr/local/bin for an ffmpeg binary, however, you can spe
 
 A pre-compiled ffmpeg binary that meets these requirements is available from the **ffmpeg-for-homebridge** project and may be used as an alternative to building ffmpeg yourself.
 
+## Enabling HomeKit Secure Video (HKSV)
+
+HomeKit Secure Video must first be enabled in the plugin configuration, either globally or for specific device(s).
+
+Once HKSV is enabled in the plugin and the accessory has restarted:
+
+1. Open the camera in the **Home** app.
+2. Tap **Settings** → **Recording Options**.
+3. For **Home** and/or **When Away**, select **“Stream & Allow Recording.”**
+4. Tap **More Options** and set **“Record When”** to **“Any Motion Is Detected.”**
+
+> **Note:** The **“More Options”** section only appears when **“Stream & Allow Recording”** is selected. If set to **“Stream Only”**, HKSV recording will not function.
+
+> **Important:** HKSV recording in this plugin is triggered by general motion events.  
+> The **“People”, “Animals”, “Vehicles” and “Packages”** recording filters are not individually supported, so **“Any Motion Is Detected”** must be selected for recording to function reliably.
+
 ## Disclaimer
 
 This is a personal hobby project, provided "as-is," with no warranty whatsoever, express or implied, including but not limited to warranties of merchantability or fitness for a particular purpose. Building and running this project is done entirely at your own risk.
