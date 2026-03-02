@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2026.02.09
+// Code version 2026.02.20
 // Mark Hulskamp
 'use strict';
 
@@ -107,7 +107,7 @@ export default class NestAccfactory {
       this.#rawData = {};
       this.#protobufRoot = null;
       this.#connections = undefined;
-      this.#deviceModules = undefined;
+      this.#deviceModules?.clear?.();
       this.cachedAccessories = [];
     });
   }

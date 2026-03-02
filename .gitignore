@@ -1,5 +1,5 @@
 persist
-node_modules
+node_modules*
 non-github
 dist*
 .vscode

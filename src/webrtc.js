@@ -4,7 +4,7 @@
 // Handles connection and data from Google WebRTC systems
 // Currently a "work in progress"
 //
-// Code version 2026.01.28
+// Code version 2026.03.02
 // Mark Hulskamp
 'use strict';
 
@@ -152,30 +152,24 @@ export default class WebRTC extends Streamer {
                   mimeType: 'audio/opus',
                   clockRate: 48000,
                   channels: 2,
-                  rtcpFeedback: [{ type: 'transport-cc' }, { type: 'nack' }],
+                  rtcpFeedback: [{ type: 'nack' }],
                   parameters: 'minptime=10;useinbandfec=1',
                   payloadType: RTP_AUDIO_PAYLOAD_TYPE,
                 }),
               ],
               video: [
-                // H264 Main profile, level 4.0
+                // H264 Baseline profile (constrained), Level 4.2
                 new werift.RTCRtpCodecParameters({
                   mimeType: 'video/H264',
                   clockRate: 90000,
-                  rtcpFeedback: [
-                    { type: 'transport-cc' },
-                    { type: 'ccm', parameter: 'fir' },
-                    { type: 'nack' },
-                    { type: 'nack', parameter: 'pli' },
-                    { type: 'goog-remb' },
-                  ],
-                  parameters: 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
+                  rtcpFeedback: [{ type: 'ccm', parameter: 'fir' }, { type: 'nack', parameter: 'pli' }, { type: 'goog-remb' }],
+                  parameters: 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e02a',
                   payloadType: RTP_VIDEO_PAYLOAD_TYPE,
                 }),
               ],
             },
             headerExtensions: {
-              audio: [werift.useTransportWideCC(), werift.useAudioLevelIndication()],
+              audio: [werift.useAudioLevelIndication()],
             },
           });
 
@@ -433,13 +427,19 @@ export default class WebRTC extends Streamer {
         baseTime: undefined,
         sampleRate: 90000,
         h264: {
+          // FU-A reassembly state
           fuBuffer: undefined,
           fuTimer: undefined,
           fuSeqStart: undefined,
           fuType: undefined,
           fuTimestamp: undefined,
+
+          // SPS/PPS caching
           lastSPS: undefined,
           lastPPS: undefined,
+
+          // basic seq tracking
+          lastSeq: undefined,
         },
       };
     }
@@ -450,12 +450,6 @@ export default class WebRTC extends Streamer {
       return;
     }
 
-    // Create timer for stalled rtp output. Restart stream if so
-    clearTimeout(this.#stalledTimer);
-    this.#stalledTimer = setTimeout(async () => {
-      await this.#peerConnection?.close?.();
-    }, 10000);
-
     const calculateTimestamp = (packet, stream) => {
       if (typeof packet?.header?.timestamp !== 'number' || typeof stream?.sampleRate !== 'number') {
         return Date.now();
@@ -464,26 +458,46 @@ export default class WebRTC extends Streamer {
         stream.baseTimestamp = packet.header.timestamp;
         stream.baseTime = Date.now();
       }
+      // 32-bit wrap handling
       let deltaTicks = (packet.header.timestamp - stream.baseTimestamp + 0x100000000) % 0x100000000;
       let deltaMs = (deltaTicks / stream.sampleRate) * 1000;
       return stream.baseTime + deltaMs;
     };
 
+    // Create timer for stalled rtp output. Restart stream if so
+    clearTimeout(this.#stalledTimer);
+    this.#stalledTimer = setTimeout(async () => {
+      await this.#peerConnection?.close?.();
+    }, 10000);
+
     // Video packet processing
     if (rtpPacket.header.payloadType === this.video?.id) {
+      if (this.video?.h264 === undefined) {
+        return;
+      }
+
       let seq = rtpPacket.header.sequenceNumber;
+
       if (this.video.h264.lastSeq !== undefined) {
         let gap = (seq - this.video.h264.lastSeq + 0x10000) % 0x10000;
         if (gap !== 1) {
           // sequence gap (ignored silently)
+          // If we were in the middle of FU-A reassembly, drop it
+          if (Array.isArray(this.video.h264.fuBuffer) === true) {
+            clearTimeout(this.video.h264.fuTimer);
+            this.video.h264.fuBuffer = undefined;
+            this.video.h264.fuTimer = undefined;
+            this.video.h264.fuSeqStart = undefined;
+            this.video.h264.fuType = undefined;
+            this.video.h264.fuTimestamp = undefined;
+          }
         }
       }
-      this.video.h264.lastSeq = seq;
-    }
 
-    if (rtpPacket.header.payloadType === this.video?.id) {
+      this.video.h264.lastSeq = seq;
+
       let payload = rtpPacket.payload;
-      if (!Buffer.isBuffer(payload) || payload.length < 1) {
+      if (Buffer.isBuffer(payload) === false || payload.length < 1) {
         return;
       }
 
@@ -500,11 +514,14 @@ export default class WebRTC extends Streamer {
           }
           let nalu = payload.subarray(offset, offset + size);
           let type = nalu[0] & 0x1f;
+
           if (type === Streamer.H264NALUS.TYPES.SPS) {
-            this.video.h264.sps = nalu;
-          } else if (type === Streamer.H264NALUS.TYPES.PPS) {
-            this.video.h264.pps = nalu;
+            this.video.h264.lastSPS = nalu;
           }
+          if (type === Streamer.H264NALUS.TYPES.PPS) {
+            this.video.h264.lastPPS = nalu;
+          }
+
           offset += size;
         }
         return;
@@ -512,48 +529,82 @@ export default class WebRTC extends Streamer {
 
       // FU-A
       if (nalType === Streamer.H264NALUS.TYPES.FU_A) {
+        if (payload.length < 2) {
+          return;
+        }
+
         let indicator = payload[0];
         let header = payload[1];
+
         let start = (header & 0x80) !== 0;
         let end = (header & 0x40) !== 0;
         let type = header & 0x1f;
+
         let nalHeader = (indicator & 0xe0) | type;
 
-        if (this.video.h264.fragmentTime && Date.now() - this.video.h264.fragmentTime > 2000) {
-          delete this.video.h264.fragment;
-          delete this.video.h264.fragmentTime;
-        }
+        if (start === true) {
+          // Start a new FU-A reassembly
+          clearTimeout(this.video.h264.fuTimer);
 
-        if (start) {
-          if (Array.isArray(this.video.h264.fragment)) {
-            delete this.video.h264.fragment;
-            delete this.video.h264.fragmentTime;
-          }
-          this.video.h264.fragment = [Buffer.from([nalHeader]), payload.subarray(2)];
-          this.video.h264.fragmentTime = Date.now();
+          this.video.h264.fuBuffer = [Buffer.from([nalHeader]), payload.subarray(2)];
+          this.video.h264.fuSeqStart = rtpPacket.header.sequenceNumber;
+          this.video.h264.fuType = type;
+          this.video.h264.fuTimestamp = rtpPacket.header.timestamp;
+
+          // Safety timer: if we don't see the end fragment, drop the partial frame
+          this.video.h264.fuTimer = setTimeout(() => {
+            this.video.h264.fuBuffer = undefined;
+            this.video.h264.fuTimer = undefined;
+            this.video.h264.fuSeqStart = undefined;
+            this.video.h264.fuType = undefined;
+            this.video.h264.fuTimestamp = undefined;
+          }, 2000);
+
           return;
         }
 
-        if (Array.isArray(this.video.h264.fragment)) {
-          this.video.h264.fragment.push(payload.subarray(2));
-          if (end) {
-            let buffer = Buffer.concat(this.video.h264.fragment);
-            delete this.video.h264.fragment;
-            delete this.video.h264.fragmentTime;
+        if (Array.isArray(this.video.h264.fuBuffer) === false) {
+          return;
+        }
 
-            let ts = calculateTimestamp(rtpPacket, this.video);
-            if (type === Streamer.H264NALUS.TYPES.IDR) {
-              if (this.video.h264.sps) {
-                this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.sps, ts);
-              }
-              if (this.video.h264.pps) {
-                this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.pps, ts);
-              }
+        // If timestamp changes mid-frame, drop the current FU-A (bad/mixed fragments)
+        if (this.video.h264.fuTimestamp !== undefined && this.video.h264.fuTimestamp !== rtpPacket.header.timestamp) {
+          clearTimeout(this.video.h264.fuTimer);
+          this.video.h264.fuBuffer = undefined;
+          this.video.h264.fuTimer = undefined;
+          this.video.h264.fuSeqStart = undefined;
+          this.video.h264.fuType = undefined;
+          this.video.h264.fuTimestamp = undefined;
+          return;
+        }
+
+        this.video.h264.fuBuffer.push(payload.subarray(2));
+
+        if (end === true) {
+          clearTimeout(this.video.h264.fuTimer);
+
+          let buffer = Buffer.concat(this.video.h264.fuBuffer);
+          this.video.h264.fuBuffer = undefined;
+          this.video.h264.fuTimer = undefined;
+          this.video.h264.fuSeqStart = undefined;
+
+          let timestamp = calculateTimestamp(rtpPacket, this.video);
+
+          // If this FU-A was an IDR, ensure SPS/PPS precede it (if we have them)
+          if (this.video.h264.fuType === Streamer.H264NALUS.TYPES.IDR) {
+            if (Buffer.isBuffer(this.video.h264.lastSPS) === true && this.video.h264.lastSPS.length > 0) {
+              this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastSPS, timestamp);
             }
 
-            this.add(Streamer.PACKET_TYPE.VIDEO, buffer, ts);
+            if (Buffer.isBuffer(this.video.h264.lastPPS) === true && this.video.h264.lastPPS.length > 0) {
+              this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastPPS, timestamp);
+            }
           }
-          return;
+
+          this.video.h264.fuType = undefined;
+          this.video.h264.fuTimestamp = undefined;
+
+          this.add(Streamer.PACKET_TYPE.VIDEO, buffer, timestamp);
         }
 
         return;
@@ -565,17 +616,27 @@ export default class WebRTC extends Streamer {
         return;
       }
 
-      let ts = calculateTimestamp(rtpPacket, this.video);
+      // Cache SPS/PPS if they arrive as standalone NALs (not just STAP-A)
+      if (type === Streamer.H264NALUS.TYPES.SPS) {
+        this.video.h264.lastSPS = payload;
+      }
+      if (type === Streamer.H264NALUS.TYPES.PPS) {
+        this.video.h264.lastPPS = payload;
+      }
+
+      let timestamp = calculateTimestamp(rtpPacket, this.video);
+
       if (type === Streamer.H264NALUS.TYPES.IDR) {
-        if (this.video.h264.sps) {
-          this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.sps, ts);
+        if (Buffer.isBuffer(this.video.h264.lastSPS) === true && this.video.h264.lastSPS.length > 0) {
+          this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastSPS, timestamp);
         }
-        if (this.video.h264.pps) {
-          this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.pps, ts);
+
+        if (Buffer.isBuffer(this.video.h264.lastPPS) === true && this.video.h264.lastPPS.length > 0) {
+          this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastPPS, timestamp);
         }
       }
 
-      this.add(Streamer.PACKET_TYPE.VIDEO, payload, ts);
+      this.add(Streamer.PACKET_TYPE.VIDEO, payload, timestamp);
       return;
     }
 
@@ -586,12 +647,12 @@ export default class WebRTC extends Streamer {
         return;
       }
 
-      let ts = calculateTimestamp(rtpPacket, this.audio);
+      let timestamp = calculateTimestamp(rtpPacket, this.audio);
       try {
         let pcm = this.#opusDecoder.decode(opus.payload);
-        this.add(Streamer.PACKET_TYPE.AUDIO, Buffer.from(pcm), ts);
+        this.add(Streamer.PACKET_TYPE.AUDIO, Buffer.from(pcm), timestamp);
       } catch {
-        this.add(Streamer.PACKET_TYPE.AUDIO, this.blankAudio, ts);
+        this.add(Streamer.PACKET_TYPE.AUDIO, PCM_S16LE_48000_STEREO_BLANK, timestamp);
       }
     }
   }

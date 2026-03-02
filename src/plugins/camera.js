@@ -1270,7 +1270,12 @@ export default class NestCamera extends HomeKitDevice {
     }
 
     if (request.type === this.hap.StreamRequestTypes.RECONFIGURE && this.#liveSessions.has(request.sessionID)) {
-      this?.log?.debug?.('Unsupported reconfiguration request for live stream on "%s"', this.deviceData.description);
+      // HomeKit is requesting stream parameter adjustments
+      // Like other camera implementations, we just ignore this and continue the stream with current parameters
+      this?.log?.debug?.(
+        'Reconfiguration request ignored for live stream on "%s" - continuing with current parameters',
+        this.deviceData.description,
+      );
     }
 
     callback?.(); // do callback if defined
@@ -1314,13 +1319,18 @@ export default class NestCamera extends HomeKitDevice {
 
     let resolutions = [
       [3840, 2160, 30], // 4K
+      [2560, 1440, 30], // 2K (QHD)
       [1920, 1080, 30], // 1080p
+      [1920, 1080, 60], // 1080p high framerate
+      [1920, 1080, 15], // 1080p low bitrate
       [1600, 1200, 30], // Native res of Nest Hello
       [1280, 960, 30],
       [1280, 720, 30], // 720p
+      [1280, 720, 60], // 720p high framerate
       [1024, 768, 30],
       [640, 480, 30],
       [640, 360, 30],
+      [640, 360, 60], // 360p high framerate
       [480, 360, 30],
       [480, 270, 30],
       [320, 240, 30],
@@ -1329,7 +1339,7 @@ export default class NestCamera extends HomeKitDevice {
       [320, 180, 15],
     ];
 
-    let profiles = [this.hap.H264Profile.MAIN];
+    let profiles = [this.hap.H264Profile.BASELINE, this.hap.H264Profile.MAIN];
     let levels = [this.hap.H264Level.LEVEL3_1, this.hap.H264Level.LEVEL3_2, this.hap.H264Level.LEVEL4_0];
     let videoType = this.hap.VideoCodecType.H264;
 
