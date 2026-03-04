@@ -22,18 +22,6 @@ export default class NestDoorbell extends NestCamera {
 
   // Class functions
   onAdd() {
-    // Setup motion services. This needs to be done before we setup the HomeKit doorbell controller
-    if (this.motionService === undefined) {
-      this.createCameraMotionService();
-    }
-
-    // Setup HomeKit doorbell controller
-    if (this.controller === undefined) {
-      // Establish the "camera" controller here as a doorbell specific one
-      // when onAdd is called for the base camera class, this will configure our camera controller established here
-      this.controller = new this.hap.DoorbellController(this.generateControllerOptions());
-    }
-
     if (this.deviceData?.has_indoor_chime === true && this.deviceData?.chimeSwitch === true) {
       // Add service to allow automation and enabling/disabling indoor chiming.
       // This needs to be explicitly enabled via a configuration option for the device
@@ -89,7 +77,8 @@ export default class NestDoorbell extends NestCamera {
         // Cooldown for doorbell button being pressed (filters out constant pressing for time period)
         // Start the cooldown timer only when event occurs
         this.addTimer(TIMERS.DOORBELL_COOLDOWN.name, {
-          interval: this.deviceData.doorbellCooldown * 1000,
+          delay: this.deviceData.doorbellCooldown * 1000,
+          reset: true,
         });
         this.#doorbellCooldownActive = true;
 
@@ -111,11 +100,14 @@ export default class NestDoorbell extends NestCamera {
   }
 
   async onTimer(message) {
-    if (typeof message !== 'object' || message?.timer !== TIMERS.DOORBELL_COOLDOWN.name) {
+    if (typeof message !== 'object') {
       return;
     }
 
-    // Doorbell cooldown timer has completed, reset the cooldown active flag to allow for new doorbell events to be processed
-    this.#doorbellCooldownActive = false;
+    // Handle doorbell-specific cooldown expiry
+    if (message?.timer === TIMERS.DOORBELL_COOLDOWN.name) {
+      // Doorbell cooldown timer has completed, reset the cooldown active flag to allow for new doorbell events to be processed
+      this.#doorbellCooldownActive = false;
+    }
   }
 }

@@ -43,10 +43,6 @@ export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
   static VERSION = '2026.03.04'; // Code version
 
-  // For messaging back to parent class (Doorbell/Floodlight)
-  static SET = HomeKitDevice.SET;
-  static GET = HomeKitDevice.GET;
-
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
   motionService = undefined; // Single motion sensor for camera(s)
@@ -91,15 +87,32 @@ export default class NestCamera extends HomeKitDevice {
 
   // Class functions
   onAdd() {
-    // Setup motion services. This needs to be done before we setup the HomeKit camera controller
-    if (this.motionService === undefined) {
-      this.createCameraMotionService();
-    }
+    // Cleanup for versions prior to 2026.03.04
+
+    // Remove cached enabled/disabled hksv setting
+    delete this?.accessory?.context?.hksv;
+
+    // Remove any old motion services from the accessory, Keep subtype 1, remove all others
+    this.accessory.services
+      .filter((service) => service.UUID === this.hap.Service.MotionSensor.UUID && service.subtype !== 1)
+      .forEach((service) => this.accessory.removeService(service));
+    // End cleanup for versions prior to 2026.03.04
+
+    // Setup the motion service if not already present on the accessory, and link it to the Eve app if configured to do so
+    // This needs to be done before we setup the HomeKit camera controller
+    this.motionService = this.addHKService(this.hap.Service.MotionSensor, '', 1, {});
+    this.motionService.removeCharacteristic(this.hap.Characteristic.Active);
+    this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
 
     // Setup HomeKit camera controller
     if (this.controller === undefined) {
-      // Establish the "camera" controller here if one hasn't been defined
-      this.controller = new this.hap.CameraController(this.generateControllerOptions());
+      if (this.deviceData.model.toUpperCase().includes('DOORBELL') === true) {
+        // If the device is a doorbell, we'll setup a doorbell controller instead of a standard camera controller
+        this.controller = new this.hap.DoorbellController(this.generateControllerOptions());
+      } else {
+        // If the device is not a doorbell, we'll setup as a standard camera controller
+        this.controller = new this.hap.CameraController(this.generateControllerOptions());
+      }
     }
     if (this.controller !== undefined) {
       // Configure the controller that's been created
@@ -434,31 +447,28 @@ export default class NestCamera extends HomeKitDevice {
         // Handle motion event
         // We will use this to trigger the starting of the HKSV recording if the camera is active
         if (event.types.includes('motion') === true) {
-          if (this.#motionCooldownActive === false && (this.ffmpeg instanceof FFmpeg === false || this.streamer === undefined)) {
-            this?.log?.info?.('Motion detected at "%s"', deviceData.description);
-          }
-
-          // Update motion service if not already active
-          if (
-            typeof this.motionService === 'object' &&
-            this.motionService.getCharacteristic(this.hap.Characteristic.MotionDetected).value !== true
-          ) {
-            // Trigger motion if not already active
-            this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, true);
-
-            // Log motion started into history
-            this.history(this.motionService, {
-              status: 1,
-            });
-          }
-
-          // Start motion cooldown if not already active
+          // Only set motion to true on first detection
           if (this.#motionCooldownActive === false) {
+            if (typeof this.motionService === 'object') {
+              this?.log?.info?.('Motion detected at "%s"', deviceData.description);
+
+              // Trigger motion
+              this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, true);
+
+              // Log motion started into history
+              this.history(this.motionService, {
+                status: 1,
+              });
+            }
+
             this.#motionCooldownActive = true;
-            this.addTimer(TIMERS.MOTION_COOLDOWN.name, {
-              interval: this.deviceData.motionCooldown * 1000,
-            });
           }
+
+          // Start or extend motion cooldown timer (reset: true extends existing timer)
+          this.addTimer(TIMERS.MOTION_COOLDOWN.name, {
+            delay: this.deviceData.motionCooldown * 1000,
+            reset: true,
+          });
         }
       }
     });
@@ -1191,20 +1201,6 @@ export default class NestCamera extends HomeKitDevice {
     callback?.(); // do callback if defined
   }
 
-  createCameraMotionService() {
-    // First up, remove any motion services present in the accessory
-    // This will help with any 'restored' service Homebridge has done
-    // And allow for zone changes on the camera/doorbell
-    this.accessory.services
-      .filter((service) => service.UUID === this.hap.Service.MotionSensor.UUID)
-      .forEach((service) => this.accessory.removeService(service));
-
-    this.motionService = this.addHKService(this.hap.Service.MotionSensor, this.deviceData.description, 1, {});
-    this.addHKCharacteristic(this.motionService, this.hap.Characteristic.Active);
-    this.motionService.updateCharacteristic(this.hap.Characteristic.Name, this.deviceData.description);
-    this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
-  }
-
   generateControllerOptions() {
     // Setup HomeKit controller camera/doorbell options
 
@@ -1317,6 +1313,7 @@ export default class NestCamera extends HomeKitDevice {
             }
           : undefined,
     };
+
     return controllerOptions;
   }
 }
@@ -1536,7 +1533,6 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               : config.options?.eveHistory === true;
         tempDevice.doorbellCooldown = parseDurationToSeconds(deviceOptions?.doorbellCooldown, { defaultValue: 60, min: 0, max: 300 });
         tempDevice.motionCooldown = parseDurationToSeconds(deviceOptions?.motionCooldown, { defaultValue: 60, min: 0, max: 300 });
-        tempDevice.personCooldown = parseDurationToSeconds(deviceOptions?.personCooldown, { defaultValue: 120, min: 0, max: 300 });
         tempDevice.chimeSwitch = deviceOptions?.chimeSwitch === true; // Control 'indoor' chime by switch
         tempDevice.localAccess = deviceOptions?.localAccess === true; // Local network video streaming rather than from cloud
         tempDevice.ffmpeg = {

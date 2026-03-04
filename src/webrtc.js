@@ -4,7 +4,7 @@
 // Handles connection and data from Google WebRTC systems
 // Currently a "work in progress"
 //
-// Code version 2026.03.03
+// Code version 2026.03.04
 // Mark Hulskamp
 'use strict';
 
@@ -333,14 +333,19 @@ export default class WebRTC extends Streamer {
     }
 
     this.video.h264.spsPpsRefreshTimer = setInterval(() => {
+      // Skip if video/h264 has been cleaned up (e.g., during shutdown)
+      if (typeof this.video?.h264 !== 'object') {
+        return;
+      }
+
       // Re-emit cached SPS/PPS with current timestamp to keep them fresh in the buffer
       let currentTimestamp = Date.now();
 
-      if (Buffer.isBuffer(this.video?.h264?.lastSPS) === true && this.video.h264.lastSPS.length > 0) {
+      if (Buffer.isBuffer(this.video.h264.lastSPS) === true && this.video.h264.lastSPS.length > 0) {
         this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastSPS, currentTimestamp);
       }
 
-      if (Buffer.isBuffer(this.video?.h264?.lastPPS) === true && this.video.h264.lastPPS.length > 0) {
+      if (Buffer.isBuffer(this.video.h264.lastPPS) === true && this.video.h264.lastPPS.length > 0) {
         this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastPPS, currentTimestamp);
       }
 
@@ -604,6 +609,9 @@ export default class WebRTC extends Streamer {
 
           // Safety timer: if we don't see the end fragment, drop the partial frame
           this.video.h264.fuTimer = setTimeout(() => {
+            if (typeof this.video?.h264 !== 'object') {
+              return;
+            }
             this.video.h264.fuBuffer = undefined;
             this.video.h264.fuTimer = undefined;
             this.video.h264.fuSeqStart = undefined;

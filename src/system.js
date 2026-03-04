@@ -92,13 +92,6 @@ export default class NestAccfactory {
       // We got notified that Homebridge is shutting down
       // Perform cleanup of internal state
 
-      for (let device of Object.values(this.#trackedDevices)) {
-        // Send a message to each device we've tracked and isn't excluded, that Homebridge is shutting down
-        if (device.exclude === false && device.uuid !== undefined) {
-          await HomeKitDevice.message(device.uuid, HomeKitDevice.SHUTDOWN, {});
-        }
-      }
-
       // Clear any running connection timers (auth token refresh, reconnect loops, etc)
       for (let uuid of Object.keys(this.#connections ?? {})) {
         clearTimeout(this.#connections[uuid].timer);
@@ -749,6 +742,7 @@ export default class NestAccfactory {
 
   async #processData() {
     for (let [deviceType, deviceModule] of this.#deviceModules) {
+      // At start of processRawData function
       if (typeof deviceModule?.processRawData === 'function') {
         let devices = {};
         try {

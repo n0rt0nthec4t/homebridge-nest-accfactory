@@ -1,7 +1,7 @@
 // Common defines
 // Part of homebridge-nest-accfactory
 //
-// Code version 2026.03.03
+// Code version 2026.03.04
 // Mark Hulskamp
 'use strict';
 
@@ -18,7 +18,6 @@ export const TIMERS = {
   SNAPSHOT: { name: 'snapshot', interval: 30000 }, // Timeout for retaining snapshot image timeout (ms)
   DOORBELL_COOLDOWN: { name: 'doorbell-cooldown', interval: 60000 }, // Cooldown timer for doorbell events (ms)
   MOTION_COOLDOWN: { name: 'motion-cooldown', interval: 60000 }, // Cooldown timer for motion events (ms)
-  PERSON_COOLDOWN: { name: 'person-cooldown', interval: 120000 }, // Cooldown timer for person/face events (ms)
 };
 
 export const USER_AGENT = 'Nest/5.82.2 (iOScom.nestlabs.jasper.release) os=18.5'; // User Agent string

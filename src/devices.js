@@ -1,7 +1,7 @@
 // Device support loader
 // Part of homebridge-nest-accfactory
 //
-// Code version 2026.02.15
+// Code version 2026.03.04
 // Mark Hulskamp
 'use strict';
 
@@ -31,33 +31,38 @@ async function loadDeviceModules(log, pluginDir = '') {
     try {
       let modulePath = url.pathToFileURL(path.join(baseDir, file)).href;
       let module = await import(modulePath);
-      let chosenClass = undefined;
 
-      // First pass: find a valid subclass of HomeKitDevice
+      // Check all exports for valid HomeKitDevice subclasses
       for (const exported of Object.values(module)) {
-        if (
-          typeof exported === 'function' &&
-          HomeKitDevice.prototype.isPrototypeOf(exported.prototype) === true &&
-          typeof exported.TYPE === 'string' &&
-          typeof exported.VERSION === 'string'
-        ) {
-          chosenClass = exported;
-          break; // first valid one wins (like your original)
+        if (typeof exported !== 'function') {
+          continue;
         }
-      }
 
-      if (chosenClass && deviceMap.has(chosenClass.TYPE) === false) {
-        let entry = { class: chosenClass };
+        // Only process if it's a HomeKitDevice subclass
+        if (HomeKitDevice.prototype.isPrototypeOf(exported.prototype) === false) {
+          continue;
+        }
 
-        // Add additional named functions (like processRawData)
-        for (const [key, value] of Object.entries(module)) {
-          if (typeof value === 'function' && value !== chosenClass) {
-            entry[key] = value;
+        // Validate TYPE and VERSION
+        if (typeof exported.TYPE !== 'string' || exported.TYPE === '' || typeof exported.VERSION !== 'string' || exported.VERSION === '') {
+          log?.warn?.('Skipping device module %s (missing TYPE or VERSION)', file);
+          continue;
+        }
+
+        // Register this class if not already registered
+        if (deviceMap.has(exported.TYPE) === false) {
+          let entry = { class: exported };
+
+          // Add additional named functions (like processRawData)
+          for (const [key, value] of Object.entries(module)) {
+            if (typeof value === 'function' && value !== exported) {
+              entry[key] = value;
+            }
           }
-        }
 
-        deviceMap.set(chosenClass.TYPE, entry);
-        log?.debug?.('%s module - %s', chosenClass.TYPE, chosenClass.VERSION);
+          deviceMap.set(exported.TYPE, entry);
+          log?.debug?.('%s module - %s', exported.TYPE, exported.VERSION);
+        }
       }
     } catch (error) {
       log?.warn?.('Failed to load device support module "%s": %s', file, error.message);
