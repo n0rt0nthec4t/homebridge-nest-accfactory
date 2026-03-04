@@ -9,11 +9,11 @@ import HomeKitDevice from '../HomeKitDevice.js';
 import { processCommonData, adjustTemperature, crc24 } from '../utils.js';
 
 // Define constants
-import { DATA_SOURCE, DEVICE_TYPE, MAX_ELEVATION, MIN_ELEVATION, NESTLABS_MAC_PREFIX } from '../consts.js';
+import { DATA_SOURCE, DEVICE_TYPE, MAX_ELEVATION, MIN_ELEVATION, NESTLABS_MAC_PREFIX, TIMERS } from '../consts.js';
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = 'Weather';
-  static VERSION = '2025.11.24'; // Code version
+  static VERSION = '2026.03.03'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -63,6 +63,9 @@ export default class NestWeather extends HomeKitDevice {
 
     // Extra setup details for output
     this.deviceData?.elevation !== undefined && this.postSetupDetail('Elevation of ' + this.deviceData.elevation + 'm');
+
+    // Setup repeat polling for weather data updates
+    this.addTimer(TIMERS.WEATHER.name, { interval: TIMERS.WEATHER.interval });
   }
 
   onRemove() {
@@ -106,42 +109,42 @@ export default class NestWeather extends HomeKitDevice {
     if (
       this.hap.Characteristic?.ForecastDay !== undefined &&
       this.temperatureService.testCharacteristic(this.hap.Characteristic.ForecastDay) === true &&
-      this.deviceData?.forecast !== undefined
+      deviceData?.forecast !== undefined
     ) {
       this.temperatureService.updateCharacteristic(this.hap.Characteristic.ForecastDay, deviceData.forecast);
     }
     if (
       this.hap.Characteristic?.ObservationStation !== undefined &&
       this.temperatureService.testCharacteristic(this.hap.Characteristic.ObservationStation) === true &&
-      this.deviceData?.station !== undefined
+      deviceData?.station !== undefined
     ) {
       this.temperatureService.updateCharacteristic(this.hap.Characteristic.ObservationStation, deviceData.station);
     }
     if (
       this.hap.Characteristic?.Condition !== undefined &&
       this.temperatureService.testCharacteristic(this.hap.Characteristic.Condition) === true &&
-      this.deviceData?.condition !== undefined
+      deviceData?.condition !== undefined
     ) {
       this.temperatureService.updateCharacteristic(this.hap.Characteristic.Condition, deviceData.condition);
     }
     if (
       this.hap.Characteristic?.WindDirection !== undefined &&
       this.temperatureService.testCharacteristic(this.hap.Characteristic.WindDirection) === true &&
-      this.deviceData?.wind_direction !== undefined
+      deviceData?.wind_direction !== undefined
     ) {
       this.temperatureService.updateCharacteristic(this.hap.Characteristic.WindDirection, deviceData.wind_direction);
     }
     if (
       this.hap.Characteristic?.WindSpeed !== undefined &&
       this.temperatureService.testCharacteristic(this.hap.Characteristic.WindSpeed) === true &&
-      this.deviceData?.wind_speed !== undefined
+      deviceData?.wind_speed !== undefined
     ) {
       this.temperatureService.updateCharacteristic(this.hap.Characteristic.WindSpeed, deviceData.wind_speed);
     }
     if (
       this.hap.Characteristic?.SunriseTime !== undefined &&
       this.temperatureService.testCharacteristic(this.hap.Characteristic.SunriseTime) === true &&
-      this.deviceData?.sunrise !== undefined
+      deviceData?.sunrise !== undefined
     ) {
       let dateString = new Date(deviceData.sunrise * 1000).toLocaleTimeString();
       this.temperatureService.updateCharacteristic(this.hap.Characteristic.SunriseTime, dateString);
@@ -149,7 +152,7 @@ export default class NestWeather extends HomeKitDevice {
     if (
       this.hap.Characteristic?.SunsetTime !== undefined &&
       this.temperatureService.testCharacteristic(this.hap.Characteristic.SunsetTime) === true &&
-      this.deviceData?.sunset !== undefined
+      deviceData?.sunset !== undefined
     ) {
       let dateString = new Date(deviceData.sunset * 1000).toLocaleTimeString();
       this.temperatureService.updateCharacteristic(this.hap.Characteristic.SunsetTime, dateString);
@@ -161,6 +164,28 @@ export default class NestWeather extends HomeKitDevice {
       { temperature: deviceData.current_temperature, humidity: deviceData.current_humidity, pressure: 0 },
       { timegap: 300, force: true },
     );
+  }
+
+  async onTimer(message) {
+    if (typeof message !== 'object' || message?.timer !== TIMERS.WEATHER.name) {
+      return;
+    }
+
+    let response = await this.get({ uuid: this.deviceData.nest_google_device_uuid, location_weather: true });
+    if (typeof response?.location_weather === 'object' && Object.keys(response.location_weather).length > 0) {
+      // Send updated weather data via UPDATE message to refresh characteristics
+      this.update({
+        current_temperature: response.location_weather.current_temperature,
+        current_humidity: response.location_weather.current_humidity,
+        condition: response.location_weather.condition,
+        wind_direction: response.location_weather.wind_direction,
+        wind_speed: response.location_weather.wind_speed,
+        sunrise: response.location_weather.sunrise,
+        sunset: response.location_weather.sunset,
+        station: response.location_weather.station,
+        forecast: response.location_weather.forecast,
+      });
+    }
   }
 }
 

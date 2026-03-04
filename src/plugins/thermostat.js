@@ -28,7 +28,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2026.02.14'; // Code version
+  static VERSION = '2026.03.03'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -708,12 +708,12 @@ export default class NestThermostat extends HomeKitDevice {
 
     if (type === HomeKitDevice?.EVEHOME?.SET) {
       if (typeof message?.vacation?.status === 'boolean') {
-        this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_device_uuid, vacation_mode: message.vacation.status });
+        this.set({ uuid: this.deviceData.nest_google_device_uuid, vacation_mode: message.vacation.status });
       }
 
       if (typeof message?.programs === 'object') {
         // Future: convert to Nest format and apply via .set()
-        // this.message(HomeKitDevice.SET, { uuid: ..., days: { ... } });
+        // this.set({ uuid: ..., days: { ... } });
       }
     }
   }
@@ -735,7 +735,7 @@ export default class NestThermostat extends HomeKitDevice {
 
       this.fanService.updateCharacteristic(this.hap.Characteristic.Active, fanState);
 
-      await this.message(HomeKitDevice.SET, {
+      await this.set({
         uuid: this.deviceData.nest_google_device_uuid,
         fan_state: isActive,
         fan_duration: this.deviceData.fan_duration,
@@ -786,7 +786,7 @@ export default class NestThermostat extends HomeKitDevice {
 
     this.dehumidifierService.updateCharacteristic(this.hap.Characteristic.Active, dehumidifierState);
 
-    await this.message(HomeKitDevice.SET, {
+    await this.set({
       uuid: this.deviceData.nest_google_device_uuid,
       dehumidifier_state: isActive,
     });
@@ -803,7 +803,7 @@ export default class NestThermostat extends HomeKitDevice {
 
     this.thermostatService.updateCharacteristic(this.hap.Characteristic.TemperatureDisplayUnits, temperatureUnit);
 
-    await this.message(HomeKitDevice.SET, {
+    await this.set({
       uuid: this.deviceData.nest_google_device_uuid,
       temperature_scale: unit,
     });
@@ -872,7 +872,7 @@ export default class NestThermostat extends HomeKitDevice {
         mode = 'range';
       }
 
-      await this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_device_uuid, hvac_mode: mode });
+      await this.set({ uuid: this.deviceData.nest_google_device_uuid, hvac_mode: mode });
       this.#logModeChange('HomeKit', mode);
     }
   }
@@ -934,7 +934,7 @@ export default class NestThermostat extends HomeKitDevice {
 
     if (targetKey !== undefined) {
       // Only set a target temperature if we've determined whicb Nest/Google data key to change
-      await this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_device_uuid, [targetKey]: temperature });
+      await this.set({ uuid: this.deviceData.nest_google_device_uuid, [targetKey]: temperature });
       this.#logTemperatureChange(
         'HomeKit',
         modeLabel,
@@ -975,7 +975,7 @@ export default class NestThermostat extends HomeKitDevice {
     if (value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_DISABLED) {
       // Clear pin hash????
     }
-    this.message(HomeKitDevice.SET, {
+    this.set({
       uuid: this.deviceData.nest_google_device_uuid,
       temperature_lock: value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED ? true : false,
     });

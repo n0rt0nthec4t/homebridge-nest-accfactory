@@ -13,7 +13,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = 'Protect';
-  static VERSION = '2025.11.23'; // Code version
+  static VERSION = '2026.03.03'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -185,7 +185,7 @@ export default class NestProtect extends HomeKitDevice {
         //this?.log?.info?.('Eve Smoke Alarm test', (message.alarmtest === true ? 'start' : 'stop'));
       }
       if (typeof message?.statusled === 'boolean') {
-        this.message(HomeKitDevice.SET, { uuid: this.deviceData.nest_google_device_uuid, ntp_green_led_enable: message.statusled });
+        this.set({ uuid: this.deviceData.nest_google_device_uuid, ntp_green_led_enable: message.statusled });
       }
     }
   }

@@ -10,7 +10,7 @@ export { processRawData };
 
 export default class NestFloodlight extends NestCamera {
   static TYPE = 'FloodlightCamera';
-  static VERSION = '2025.11.22'; // Code version
+  static VERSION = '2026.03.03'; // Code version
 
   lightService = undefined; // HomeKit light
 
@@ -23,7 +23,7 @@ export default class NestFloodlight extends NestCamera {
         props: { minStep: 10 }, // Light only goes in 10% increments
         onSet: (value) => {
           if (value !== this.deviceData.light_brightness) {
-            this.message(NestFloodlight.SET, { uuid: this.deviceData.nest_google_device_uuid, light_brightness: value });
+            this.set({ uuid: this.deviceData.nest_google_device_uuid, light_brightness: value });
 
             this?.log?.info?.('Floodlight brightness on "%s" was set to "%s %"', this.deviceData.description, value);
           }

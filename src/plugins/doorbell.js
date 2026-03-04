@@ -4,25 +4,27 @@
 // Mark Hulskamp
 'use strict';
 
-// Define nodejs module requirements
-import { setTimeout, clearTimeout } from 'node:timers';
-
 // Define external module requirements
 import NestCamera, { processRawData } from './camera.js';
 export { processRawData };
 
+// Define constants
+import { TIMERS } from '../consts.js';
+
 export default class NestDoorbell extends NestCamera {
   static TYPE = 'Doorbell';
-  static VERSION = '2025.11.22'; // Code version
+  static VERSION = '2026.03.04'; // Code version
 
-  doorbellTimer = undefined; // Cooldown timer for doorbell events
   switchService = undefined; // HomeKit switch for enabling/disabling chime
+
+  // Internal data only for this class
+  #doorbellCooldownActive = false; // Flag to track if doorbell cooldown is active
 
   // Class functions
   onAdd() {
     // Setup motion services. This needs to be done before we setup the HomeKit doorbell controller
-    if (this.motionServices === undefined) {
-      this.createCameraMotionServices();
+    if (this.motionService === undefined) {
+      this.createCameraMotionService();
     }
 
     // Setup HomeKit doorbell controller
@@ -42,7 +44,7 @@ export default class NestDoorbell extends NestCamera {
         onSet: (value) => {
           if (value !== this.deviceData.indoor_chime_enabled) {
             // only change indoor chime status value if different than on-device
-            this.message(NestDoorbell.SET, { uuid: this.deviceData.nest_google_device_uuid, indoor_chime_enabled: value });
+            this.set({ uuid: this.deviceData.nest_google_device_uuid, indoor_chime_enabled: value });
 
             this?.log?.info?.('Indoor chime on "%s" was turned %s', this.deviceData.description, value === true ? 'on' : 'off');
           }
@@ -67,9 +69,6 @@ export default class NestDoorbell extends NestCamera {
   }
 
   onRemove() {
-    clearTimeout(this.doorbellTimer);
-    this.doorbellTimer = undefined;
-
     this.accessory.removeService(this.switchService);
     this.switchService = undefined;
   }
@@ -84,14 +83,15 @@ export default class NestDoorbell extends NestCamera {
       this.switchService.updateCharacteristic(this.hap.Characteristic.On, deviceData.indoor_chime_enabled);
     }
 
-    deviceData.alerts.forEach((event) => {
+    deviceData.events.forEach((event) => {
       // Handle doorbell event, should always be handled first
-      if (event.types.includes('doorbell') === true && this.doorbellTimer === undefined) {
+      if (event.types.includes('doorbell') === true && this.#doorbellCooldownActive === false) {
         // Cooldown for doorbell button being pressed (filters out constant pressing for time period)
-        // Start this before we process further
-        this.doorbellTimer = setTimeout(() => {
-          this.doorbellTimer = undefined; // No doorbell timer active
-        }, this.deviceData.doorbellCooldown * 1000);
+        // Start the cooldown timer only when event occurs
+        this.addTimer(TIMERS.DOORBELL_COOLDOWN.name, {
+          interval: this.deviceData.doorbellCooldown * 1000,
+        });
+        this.#doorbellCooldownActive = true;
 
         if (deviceData.indoor_chime_enabled === false || deviceData.quiet_time_enabled === true) {
           // Indoor chime is disabled or quiet time is enabled, so we won't 'ring' the doorbell
@@ -108,5 +108,14 @@ export default class NestDoorbell extends NestCamera {
         this.history(this.controller.doorbellService, { status: 0 }, { timegap: 2, force: true });
       }
     });
+  }
+
+  async onTimer(message) {
+    if (typeof message !== 'object' || message?.timer !== TIMERS.DOORBELL_COOLDOWN.name) {
+      return;
+    }
+
+    // Doorbell cooldown timer has completed, reset the cooldown active flag to allow for new doorbell events to be processed
+    this.#doorbellCooldownActive = false;
   }
 }

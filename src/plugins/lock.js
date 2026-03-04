@@ -13,7 +13,7 @@ import { DATA_SOURCE, DEVICE_TYPE, PROTOBUF_RESOURCES, LOW_BATTERY_LEVEL } from 
 
 export default class NestLock extends HomeKitDevice {
   static TYPE = 'Lock';
-  static VERSION = '2025.11.23'; // Code version
+  static VERSION = '2026.03.03'; // Code version
 
   // Define lock bolt states
   static STATE = {
@@ -53,7 +53,7 @@ export default class NestLock extends HomeKitDevice {
         if (value !== this.lockService.getCharacteristic(this.hap.Characteristic.LockTargetState).value) {
           let locked = value === this.hap.Characteristic.LockTargetState.SECURED;
 
-          this.message(HomeKitDevice.SET, {
+          this.set({
             uuid: this.deviceData.nest_google_device_uuid,
             bolt_lock: locked,
           });
@@ -77,7 +77,7 @@ export default class NestLock extends HomeKitDevice {
         value = Math.floor(value); // Make a round number
 
         if (value !== this.deviceData.auto_relock_duration) {
-          this.message(HomeKitDevice.SET, {
+          this.set({
             uuid: this.deviceData.nest_google_device_uuid,
             auto_relock_duration: value,
           });

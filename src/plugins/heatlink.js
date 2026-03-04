@@ -20,7 +20,7 @@ import {
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = 'Heatlink';
-  static VERSION = '2025.12.15'; // Code version
+  static VERSION = '2026.03.03'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
@@ -142,7 +142,7 @@ export default class NestHeatlink extends HomeKitDevice {
       onSet: (value) => {
         let unit = value === this.hap.Characteristic.TemperatureDisplayUnits.CELSIUS ? 'C' : 'F';
 
-        this.message(HomeKitDevice.SET, {
+        this.set({
           uuid: this.deviceData.associated_thermostat,
           temperature_scale: unit,
         });
@@ -173,7 +173,7 @@ export default class NestHeatlink extends HomeKitDevice {
       },
       onSet: (value) => {
         if (value !== this.deviceData.hot_water_temperature) {
-          this.message(HomeKitDevice.SET, { uuid: this.deviceData.associated_thermostat, hot_water_temperature: value });
+          this.set({ uuid: this.deviceData.associated_thermostat, hot_water_temperature: value });
 
           this?.log?.info?.('Set hotwater boiler temperature on heat link "%s" to "%s °C"', this.deviceData.description, value);
         }
@@ -197,7 +197,7 @@ export default class NestHeatlink extends HomeKitDevice {
     this.addHKCharacteristic(this.switchService, this.hap.Characteristic.On, {
       onSet: (value) => {
         if (value !== this.deviceData.hot_water_boost_active) {
-          this.message(HomeKitDevice.SET, {
+          this.set({
             uuid: this.deviceData.associated_thermostat,
             hot_water_boost_active: { state: value === true, time: this.deviceData.hotwaterBoostTime },
           });

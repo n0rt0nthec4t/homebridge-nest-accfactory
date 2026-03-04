@@ -4,7 +4,7 @@
 // Handles connection and data from Google WebRTC systems
 // Currently a "work in progress"
 //
-// Code version 2026.03.02
+// Code version 2026.03.03
 // Mark Hulskamp
 'use strict';
 
@@ -29,6 +29,9 @@ import Streamer from './streamer.js';
 import { USER_AGENT, __dirname } from './consts.js';
 
 const EXTEND_INTERVAL = 30000; // Send extend command to Google Home Foyer every this period for active streams
+const GOOGLE_HOME_FOYER_REQUEST_TIMEOUT = 15000; // Client-side timeout for Google Home Foyer gRPC requests
+const GOOGLE_HOME_FOYER_BUFFER_INITIAL = 8 * 1024; // Initial 8KB buffer for gRPC responses
+const GOOGLE_HOME_FOYER_BUFFER_MAX = 10 * 1024 * 1024; // Maximum 10MB buffer limit
 const RTP_PACKET_HEADER_SIZE = 12;
 const RTP_VIDEO_PAYLOAD_TYPE = 102;
 const RTP_AUDIO_PAYLOAD_TYPE = 111;
@@ -58,7 +61,7 @@ export default class WebRTC extends Streamer {
   #opusDecoder = new Decoder({ channels: 2, sample_rate: 48000 });
   #extendTimer = undefined; // Stream extend timer
   #stalledTimer = undefined; // Timer object for no received data
-  #pingTimer = undefined; // Google Hopme Foyer periodic ping
+  #pingTimer = undefined; // Google Home Foyer periodic ping
 
   // Codecs being used for video, audio and talking
   get codecs() {
@@ -307,8 +310,11 @@ export default class WebRTC extends Streamer {
 
     clearInterval(this.#extendTimer);
     clearInterval(this.#stalledTimer);
+    clearInterval(this.#pingTimer);
+    clearInterval(this.video?.h264?.spsPpsRefreshTimer);
     this.#extendTimer = undefined;
     this.#stalledTimer = undefined;
+    this.#pingTimer = undefined;
     this.#id = undefined;
     this.#googleHomeFoyer = undefined;
     this.#peerConnection = undefined;
@@ -317,6 +323,30 @@ export default class WebRTC extends Streamer {
     this.connected = undefined;
     this.video = {};
     this.audio = {};
+  }
+
+  #startSpsRefreshTimer() {
+    // Start a timer that periodically re-emits cached SPS/PPS to keep them fresh in the buffer
+    // Prevents them from aging out (5s max) before ffmpeg connects to read the stream
+    if (this.video?.h264?.spsPpsRefreshTimer !== undefined) {
+      return; // Already running
+    }
+
+    this.video.h264.spsPpsRefreshTimer = setInterval(() => {
+      // Re-emit cached SPS/PPS with current timestamp to keep them fresh in the buffer
+      let currentTimestamp = Date.now();
+
+      if (Buffer.isBuffer(this.video?.h264?.lastSPS) === true && this.video.h264.lastSPS.length > 0) {
+        this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastSPS, currentTimestamp);
+      }
+
+      if (Buffer.isBuffer(this.video?.h264?.lastPPS) === true && this.video.h264.lastPPS.length > 0) {
+        this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastPPS, currentTimestamp);
+      }
+
+      // Update timestamp to indicate we just emitted SPS/PPS
+      this.video.h264.lastSpsEmitTime = currentTimestamp;
+    }, 2000); // Re-emit every 2 seconds to stay within 5s buffer window
   }
 
   async onUpdate(deviceData) {
@@ -434,9 +464,11 @@ export default class WebRTC extends Streamer {
           fuType: undefined,
           fuTimestamp: undefined,
 
-          // SPS/PPS caching
+          // SPS/PPS caching & emission tracking
           lastSPS: undefined,
           lastPPS: undefined,
+          lastSpsEmitTime: undefined, // Timestamp of last SPS/PPS emit for periodic re-checking
+          spsPpsRefreshTimer: undefined, // Timer to periodically re-emit SPS/PPS to keep fresh in buffer
 
           // basic seq tracking
           lastSeq: undefined,
@@ -503,9 +535,13 @@ export default class WebRTC extends Streamer {
 
       let nalType = payload[0] & 0x1f;
 
-      // STAP-A
+      // STAP-A (Single-Time Aggregation Packet)
       if (nalType === Streamer.H264NALUS.TYPES.STAP_A) {
+        let timestamp = calculateTimestamp(rtpPacket, this.video);
         let offset = 1;
+        let foundSPS = false;
+        let foundPPS = false;
+
         while (offset + 2 <= payload.length) {
           let size = payload.readUInt16BE(offset);
           offset += 2;
@@ -516,13 +552,28 @@ export default class WebRTC extends Streamer {
           let type = nalu[0] & 0x1f;
 
           if (type === Streamer.H264NALUS.TYPES.SPS) {
-            this.video.h264.lastSPS = nalu;
-          }
-          if (type === Streamer.H264NALUS.TYPES.PPS) {
-            this.video.h264.lastPPS = nalu;
+            this.video.h264.lastSPS = Buffer.from(nalu); // Clone to avoid sharing
+            this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastSPS, timestamp);
+            foundSPS = true;
+          } else if (type === Streamer.H264NALUS.TYPES.PPS) {
+            this.video.h264.lastPPS = Buffer.from(nalu); // Clone to avoid sharing
+            this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastPPS, timestamp);
+            foundPPS = true;
+          } else {
+            // Output other NALs (slicing, etc) as-is from STAP-A
+            this.add(Streamer.PACKET_TYPE.VIDEO, Buffer.from(nalu), timestamp);
           }
 
           offset += size;
+        }
+
+        if (foundSPS === true || foundPPS === true) {
+          this.video.h264.lastSpsEmitTime = timestamp;
+
+          // Start refresh timer to keep SPS/PPS fresh in buffer if not already running
+          if (this.video.h264.spsPpsRefreshTimer === undefined) {
+            this.#startSpsRefreshTimer();
+          }
         }
         return;
       }
@@ -590,13 +641,21 @@ export default class WebRTC extends Streamer {
 
           let timestamp = calculateTimestamp(rtpPacket, this.video);
 
-          // If this FU-A was an IDR, ensure SPS/PPS precede it (if we have them)
-          if (this.video.h264.fuType === Streamer.H264NALUS.TYPES.IDR) {
-            if (Buffer.isBuffer(this.video.h264.lastSPS) === true && this.video.h264.lastSPS.length > 0) {
+          // Before outputting ANY FU-A frame, ensure SPS/PPS were emitted recently (within 1 second)
+          let now = Date.now();
+          let timeSinceSpsEmit = this.video.h264.lastSpsEmitTime ? now - this.video.h264.lastSpsEmitTime : Infinity;
+
+          if (timeSinceSpsEmit > 1000) {
+            // More than 1 second since last SPS/PPS emit, send them again to ensure new consumers get them
+            let hasSPS = Buffer.isBuffer(this.video.h264.lastSPS) === true && this.video.h264.lastSPS.length > 0;
+            let hasPPS = Buffer.isBuffer(this.video.h264.lastPPS) === true && this.video.h264.lastPPS.length > 0;
+
+            if (hasSPS === true) {
               this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastSPS, timestamp);
+              this.video.h264.lastSpsEmitTime = now;
             }
 
-            if (Buffer.isBuffer(this.video.h264.lastPPS) === true && this.video.h264.lastPPS.length > 0) {
+            if (hasPPS === true) {
               this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastPPS, timestamp);
             }
           }
@@ -616,22 +675,47 @@ export default class WebRTC extends Streamer {
         return;
       }
 
-      // Cache SPS/PPS if they arrive as standalone NALs (not just STAP-A)
+      let timestamp = calculateTimestamp(rtpPacket, this.video);
+
+      // Handle standalone NAL units (SPS/PPS)
       if (type === Streamer.H264NALUS.TYPES.SPS) {
         this.video.h264.lastSPS = payload;
+        this.add(Streamer.PACKET_TYPE.VIDEO, payload, timestamp);
+        this.video.h264.lastSpsEmitTime = timestamp;
+
+        // Start refresh timer to keep SPS/PPS fresh in buffer if not already running
+        if (this.video.h264.spsPpsRefreshTimer === undefined) {
+          this.#startSpsRefreshTimer();
+        }
+        return;
       }
       if (type === Streamer.H264NALUS.TYPES.PPS) {
         this.video.h264.lastPPS = payload;
+        this.add(Streamer.PACKET_TYPE.VIDEO, payload, timestamp);
+        this.video.h264.lastSpsEmitTime = timestamp;
+
+        // Start refresh timer to keep SPS/PPS fresh in buffer if not already running
+        if (this.video.h264.spsPpsRefreshTimer === undefined) {
+          this.#startSpsRefreshTimer();
+        }
+        return;
       }
 
-      let timestamp = calculateTimestamp(rtpPacket, this.video);
+      // Before outputting ANY frame, ensure SPS/PPS were emitted recently (within 1 second)
+      let now = Date.now();
+      let timeSinceSpsEmit = this.video.h264.lastSpsEmitTime ? now - this.video.h264.lastSpsEmitTime : Infinity;
 
-      if (type === Streamer.H264NALUS.TYPES.IDR) {
-        if (Buffer.isBuffer(this.video.h264.lastSPS) === true && this.video.h264.lastSPS.length > 0) {
+      if (timeSinceSpsEmit > 1000) {
+        // More than 1 second since last SPS/PPS emit, send them again to ensure new consumers get them
+        let hasSPS = Buffer.isBuffer(this.video.h264.lastSPS) === true && this.video.h264.lastSPS.length > 0;
+        let hasPPS = Buffer.isBuffer(this.video.h264.lastPPS) === true && this.video.h264.lastPPS.length > 0;
+
+        if (hasSPS === true) {
           this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastSPS, timestamp);
+          this.video.h264.lastSpsEmitTime = now;
         }
 
-        if (Buffer.isBuffer(this.video.h264.lastPPS) === true && this.video.h264.lastPPS.length > 0) {
+        if (hasPPS === true) {
           this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastPPS, timestamp);
         }
       }
@@ -665,23 +749,26 @@ export default class WebRTC extends Streamer {
       return;
     }
 
-    // Attempt to retrieve both 'Request' and 'Response' traits for the associated service and command
+    let buffer = Buffer.allocUnsafe(GOOGLE_HOME_FOYER_BUFFER_INITIAL);
+    let offset = 0;
     let TraitMapRequest = this.#protobufFoyer.lookup(GOOGLE_HOME_FOYER_PREFIX + command + 'Request');
     let TraitMapResponse = this.#protobufFoyer.lookup(GOOGLE_HOME_FOYER_PREFIX + command + 'Response');
-    let buffer = Buffer.alloc(0);
     let commandResponse = {
       status: undefined,
       message: '',
       data: [],
     };
 
-    if (TraitMapRequest !== null && TraitMapResponse !== null && this.token !== undefined) {
+    if (TraitMapRequest !== null && TraitMapResponse !== null && typeof this.token === 'string' && this.token.trim() !== '') {
       try {
         if (this.#googleHomeFoyer === undefined || (this.#googleHomeFoyer?.connected === false && this.#googleHomeFoyer?.closed === true)) {
           // No current HTTP/2 connection or current session is closed
           this?.log?.debug?.('Connection started to Google Home Foyer "%s"', this.#googleHomeFoyerAPIHost);
           this.#googleHomeFoyer = http2.connect(this.#googleHomeFoyerAPIHost);
+        }
 
+        // Register event handlers if not already attached to this connection
+        if (this.#googleHomeFoyer?.listenerCount?.('connect') === 0) {
           this.#googleHomeFoyer.on('connect', () => {
             this?.log?.debug?.('Connection established to Google Home Foyer "%s"', this.#googleHomeFoyerAPIHost);
 
@@ -731,18 +818,38 @@ export default class WebRTC extends Streamer {
         });
 
         request.on('data', (data) => {
-          buffer = Buffer.concat([buffer, data]);
-          while (buffer.length >= 5) {
+          if (offset + data.length > buffer.length) {
+            let newSize = buffer.length * 2;
+            if (newSize > GOOGLE_HOME_FOYER_BUFFER_MAX) {
+              // Response exceeds maximum allowed size, reject it
+              commandResponse.status = 413; // Payload too large
+              commandResponse.message = 'gRPC response exceeds maximum buffer size';
+              try {
+                request.close();
+              } catch {
+                // Empty
+              }
+              return;
+            }
+            let newBuffer = Buffer.allocUnsafe(newSize);
+            buffer.copy(newBuffer, 0, 0, offset);
+            buffer = newBuffer;
+          }
+
+          data.copy(buffer, offset);
+          offset += data.length;
+
+          while (offset >= 5) {
             let headerSize = 5;
             let dataSize = buffer.readUInt32BE(1);
-            if (buffer.length < headerSize + dataSize) {
-              // We don't have enough data in the buffer yet to process the data
-              // so, exit loop and await more data
+            if (offset < headerSize + dataSize) {
               break;
             }
 
             commandResponse.data.push(TraitMapResponse.decode(buffer.subarray(headerSize, headerSize + dataSize)).toJSON());
-            buffer = buffer.subarray(headerSize + dataSize);
+
+            buffer.copy(buffer, 0, headerSize + dataSize, offset);
+            offset -= headerSize + dataSize;
           }
         });
 
@@ -773,6 +880,17 @@ export default class WebRTC extends Streamer {
           header.writeUInt32BE(encodedData.length, 1);
           request.write(Buffer.concat([header, encodedData]));
           request.end();
+
+          // Set client-side timeout to prevent stuck requests
+          let requestTimeout = setTimeout(() => {
+            try {
+              request.close();
+            } catch {
+              // Empty
+            }
+          }, GOOGLE_HOME_FOYER_REQUEST_TIMEOUT);
+
+          request.on('close', () => clearTimeout(requestTimeout));
 
           await EventEmitter.once(request, 'close');
         }

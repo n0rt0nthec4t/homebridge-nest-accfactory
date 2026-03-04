@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2026.02.20
+// Code version 2026.03.04
 // Mark Hulskamp
 'use strict';
 
@@ -10,7 +10,7 @@ import protobuf from 'protobufjs';
 
 // Define nodejs module requirements
 import { Buffer } from 'node:buffer';
-import { setInterval, clearInterval, setTimeout, clearTimeout } from 'node:timers';
+import { setTimeout, clearTimeout } from 'node:timers';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -23,7 +23,7 @@ import { processConfig, buildConnections } from './config.js';
 import { adjustTemperature, scaleValue, fetchWrapper, logJSONObject } from './utils.js';
 
 // Define constants
-import { TIMERS, USER_AGENT, __dirname, DATA_SOURCE, DEVICE_TYPE, ACCOUNT_TYPE, NEST_API_BUCKETS, PROTOBUF_RESOURCES } from './consts.js';
+import { USER_AGENT, __dirname, DATA_SOURCE, DEVICE_TYPE, ACCOUNT_TYPE, NEST_API_BUCKETS, PROTOBUF_RESOURCES } from './consts.js';
 
 // We handle the connections to Nest/Google
 // Perform device management (additions/removals/updates)
@@ -97,9 +97,11 @@ export default class NestAccfactory {
         if (device.exclude === false && device.uuid !== undefined) {
           await HomeKitDevice.message(device.uuid, HomeKitDevice.SHUTDOWN, {});
         }
+      }
 
-        // Cleanup any timers we have running the devices ie: weather, alerts, zones polling etc
-        Object.values(device?.timers || {}).forEach((timer) => clearInterval(timer));
+      // Clear any running connection timers (auth token refresh, reconnect loops, etc)
+      for (let uuid of Object.keys(this.#connections ?? {})) {
+        clearTimeout(this.#connections[uuid].timer);
       }
 
       // Cleanup internal data
@@ -444,12 +446,13 @@ export default class NestAccfactory {
         for (let value of data) {
           if (value.object_key.startsWith('structure.') === true) {
             // Since we have a structure key, need to add in weather data for the location using stored post/country codes
-            value.value.weather = await this.#getWeather(uuid, value.object_key, value.value.postal_code, value.value.country_code);
+            value.value.weather = await this.#getLocationWeather(uuid, value.object_key, value.value.postal_code, value.value.country_code);
 
             // Check for changes in the swarm property. This seems to indicate changes in devices
             if (typeof this.#rawData[value.object_key]?.value?.swarm === 'object' && Array.isArray(value.value?.swarm) === true) {
+              let newSwarmSet = new Set(value.value.swarm);
               this.#rawData[value.object_key].value.swarm.forEach((object_key) => {
-                if (value.value.swarm.includes(object_key) === false) {
+                if (newSwarmSet.has(object_key) === false) {
                   // Object is present in the old swarm list, but not in the new swarm list, so we assume it has been removed
                   // We'll remove the associated object here for future subscribe
                   delete this.#rawData[object_key];
@@ -474,30 +477,23 @@ export default class NestAccfactory {
                     this.#rawData?.[value.object_key]?.value?.properties.constructor === Object
                   ? this.#rawData[value.object_key].value.properties
                   : {};
-
-            // Get camera/doorbell activity zones
-            let zones = await this.#getCameraActivityZones(uuid, value.object_key, value.value.nexus_api_http_server_url);
-            value.value.activity_zones =
-              Array.isArray(zones) === true
-                ? zones
-                : Array.isArray(this.#rawData?.[value.object_key]?.value?.activity_zones) === true
-                  ? this.#rawData[value.object_key].value.activity_zones
-                  : [];
           }
 
           if (value.object_key.startsWith('buckets.') === true) {
             if (typeof this.#rawData[value.object_key] === 'object' && typeof this.#rawData[value.object_key].value?.buckets === 'object') {
               // Check for added objects
-              value.value.buckets.map((object_key) => {
-                if (this.#rawData[value.object_key].value.buckets.includes(object_key) === false) {
+              let newBucketsSet = new Set(value.value.buckets);
+              this.#rawData[value.object_key].value.buckets.forEach((object_key) => {
+                if (newBucketsSet.has(object_key) === false) {
                   // Since this is an added object to the raw Nest API structure, we need to do a full read of the data
                   fullRead = true;
                 }
               });
 
               // Check for removed objects
-              this.#rawData[value.object_key].value.buckets.map((object_key) => {
-                if (value.value.buckets.includes(object_key) === false) {
+              let oldBucketsSet = new Set(this.#rawData[value.object_key].value.buckets);
+              value.value.buckets.forEach((object_key) => {
+                if (oldBucketsSet.has(object_key) === false) {
                   // Object is present in the old buckets list, but not in the new buckets list
                   // so we assume it has been removed
                   // It also could mean device(s) have been removed from Nest
@@ -510,11 +506,6 @@ export default class NestAccfactory {
                   ) {
                     // Tidy up tracked devices since this one is removed
                     if (this.#trackedDevices[this.#rawData?.[object_key]?.value?.serial_number] !== undefined) {
-                      // Remove any active running timers we have for this device
-                      Object.values(this.#trackedDevices[this.#rawData[object_key].value.serial_number].timers).forEach((timers) => {
-                        clearInterval(timers);
-                      });
-
                       // Send removed notice onto HomeKit device for it to process
                       HomeKitDevice.message(
                         this.#trackedDevices[this.#rawData[object_key].value.serial_number].uuid,
@@ -661,15 +652,6 @@ export default class NestAccfactory {
               // We have the removal of a 'home' and/or device
               // Tidy up tracked devices since this one is removed
               if (this.#trackedDevices[this.#rawData?.[resource.resourceId]?.value?.device_identity?.serialNumber] !== undefined) {
-                // Remove any active running timers we have for this device
-                if (this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber]?.timers !== undefined) {
-                  Object.values(
-                    this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber]?.timers,
-                  ).forEach((timers) => {
-                    clearInterval(timers);
-                  });
-                }
-
                 // Send removed notice onto HomeKit device for it to process
                 HomeKitDevice.message(
                   this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber].uuid,
@@ -719,7 +701,7 @@ export default class NestAccfactory {
               (trait.patch.values?.postalCode?.value?.trim?.() ?? '') !== '' &&
               (trait.patch.values?.countryCode?.value?.trim?.() ?? '') !== ''
             ) {
-              this.#rawData[trait.traitId.resourceId].value.weather = await this.#getWeather(
+              this.#rawData[trait.traitId.resourceId].value.weather = await this.#getLocationWeather(
                 uuid,
                 trait.traitId.resourceId,
                 trait.patch.values.postalCode.value,
@@ -849,123 +831,6 @@ export default class NestAccfactory {
                   timers: {},
                   exclude: false,
                 };
-
-                // Optional things for each device type
-                if (
-                  deviceModule.class.TYPE === DEVICE_TYPE.CAMERA ||
-                  deviceModule.class.TYPE === DEVICE_TYPE.DOORBELL ||
-                  deviceModule.class.TYPE === DEVICE_TYPE.FLOODLIGHT
-                ) {
-                  // Setup polling loop for camera/doorbell zone data
-                  // This is only required for Nest API data sources as these details are present in Protobuf API
-                  clearInterval(this.#trackedDevices?.[deviceData.serialNumber]?.timers?.zones);
-                  this.#trackedDevices[deviceData.serialNumber].timers.zones = setInterval(async () => {
-                    try {
-                      let nest_google_device_uuid = this.#trackedDevices?.[deviceData?.serialNumber]?.nest_google_device_uuid;
-
-                      if (
-                        typeof nest_google_device_uuid === 'string' &&
-                        nest_google_device_uuid !== '' &&
-                        this.#trackedDevices?.[deviceData?.serialNumber]?.uuid &&
-                        this.#trackedDevices[deviceData.serialNumber].source === DATA_SOURCE.NEST &&
-                        typeof this.#rawData?.[nest_google_device_uuid]?.value === 'object'
-                      ) {
-                        let zones = await this.#getCameraActivityZones(
-                          this.#rawData[nest_google_device_uuid].connection,
-                          nest_google_device_uuid,
-                          this.#rawData[nest_google_device_uuid].value.nexus_api_http_server_url,
-                        );
-
-                        if (Array.isArray(zones) === true) {
-                          this.#rawData[nest_google_device_uuid].value.activity_zones = zones;
-
-                          // Send updated data onto HomeKit device for it to process
-                          HomeKitDevice.message(this.#trackedDevices[deviceData.serialNumber].uuid, HomeKitDevice.UPDATE, {
-                            activity_zones: zones,
-                          });
-                        }
-                      }
-                      // eslint-disable-next-line no-unused-vars
-                    } catch (error) {
-                      // Empty
-                    }
-                  }, TIMERS.ZONES);
-
-                  // Setup polling loop for camera/doorbell alert data, clearing any existing polling loop
-                  clearInterval(this.#trackedDevices?.[deviceData.serialNumber]?.timers?.alerts);
-                  this.#trackedDevices[deviceData.serialNumber].timers.alerts = setInterval(async () => {
-                    try {
-                      let nest_google_device_uuid = this.#trackedDevices?.[deviceData?.serialNumber]?.nest_google_device_uuid;
-                      if (
-                        (this.#trackedDevices?.[deviceData?.serialNumber]?.uuid ?? '') !== '' &&
-                        typeof this.#rawData?.[nest_google_device_uuid]?.value === 'object'
-                      ) {
-                        let alerts = await this.#getCameraActivityAlerts(
-                          this.#rawData[nest_google_device_uuid].connection,
-                          nest_google_device_uuid,
-                          this.#rawData[nest_google_device_uuid]?.value?.nexus_api_http_server_url ?? undefined,
-                        );
-
-                        if (Array.isArray(alerts) === true) {
-                          this.#rawData[nest_google_device_uuid].value.alerts = alerts;
-
-                          // Send updated data onto HomeKit device for it to process
-                          HomeKitDevice.message(this.#trackedDevices?.[deviceData?.serialNumber]?.uuid, HomeKitDevice.UPDATE, {
-                            alerts: this.#rawData[nest_google_device_uuid].value.alerts,
-                          });
-                        }
-                      }
-                      // eslint-disable-next-line no-unused-vars
-                    } catch (error) {
-                      // Empty
-                    }
-                  }, TIMERS.ALERTS);
-                }
-              }
-
-              if (deviceModule.class.TYPE === DEVICE_TYPE.WEATHER) {
-                // Setup polling loop for weather data, clearing any existing polling loop
-                clearInterval(this.#trackedDevices?.[deviceData.serialNumber]?.timers?.weather);
-                this.#trackedDevices[deviceData.serialNumber].timers.weather = setInterval(async () => {
-                  try {
-                    let nest_google_device_uuid = this.#trackedDevices?.[deviceData?.serialNumber]?.nest_google_device_uuid;
-
-                    if (
-                      (this.#trackedDevices?.[deviceData?.serialNumber]?.uuid ?? '') !== '' &&
-                      typeof this.#rawData?.[nest_google_device_uuid]?.value === 'object'
-                    ) {
-                      this.#rawData[nest_google_device_uuid].value.weather = await this.#getWeather(
-                        this.#rawData[nest_google_device_uuid].connection,
-                        nest_google_device_uuid,
-                        this.#rawData[nest_google_device_uuid].value?.weather?.postal_code,
-                        this.#rawData[nest_google_device_uuid].value?.weather?.country_code,
-                      );
-
-                      // Send updated data onto HomeKit device for it to process
-                      if (typeof this.#rawData?.[nest_google_device_uuid]?.value?.weather === 'object') {
-                        HomeKitDevice.message(this.#trackedDevices?.[deviceData?.serialNumber]?.uuid, HomeKitDevice.UPDATE, {
-                          current_temperature: adjustTemperature(
-                            this.#rawData[nest_google_device_uuid].value.weather.current_temperature,
-                            'C',
-                            'C',
-                            true,
-                          ),
-                          current_humidity: this.#rawData[nest_google_device_uuid].value.weather.current_humidity,
-                          condition: this.#rawData[nest_google_device_uuid].value.weather.condition,
-                          wind_direction: this.#rawData[nest_google_device_uuid].value.weather.wind_direction,
-                          wind_speed: this.#rawData[nest_google_device_uuid].value.weather.wind_speed,
-                          sunrise: this.#rawData[nest_google_device_uuid].value.weather.sunrise,
-                          sunset: this.#rawData[nest_google_device_uuid].value.weather.sunset,
-                          station: this.#rawData[nest_google_device_uuid].value.weather.station,
-                          forecast: this.#rawData[nest_google_device_uuid].value.weather.forecast,
-                        });
-                      }
-                    }
-                    // eslint-disable-next-line no-unused-vars
-                  } catch (error) {
-                    // Empty
-                  }
-                }, TIMERS.WEATHER);
               }
             }
 
@@ -1641,8 +1506,28 @@ export default class NestAccfactory {
 
       if (key === 'camera_snapshot') {
         // Camera snapshot requested.
-        // We'll pass in either the nexus api server url for Nest API devices OR the resultant uploaded image URL for Google API devices
         values[key] = await this.#getCameraSnapshot(uuid, nest_google_device_uuid);
+      }
+
+      if (key === 'location_weather') {
+        // Weather data requested.
+        // We'll pass in the postal code and country code for the device if available to get localised weather data
+        values[key] = await this.#getLocationWeather(
+          uuid,
+          nest_google_device_uuid,
+          this.#rawData[nest_google_device_uuid].value?.weather?.postal_code,
+          this.#rawData[nest_google_device_uuid].value?.weather?.country_code,
+        );
+      }
+
+      if (key === 'camera_events') {
+        // Camera events requested.
+        // We'll pass in the nexus api server url for Nest API devices
+        values[key] = await this.#getCameraEvents(
+          uuid,
+          nest_google_device_uuid,
+          this.#rawData[nest_google_device_uuid]?.value?.nexus_api_http_server_url ?? undefined,
+        );
       }
     }
 
@@ -1766,7 +1651,7 @@ export default class NestAccfactory {
     return snapshot;
   }
 
-  async #getWeather(uuid, nest_google_device_uuid, postal_code, country_code) {
+  async #getLocationWeather(uuid, nest_google_device_uuid, postal_code, country_code) {
     if (
       (postal_code?.trim?.() ?? '') === '' ||
       (country_code?.trim?.() ?? '') === '' ||
@@ -1846,62 +1731,6 @@ export default class NestAccfactory {
     return weather;
   }
 
-  async #getCameraActivityZones(uuid, nest_google_device_uuid, nexus_api_url) {
-    if (
-      typeof this.#connections?.[uuid] !== 'object' ||
-      this.#connections[uuid]?.authorised !== true ||
-      (nest_google_device_uuid?.trim?.() ?? '') === '' ||
-      this.config?.options?.useNestAPI !== true ||
-      nest_google_device_uuid.startsWith('quartz.') !== true ||
-      (nexus_api_url?.trim?.() ?? '') === ''
-    ) {
-      // Not a valid connection, not authorised, useNestAPI disabled, invalid device, or no valid URL
-      return;
-    }
-
-    try {
-      let response = await fetchWrapper(
-        'get',
-        new URL('/cuepoint_category/' + nest_google_device_uuid.trim().split('.')[1], nexus_api_url).href,
-        {
-          headers: {
-            Referer: 'https://' + this.#connections[uuid].referer,
-            Origin: 'https://' + this.#connections[uuid].referer,
-            [this.#connections[uuid].cameraAPI.key]: this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
-            'User-Agent': USER_AGENT,
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-origin',
-          },
-          retry: 3,
-          timeout: TIMERS.ZONES,
-        },
-      );
-
-      let data = await response.json();
-
-      // Transform zones if present in the returned data
-      if (Array.isArray(data) === true) {
-        let activityZones = data
-          .filter((zone) => zone?.type?.toUpperCase() === 'ACTIVITY' || zone?.type?.toUpperCase() === 'REGION')
-          .map((zone) => ({
-            id: zone.id === 0 ? 1 : zone.id,
-            name: HomeKitDevice.makeValidHKName(zone.label),
-            hidden: zone.hidden === true,
-            uri: zone.nexusapi_image_uri,
-          }));
-
-        return activityZones;
-      }
-    } catch (error) {
-      // Log unexpected errors (excluding timeouts) for debugging
-      this?.log?.debug?.(
-        'Nest API had error retrieving camera/doorbell activity zones for device "%s". Error was "%s"',
-        nest_google_device_uuid,
-        typeof error?.message === 'string' ? error.message : String(error),
-      );
-    }
-  }
-
   async #getCameraProperties(uuid, nest_google_device_uuid) {
     if (
       typeof this.#connections?.[uuid] !== 'object' ||
@@ -1946,7 +1775,7 @@ export default class NestAccfactory {
     }
   }
 
-  async #getCameraActivityAlerts(uuid, nest_google_device_uuid, nexus_api_url) {
+  async #getCameraEvents(uuid, nest_google_device_uuid, nexus_api_url) {
     if (
       typeof this.#connections?.[uuid] !== 'object' ||
       this.#connections[uuid]?.authorised !== true ||
@@ -1987,7 +1816,7 @@ export default class NestAccfactory {
         typeof commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.event?.event === 'object' &&
         commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.event?.event.constructor === Object
       ) {
-        let alerts =
+        let events =
           Array.isArray(commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.event?.event?.cameraEventWindow?.cameraEvent) ===
           true
             ? commandResponse.sendCommandResponse[0].traitOperations[0].event.event.cameraEventWindow.cameraEvent
@@ -2021,7 +1850,7 @@ export default class NestAccfactory {
                 .sort((a, b) => b.start_time - a.start_time)
             : [];
 
-        return alerts; // Return alerts from Google API
+        return events; // Return events from Google API
       }
     }
 
@@ -2052,7 +1881,7 @@ export default class NestAccfactory {
 
         let data = await response.json();
 
-        let alerts =
+        let events =
           Array.isArray(data) === true
             ? data
                 .map((alert) => {
@@ -2071,7 +1900,7 @@ export default class NestAccfactory {
                 })
                 .sort((a, b) => b.start_time - a.start_time)
             : [];
-        return alerts; // Return alerts from Nest API
+        return events; // Return events from Nest API
       } catch (error) {
         // Log unexpected errors (excluding timeouts) for debugging
         this?.log?.debug?.(

@@ -1,7 +1,7 @@
 // Common defines
 // Part of homebridge-nest-accfactory
 //
-// Code version 2026.02.03
+// Code version 2026.03.03
 // Mark Hulskamp
 'use strict';
 
@@ -11,12 +11,14 @@ import url from 'node:url';
 
 // Define constants
 export const TIMERS = {
-  ALERTS: 2000, // Camera alert polling interval (ms)
-  ZONES: 30000, // Camera zone polling interval (ms)
-  WEATHER: 300000, // Weather data refresh interval (ms)
-  NEST_API: 10000, // Nest API request timeout (ms)
-  TALKBACK_AUDIO: 1000, // Audio talkback timeout (ms)
-  SNAPSHOT: 30000, // Timeout for retaining snapshot image timeout (ms)
+  CAMERA_EVENTS: { name: 'camera_events', interval: 2000 }, // Camera events polling interval (ms)
+  WEATHER: { name: 'weather', interval: 300000 }, // Weather location data refresh interval (ms)
+  NEST_API: { name: 'nest-api', interval: 10000 }, // Nest API request timeout (ms)
+  TALKBACK_AUDIO: { name: 'talkback-audio', interval: 1000 }, // Audio talkback timeout (ms)
+  SNAPSHOT: { name: 'snapshot', interval: 30000 }, // Timeout for retaining snapshot image timeout (ms)
+  DOORBELL_COOLDOWN: { name: 'doorbell-cooldown', interval: 60000 }, // Cooldown timer for doorbell events (ms)
+  MOTION_COOLDOWN: { name: 'motion-cooldown', interval: 60000 }, // Cooldown timer for motion events (ms)
+  PERSON_COOLDOWN: { name: 'person-cooldown', interval: 120000 }, // Cooldown timer for person/face events (ms)
 };
 
 export const USER_AGENT = 'Nest/5.82.2 (iOScom.nestlabs.jasper.release) os=18.5'; // User Agent string

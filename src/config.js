@@ -1,7 +1,7 @@
 // Configuration validation and processing
 // Part of homebridge-nest-accfactory
 //
-// Code version 2026.02.15
+// Code version 2026.03.04
 // Mark Hulskamp
 'use strict';
 
@@ -19,7 +19,6 @@ function processConfig(config, log) {
 
   options.eveHistory = config.options?.eveHistory === true;
   options.weather = config.options?.weather === true;
-  options.hksv = config.options?.hksv === true;
   options.exclude = config.options?.exclude === true;
 
   options.elevation =

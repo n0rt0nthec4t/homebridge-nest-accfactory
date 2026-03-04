@@ -30,6 +30,7 @@ import {
   DEVICE_TYPE,
   TIMERS,
   LOW_BATTERY_LEVEL,
+  LOG_LEVELS,
 } from '../consts.js';
 
 const MP4BOX = 'mp4box';
@@ -40,7 +41,7 @@ const STREAMING_PROTOCOL = {
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2026.02.12'; // Code version
+  static VERSION = '2026.03.04'; // Code version
 
   // For messaging back to parent class (Doorbell/Floodlight)
   static SET = HomeKitDevice.SET;
@@ -48,10 +49,8 @@ export default class NestCamera extends HomeKitDevice {
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
-  motionServices = undefined; // Object of Camera/Doorbell motion sensor(s)
+  motionService = undefined; // Single motion sensor for camera(s)
   batteryService = undefined; // If a camera has a battery
-  personTimer = undefined; // Cooldown timer for person/face events
-  motionTimer = undefined; // Cooldown timer for motion events
   snapshotEvent = undefined; // Event for which to get snapshot for
   ffmpeg = undefined; // FFMpeg object class
 
@@ -61,6 +60,7 @@ export default class NestCamera extends HomeKitDevice {
   #cameraImages = {}; // Snapshot resource images
   #snapshotTimer = undefined; // Timer for cached snapshot images
   #lastSnapshotImage = undefined; // JPG image buffer for last camera snapshot
+  #motionCooldownActive = false; // Flag to track if motion cooldown is active
 
   constructor(accessory, api, log, deviceData) {
     super(accessory, api, log, deviceData);
@@ -91,19 +91,9 @@ export default class NestCamera extends HomeKitDevice {
 
   // Class functions
   onAdd() {
-    // Handle HKSV configuration change from enabled/disable states
-    if (typeof this?.accessory?.context?.hksv === 'boolean' && this.accessory.context.hksv !== this.deviceData.hksv) {
-      // We need to remove the CameraOperatingMode service to avoid errors when setting up the HomeKit controller
-      // Thanks to @bcullman (Brad Ullman) for catching this
-      if (this.accessory.getService(this.hap.Service.CameraOperatingMode) !== undefined) {
-        this.accessory.removeService(this.accessory.getService(this.hap.Service.CameraOperatingMode));
-      }
-    }
-    this.accessory.context.hksv = this.deviceData.hksv;
-
     // Setup motion services. This needs to be done before we setup the HomeKit camera controller
-    if (this.motionServices === undefined) {
-      this.createCameraMotionServices();
+    if (this.motionService === undefined) {
+      this.createCameraMotionService();
     }
 
     // Setup HomeKit camera controller
@@ -114,15 +104,6 @@ export default class NestCamera extends HomeKitDevice {
     if (this.controller !== undefined) {
       // Configure the controller that's been created
       this.accessory.configureController(this.controller);
-    }
-
-    // Setup additional services/characteristics after we have a controller created
-    if (this.controller?.recordingManagement?.operatingModeService === undefined && this.deviceData.hksv === false) {
-      // Add in operating mode service for a non-hksv camera/doorbell
-      // Allow us to change things such as night vision, camera indicator etc within HomeKit for those also :-)
-      this.controller.recordingManagement = {
-        operatingModeService: this.addHKService(this.hap.Service.CameraOperatingMode, '', 1),
-      };
     }
 
     // Setup battery service if required and not already present on the accessory
@@ -144,7 +125,7 @@ export default class NestCamera extends HomeKitDevice {
               (value === true && this.deviceData.statusled_brightness !== 0) ||
               (value === false && this.deviceData.statusled_brightness !== 1)
             ) {
-              this.message(HomeKitDevice.SET, {
+              this.set({
                 uuid: this.deviceData.nest_google_device_uuid,
                 statusled_brightness: value === true ? 0 : 1,
               });
@@ -163,7 +144,7 @@ export default class NestCamera extends HomeKitDevice {
         onSet: (value) => {
           // only change IRLed status value if different than on-device
           if ((value === false && this.deviceData.irled_enabled === true) || (value === true && this.deviceData.irled_enabled === false)) {
-            this.message(HomeKitDevice.SET, {
+            this.set({
               uuid: this.deviceData.nest_google_device_uuid,
               irled_enabled: value === true ? 'auto_on' : 'always_off',
             });
@@ -189,7 +170,7 @@ export default class NestCamera extends HomeKitDevice {
             (this.deviceData.streaming_enabled === true && value === this.hap.Characteristic.HomeKitCameraActive.OFF)
           ) {
             // Camera state does not reflect requested state, so fix
-            this.message(HomeKitDevice.SET, {
+            this.set({
               uuid: this.deviceData.nest_google_device_uuid,
               streaming_enabled: value === this.hap.Characteristic.HomeKitCameraActive.ON ? true : false,
             });
@@ -221,7 +202,7 @@ export default class NestCamera extends HomeKitDevice {
               (this.deviceData.audio_enabled === true && value === this.hap.Characteristic.RecordingAudioActive.DISABLE) ||
               (this.deviceData.audio_enabled === false && value === this.hap.Characteristic.RecordingAudioActive.ENABLE)
             ) {
-              this.message(HomeKitDevice.SET, {
+              this.set({
                 uuid: this.deviceData.nest_google_device_uuid,
                 audio_enabled: value === this.hap.Characteristic.RecordingAudioActive.ENABLE ? true : false,
               });
@@ -261,22 +242,24 @@ export default class NestCamera extends HomeKitDevice {
     // Extra setup details for output
     this.deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.WEBRTC) === true &&
       WebRTC !== undefined &&
-      this.postSetupDetail('WebRTC streamer', 'debug');
+      this.postSetupDetail('WebRTC streamer', LOG_LEVELS.DEBUG);
     this.deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.NEXUSTALK) === true &&
       NexusTalk !== undefined &&
-      this.postSetupDetail('NexusTalk streamer', 'debug');
-    this.deviceData.hksv === true && this.postSetupDetail('HomeKit Secure Video support');
-    this.deviceData.localAccess === true && this.postSetupDetail('Local network access');
+      this.postSetupDetail('NexusTalk streamer', LOG_LEVELS.DEBUG);
+    this.postSetupDetail(
+      'HomeKit Secure Video support' +
+        (this.deviceData.model.includes('battery') === true && isNaN(this.deviceData?.battery_level) === false ? ' (on battery)' : ''),
+    );
     this.deviceData.ffmpeg.hwaccel === true && this.postSetupDetail('Video hardware acceleration');
+
+    // Setup repeat polling for camera events.
+    // This is time-sensitive and we want to trigger HomeKit automations as close to real-time as possible
+    this.addTimer(TIMERS.CAMERA_EVENTS.name, { interval: TIMERS.CAMERA_EVENTS.interval });
   }
 
   onRemove() {
     // Clean up our camera object since this device is being removed
-    clearTimeout(this.motionTimer);
-    clearTimeout(this.personTimer);
     clearTimeout(this.#snapshotTimer);
-    this.motionTimer = undefined;
-    this.personTimer = undefined;
     this.#snapshotTimer = undefined;
 
     // Stop all streamer logic (buffering, output, etc)
@@ -292,18 +275,17 @@ export default class NestCamera extends HomeKitDevice {
     });
 
     // Remove any motion services we created
-    Object.values(this.motionServices).forEach((service) => {
-      service.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
-      this.accessory.removeService(service);
-    });
+    if (this.motionService !== undefined) {
+      this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
+      this.accessory.removeService(this.motionService);
+    }
 
     // Remove the camera controller
     this.accessory.removeController(this.controller);
 
     // Clear references
-    this.controller.recordingManagement.operatingModeService = undefined;
     this.#liveSessions = undefined;
-    this.motionServices = undefined;
+    this.motionService = undefined;
     this.streamer = undefined;
     this.controller = undefined;
   }
@@ -370,7 +352,6 @@ export default class NestCamera extends HomeKitDevice {
       }
       if (
         this?.streamer?.isBuffering() === false &&
-        deviceData?.hksv === true &&
         this?.controller?.recordingManagement?.recordingManagementService !== undefined &&
         this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.Active).value ===
           this.hap.Characteristic.Active.ACTIVE
@@ -378,51 +359,6 @@ export default class NestCamera extends HomeKitDevice {
         await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_BUFFER);
       }
     }
-
-    // Check to see if any activity zones were added for both non-HKSV and HKSV enabled devices
-    if (
-      Array.isArray(deviceData.activity_zones) === true &&
-      JSON.stringify(deviceData.activity_zones) !== JSON.stringify(this.deviceData.activity_zones)
-    ) {
-      deviceData.activity_zones.forEach((zone) => {
-        if (this.deviceData.hksv === false || (this.deviceData.hksv === true && this.ffmpeg instanceof FFmpeg === true && zone.id === 1)) {
-          if (this.motionServices?.[zone.id]?.service === undefined) {
-            // Zone doesn't have an associated motion sensor, so add one
-            let zoneName = zone.id === 1 ? '' : zone.name;
-            let eveOptions = zone.id === 1 ? {} : undefined; // Only link EveHome for zone 1
-
-            let tempService = this.addHKService(this.hap.Service.MotionSensor, zoneName, zone.id, eveOptions);
-
-            this.addHKCharacteristic(tempService, this.hap.Characteristic.Active);
-            tempService.updateCharacteristic(this.hap.Characteristic.Name, zoneName);
-            tempService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
-
-            this.motionServices[zone.id] = { service: tempService, timer: undefined };
-          }
-        }
-      });
-    }
-
-    // Check to see if any activity zones were removed for both non-HKSV and HKSV enabled devices
-    // We'll also update the online status of the camera in the motion service here
-    Object.entries(this.motionServices).forEach(([zoneID, service]) => {
-      // Set online status
-      service.service.updateCharacteristic(
-        this.hap.Characteristic.Active,
-        deviceData.online === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE,
-      );
-
-      // Handle deleted zones (excluding zone ID 1 for HKSV)
-      if (
-        zoneID !== '1' &&
-        Array.isArray(deviceData.activity_zones) === true &&
-        deviceData.activity_zones.findIndex(({ id }) => id === Number(zoneID)) === -1
-      ) {
-        // Motion service we created doesn't appear in zone list anymore, so assume deleted
-        this.accessory.removeService(service.service);
-        delete this.motionServices[zoneID];
-      }
-    });
 
     if (this.controller?.recordingManagement?.operatingModeService !== undefined) {
       // Update camera off/on status
@@ -459,22 +395,9 @@ export default class NestCamera extends HomeKitDevice {
           deviceData.video_flipped === true ? 180 : 0,
         );
       }
-
-      if (this.deviceData.hksv === false) {
-        // Specific settings for non-HKSV camera's
-        this.controller.recordingManagement.operatingModeService.updateCharacteristic(
-          this.hap.Characteristic.PeriodicSnapshotsActive,
-          this.hap.Characteristic.PeriodicSnapshotsActive.ENABLE,
-        );
-
-        this.controller.recordingManagement.operatingModeService.updateCharacteristic(
-          this.hap.Characteristic.HomeKitCameraActive,
-          this.hap.Characteristic.HomeKitCameraActive.ON,
-        );
-      }
     }
 
-    if (this.deviceData.hksv === true && this.controller?.recordingManagement?.recordingManagementService !== undefined) {
+    if (this.controller?.recordingManagement?.recordingManagementService !== undefined) {
       // Update recording audio status
       this.controller.recordingManagement.recordingManagementService.updateCharacteristic(
         this.hap.Characteristic.RecordingAudioActive,
@@ -499,10 +422,8 @@ export default class NestCamera extends HomeKitDevice {
       this.controller.setSpeakerMuted(deviceData.audio_enabled === false ? true : false);
     }
 
-    // Process alerts, the most recent alert is first
-    // For HKSV, we're interested motion events
-    // For non-HKSV, we're interested motion, face and person events (maybe sound and package later)
-    deviceData.alerts.forEach((event) => {
+    // Process camera events, the most recent event is first
+    deviceData.events.forEach((event) => {
       if (
         this.controller?.recordingManagement?.operatingModeService?.getCharacteristic?.(this.hap.Characteristic.HomeKitCameraActive)
           .value === this.hap.Characteristic.HomeKitCameraActive.ON
@@ -511,68 +432,32 @@ export default class NestCamera extends HomeKitDevice {
         // https://github.com/Supereg/secure-video-specification?tab=readme-ov-file#33-homekitcameraactive
 
         // Handle motion event
-        // For a HKSV enabled camera, we will use this to trigger the starting of the HKSV recording if the camera is active
+        // We will use this to trigger the starting of the HKSV recording if the camera is active
         if (event.types.includes('motion') === true) {
-          if (
-            this.motionTimer === undefined &&
-            (this.deviceData.hksv === false || this.ffmpeg instanceof FFmpeg === false || this.streamer === undefined)
-          ) {
+          if (this.#motionCooldownActive === false && (this.ffmpeg instanceof FFmpeg === false || this.streamer === undefined)) {
             this?.log?.info?.('Motion detected at "%s"', deviceData.description);
           }
 
-          event.zone_ids.forEach((zoneID) => {
-            if (
-              typeof this.motionServices?.[zoneID]?.service === 'object' &&
-              this.motionServices[zoneID].service.getCharacteristic(this.hap.Characteristic.MotionDetected).value !== true
-            ) {
-              // Trigger motion for matching zone if not already active
-              this.motionServices[zoneID].service.updateCharacteristic(this.hap.Characteristic.MotionDetected, true);
+          // Update motion service if not already active
+          if (
+            typeof this.motionService === 'object' &&
+            this.motionService.getCharacteristic(this.hap.Characteristic.MotionDetected).value !== true
+          ) {
+            // Trigger motion if not already active
+            this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, true);
 
-              // Log motion started into history
-              this.history(this.motionServices[zoneID].service, {
-                status: 1,
-              });
-            }
-          });
-
-          // Clear any motion active timer so we can extend if more motion detected
-          clearTimeout(this.motionTimer);
-          this.motionTimer = setTimeout(() => {
-            event.zone_ids.forEach((zoneID) => {
-              if (typeof this.motionServices?.[zoneID]?.service === 'object') {
-                // Mark associated motion services as motion not detected
-                this.motionServices[zoneID].service.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
-
-                // Log motion stopped into history
-                this.history(this.motionServices[zoneID].service, { status: 0 });
-              }
+            // Log motion started into history
+            this.history(this.motionService, {
+              status: 1,
             });
+          }
 
-            this.motionTimer = undefined; // No motion timer active
-          }, this.deviceData.motionCooldown * 1000);
-        }
-
-        // Handle person/face event
-        // We also treat a 'face' event the same as a person event ie: if you have a face, you have a person
-        if (event.types.includes('person') === true || event.types.includes('face') === true) {
-          if (this.personTimer === undefined) {
-            // We don't have a person cooldown timer running, so we can process the 'person'/'face' event
-            if (this.deviceData.hksv === false || this.ffmpeg instanceof FFmpeg === false || this.streamer === undefined) {
-              // We'll only log a person detected event if HKSV is disabled
-              this?.log?.info?.('Person detected at "%s"', deviceData.description);
-            }
-
-            // Cooldown for person being detected
-            // Start this before we process further
-            this.personTimer = setTimeout(() => {
-              this.personTimer = undefined; // No person timer active
-            }, this.deviceData.personCooldown * 1000);
-
-            if (event.types.includes('motion') === false) {
-              // If person/face events doesn't include a motion event, add in here
-              // This will handle all the motion triggering stuff
-              event.types.push('motion');
-            }
+          // Start motion cooldown if not already active
+          if (this.#motionCooldownActive === false) {
+            this.#motionCooldownActive = true;
+            this.addTimer(TIMERS.MOTION_COOLDOWN.name, {
+              interval: this.deviceData.motionCooldown * 1000,
+            });
           }
         }
       }
@@ -591,6 +476,34 @@ export default class NestCamera extends HomeKitDevice {
     this.#liveSessions?.forEach?.((session) => {
       session?.rtpSplitter?.close?.();
     });
+  }
+
+  async onTimer(message) {
+    if (typeof message !== 'object' || typeof message?.timer !== 'string') {
+      return;
+    }
+
+    // Handle camera events polling timer
+    if (message.timer === TIMERS.CAMERA_EVENTS.name) {
+      let response = await this.get({ uuid: this.deviceData.nest_google_device_uuid, camera_events: true });
+      // // Send updates (empty array if no events)
+      this.update({
+        events: Array.isArray(response?.camera_events) === true ? response.camera_events : [],
+      });
+    }
+
+    // Handle motion cooldown timer expiration
+    if (message.timer === TIMERS.MOTION_COOLDOWN.name) {
+      // Motion cooldown expired
+      if (typeof this.motionService === 'object') {
+        // Mark motion service as motion not detected
+        this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
+
+        // Log motion stopped into history
+        this.history(this.motionService, { status: 0 });
+      }
+      this.#motionCooldownActive = false;
+    }
   }
 
   // Taken and adapted from:
@@ -613,10 +526,7 @@ export default class NestCamera extends HomeKitDevice {
       return;
     }
 
-    if (
-      this.motionServices?.[1]?.service !== undefined &&
-      this.motionServices[1].service.getCharacteristic(this.hap.Characteristic.MotionDetected).value === false
-    ) {
+    if (this.motionService !== undefined && this.motionService.getCharacteristic(this.hap.Characteristic.MotionDetected).value === false) {
       // Should only be recording if motion detected.
       // Sometimes when starting up, HAP-nodeJS or HomeKit triggers this even when motion isn't occurring
       this?.log?.debug?.(
@@ -900,7 +810,7 @@ export default class NestCamera extends HomeKitDevice {
         clearTimeout(this.#snapshotTimer);
         this.#snapshotTimer = setTimeout(() => {
           this.#lastSnapshotImage = undefined;
-        }, TIMERS.SNAPSHOT);
+        }, TIMERS.SNAPSHOT.interval);
       }
     }
 
@@ -1281,37 +1191,18 @@ export default class NestCamera extends HomeKitDevice {
     callback?.(); // do callback if defined
   }
 
-  createCameraMotionServices() {
+  createCameraMotionService() {
     // First up, remove any motion services present in the accessory
     // This will help with any 'restored' service Homebridge has done
     // And allow for zone changes on the camera/doorbell
-    this.motionServices = {};
     this.accessory.services
       .filter((service) => service.UUID === this.hap.Service.MotionSensor.UUID)
       .forEach((service) => this.accessory.removeService(service));
 
-    let zones = Array.isArray(this.deviceData.activity_zones) === true ? this.deviceData.activity_zones : [];
-
-    if (this.deviceData.has_motion_detection === true && zones.length > 0) {
-      // We have the capability of motion sensing on device, so setup motion sensor(s)
-      // If we have HKSV video enabled, we'll only create a single motion sensor
-      // A zone with the ID of 1 is treated as the main motion sensor
-      for (let zone of zones) {
-        if (this.deviceData.hksv === true && this.ffmpeg instanceof FFmpeg === true && zone.id !== 1) {
-          continue;
-        }
-
-        let zoneName = zone.id === 1 ? '' : zone.name;
-        let eveOptions = zone.id === 1 ? {} : undefined; // Only link EveHome for zone 1
-
-        let service = this.addHKService(this.hap.Service.MotionSensor, zoneName, zone.id, eveOptions);
-        this.addHKCharacteristic(service, this.hap.Characteristic.Active);
-        service.updateCharacteristic(this.hap.Characteristic.Name, zoneName);
-        service.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
-
-        this.motionServices[zone.id] = { service, timer: undefined };
-      }
-    }
+    this.motionService = this.addHKService(this.hap.Service.MotionSensor, this.deviceData.description, 1, {});
+    this.addHKCharacteristic(this.motionService, this.hap.Characteristic.Active);
+    this.motionService.updateCharacteristic(this.hap.Characteristic.Name, this.deviceData.description);
+    this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
   }
 
   generateControllerOptions() {
@@ -1321,16 +1212,13 @@ export default class NestCamera extends HomeKitDevice {
       [3840, 2160, 30], // 4K
       [2560, 1440, 30], // 2K (QHD)
       [1920, 1080, 30], // 1080p
-      [1920, 1080, 60], // 1080p high framerate
       [1920, 1080, 15], // 1080p low bitrate
       [1600, 1200, 30], // Native res of Nest Hello
       [1280, 960, 30],
       [1280, 720, 30], // 720p
-      [1280, 720, 60], // 720p high framerate
       [1024, 768, 30],
       [640, 480, 30],
       [640, 360, 30],
-      [640, 360, 60], // 360p high framerate
       [480, 360, 30],
       [480, 270, 30],
       [320, 240, 30],
@@ -1390,7 +1278,7 @@ export default class NestCamera extends HomeKitDevice {
               },
             },
       recording:
-        this.deviceData.hksv === true && this.ffmpeg instanceof FFmpeg === true
+        this.ffmpeg instanceof FFmpeg === true
           ? {
               delegate: this,
               options: {
@@ -1423,9 +1311,9 @@ export default class NestCamera extends HomeKitDevice {
             }
           : undefined,
       sensors:
-        this.deviceData.hksv === true && this.ffmpeg instanceof FFmpeg === true
+        this.ffmpeg instanceof FFmpeg === true
           ? {
-              motion: typeof this.motionServices?.[1]?.service === 'object' ? this.motionServices[1].service : false,
+              motion: this.motionService !== undefined ? this.motionService : false,
             }
           : undefined,
     };
@@ -1523,16 +1411,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               has_microphone: value.value?.microphone_settings?.enableMicrophone === true,
               has_speaker: value.value?.speaker_volume?.volume !== undefined,
               has_motion_detection: value.value?.observation_trigger_capabilities?.videoEventTypes?.motion?.value === true,
-              activity_zones:
-                Array.isArray(value.value?.activity_zone_settings?.activityZones) === true
-                  ? value.value.activity_zone_settings.activityZones.map((zone) => ({
-                      id: zone.zoneProperties?.zoneId !== undefined ? zone.zoneProperties.zoneId : zone.zoneProperties.internalIndex,
-                      name: HomeKitDevice.makeValidHKName(zone.zoneProperties?.name !== undefined ? zone.zoneProperties.name : ''),
-                      hidden: false,
-                      uri: '',
-                    }))
-                  : [],
-              alerts: typeof value.value?.alerts === 'object' ? value.value.alerts : [],
+              events: typeof value.value?.events === 'object' ? value.value.events : [],
               quiet_time_enabled:
                 isNaN(value.value?.quiet_time_settings?.quietTimeEnds?.seconds) === false &&
                 Number(value.value.quiet_time_settings.quietTimeEnds.seconds) !== 0 &&
@@ -1607,8 +1486,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               has_microphone: value.value?.capabilities.includes('audio.microphone') === true,
               has_speaker: value.value?.capabilities.includes('audio.speaker') === true,
               has_motion_detection: value.value?.capabilities.includes('detectors.on_camera') === true,
-              activity_zones: value.value.activity_zones,
-              alerts: typeof value.value?.alerts === 'object' ? value.value.alerts : [],
+              events: typeof value.value?.events === 'object' ? value.value.events : [],
               streaming_protocols: ['PROTOCOL_NEXUSTALK'],
               streaming_host: value.value.direct_nexustalk_host,
               quiet_time_enabled: false,
@@ -1656,9 +1534,6 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
             : homeOptions?.eveHistory !== undefined
               ? homeOptions.eveHistory === true
               : config.options?.eveHistory === true;
-        tempDevice.hksv =
-          (deviceOptions?.hksv === true || (deviceOptions?.hksv !== false && config.options?.hksv === true)) &&
-          config.options?.ffmpeg?.valid === true;
         tempDevice.doorbellCooldown = parseDurationToSeconds(deviceOptions?.doorbellCooldown, { defaultValue: 60, min: 0, max: 300 });
         tempDevice.motionCooldown = parseDurationToSeconds(deviceOptions?.motionCooldown, { defaultValue: 60, min: 0, max: 300 });
         tempDevice.personCooldown = parseDurationToSeconds(deviceOptions?.personCooldown, { defaultValue: 120, min: 0, max: 300 });
@@ -1673,7 +1548,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
             config.options.ffmpeg.valid === true &&
             config.options.ffmpeg.hwaccel === true,
         };
-        tempDevice.maxStreams = config.options.hksv === true || deviceOptions?.hksv === true ? 1 : 2;
+        tempDevice.maxStreams = 1; // Always 1 stream since HKSV is mandatory
 
         devices[tempDevice.serialNumber] = tempDevice; // Store processed device
       }

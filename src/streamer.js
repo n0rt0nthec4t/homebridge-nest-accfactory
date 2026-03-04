@@ -18,7 +18,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2025.11.22
+// Code version 2026.03.03
 // Mark Hulskamp
 'use strict';
 
@@ -258,6 +258,12 @@ export default class Streamer {
   stopEverything() {
     if (this.isStreaming() === true || this.isBuffering() === true) {
       this?.log?.debug?.('Stopped buffering, live and recording from device uuid "%s"', this.nest_google_device_uuid);
+
+      // Clear any pending talkback timeouts before clearing outputs
+      for (let output of Object.values(this.#outputs)) {
+        clearTimeout(output?.talkbackTimeout);
+      }
+
       this.#outputs = {}; // Remove all outputs (live, record, buffer)
       this.#sequenceCounters = {}; // Reset sequence tracking
       this.#h264Video = {}; // Reset cached SPS/PPS and keyframe flag
@@ -421,7 +427,7 @@ export default class Streamer {
         this.#outputs[sessionID].talkbackTimeout = setTimeout(() => {
           // no audio received in 1000ms, so mark end of stream
           this.sendTalkback(Buffer.alloc(0));
-        }, TIMERS.TALKBACK_AUDIO);
+        }, TIMERS.TALKBACK_AUDIO.interval);
       }
     });
     talkbackIn?.on?.('close', () => {

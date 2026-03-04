@@ -106,12 +106,6 @@
                         "placeholder": "Path to ffmpeg binary",
                         "default": "/usr/local/bin/ffmpeg"
                     },
-                    "hksv": {
-                        "title": "HomeKit Secure Video",
-                        "description": "Enable HomeKit Secure Video for supported camera(s) and doorbell(s)",
-                        "type": "boolean",
-                        "default": false
-                    },
                     "maxStreams": {
                         "type": "integer"
                     },
@@ -183,9 +177,6 @@
                         "ffmpegHWAccel": {
                             "type": "boolean"
                         },
-                        "hksv": {
-                            "type": "boolean"
-                        },
                         "hotwaterBoostTime": {
                             "type": "number"
                         },
@@ -202,9 +193,6 @@
                             "type": "boolean"
                         },
                         "motionCooldown": {
-                            "type": "number"
-                        },
-                        "personCooldown": {
                             "type": "number"
                         }
                     }
@@ -282,7 +270,6 @@
                 "options.eveHistory",
                 "options.weather",
                 "options.elevation",
-                "options.hksv",
                 "options.ffmpegPath"
             ]
         }

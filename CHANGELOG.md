@@ -8,11 +8,22 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 - Some newer Nest/Google cameras may use different video sizes or shapes, causing the video to look slightly cropped or not fill the screen correctly.
 - HomeKit Secure Video (HKSV) can be enabled on battery powered cameras, which will significantly reduce battery life
 
-## v0.3.10 (xxxx/xx/xx)
+## v0.4.0 (xxxx/xx/xx)
+
+### ⚠️ Breaking Change
+
+From version **0.4.0**, **HomeKit Secure Video (HKSV) is now mandatory**.
+
+The `hksv` configuration option has been removed and **all cameras will use HKSV by default**.
+
+### Changes
 
 - General code cleanup and stability improvements
+- Refactored core modules to use the updated base class
 - Fixed an issue affecting live view and HKSV recording on migrated Nest/Google cameras
 - Fixed an issue affecting audio talkback on some older migrated Nest/Google cameras
+- Removed multiple motion sensors per Nest/Google camera (a single motion sensor is now exposed)
+- Updated `README.md` to clarify that HKSV recording relies on general motion events and does not support individual recording filters
 
 ## v0.3.9 (2026/02/18)
 
@@ -27,7 +38,7 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 - General code cleanup and stability improvements
 - Fixed WebRTC streaming issues when a home does not contain any devices [@benbean303](https://github.com/benbean303)
-- Fixed an issue where snapshots could appear empty on some Nest/Google cameras.
+- Fixed an issue where snapshots could appear empty on some Nest/Google cameras
 - Added support for Nest Cam Outdoor (2nd gen, wired)
 - Added support for Nest Doorbell (3rd gen, wired)
 

@@ -5,7 +5,7 @@
 //
 // Credit to https://github.com/Brandawg93/homebridge-nest-cam for the work on the Nest Camera comms code on which this is based
 //
-// Code version 2025.11.22
+// Code version 2026.03.03
 // Mark Hulskamp
 'use strict';
 
@@ -72,7 +72,8 @@ export default class NexusTalk extends Streamer {
   // Internal data only for this class
   #protobufNexusTalk = undefined; // Protobuf for NexusTalk
   #socket = undefined; // TCP socket object
-  #packets = []; // Incoming packets
+  #packetBuffer = undefined; // Incoming packet buffer
+  #packetOffset = undefined; // Current offset in packet buffer
   #messages = []; // Incoming messages
   #authorised = false; // Have we been authorised
   #id = undefined; // Session ID
@@ -176,6 +177,12 @@ export default class NexusTalk extends Streamer {
 
   async close(stopStreamFirst) {
     // Close an authenticated socket stream gracefully
+    // Clear any running timers before closing socket to prevent race conditions
+    clearInterval(this.#pingTimer);
+    clearTimeout(this.#stalledTimer);
+    this.#pingTimer = undefined;
+    this.#stalledTimer = undefined;
+
     if (this.#socket !== undefined) {
       if (stopStreamFirst === true) {
         // Send a notification to nexus that we've finished playback
@@ -187,7 +194,8 @@ export default class NexusTalk extends Streamer {
     this.connected = undefined;
     this.#socket = undefined;
     this.#id = undefined; // Not an active session anymore
-    this.#packets = [];
+    this.#packetBuffer = undefined;
+    this.#packetOffset = undefined;
     this.#messages = [];
     this.video = {};
     this.audio = {};
@@ -402,7 +410,8 @@ export default class NexusTalk extends Streamer {
 
       // Since this is the beginning of playback, clear any active buffers contents
       this.#id = decodedMessage.sessionId;
-      this.#packets = [];
+      this.#packetBuffer = undefined;
+      this.#packetOffset = undefined;
       this.#messages = [];
 
       this?.log?.debug?.('Playback started from "%s" with session ID "%s"', this.#host, this.#id);
@@ -519,27 +528,37 @@ export default class NexusTalk extends Streamer {
   }
 
   #handleNexusData(data) {
-    // Process the raw data from our socket connection and convert into nexus packets to take action against
-    this.#packets = this.#packets.length === 0 ? data : Buffer.concat([this.#packets, data]);
+    if (this.#packetOffset === undefined) {
+      this.#packetBuffer = Buffer.allocUnsafe(256 * 1024);
+      this.#packetOffset = 0;
+    }
 
-    while (this.#packets.length >= 3) {
+    if (this.#packetOffset + data.length > this.#packetBuffer.length) {
+      let newBuffer = Buffer.allocUnsafe(this.#packetBuffer.length * 2);
+      this.#packetBuffer.copy(newBuffer, 0, 0, this.#packetOffset);
+      this.#packetBuffer = newBuffer;
+    }
+
+    data.copy(this.#packetBuffer, this.#packetOffset);
+    this.#packetOffset += data.length;
+
+    while (this.#packetOffset >= 3) {
       let headerSize = 3;
-      let packetType = this.#packets.readUInt8(0);
-      let packetSize = this.#packets.readUInt16BE(1);
+      let packetType = this.#packetBuffer.readUInt8(0);
+      let packetSize = this.#packetBuffer.readUInt16BE(1);
 
       if (packetType === PACKET_TYPE.LONG_PLAYBACK_PACKET) {
         headerSize = 5;
-        packetSize = this.#packets.readUInt32BE(1);
+        packetSize = this.#packetBuffer.readUInt32BE(1);
       }
 
-      if (this.#packets.length < headerSize + packetSize) {
-        // We don't have enough data in the buffer yet to process the full packet
-        // so, exit loop and await more data
+      if (this.#packetOffset < headerSize + packetSize) {
         break;
       }
 
-      let protoBufPayload = this.#packets.subarray(headerSize, headerSize + packetSize);
-      this.#packets = this.#packets.subarray(headerSize + packetSize);
+      let protoBufPayload = this.#packetBuffer.subarray(headerSize, headerSize + packetSize);
+      this.#packetBuffer.copy(this.#packetBuffer, 0, headerSize + packetSize, this.#packetOffset);
+      this.#packetOffset -= headerSize + packetSize;
 
       switch (packetType) {
         case PACKET_TYPE.PING: {

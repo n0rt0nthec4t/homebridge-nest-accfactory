@@ -90,7 +90,6 @@ Sample config.json entries below
         "eveHistory": true,
         "weather": true,
         "elevation": 600,
-        "hksv": false
     },
     "devices": [
         {
@@ -99,7 +98,7 @@ Sample config.json entries below
         },
         {
             "serialNumber": "YYYYYYYY",
-            "hksv": true
+            "humiditySensor": true
         }
     ],
     "platform": "NestAccfactory"
@@ -118,7 +117,6 @@ The following options are available in the config.json options object. These app
 | ffmpegDebug        | Turns on specific debugging output for when ffmpeg is invoked                                | false          |
 | ffmpegHWaccel      | Enable video hardware acceleration for supported camera(s) and doorbell(s)                   | false          |
 | ffmpegPath         | Path to an ffmpeg binary (looks for binary named `ffmpeg` in path)                           | /usr/local/bin |
-| hksv               | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                          | false          |
 | weather            | Virtual weather station for each Nest/Google home we discover                                | false          |
 
 #### devices
@@ -134,14 +132,12 @@ The following options are available on a per-device level in the `config.json` `
 | fanDuration        | Fan runtime duration                                                                         |                |
 | ffmpegDebug        | Turns on specific debugging output for when ffmpeg is invoked                                | false          |
 | ffmpegHWaccel      | Enable video hardware acceleration for supported camera(s) and doorbell(s)                   | false          |
-| hksv               | Enable HomeKit Secure Video for supported camera(s) and doorbell(s)                          | false          |
 | hotwaterBoostTime  | Time for hotwater boost heating (30, 160, 120mins)                                           | 30mins         |
 | hotwaterMaxTemp    | Maximum supported temperature for hotwater heating                                           | 70c            |
 | hotwaterMinTemp    | Minimum supported temperature for hotwater heating                                           | 30c            |
 | humiditySensor     | Separate humidity sensor for supported thermostat(s)                                         | false          |
 | localAccess        | Use direct access to supported camera(s) and doorbell(s) for video streaming and recording   | false          |
 | motionCooldown     | Time between detected motion events                                                          | 60s            |
-| personCooldown     | Time between detected person events                                                          | 120s           |
 | serialNumber       | Device serial number to which these settings belong to                                       |                |
 
 #### homes
@@ -168,22 +164,6 @@ To support streaming and recording from cameras, an ffmpeg binary needs to be pr
 By default, we look in /usr/local/bin for an ffmpeg binary, however, you can specify a specific ffmpeg binary to use via the configuration option 'ffmpegPath'
 
 A pre-compiled ffmpeg binary that meets these requirements is available from the **ffmpeg-for-homebridge** project and may be used as an alternative to building ffmpeg yourself.
-
-## Enabling HomeKit Secure Video (HKSV)
-
-HomeKit Secure Video must first be enabled in the plugin configuration, either globally or for specific device(s).
-
-Once HKSV is enabled in the plugin and the accessory has restarted:
-
-1. Open the camera in the **Home** app.
-2. Tap **Settings** → **Recording Options**.
-3. For **Home** and/or **When Away**, select **“Stream & Allow Recording.”**
-4. Tap **More Options** and set **“Record When”** to **“Any Motion Is Detected.”**
-
-> **Note:** The **“More Options”** section only appears when **“Stream & Allow Recording”** is selected. If set to **“Stream Only”**, HKSV recording will not function.
-
-> **Important:** HKSV recording in this plugin is triggered by general motion events.  
-> The **“People”, “Animals”, “Vehicles” and “Packages”** recording filters are not individually supported, so **“Any Motion Is Detected”** must be selected for recording to function reliably.
 
 ## Disclaimer
 
