@@ -41,7 +41,7 @@ const STREAMING_PROTOCOL = {
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2026.03.04'; // Code version
+  static VERSION = '2026.03.05'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -475,6 +475,11 @@ export default class NestCamera extends HomeKitDevice {
   }
 
   onShutdown() {
+    // Clear any motion
+    if (this.motionService !== undefined) {
+      this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
+    }
+
     // Stop all streamer logic (buffering, output, etc)
     this.streamer?.stopEverything?.();
 

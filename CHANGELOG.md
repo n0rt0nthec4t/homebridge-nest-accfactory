@@ -20,6 +20,7 @@ The `hksv` configuration option has been removed and **all cameras will use HKSV
 
 - General code cleanup and stability improvements
 - Refactored core modules to use the updated base class
+- Added humidifier support for Nest Thermostats
 - Fixed an issue affecting live view and HKSV recording on migrated Nest/Google cameras
 - Fixed an issue affecting audio talkback on some older migrated Nest/Google cameras
 - Removed multiple motion sensors per Nest/Google camera (a single motion sensor is now exposed)

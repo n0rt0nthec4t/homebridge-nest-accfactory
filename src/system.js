@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2026.03.04
+// Code version 2026.03.05
 // Mark Hulskamp
 'use strict';
 
@@ -1206,6 +1206,7 @@ export default class NestAccfactory {
         if (
           key === 'dehumidifier_state' &&
           typeof value === 'boolean' &&
+          isNaN(values?.target_humidity) === false &&
           this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasDehumidifier === true
         ) {
           // Set dehumidifier on/off on the target thermostat
@@ -1213,6 +1214,21 @@ export default class NestAccfactory {
           updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait';
           updateElement.state.value = this.#rawData[nest_google_device_uuid].value.humidity_control_settings;
           updateElement.state.value.dehumidifierTargetHumidity.enabled = value;
+          updateElement.state.value.dehumidifierTargetHumidity.value = Number(values.target_humidity);
+        }
+
+        if (
+          key === 'humidifier_state' &&
+          typeof value === 'boolean' &&
+          isNaN(values?.target_humidity) === false &&
+          this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasHumidifier === true
+        ) {
+          // Set humidifier on/off on the target thermostat
+          updateElement.traitRequest.traitLabel = 'humidity_control_settings';
+          updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait';
+          updateElement.state.value = this.#rawData[nest_google_device_uuid].value.humidity_control_settings;
+          updateElement.state.value.humidifierTargetHumidity.enabled = value;
+          updateElement.state.value.humidifierTargetHumidity.value = Number(values.target_humidity);
         }
 
         if (updateElement.traitRequest.traitLabel !== '' && updateElement.state.type_url !== '') {
@@ -1356,6 +1372,7 @@ export default class NestAccfactory {
               object_key: nest_google_device_uuid,
               op: 'MERGE',
               value: {
+                fan_state: value,
                 fan_timer_timeout: value === true ? values.fan_duration + Math.floor(Date.now() / 1000) : 0,
               },
             });
@@ -1424,11 +1441,31 @@ export default class NestAccfactory {
           if (
             key === 'dehumidifier_state' &&
             typeof value === 'boolean' &&
+            isNaN(values?.target_humidity) === false &&
             nest_google_device_uuid.startsWith('device.') === true &&
             this.#rawData?.[nest_google_device_uuid]?.value?.has_dehumidifier === true
           ) {
             // Set dehumidifier state on thermostat
-            subscribeJSONData.objects.push({ object_key: nest_google_device_uuid, op: 'MERGE', value: { dehumidifier_state: value } });
+            subscribeJSONData.objects.push({
+              object_key: nest_google_device_uuid,
+              op: 'MERGE',
+              value: { dehumidifier_state: value, target_humidity: Number(values.target_humidity) },
+            });
+          }
+
+          if (
+            key === 'humidifier_state' &&
+            typeof value === 'boolean' &&
+            isNaN(values?.target_humidity) === false &&
+            nest_google_device_uuid.startsWith('device.') === true &&
+            this.#rawData?.[nest_google_device_uuid]?.value?.has_dehumidifier === true
+          ) {
+            // Set humidifier state on thermostat
+            subscribeJSONData.objects.push({
+              object_key: nest_google_device_uuid,
+              op: 'MERGE',
+              value: { humidifier_state: value, target_humidity: Number(values.target_humidity) },
+            });
           }
 
           if (
