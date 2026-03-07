@@ -13,7 +13,7 @@ import { TIMERS } from '../consts.js';
 
 export default class NestDoorbell extends NestCamera {
   static TYPE = 'Doorbell';
-  static VERSION = '2026.03.04'; // Code version
+  static VERSION = '2026.03.06'; // Code version
 
   switchService = undefined; // HomeKit switch for enabling/disabling chime
 
@@ -41,8 +41,11 @@ export default class NestDoorbell extends NestCamera {
           return this.deviceData.indoor_chime_enabled === true;
         },
       });
+
+      // Extra setup details for output
+      this.switchService !== undefined && this.postSetupDetail('Chime switch');
     }
-    if (this.deviceData?.has_indoor_chime === false || this.deviceData?.chimeSwitch === false) {
+    if (this.deviceData?.has_indoor_chime !== true || this.deviceData?.chimeSwitch !== true) {
       // No longer required to have the switch service
       // This is to handle Homebridge cached restored accessories and if configuration options have changed
       this.switchService = this.accessory.getService(this.hap.Service.Switch);
@@ -51,9 +54,6 @@ export default class NestDoorbell extends NestCamera {
       }
       this.switchService = undefined;
     }
-
-    // Extra setup details for output
-    this.switchService !== undefined && this.postSetupDetail('Chime switch');
   }
 
   onRemove() {

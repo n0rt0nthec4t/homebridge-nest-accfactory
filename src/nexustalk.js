@@ -5,7 +5,7 @@
 //
 // Credit to https://github.com/Brandawg93/homebridge-nest-cam for the work on the Nest Camera comms code on which this is based
 //
-// Code version 2026.03.03
+// Code version 2026.03.06
 // Mark Hulskamp
 'use strict';
 
@@ -230,6 +230,10 @@ export default class NexusTalk extends Streamer {
         this.close(true); // Close existing socket
       }
     }
+  }
+
+  async onShutdown() {
+    await this.close(true); // Gracefully stop stream and close socket
   }
 
   sendTalkback(talkingBuffer) {

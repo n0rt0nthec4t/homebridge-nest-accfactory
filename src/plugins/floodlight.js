@@ -10,13 +10,13 @@ export { processRawData };
 
 export default class NestFloodlight extends NestCamera {
   static TYPE = 'FloodlightCamera';
-  static VERSION = '2026.03.03'; // Code version
+  static VERSION = '2026.03.06'; // Code version
 
   lightService = undefined; // HomeKit light
 
   // Class functions
   onAdd() {
-    if (this.deviceData.has_light === true) {
+    if (this.deviceData?.has_light === true) {
       // Add service for a light, including brightness control
       this.lightService = this.addHKService(this.hap.Service.Lightbulb, '', 1);
       this.addHKCharacteristic(this.lightService, this.hap.Characteristic.Brightness, {
@@ -45,8 +45,11 @@ export default class NestFloodlight extends NestCamera {
           return this.deviceData.light_enabled === true;
         },
       });
+
+      // Extra setup details for output
+      this.lightService !== undefined && this.postSetupDetail('Light support');
     }
-    if (this.deviceData.has_light !== true) {
+    if (this.deviceData?.has_light !== true) {
       // No longer required to have the light service
       this.lightService = this.accessory.getService(this.hap.Service.Lightbulb);
       if (this.lightService !== undefined) {
@@ -54,9 +57,6 @@ export default class NestFloodlight extends NestCamera {
       }
       this.lightService = undefined;
     }
-
-    // Extra setup details for output
-    this.lightService !== undefined && this.postSetupDetail('Light support');
   }
 
   onRemove() {

@@ -197,7 +197,7 @@ message ObservationTriggerSettingsTrait {
         AISeenSettings seenSettings = 2;
     }
 
-    SoundTriggerSettings globalTriggerSettings = 6;
+    SoundTriggerSettings globalSoundTriggerSettings = 6;
     repeated ZoneTriggerSettings zoneTriggerSettings = 8;
     AITriggerSettings globalAITriggerSettings = 9;
 }

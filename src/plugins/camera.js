@@ -41,12 +41,12 @@ const STREAMING_PROTOCOL = {
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2026.03.05'; // Code version
+  static VERSION = '2026.03.07'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
   motionService = undefined; // Single motion sensor for camera(s)
-  batteryService = undefined; // If a camera has a battery
+  batteryService = undefined; // Service for Camera/doorbell with battery
   snapshotEvent = undefined; // Event for which to get snapshot for
   ffmpeg = undefined; // FFMpeg object class
 
@@ -87,33 +87,27 @@ export default class NestCamera extends HomeKitDevice {
 
   // Class functions
   onAdd() {
-    // Cleanup for versions prior to 2026.03.04
-
-    // Remove cached enabled/disabled hksv setting
-    delete this?.accessory?.context?.hksv;
-
-    // Remove any old motion services from the accessory, Keep subtype 1, remove all others
+    // Remove any old motion services from the accessory before we add our own.
+    // This allows the HomeKit controller to properly link the motion service to the camera controller
+    // and ensures we have a clean setup of the motion service with correct characteristics.
     this.accessory.services
-      .filter((service) => service.UUID === this.hap.Service.MotionSensor.UUID && service.subtype !== 1)
+      .filter((service) => service.UUID === this.hap.Service.MotionSensor.UUID)
       .forEach((service) => this.accessory.removeService(service));
-    // End cleanup for versions prior to 2026.03.04
 
     // Setup the motion service if not already present on the accessory, and link it to the Eve app if configured to do so
     // This needs to be done before we setup the HomeKit camera controller
     this.motionService = this.addHKService(this.hap.Service.MotionSensor, '', 1, {});
-    this.motionService.removeCharacteristic(this.hap.Characteristic.Active);
     this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
 
     // Setup HomeKit camera controller
-    if (this.controller === undefined) {
-      if (this.deviceData.model.toUpperCase().includes('DOORBELL') === true) {
-        // If the device is a doorbell, we'll setup a doorbell controller instead of a standard camera controller
-        this.controller = new this.hap.DoorbellController(this.generateControllerOptions());
-      } else {
-        // If the device is not a doorbell, we'll setup as a standard camera controller
-        this.controller = new this.hap.CameraController(this.generateControllerOptions());
-      }
+    // Doorbell device, we'll setup a doorbell controller instead of a standard camera controller
+    // Otherwise we'll setup as a standard camera controller
+    if (this.deviceData.type === DEVICE_TYPE.DOORBELL) {
+      this.controller = new this.hap.DoorbellController(this.generateControllerOptions());
+    } else {
+      this.controller = new this.hap.CameraController(this.generateControllerOptions());
     }
+
     if (this.controller !== undefined) {
       // Configure the controller that's been created
       this.accessory.configureController(this.controller);
@@ -259,6 +253,10 @@ export default class NestCamera extends HomeKitDevice {
     this.deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.NEXUSTALK) === true &&
       NexusTalk !== undefined &&
       this.postSetupDetail('NexusTalk streamer', LOG_LEVELS.DEBUG);
+
+    (this.deviceData?.has_motion_detection !== true || this.deviceData?.motion_detection_enabled !== true) &&
+      this.postSetupDetail('Camera motion detection not available', LOG_LEVELS.WARN);
+
     this.postSetupDetail(
       'HomeKit Secure Video support' +
         (this.deviceData.model.includes('battery') === true && isNaN(this.deviceData?.battery_level) === false ? ' (on battery)' : ''),
@@ -370,6 +368,27 @@ export default class NestCamera extends HomeKitDevice {
           this.hap.Characteristic.Active.ACTIVE
       ) {
         await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_BUFFER);
+      }
+    }
+
+    // Handle motion detection on camera changes
+    if (
+      (deviceData?.has_motion_detection === true && this.deviceData?.has_motion_detection !== true) ||
+      (deviceData.motion_detection_enabled === true && this.deviceData.motion_detection_enabled !== true)
+    ) {
+      this?.log?.info?.('Camera motion detection has been enabled on "%s"', deviceData.description);
+    }
+
+    if (
+      (deviceData?.has_motion_detection !== true && this.deviceData?.has_motion_detection === true) ||
+      (deviceData.motion_detection_enabled !== true && this.deviceData.motion_detection_enabled === true)
+    ) {
+      this?.log?.warn?.('Camera motion detection has been disabled on "%s"', deviceData.description);
+
+      // Clear any existing motion status in HomeKit since detection is now disabled
+      if (this.motionService !== undefined) {
+        this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
+        this.history(this.motionService, { status: 0 });
       }
     }
 
@@ -1283,7 +1302,7 @@ export default class NestCamera extends HomeKitDevice {
           ? {
               delegate: this,
               options: {
-                overrideEventTriggerOptions: [this.hap.EventTriggerOption.MOTION],
+                overrideEventTriggerOptions: [this.hap.EventTriggerOption.MOTION, this.hap.EventTriggerOption.DOORBELL],
                 mediaContainerConfiguration: [
                   {
                     fragmentLength: 4000,
@@ -1362,7 +1381,12 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
             object_key,
             value.value.device_info.pairerId.resourceId,
             {
-              type: DEVICE_TYPE.CAMERA,
+              type:
+                value.value?.doorbell_indoor_chime_settings?.chimeType !== undefined
+                  ? DEVICE_TYPE.DOORBELL
+                  : typeof value.value?.floodlight_settings === 'object' && typeof value.value?.floodlight_state === 'object'
+                    ? DEVICE_TYPE.FLOODLIGHT
+                    : DEVICE_TYPE.CAMERA,
               model:
                 value.value.device_info.typeName === 'google.resource.GreenQuartzResource'
                   ? 'Doorbell (2nd gen, battery)'
@@ -1413,6 +1437,9 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               has_microphone: value.value?.microphone_settings?.enableMicrophone === true,
               has_speaker: value.value?.speaker_volume?.volume !== undefined,
               has_motion_detection: value.value?.observation_trigger_capabilities?.videoEventTypes?.motion?.value === true,
+              motion_detection_enabled: value.value?.observation_trigger_settings?.zoneTriggerSettings?.some?.(
+                (zone) => zone?.zoneSettings?.triggerTypes?.motion?.enabled?.value === true,
+              ),
               events: typeof value.value?.events === 'object' ? value.value.events : [],
               quiet_time_enabled:
                 isNaN(value.value?.quiet_time_settings?.quietTimeEnds?.seconds) === false &&
@@ -1425,7 +1452,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
                 typeof value.value?.streaming_protocol?.directHost?.value === 'string'
                   ? value.value.streaming_protocol.directHost.value
                   : '',
-              has_light: value.value?.floodlight_settings !== undefined && value.value?.floodlight_state !== undefined,
+              has_light: typeof value.value?.floodlight_settings === 'object' && typeof value.value?.floodlight_state === 'object',
               light_enabled: value.value?.floodlight_state?.currentState === 'LIGHT_STATE_ON',
               light_brightness:
                 isNaN(value.value?.floodlight_settings?.brightness) === false
@@ -1442,12 +1469,6 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
             },
             config,
           );
-          if (tempDevice.model.toUpperCase().includes('DOORBELL') === true) {
-            tempDevice.type = DEVICE_TYPE.DOORBELL;
-          }
-          if (tempDevice.model.toUpperCase().includes('FLOODLIGHT') === true) {
-            tempDevice.type = DEVICE_TYPE.FLOODLIGHT;
-          }
         }
 
         if (
@@ -1462,7 +1483,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
             object_key,
             'structure.' + value.value.structure_id,
             {
-              type: DEVICE_TYPE.CAMERA,
+              type: value.value?.capabilities.includes('indoor_chime') === true ? DEVICE_TYPE.DOORBELL : DEVICE_TYPE.CAMERA,
               serialNumber: value.value.serial_number,
               softwareVersion: value.value.software_version,
               model: value.value.model.replace(/nest\s*/gi, ''), // Use camera/doorbell model that Nest supplies
@@ -1488,6 +1509,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               has_microphone: value.value?.capabilities.includes('audio.microphone') === true,
               has_speaker: value.value?.capabilities.includes('audio.speaker') === true,
               has_motion_detection: value.value?.capabilities.includes('detectors.on_camera') === true,
+              motion_detection_enabled: value.value?.properties?.['notify.motion.enabled'] === true,
               events: typeof value.value?.events === 'object' ? value.value.events : [],
               streaming_protocols: ['PROTOCOL_NEXUSTALK'],
               streaming_host: value.value.direct_nexustalk_host,
@@ -1496,19 +1518,13 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               migrating:
                 value.value?.properties?.['cc2migration.overview_state'] !== undefined &&
                 value.value.properties['cc2migration.overview_state'] !== 'NORMAL',
-              /*   battery_level:
+              battery_level:
                 isNaN(value.value?.properties['rq_battery_battery_volt']) === false
-                  ? scaleValue(Number(value.value?.properties['rq_battery_battery_volt']), 0, 5.4, 0, 100)
-                  : 0, */
+                  ? scaleValue(Number(value.value?.properties['rq_battery_battery_volt']), 6.2, 8.4, 0, 100)
+                  : 0,
             },
             config,
           );
-          if (tempDevice.model.toUpperCase().includes('DOORBELL') === true) {
-            tempDevice.type = DEVICE_TYPE.DOORBELL;
-          }
-          if (tempDevice.model.toUpperCase().includes('FLOODLIGHT') === true) {
-            tempDevice.type = DEVICE_TYPE.FLOODLIGHT;
-          }
         }
         // eslint-disable-next-line no-unused-vars
       } catch (error) {

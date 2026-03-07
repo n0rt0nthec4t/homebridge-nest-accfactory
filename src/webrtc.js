@@ -373,6 +373,10 @@ export default class WebRTC extends Streamer {
     }
   }
 
+  async onShutdown() {
+    await this.close(); // Gracefully close peer connection and HTTP/2 session
+  }
+
   async sendTalkback(talkingBuffer) {
     if (
       Buffer.isBuffer(talkingBuffer) === false ||

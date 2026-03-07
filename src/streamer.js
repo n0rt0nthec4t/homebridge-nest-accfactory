@@ -12,13 +12,14 @@
 // streamer.close()
 // streamer.sendTalkback(talkingBuffer)
 // streamer.onUpdate(deviceData)
+// streamer.onShutdown() <- should stop all streaming and buffering and clean up resources
 // streamer.codecs() <- return codecs beeing used in
 //
 // The following defines should be overriden in your class which extends this
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2026.03.03
+// Code version 2026.03.06
 // Mark Hulskamp
 'use strict';
 
@@ -123,9 +124,10 @@ export default class Streamer {
       this.log = options.log;
     }
 
-    // Setup HomeKitDevicee message type handler back to HomeKitDevice classes
+    // Setup HomeKitDevice message type handler back to HomeKitDevice classes
     HomeKitDevice.message(uuid, Streamer.MESSAGE, this);
     HomeKitDevice.message(uuid, HomeKitDevice.UPDATE, this); // Register for 'update' message for this uuid also
+    HomeKitDevice.message(uuid, HomeKitDevice.TIMER, this); // Register for 'timer' message for this uuid also
     HomeKitDevice.message(uuid, HomeKitDevice.SHUTDOWN, this); // Register for 'shutdown' message for this uuid also
 
     // Store data we need from the device data passed it
