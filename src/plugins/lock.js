@@ -13,7 +13,7 @@ import { DATA_SOURCE, DEVICE_TYPE, PROTOBUF_RESOURCES, LOW_BATTERY_LEVEL } from 
 
 export default class NestLock extends HomeKitDevice {
   static TYPE = 'Lock';
-  static VERSION = '2026.03.03'; // Code version
+  static VERSION = '2026.03.10'; // Code version
 
   // Define lock bolt states
   static STATE = {
@@ -152,6 +152,23 @@ export default class NestLock extends HomeKitDevice {
       this.hap.Characteristic.StatusTampered,
       deviceData.tampered !== true ? this.hap.Characteristic.StatusTampered.NOT_TAMPERED : this.hap.Characteristic.StatusTampered.TAMPERED,
     );
+
+    // Log lock state changes
+    if (deviceData.bolt_state === NestLock.STATE.LOCKED && this.deviceData.bolt_state === NestLock.STATE.UNLOCKED) {
+      this?.log?.info?.('Lock locked on "%s" by %s', deviceData.description, deviceData.bolt_actor);
+    }
+
+    if (deviceData.bolt_state === NestLock.STATE.UNLOCKED && this.deviceData.bolt_state === NestLock.STATE.LOCKED) {
+      this?.log?.warn?.('Lock unlocked on "%s" by %s', deviceData.description, deviceData.bolt_actor);
+    }
+
+    if (deviceData.bolt_state === NestLock.STATE.JAMMED && this.deviceData.bolt_state !== NestLock.STATE.JAMMED) {
+      this?.log?.error?.('Lock jammed on "%s"', deviceData.description);
+    }
+
+    if (deviceData.bolt_state !== NestLock.STATE.JAMMED && this.deviceData.bolt_state === NestLock.STATE.JAMMED) {
+      this?.log?.info?.('Lock unjammed on "%s"', deviceData.description);
+    }
 
     // Log lock status to history only if changed to previous recording
     if (deviceData.bolt_state === NestLock.STATE.LOCKED || deviceData.bolt_state === NestLock.STATE.UNLOCKED) {
@@ -303,7 +320,9 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
         );
         let homeOptions = config?.homes?.find(
-          (home) => home?.google_home_uuid?.toUpperCase?.() === value?.value?.device_info?.pairerId?.resourceId?.toUpperCase?.(),
+          (home) =>
+            home?.nest_home_uuid?.toUpperCase?.() === 'structure.' + value?.value?.structure_id?.toUpperCase?.() ||
+            home?.google_home_uuid?.toUpperCase?.() === value?.value?.device_info?.pairerId?.resourceId?.toUpperCase?.(),
         );
 
         // Insert any extra options we've read in from configuration file for this device

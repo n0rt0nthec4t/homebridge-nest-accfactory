@@ -19,7 +19,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2026.03.06
+// Code version 2026.03.08
 // Mark Hulskamp
 'use strict';
 
@@ -233,7 +233,7 @@ export default class Streamer {
 
     if (type === Streamer.MESSAGE_TYPE.START_LIVE) {
       // Start live HomeKit stream
-      return await this.#startLiveStream(sessionID);
+      return await this.#startLiveStream(sessionID, message?.includeAudio === true);
     }
 
     if (type === Streamer.MESSAGE_TYPE.STOP_LIVE) {
@@ -243,7 +243,7 @@ export default class Streamer {
 
     if (type === Streamer.MESSAGE_TYPE.START_RECORD) {
       // Start recording HomeKit stream
-      return await this.#startRecording(sessionID);
+      return await this.#startRecording(sessionID, message?.includeAudio === true);
     }
 
     if (type === Streamer.MESSAGE_TYPE.STOP_RECORD) {
@@ -394,7 +394,7 @@ export default class Streamer {
     }
   }
 
-  #startLiveStream(sessionID) {
+  #startLiveStream(sessionID, includeAudio = true) {
     if (typeof sessionID !== 'string' || sessionID === '') {
       return;
     }
@@ -409,8 +409,8 @@ export default class Streamer {
     }
 
     let videoOut = new PassThrough(); // Streamer writes video here
-    let audioOut = new PassThrough(); // Streamer writes audio here
-    let talkbackIn = new PassThrough({ highWaterMark: 1024 * 16 }); // ffmpeg writes talkback here
+    let audioOut = includeAudio === true ? new PassThrough() : null; // Conditionally create audio stream
+    let talkbackIn = includeAudio === true ? new PassThrough({ highWaterMark: 1024 * 16 }) : null; // Conditionally create talkback stream
 
     // eslint-disable-next-line no-unused-vars
     videoOut?.on?.('error', (error) => {});
@@ -472,7 +472,7 @@ export default class Streamer {
     }
   }
 
-  #startRecording(sessionID) {
+  #startRecording(sessionID, includeAudio = true) {
     if (typeof sessionID !== 'string' || sessionID === '') {
       return;
     }
@@ -488,7 +488,7 @@ export default class Streamer {
 
     // Create stream outputs for ffmpeg to consume
     let videoOut = new PassThrough(); // Streamer writes video here
-    let audioOut = new PassThrough(); // Streamer writes audio here
+    let audioOut = includeAudio === true ? new PassThrough() : null; // Conditionally create audio stream
 
     // eslint-disable-next-line no-unused-vars
     videoOut?.on?.('error', (error) => {});

@@ -20,7 +20,7 @@ import {
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = 'Heatlink';
-  static VERSION = '2026.03.03'; // Code version
+  static VERSION = '2026.03.10'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
@@ -317,7 +317,10 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           );
         }
 
+        // Only process Nest API data if Google API data wasn't already processed for this device
+        // Google API provides more detailed and up-to-date information
         if (
+          Object.entries(tempDevice).length === 0 &&
           value?.source === DATA_SOURCE.NEST &&
           typeof rawData?.['track.' + value.value?.serial_number] === 'object' &&
           typeof rawData?.['link.' + value.value?.serial_number]?.value?.structure === 'string' &&

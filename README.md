@@ -165,6 +165,32 @@ By default, we look in /usr/local/bin for an ffmpeg binary, however, you can spe
 
 A pre-compiled ffmpeg binary that meets these requirements is available from the **ffmpeg-for-homebridge** project and may be used as an alternative to building ffmpeg yourself.
 
+## HomeKit Secure Video (HKSV)
+
+From version **0.4.0**, **HomeKit Secure Video (HKSV)** is always enabled for supported Nest cameras and doorbells.
+
+This plugin streams video directly to HomeKit and allows recordings to be stored in **iCloud** using Apple’s HKSV infrastructure.
+
+### Important Notes
+
+- HKSV being enabled **does not mean cameras record continuously by default**.
+- Recording behaviour is controlled **entirely within the Apple Home app**.
+- By default, cameras are typically configured as **Stream Only** until recording is enabled in HomeKit.
+
+### Motion Events and Recording
+
+Nest / Google cameras expose **general motion events** to this plugin for recording triggers.
+
+Because of this, the plugin can only trigger HKSV recordings using **general motion detection** from the Nest / Google API.
+
+HomeKit Secure Video may still analyse recorded footage using its own processing, but the plugin does **not** act on person, vehicle, animal, or package-specific trigger events from the Nest / Google API.
+
+This means recording is triggered by **general motion events only**, rather than by individual event types exposed directly by the camera API..
+
+### Camera Streaming
+
+Camera live streaming and HKSV recording require a compatible **ffmpeg** binary with the features described in the section above.
+
 ## Disclaimer
 
 This is a personal hobby project, provided "as-is," with no warranty whatsoever, express or implied, including but not limited to warranties of merchantability or fitness for a particular purpose. Building and running this project is done entirely at your own risk.

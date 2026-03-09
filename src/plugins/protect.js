@@ -13,7 +13,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = 'Protect';
-  static VERSION = '2026.03.03'; // Code version
+  static VERSION = '2026.03.10'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -29,7 +29,7 @@ export default class NestProtect extends HomeKitDevice {
       EveSmoke_alarmtest: this.deviceData.self_test_in_progress,
       EveSmoke_heatstatus: this.deviceData.heat_status,
       EveSmoke_hushedstate: this.deviceData.hushed_state,
-      Evesmoke_statusled: this.deviceData.ntp_green_led_enable,
+      EveSmoke_statusled: this.deviceData.ntp_green_led_enable,
       EveSmoke_smoketestpassed: this.deviceData.smoke_test_passed,
       EveSmoke_heattestpassed: this.deviceData.heat_test_passed,
     });
@@ -46,8 +46,9 @@ export default class NestProtect extends HomeKitDevice {
     this.batteryService.setHiddenService(true);
 
     // Setup motion service if not already present on the accessory and Nest protect is a wired version
-    if (this.deviceData?.wired_or_battery === 0) {
+    if (this.deviceData?.wired_or_battery === false) {
       this.motionService = this.addHKService(this.hap.Service.MotionSensor, '', 1);
+      this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
       this.postSetupDetail('With motion sensor');
     }
   }
@@ -61,6 +62,13 @@ export default class NestProtect extends HomeKitDevice {
     this.carbonMonoxideService = undefined;
     this.batteryService = undefined;
     this.motionService = undefined;
+  }
+
+  onShutdown() {
+    // Clear motion sensor on shutdown to prevent stale status in HomeKit after restart
+    if (this.motionService !== undefined) {
+      this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
+    }
   }
 
   onUpdate(deviceData) {
@@ -250,11 +258,60 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               ),
               online: value.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
               line_power_present: value.value?.wall_power?.status === 'POWER_SOURCE_STATUS_ACTIVE',
-              wired_or_battery: typeof value.value?.wall_power?.status === 'string' ? 0 : 1,
-              battery_level:
-                isNaN(value.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === false
-                  ? scaleValue(Number(value.value.battery_voltage_bank1.batteryValue.batteryVoltage.value), 0, 5.4, 0, 100)
-                  : 0,
+              wired_or_battery: value.value?.wall_power?.present !== true,
+              battery_level: (() => {
+                // Check for new firmware battery field first
+                if (typeof value.value?.battery?.replacementIndicator === 'string') {
+                  if (value.value.battery.replacementIndicator === 'BATTERY_REPLACEMENT_INDICATOR_NOT_AT_ALL') {
+                    return 100;
+                  }
+                  if (value.value.battery.replacementIndicator === 'BATTERY_REPLACEMENT_INDICATOR_SOON') {
+                    return 50;
+                  }
+                  if (value.value.battery.replacementIndicator === 'BATTERY_REPLACEMENT_INDICATOR_NOW') {
+                    return 20;
+                  }
+                }
+
+                let voltage = 0;
+                if (value.value?.wall_power?.present !== true) {
+                  // Battery-powered (6xAA) - use minimum of both banks if available
+                  if (
+                    isNaN(value.value?.battery_voltage_bank0?.batteryValue?.batteryVoltage?.value) === false &&
+                    isNaN(value.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === false
+                  ) {
+                    voltage = Math.min(
+                      Number(value.value?.battery_voltage_bank0?.batteryValue?.batteryVoltage?.value),
+                      Number(value.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value),
+                    );
+                  }
+
+                  if (
+                    isNaN(value.value?.battery_voltage_bank0?.batteryValue?.batteryVoltage?.value) === false &&
+                    isNaN(value.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === true
+                  ) {
+                    voltage = Number(value.value?.battery_voltage_bank0?.batteryValue?.batteryVoltage?.value);
+                  }
+
+                  if (
+                    isNaN(value.value?.battery_voltage_bank0?.batteryValue?.batteryVoltage?.value) === true &&
+                    isNaN(value.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === false
+                  ) {
+                    voltage = Number(value.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value);
+                  }
+
+                  // 6xAA battery pack
+                  return scaleValue(voltage, 6.6, 9.0, 0, 100);
+                }
+
+                // Wall-powered with backup batteries (3xAA) - use bank1
+                voltage =
+                  isNaN(value.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === false
+                    ? Number(value.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value)
+                    : 0;
+
+                return scaleValue(voltage, 3.3, 4.5, 0, 100);
+              })(),
               battery_health_state:
                 value.value?.battery_voltage_bank0?.faultInformation === undefined &&
                 value.value?.battery_voltage_bank1?.faultInformation === undefined
@@ -266,15 +323,36 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               hushed_state:
                 value.value?.safety_alarm_smoke?.silenceState === 'SILENCE_STATE_SILENCED' ||
                 value.value?.safety_alarm_co?.silenceState === 'SILENCE_STATE_SILENCED',
-              ntp_green_led: value.value?.night_time_promise_settings?.greenLedEnabled === true,
+              ntp_green_led_enable: value.value?.night_time_promise_settings?.greenLedEnabled === true,
               smoke_test_passed:
-                typeof value.value.safety_summary?.warningDevices?.failures === 'object'
-                  ? value.value.safety_summary.warningDevices.failures.includes('FAILURE_TYPE_SMOKE') === false
-                  : true,
+                value.value?.safety_summary?.warningDevices?.failures?.includes('FAILURE_TYPE_SMOKE') === false
+                  ? true
+                  : typeof value.value?.smoke !== 'object'
+                    ? undefined
+                    : value.value?.smoke?.infraredLedFault === undefined || value.value?.smoke?.blueLedFault === undefined
+                      ? true
+                      : (value.value?.smoke?.infraredLedFault?.type === 'SMOKE_FAULT_TYPE_NONE' &&
+                            value.value?.smoke?.blueLedFault?.type === 'SMOKE_FAULT_TYPE_NONE') === true
+                          ? true
+                          : false,
               heat_test_passed:
-                typeof value.value.safety_summary?.warningDevices?.failures === 'object'
-                  ? value.value.safety_summary.warningDevices.failures.includes('FAILURE_TYPE_TEMP') === false
-                  : true,
+                value.value?.safety_summary?.warningDevices?.failures?.includes('FAILURE_TYPE_TEMP') === false
+                  ? true
+                  : typeof value.value?.passive_infrared !== 'object'
+                    ? undefined
+                    : value.value?.passive_infrared?.faultInformation === undefined
+                      ? true
+                      : (value.value?.passive_infrared?.faultInformation?.type === 'PASSIVE_INFRARED_FAULT_TYPE_NONE') === true
+                          ? true
+                          : false,
+              co_test_passed:
+                typeof value.value?.carbon_monoxide !== 'object'
+                  ? undefined
+                  : value.value?.carbon_monoxide?.faultInformation === undefined
+                    ? true
+                    : (value.value?.carbon_monoxide?.faultInformation?.type === 'CO_FAULT_TYPE_NONE') === true
+                        ? true
+                        : false,
               latest_alarm_test:
                 isNaN(value.value?.self_test?.lastMstEnd?.seconds) === false ? Number(value.value.self_test.lastMstEnd.seconds) : 0,
               self_test_in_progress:
@@ -289,13 +367,18 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
                   ? value.value.safety_structure_settings.structureHushKey
                   : '',
               detected_motion:
-                value.value?.legacy_protect_device_info?.autoAway !== true || value.value?.structure_mode?.occupancy === 'ACTIVITY_ACTIVE',
+                typeof value.value?.legacy_protect_device_info === 'object'
+                  ? value.value?.legacy_protect_device_info?.autoAway !== true
+                  : false,
             },
             config,
           );
         }
 
+        // Only process Nest API data if Google API data wasn't already processed for this device
+        // Google API provides more detailed and up-to-date information (e.g., new firmware sensor diagnostics)
         if (
+          Object.entries(tempDevice).length === 0 &&
           value?.source === DATA_SOURCE.NEST &&
           rawData?.['where.' + value.value?.structure_id] !== undefined &&
           rawData?.['safety.' + value.value?.structure_id] !== undefined &&
@@ -314,9 +397,9 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
                     : value.value.serial_number.substring(0, 2) === '05'
                       ? 'Protect (1st gen)'
                       : 'Protect (unknown)';
-                return value.value.wired_or_battery === 1
+                return value.value.wired_or_battery === true
                   ? model.replace(/\bgen\)/, 'gen, battery)')
-                  : value.value.wired_or_battery === 0
+                  : value.value.wired_or_battery === false
                     ? model.replace(/\bgen\)/, 'gen, wired)')
                     : model;
               })(),
@@ -329,8 +412,10 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               ),
               online: rawData?.['widget_track.' + value.value.thread_mac_address.toUpperCase()]?.value?.online === true,
               line_power_present: value.value.line_power_present === true,
-              wired_or_battery: value.value.wired_or_battery,
-              battery_level: scaleValue(value.value.battery_level, 0, 5400, 0, 100),
+              wired_or_battery: value.value.wired_or_battery === 1,
+              // Nest Protect reports an internal battery capacity metric (0–5400)
+              // rather than actual voltage. ~5400 = fresh batteries, ~3000 ≈ low battery.
+              battery_level: scaleValue(value.value.battery_level, 3000, 5400, 0, 100),
               battery_health_state: value.value.battery_health_state,
               smoke_status: value.value.smoke_status !== 0,
               co_status: value.value.co_status !== 0,
@@ -339,6 +424,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               ntp_green_led_enable: value.value.ntp_green_led_enable === true,
               smoke_test_passed: value.value.component_smoke_test_passed === true,
               heat_test_passed: value.value.component_temp_test_passed === true,
+              co_test_passed: value.value.component_co_test_passed === true,
               latest_alarm_test: value.value.latest_manual_test_end_utc_secs,
               self_test_in_progress: rawData?.['safety.' + value.value.structure_id]?.value?.manual_self_test_in_progress === true,
               replacement_date: value.value.replace_by_date_utc_secs,

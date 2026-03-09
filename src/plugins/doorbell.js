@@ -13,7 +13,7 @@ import { TIMERS } from '../consts.js';
 
 export default class NestDoorbell extends NestCamera {
   static TYPE = 'Doorbell';
-  static VERSION = '2026.03.06'; // Code version
+  static VERSION = '2026.03.07'; // Code version
 
   switchService = undefined; // HomeKit switch for enabling/disabling chime
 
@@ -69,6 +69,11 @@ export default class NestDoorbell extends NestCamera {
     if (this.switchService !== undefined) {
       // Update status of indoor chime enable/disable switch
       this.switchService.updateCharacteristic(this.hap.Characteristic.On, deviceData.indoor_chime_enabled);
+    }
+
+    // Log indoor chime state changes
+    if (typeof deviceData?.indoor_chime_enabled === 'boolean' && deviceData.indoor_chime_enabled !== this.deviceData.indoor_chime_enabled) {
+      this?.log?.info?.('Indoor chime on "%s" turned %s', deviceData.description, deviceData.indoor_chime_enabled === true ? 'on' : 'off');
     }
 
     deviceData.events.forEach((event) => {

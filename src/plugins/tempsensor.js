@@ -13,7 +13,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestTemperatureSensor extends HomeKitDevice {
   static TYPE = 'TemperatureSensor';
-  static VERSION = '2025.11.23'; // Code version
+  static VERSION = '2026.03.10'; // Code version
 
   batteryService = undefined;
   temperatureService = undefined;
@@ -48,15 +48,13 @@ export default class NestTemperatureSensor extends HomeKitDevice {
       deviceData.online === true ? this.hap.Characteristic.StatusFault.NO_FAULT : this.hap.Characteristic.StatusFault.GENERAL_FAULT,
     );
 
-    this.temperatureService.updateCharacteristic(this.hap.Characteristic.StatusActive, deviceData.online === true);
-    if (typeof deviceData?.associated_thermostat === 'string' && deviceData.associated_thermostat !== '') {
-      // This temperature sensor is associated with a thermostat
-      // Update status if providing active temperature for the thermostats
-      this.temperatureService.updateCharacteristic(
-        this.hap.Characteristic.StatusActive,
-        deviceData.online === true && deviceData?.active_sensor === true,
-      );
-    }
+    // Status active: if linked to thermostat, must be online AND the active sensor; otherwise just online
+    this.temperatureService.updateCharacteristic(
+      this.hap.Characteristic.StatusActive,
+      typeof deviceData?.associated_thermostat === 'string' && deviceData.associated_thermostat !== ''
+        ? deviceData.online === true && deviceData?.active_sensor === true
+        : deviceData.online === true,
+    );
 
     // Update temperature
     this.temperatureService.updateCharacteristic(this.hap.Characteristic.CurrentTemperature, deviceData.current_temperature);
@@ -95,7 +93,10 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
   }
 
   // Process data for any temperature sensors we have in the raw data
-  // We do this using any thermostat data
+  // We do this using any thermostat data. Temperature sensors can come from either Google or Nest APIs,
+  // with Google API data prioritised when sensors exist on both. Some thermostats may have sensors
+  // that only exist on one API (e.g., 2 on Google + 1 on Nest), so both APIs are processed and sensors
+  // are deduplicated by serialNumber to build a complete sensor list.
   let devices = {};
   Object.entries(rawData)
     .filter(
@@ -105,6 +106,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
     )
     .forEach(([object_key, value]) => {
       try {
+        // Process Google API temperature sensors for this thermostat
         if (
           value?.source === DATA_SOURCE.GOOGLE &&
           value.value?.configuration_done?.deviceReady === true &&
@@ -134,8 +136,9 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
                     ].find((where) => where?.whereId?.resourceId === sensorData?.device_located_settings?.whereAnnotationRid?.resourceId)
                       ?.label?.literal ?? '',
                   ),
-                  // Guessing battery minimum voltage is 2v??
-                  battery_level: scaleValue(Number(sensorData.battery.assessedVoltage.value), 2.0, 3.0, 0, 100),
+                  // CR2 lithium battery discharge range used by Nest Temperature Sensors
+                  // 3.2V ≈ fresh, ~2.6V ≈ low battery warning, 2.5V treated as empty
+                  battery_level: scaleValue(Number(sensorData.battery.assessedVoltage.value), 2.5, 3.2, 0, 100),
                   current_temperature: adjustTemperature(sensorData.current_temperature.temperatureValue.temperature.value, 'C', 'C', true),
                   online:
                     isNaN(sensorData?.last_updated_beacon?.lastBeaconTime?.seconds) === false &&
@@ -153,6 +156,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
                 typeof devices[tempDevice.serialNumber] === 'undefined' &&
                 (deviceType === undefined || (typeof deviceType === 'string' && deviceType !== '' && tempDevice.type === deviceType))
               ) {
+                // Deduplicate by serialNumber: Google API data processed first takes priority
                 let deviceOptions = config?.devices?.find(
                   (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
                 );
@@ -174,6 +178,9 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           });
         }
 
+        // Process Nest API temperature sensors for this thermostat
+        // Skipped if sensor already processed from Google API (serialNumber uniqueness check below prevents duplicates)
+        // This ensures complete sensor coverage when some sensors only exist on Nest API
         if (
           value?.source === DATA_SOURCE.NEST &&
           Array.isArray(rawData?.['rcs_settings.' + value.value?.serial_number]?.value?.associated_rcs_sensors) === true
@@ -213,6 +220,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
                 typeof devices[tempDevice.serialNumber] === 'undefined' &&
                 (deviceType === undefined || (typeof deviceType === 'string' && deviceType !== '' && tempDevice.type === deviceType))
               ) {
+                // Deduplicate by serialNumber: Nest API fills gaps left by Google API (if not already processed)
                 let deviceOptions = config?.devices?.find(
                   (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
                 );

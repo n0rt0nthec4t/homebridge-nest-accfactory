@@ -10,7 +10,7 @@ export { processRawData };
 
 export default class NestFloodlight extends NestCamera {
   static TYPE = 'FloodlightCamera';
-  static VERSION = '2026.03.06'; // Code version
+  static VERSION = '2026.03.07'; // Code version
 
   lightService = undefined; // HomeKit light
 
@@ -73,6 +73,11 @@ export default class NestFloodlight extends NestCamera {
       // Update status of light, including brightness
       this.lightService.updateCharacteristic(this.hap.Characteristic.On, deviceData.light_enabled);
       this.lightService.updateCharacteristic(this.hap.Characteristic.Brightness, deviceData.light_brightness);
+
+      // Log floodlight on/off state changes
+      if (typeof deviceData?.light_enabled === 'boolean' && deviceData.light_enabled !== this.deviceData.light_enabled) {
+        this?.log?.info?.('Floodlight light on "%s" turned %s', deviceData.description, deviceData.light_enabled === true ? 'on' : 'off');
+      }
     }
   }
 }

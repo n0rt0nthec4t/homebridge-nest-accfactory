@@ -41,7 +41,7 @@ const STREAMING_PROTOCOL = {
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2026.03.07'; // Code version
+  static VERSION = '2026.03.10'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -90,9 +90,9 @@ export default class NestCamera extends HomeKitDevice {
     // Remove any old motion services from the accessory before we add our own.
     // This allows the HomeKit controller to properly link the motion service to the camera controller
     // and ensures we have a clean setup of the motion service with correct characteristics.
-    this.accessory.services
-      .filter((service) => service.UUID === this.hap.Service.MotionSensor.UUID)
-      .forEach((service) => this.accessory.removeService(service));
+    // this.accessory.services
+    //  .filter((service) => service.UUID === this.hap.Service.MotionSensor.UUID)
+    //  .forEach((service) => this.accessory.removeService(service));
 
     // Setup the motion service if not already present on the accessory, and link it to the Eve app if configured to do so
     // This needs to be done before we setup the HomeKit camera controller
@@ -373,21 +373,35 @@ export default class NestCamera extends HomeKitDevice {
 
     // Handle motion detection on camera changes
     if (
-      (deviceData?.has_motion_detection === true && this.deviceData?.has_motion_detection !== true) ||
+      (deviceData.has_motion_detection === true && this.deviceData.has_motion_detection !== true) ||
       (deviceData.motion_detection_enabled === true && this.deviceData.motion_detection_enabled !== true)
     ) {
       this?.log?.info?.('Camera motion detection has been enabled on "%s"', deviceData.description);
     }
 
     if (
-      (deviceData?.has_motion_detection !== true && this.deviceData?.has_motion_detection === true) ||
+      (deviceData.has_motion_detection !== true && this.deviceData.has_motion_detection === true) ||
       (deviceData.motion_detection_enabled !== true && this.deviceData.motion_detection_enabled === true)
     ) {
       this?.log?.warn?.('Camera motion detection has been disabled on "%s"', deviceData.description);
 
       // Clear any existing motion status in HomeKit since detection is now disabled
-      if (this.motionService !== undefined) {
+      if (this.motionService !== undefined && this.motionService.getCharacteristic(this.hap.Characteristic.MotionDetected).value === true) {
         this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
+        this.#motionCooldownActive = false;
+        this.removeTimer(TIMERS.MOTION_COOLDOWN.name);
+        this.history(this.motionService, { status: 0 });
+      }
+    }
+
+    // Handle online status changes for motion sensor
+    if (this.motionService !== undefined) {
+      this.motionService.updateCharacteristic(this.hap.Characteristic.StatusActive, deviceData.online === true);
+
+      if (deviceData.online === false && this.motionService.getCharacteristic(this.hap.Characteristic.MotionDetected).value === true) {
+        this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
+        this.#motionCooldownActive = false;
+        this.removeTimer(TIMERS.MOTION_COOLDOWN.name);
         this.history(this.motionService, { status: 0 });
       }
     }
@@ -596,9 +610,22 @@ export default class NestCamera extends HomeKitDevice {
       // Audio input (optional)
       ...(includeAudio === true
         ? this.streamer.codecs.audio === Streamer.CODEC_TYPE.PCM
-          ? ['-thread_queue_size', '512', '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', 'pipe:3']
+          ? [
+              '-thread_queue_size',
+              '1024',
+              '-f',
+              's16le',
+              '-ar',
+              '48000',
+              '-ac',
+              '2',
+              '-i',
+              'pipe:3',
+              '-af',
+              'aresample=async=1:first_pts=0',
+            ]
           : this.streamer.codecs.audio === Streamer.CODEC_TYPE.AAC
-            ? ['-thread_queue_size', '512', '-f', 'aac', '-i', 'pipe:3']
+            ? ['-thread_queue_size', '1024', '-f', 'aac', '-i', 'pipe:3', '-af', 'aresample=async=1:first_pts=0']
             : []
         : []),
 
@@ -712,7 +739,7 @@ export default class NestCamera extends HomeKitDevice {
     });
 
     ffmpegStream?.on?.('exit', (code, signal) => {
-      if (signal !== 'SIGKILL' || signal === null) {
+      if (signal !== 'SIGKILL' && (signal !== null || code !== 0)) {
         this?.log?.error?.('ffmpeg recording process for "%s" stopped unexpectedly. Exit code was "%s"', this.deviceData.description, code);
       }
 
@@ -724,11 +751,12 @@ export default class NestCamera extends HomeKitDevice {
     // Start the appropriate streamer
     let { video, audio } = await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_RECORD, {
       sessionID: sessionID,
+      includeAudio: includeAudio === true,
     });
 
     // Connect the ffmpeg process to the streamer input/output
-    video?.pipe?.(ffmpegStream?.stdin); // Streamer video → ffmpeg stdin (pipe:0)
-    audio?.pipe?.(ffmpegStream?.stdio?.[3]); // Streamer audio → ffmpeg pipe:3
+    video?.pipe?.(ffmpegStream?.stdin); // Streamer video -> ffmpeg stdin (pipe:0)
+    audio?.pipe?.(ffmpegStream?.stdio?.[3]); // Streamer audio (if present) -> ffmpeg pipe:3
 
     this?.log?.info?.('Started recording from "%s" %s', this.deviceData.description, includeAudio === false ? 'without audio' : '');
 
@@ -1088,6 +1116,28 @@ export default class NestCamera extends HomeKitDevice {
         4, // 4 pipes required
       );
 
+      ffmpegStream?.on?.('exit', async (code, signal) => {
+        if (signal !== 'SIGKILL' && (signal !== null || code !== 0)) {
+          this?.log?.error?.(
+            'ffmpeg live streaming process for "%s" stopped unexpectedly. Exit code was "%s"',
+            this.deviceData.description,
+            code,
+          );
+
+          // Stop the streamer and notify HomeKit that the stream has failed
+          try {
+            await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_LIVE, {
+              sessionID: request.sessionID,
+            });
+          } catch {
+            // Ignore errors if streamer already stopped
+          }
+          this.controller.forceStopStreamingSession(request.sessionID);
+          this.#liveSessions.get(request.sessionID)?.rtpSplitter?.close?.();
+          this.#liveSessions.delete(request.sessionID);
+        }
+      });
+
       // Two-way audio support if enabled and codecs available
       let ffmpegTalk = null;
       if (
@@ -1157,6 +1207,28 @@ export default class NestCamera extends HomeKitDevice {
           3, // 3 pipes required
         );
 
+        ffmpegTalk?.on?.('exit', async (code, signal) => {
+          if (signal !== 'SIGKILL' && (signal !== null || code !== 0)) {
+            this?.log?.error?.(
+              'ffmpeg talkback process for "%s" stopped unexpectedly. Exit code was "%s"',
+              this.deviceData.description,
+              code,
+            );
+
+            // Stop the streamer and notify HomeKit that the stream has failed
+            try {
+              await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_LIVE, {
+                sessionID: request.sessionID,
+              });
+            } catch {
+              // Ignore errors if streamer already stopped
+            }
+            this.controller.forceStopStreamingSession(request.sessionID);
+            this.#liveSessions.get(request.sessionID)?.rtpSplitter?.close?.();
+            this.#liveSessions.delete(request.sessionID);
+          }
+        });
+
         let sdp = [
           'v=0',
           'o=- 0 0 IN ' + (session.ipv6 ? 'IP6' : 'IP4') + ' ' + session.address,
@@ -1193,11 +1265,13 @@ export default class NestCamera extends HomeKitDevice {
       this?.log?.info?.('Live stream started on "%s"%s', this.deviceData.description, ffmpegTalk ? ' (two-way audio enabled)' : '');
       let { video, audio, talkback } = await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_LIVE, {
         sessionID: request.sessionID,
+        includeAudio: includeAudio === true,
       });
+
       // Connect the ffmpeg process to the streamer input/output
-      video?.pipe?.(ffmpegStream?.stdin); // Streamer video → ffmpeg stdin (pipe:0)
-      audio?.pipe?.(ffmpegStream?.stdio?.[3]); // Streamer audio → ffmpeg pipe:3
-      ffmpegTalk?.stdout?.pipe?.(talkback); // ffmpeg talkback stdout → Streamer talkback pipe:1
+      video?.pipe?.(ffmpegStream?.stdin); // Streamer video -> ffmpeg stdin (pipe:0)
+      audio?.pipe?.(ffmpegStream?.stdio?.[3]); // Streamer audio (if present) -> ffmpeg pipe:3
+      ffmpegTalk?.stdout?.pipe?.(talkback); // ffmpeg talkback stdout -> Streamer talkback pipe:1
     }
 
     if (request.type === this.hap.StreamRequestTypes.STOP && this.#liveSessions.has(request.sessionID)) {
@@ -1412,7 +1486,9 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
                                       ? 'Doorbell (1st gen, wired)'
                                       : value.value.device_info.typeName === 'google.resource.NeonQuartzResource'
                                         ? 'Cam with Floodlight (1st gen, wired)'
-                                        : 'Camera (unknown)',
+                                        : value.value.device_info.typeName === 'google.resource.GoogleNewmanResource'
+                                          ? 'Max Hub (1st gen, wired)'
+                                          : 'Camera (unknown)',
               softwareVersion: value.value.device_identity.softwareVersion,
               serialNumber: value.value.device_identity.serialNumber,
               description: String(value.value?.label?.label ?? ''),
@@ -1437,9 +1513,11 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               has_microphone: value.value?.microphone_settings?.enableMicrophone === true,
               has_speaker: value.value?.speaker_volume?.volume !== undefined,
               has_motion_detection: value.value?.observation_trigger_capabilities?.videoEventTypes?.motion?.value === true,
-              motion_detection_enabled: value.value?.observation_trigger_settings?.zoneTriggerSettings?.some?.(
-                (zone) => zone?.zoneSettings?.triggerTypes?.motion?.enabled?.value === true,
-              ),
+              motion_detection_enabled:
+                value.value?.observation_trigger_capabilities?.videoEventTypes?.motion?.value === true &&
+                value.value?.observation_trigger_settings?.zoneTriggerSettings?.some?.(
+                  (zone) => zone?.zoneSettings?.triggerTypes?.motion?.enabled?.value === true,
+                ),
               events: typeof value.value?.events === 'object' ? value.value.events : [],
               quiet_time_enabled:
                 isNaN(value.value?.quiet_time_settings?.quietTimeEnds?.seconds) === false &&
@@ -1471,7 +1549,10 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           );
         }
 
+        // Only process Nest API data if Google API data wasn't already processed for this device
+        // Google API provides more detailed and up-to-date information
         if (
+          Object.entries(tempDevice).length === 0 &&
           value?.source === DATA_SOURCE.NEST &&
           rawData?.['where.' + value.value.structure_id] !== undefined &&
           value.value?.nexus_api_http_server_url !== undefined &&
@@ -1483,7 +1564,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
             object_key,
             'structure.' + value.value.structure_id,
             {
-              type: value.value?.capabilities.includes('indoor_chime') === true ? DEVICE_TYPE.DOORBELL : DEVICE_TYPE.CAMERA,
+              type: value.value?.capabilities?.includes?.('indoor_chime') === true ? DEVICE_TYPE.DOORBELL : DEVICE_TYPE.CAMERA,
               serialNumber: value.value.serial_number,
               softwareVersion: value.value.software_version,
               model: value.value.model.replace(/nest\s*/gi, ''), // Use camera/doorbell model that Nest supplies
@@ -1495,21 +1576,23 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               nexus_api_http_server_url: value.value.nexus_api_http_server_url ?? '',
               online: value.value.streaming_state.includes('offline') === false,
               audio_enabled: value.value.audio_input_enabled === true,
-              has_indoor_chime: value.value?.capabilities.includes('indoor_chime') === true,
-              indoor_chime_enabled: value.value?.properties['doorbell.indoor_chime.enabled'] === true,
-              has_irled: value.value?.capabilities.includes('irled') === true,
-              irled_enabled: value.value?.properties['irled.state'] !== 'always_off',
-              has_statusled: value.value?.capabilities.includes('statusled') === true,
-              has_video_flip: value.value?.capabilities.includes('video.flip') === true,
-              video_flipped: value.value?.properties['video.flipped'] === true,
+              has_indoor_chime: value.value?.capabilities?.includes?.('indoor_chime') === true,
+              indoor_chime_enabled: value.value?.properties?.['doorbell.indoor_chime.enabled'] === true,
+              has_irled: value.value?.capabilities?.includes?.('irled') === true,
+              irled_enabled: value.value?.properties?.['irled.state'] !== 'always_off',
+              has_statusled: value.value?.capabilities?.includes?.('statusled') === true,
+              has_video_flip: value.value?.capabilities?.includes?.('video.flip') === true,
+              video_flipped: value.value?.properties?.['video.flipped'] === true,
               statusled_brightness:
                 isNaN(value.value?.properties?.['statusled.brightness']) === false
                   ? Number(value.value.properties['statusled.brightness'])
                   : 0,
-              has_microphone: value.value?.capabilities.includes('audio.microphone') === true,
-              has_speaker: value.value?.capabilities.includes('audio.speaker') === true,
-              has_motion_detection: value.value?.capabilities.includes('detectors.on_camera') === true,
-              motion_detection_enabled: value.value?.properties?.['notify.motion.enabled'] === true,
+              has_microphone: value.value?.capabilities?.includes?.('audio.microphone') === true,
+              has_speaker: value.value?.capabilities?.includes?.('audio.speaker') === true,
+              has_motion_detection: value.value?.capabilities?.includes?.('detectors.on_camera') === true,
+              motion_detection_enabled:
+                value.value?.capabilities?.includes?.('detectors.on_camera') === true &&
+                value.value?.properties?.['notify.motion.enabled'] === true,
               events: typeof value.value?.events === 'object' ? value.value.events : [],
               streaming_protocols: ['PROTOCOL_NEXUSTALK'],
               streaming_host: value.value.direct_nexustalk_host,
@@ -1517,9 +1600,9 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               camera_type: value.value.camera_type,
               migrating:
                 value.value?.properties?.['cc2migration.overview_state'] !== undefined &&
-                value.value.properties['cc2migration.overview_state'] !== 'NORMAL',
+                value.value?.properties?.['cc2migration.overview_state'] !== 'NORMAL',
               battery_level:
-                isNaN(value.value?.properties['rq_battery_battery_volt']) === false
+                isNaN(value.value?.properties?.['rq_battery_battery_volt']) === false
                   ? scaleValue(Number(value.value?.properties['rq_battery_battery_volt']), 6.2, 8.4, 0, 100)
                   : 0,
             },

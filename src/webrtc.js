@@ -4,7 +4,7 @@
 // Handles connection and data from Google WebRTC systems
 // Currently a "work in progress"
 //
-// Code version 2026.03.04
+// Code version 2026.03.08
 // Mark Hulskamp
 'use strict';
 
@@ -53,7 +53,7 @@ export default class WebRTC extends Streamer {
   #protobufFoyer = undefined; // Protobuf for Google Home Foyer
   #googleHomeFoyer = undefined; // HTTP/2 connection to Google Home Foyer APIs
   #googleHomeFoyerAPIHost = 'https://googlehomefoyer-pa.googleapis.com'; // Default API endpoint for Google Home Foyer
-  #id = undefined; // Session ID
+  #streamId = undefined; // Stream ID
   #googleHomeDeviceUUID = undefined; // Normal Nest/Google protobuf device ID translated to a Google Foyer device ID
   #peerConnection = undefined;
   #videoTransceiver = undefined;
@@ -98,7 +98,7 @@ export default class WebRTC extends Streamer {
     clearTimeout(this.#stalledTimer);
     this.#extendTimer = undefined;
     this.#stalledTimer = undefined;
-    this.#id = undefined;
+    this.#streamId = undefined;
 
     if (this.online === true && this.videoEnabled === true) {
       if (this.#googleHomeDeviceUUID === undefined) {
@@ -233,14 +233,18 @@ export default class WebRTC extends Streamer {
               });
             });
 
-            this.#id = homeFoyerResponse.data[0].streamId;
+            this.#streamId = homeFoyerResponse.data[0].streamId;
 
             await this.#peerConnection?.setRemoteDescription?.({
               type: 'answer',
               sdp: homeFoyerResponse.data[0].sdp,
             });
 
-            this?.log?.debug?.('Playback started from WebRTC for uuid "%s" with session ID "%s"', this.nest_google_device_uuid, this.#id);
+            this?.log?.debug?.(
+              'Playback started from WebRTC for uuid "%s" with stream ID "%s"',
+              this.nest_google_device_uuid,
+              this.#streamId,
+            );
             this.connected = true;
 
             // Monitor connection status. If closed and there are still output streams, re-connect
@@ -260,13 +264,13 @@ export default class WebRTC extends Streamer {
               if (
                 this.#googleHomeFoyer !== undefined &&
                 this.connected === true &&
-                this.#id !== undefined &&
+                this.#streamId !== undefined &&
                 this.#googleHomeDeviceUUID !== undefined
               ) {
                 let homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'JoinStream', {
                   command: 'extend',
                   deviceId: this.nest_google_device_uuid,
-                  streamId: this.#id,
+                  streamId: this.#streamId,
                 });
 
                 if (homeFoyerResponse?.data?.[0]?.streamExtensionStatus !== 'STATUS_STREAM_EXTENDED') {
@@ -283,14 +287,14 @@ export default class WebRTC extends Streamer {
   }
 
   async close() {
-    if (this.#id !== undefined) {
+    if (this.#streamId !== undefined) {
       if (this.audio?.talking !== undefined) {
         // If we're starting or started talk, stop it
         await this.#googleHomeFoyerCommand('CameraService', 'SendTalkback', {
           googleDeviceId: {
             value: this.#googleHomeDeviceUUID,
           },
-          streamId: this.#id,
+          streamId: this.#streamId,
           command: 'COMMAND_STOP',
         });
       }
@@ -299,7 +303,7 @@ export default class WebRTC extends Streamer {
       await this.#googleHomeFoyerCommand('CameraService', 'JoinStream', {
         command: 'end',
         deviceId: this.nest_google_device_uuid,
-        streamId: this.#id,
+        streamId: this.#streamId,
         endStreamReason: 'REASON_USER_EXITED_SESSION',
       });
     }
@@ -315,7 +319,7 @@ export default class WebRTC extends Streamer {
     this.#extendTimer = undefined;
     this.#stalledTimer = undefined;
     this.#pingTimer = undefined;
-    this.#id = undefined;
+    this.#streamId = undefined;
     this.#googleHomeFoyer = undefined;
     this.#peerConnection = undefined;
     this.#videoTransceiver = undefined;
@@ -381,7 +385,7 @@ export default class WebRTC extends Streamer {
     if (
       Buffer.isBuffer(talkingBuffer) === false ||
       this.#googleHomeDeviceUUID === undefined ||
-      this.#id === undefined ||
+      this.#streamId === undefined ||
       typeof this.#audioTransceiver?.sender?.sendRtp !== 'function'
     ) {
       return;
@@ -394,7 +398,7 @@ export default class WebRTC extends Streamer {
           googleDeviceId: {
             value: this.#googleHomeDeviceUUID,
           },
-          streamId: this.#id,
+          streamId: this.#streamId,
           command: 'COMMAND_START',
         });
 
@@ -428,7 +432,7 @@ export default class WebRTC extends Streamer {
         googleDeviceId: {
           value: this.#googleHomeDeviceUUID,
         },
-        streamId: this.#id,
+        streamId: this.#streamId,
         command: 'COMMAND_STOP',
       });
       if (homeFoyerResponse?.status !== 0) {

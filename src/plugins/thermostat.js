@@ -28,7 +28,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2026.03.05'; // Code version
+  static VERSION = '2026.03.10'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -327,7 +327,7 @@ export default class NestThermostat extends HomeKitDevice {
     if (this.thermostatService.testCharacteristic(this.hap.Characteristic.FilterChangeIndication) === true) {
       this.thermostatService.updateCharacteristic(
         this.hap.Characteristic.FilterChangeIndication,
-        deviceData.has_air_filter && deviceData.filter_replacement_needed === true
+        deviceData.has_air_filter === true && deviceData.filter_replacement_needed === true
           ? this.hap.Characteristic.FilterChangeIndication.CHANGE_FILTER
           : this.hap.Characteristic.FilterChangeIndication.FILTER_OK,
       );
@@ -1073,16 +1073,24 @@ export default class NestThermostat extends HomeKitDevice {
   }
 
   setChildlock(pin, value) {
-    // TODO - pincode setting when turning on.
-    // On REST API, writes to device.xxxxxxxx.temperature_lock_pin_hash. How is the hash calculated???
-    // Do we set temperature range limits when child lock on??
-
     this.thermostatService.updateCharacteristic(this.hap.Characteristic.LockPhysicalControls, value); // Update HomeKit with value
     if (value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_ENABLED) {
-      // Set pin hash????
+      // TODO - Implement PIN setting when API supports it
+      // Would need: temperature_lock_pin_hash = SHA-1(pin + serialNumber) base64
+      // Example code to calculate PIN hash:
+      // const crypto = require('crypto');
+      // if (typeof pin === 'string' && pin.length > 0 && pin.length <= 4 && typeof this.deviceData?.serialnumber === 'string') {
+      //   const combined = pin + this.deviceData.serialnumber;
+      //   const pinHash = crypto.createHash('sha1').update(combined).digest('base64');
+      //   await this.set({
+      //     uuid: this.deviceData.nest_google_device_uuid,
+      //     temperature_lock: true,
+      //     temperature_lock_pin_hash: pinHash
+      //   });
+      // }
     }
     if (value === this.hap.Characteristic.LockPhysicalControls.CONTROL_LOCK_DISABLED) {
-      // Clear pin hash????
+      // Clear PIN when disabling child lock
     }
     this.set({
       uuid: this.deviceData.nest_google_device_uuid,
@@ -1431,17 +1439,17 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           if (value.value.device_info.typeName === 'google.resource.GoogleZirconium1Resource') {
             // Lower battery voltages for the "2020" mirror thermostat. Levels are a "guestimate" :-)
             RESTTypeData.battery_level = scaleValue(
-              parseFloat(value.value.battery_voltage.batteryValue.batteryVoltage.value),
+              parseFloat(value.value?.battery_voltage?.batteryValue?.batteryVoltage?.value),
               2.9,
-              3.15,
+              3.2,
               0,
               100,
             );
           } else {
             RESTTypeData.battery_level = scaleValue(
-              parseFloat(value.value.battery_voltage.batteryValue.batteryVoltage.value),
+              parseFloat(value.value?.battery_voltage?.batteryValue?.batteryVoltage?.value),
               3.6,
-              3.9,
+              4.0,
               0,
               100,
             );
@@ -1667,7 +1675,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           RESTTypeData.removed_from_base = value.value.nlclient_state.toUpperCase() === 'BPD';
           RESTTypeData.backplate_temperature = value.value.backplate_temperature;
           RESTTypeData.current_temperature = value.value.backplate_temperature;
-          RESTTypeData.battery_level = scaleValue(value.value.battery_level, 3.6, 3.9, 0, 100);
+          RESTTypeData.battery_level = scaleValue(value.value.battery_level, 3.6, 4.0, 0, 100);
           RESTTypeData.online = rawData?.['track.' + value.value.serial_number]?.value?.online === true;
           RESTTypeData.leaf = value.value.leaf === true;
           RESTTypeData.has_humidifier = value.value.has_humidifier === true;
@@ -1728,7 +1736,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           if (value.value.eco.mode.toUpperCase() === 'AUTO-ECO' || value.value.eco.mode.toUpperCase() === 'MANUAL-ECO') {
             RESTTypeData.target_temperature_low = value.value.away_temperature_low;
             RESTTypeData.target_temperature_high = value.value.away_temperature_high;
-            if (value.value.away_temperature_high_enabled === true && value.value.away_temperature_low_enabled === false) {
+            if (value.value.away_temperature_low_enabled === true && value.value.away_temperature_high_enabled === false) {
               RESTTypeData.target_temperature = value.value.away_temperature_low;
               RESTTypeData.hvac_mode = 'ecoheat';
             }

@@ -7,24 +7,32 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 - The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
 - Some newer Nest/Google cameras may use different video sizes or shapes, causing the video to look slightly cropped or not fill the screen correctly.
 - HomeKit Secure Video (HKSV) can be enabled on battery powered cameras, which will significantly reduce battery life
+- Motion sensing on wired Nest Protect devices may report incorrect states due to recent firmware changes
 
 ## v0.4.0 (xxxx/xx/xx)
 
-### ⚠️ Breaking Change
+### ⚠️ Breaking Changes
 
-From version **0.4.0**, **HomeKit Secure Video (HKSV) is now mandatory**.
+From version **0.4.0**, **HomeKit Secure Video (HKSV) support is now mandatory for all cameras**.
 
-The `hksv` configuration option has been removed and **all cameras will use HKSV by default**.
+- The `hksv` configuration option has been removed
+- All cameras now expose HKSV capability by default
+
+This does **not** mean cameras will automatically record video.
+
+Recording behaviour is controlled by HomeKit settings in the Apple Home app
 
 ### Changes
 
 - General code cleanup and stability improvements
 - Refactored core modules to use the updated base class
 - Added humidifier support for Nest Thermostats
-- Fixed an issue affecting live view and HKSV recording on migrated Nest/Google cameras
-- Fixed an issue affecting audio talkback on some older migrated Nest/Google cameras
-- Removed multiple motion sensors per Nest/Google camera (a single motion sensor is now exposed)
-- Updated `README.md` to clarify that HKSV recording relies on general motion events and does not support individual recording filters
+- Fixed an issue affecting live view and HKSV recording on migrated Nest / Google cameras
+- Fixed an issue affecting audio talkback on some older migrated Nest / Google cameras
+- Simplified camera motion handling — only a single motion sensor is now exposed per camera
+- Updated support for Nest Hub Max (1st gen, wired)
+- Updated device discovery to prioritise Google API devices over Nest API devices
+- Updated `README.md` to clarify that HKSV recording is triggered by general motion events and does not support individual recording filters
 
 ## v0.3.9 (2026/02/18)
 
@@ -48,9 +56,9 @@ The `hksv` configuration option has been removed and **all cameras will use HKSV
 This marks the final release of 2025. A huge thank you to everyone who’s used the plugin, reported issues, tested changes, and contributed feedback throughout the year. Your support genuinely helps shape the project.
 
 - Fixed parsing of time values in the configuration file [@currybeast](https://github.com/currybeast)
-- Added support for Nest Cam Indoor (3rd gen, wired)
-- Added support for Nest Doorbell (2nd gen, wired)
-- Added support for Nest Thermostat (3rd gen v2)
+- Added support for **Nest Cam Indoor (3rd gen, wired)**
+- Added support for **Nest Doorbell (2nd gen, wired)**
+- Added support for **Nest Thermostat (3rd gen v2)**
 - Updated `README.md` with instructions to obtain Google issueToken and cookie using Safari (the only supported method)
 - Refined repetitive connection status logging to only appear in debug mode [@MorelloCherry](https://github.com/MorelloCherry)
 
