@@ -191,13 +191,26 @@ This means recording is triggered by **general motion events only**, rather than
 
 Camera live streaming and HKSV recording require a compatible **ffmpeg** binary with the features described in the section above.
 
+## Support Policy
+
+This plugin is developed and tested specifically for **Homebridge**.
+
+Supported environments include Homebridge installations running on common platforms such as Linux or macOS, as well as official container or image distributions such as **docker-homebridge**, **homebridge-vm-image**, and **homebridge-raspbian-image**.
+
+Platforms that bundle, modify, or wrap Homebridge — such as **HOOBS**, **Home Assistant**, or similar derivatives are **not officially supported** and may behave differently. Issues reported from these environments may be closed without investigation.
+
+If you encounter a problem, please [raise an issue](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issues) on the project's **GitHub repository**.
+
+When reporting an issue, providing relevant diagnostic information (logs, configuration snippets, device details, etc.) and being available to assist with follow-up testing is greatly appreciated. Issues reported without sufficient detail may be difficult to investigate.
+
+Feature requests and enhancements are welcome, but please keep in mind that this is a personal open-source project maintained in spare time.
+
 ## Disclaimer
 
-This is a personal hobby project, provided "as-is," with no warranty whatsoever, express or implied, including but not limited to warranties of merchantability or fitness for a particular purpose. Building and running this project is done entirely at your own risk.
+This is a personal hobby project provided **"as-is"**, with no warranty whatsoever, express or implied, including but not limited to warranties of merchantability or fitness for a particular purpose.
 
-This plugin is only supported when used with **official Homebridge installations**.  
-Other platforms or forks such as **HOOBS**, **Home Assistant**, or similar derivatives are **not officially supported** and may not function as intended.
+Building and running this project is done entirely at your own risk.
 
-Please note that I am not affiliated with any companies, including but not limited to Google, Apple, or any other entities. The author of this project shall not be held liable for any damages or issues arising from its use.  
+I am not affiliated with any companies such as Google, Apple, or other related entities. The author of this project shall not be held liable for any damages or issues arising from its use.
 
-If you encounter a problem, please [raise an issue](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issues) on the project's **GitHub repository**. Providing diagnostic details and being available to assist with followup testing is appreciated and helps ensure the issue can be resolved effectively. 
+If you find this project useful, sponsorship to support ongoing development is always appreciated.
