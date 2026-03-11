@@ -1,13 +1,19 @@
 // Thermostat external control plugin for homebridge-nest-accfactory
 // Controls a daikin wifi connected a/c system via thermostat with no physical connection to it
 //
-// Code version 2025.06.15
+// Code version 2026.03.11
 // Mark Hulskamp
 'use strict';
 
 // Define nodejs module requirements
-import { setTimeout } from 'node:timers';
 import { URL } from 'node:url';
+import { setTimeout } from 'node:timers';
+
+// Define external library requirements
+import { Agent } from 'undici';
+
+// Define constants
+const defaultFetchAgent = new Agent(); // shared across all requests
 
 // Define constants
 const POWER = {
@@ -50,10 +56,10 @@ const LOG_LEVELS = {
 
 let systemURL = undefined;
 let log = undefined;
+let logPrefix = '[External]';
 let lastMode = MODE.AUTO;
-let lastTemperature = 0;
-// eslint-disable-next-line no-unused-vars
-let lastHumidity = 0;
+let lastTemperature = undefined;
+let lastHumidity = undefined;
 let lastFanRate = FAN_RATE.AUTO;
 let lastFanMode = FAN_DIRECTION.SWING;
 
@@ -85,11 +91,11 @@ async function cool(temperature) {
         throw new Error('Daikin A/C system get failed with error');
       }
 
-      log?.info?.('[External Daikin] Cool mode on "%s" with target temperature of "%s °C"', systemURL, temperature);
+      log?.debug?.('%s Cool mode on "%s" with target temperature of "%s °C"', logPrefix, systemURL, temperature);
     })
     // eslint-disable-next-line no-unused-vars
     .catch((error) => {
-      log?.error?.('[External Daikin] Failed to set cool mode on "%s"', systemURL);
+      log?.error?.('%s Failed to set cool mode on "%s"', logPrefix, systemURL);
     });
   lastMode = MODE.COOL;
   lastTemperature = temperature;
@@ -124,11 +130,11 @@ async function heat(temperature) {
         throw new Error('Daikin A/C system get failed with error');
       }
 
-      log?.info?.('[External Daikin] Heat mode on "%s" with target temperature of "%s °C"', systemURL, temperature);
+      log?.debug?.('%s Heat mode on "%s" with target temperature of "%s °C"', logPrefix, systemURL, temperature);
     })
     // eslint-disable-next-line no-unused-vars
     .catch((error) => {
-      log?.error?.('[External Daikin] Failed to set heat mode on "%s"', systemURL);
+      log?.error?.('%s Failed to set heat mode on "%s"', logPrefix, systemURL);
     });
   lastMode = MODE.HEAT;
   lastTemperature = temperature;
@@ -163,11 +169,11 @@ async function dehumidifier(humidity) {
         throw new Error('Daikin A/C system get failed with error');
       }
 
-      log?.info?.('[External Daikin] Dehumidifier mode on "%s" with target humidity of "%s"', systemURL, humidity);
+      log?.debug?.('%s Dehumidifier mode on "%s" with target humidity of "%s"', logPrefix, systemURL, humidity);
     })
     // eslint-disable-next-line no-unused-vars
     .catch((error) => {
-      log?.error && log.error('[External Daikin] Failed to set dehumidifier mode on "%s"', systemURL);
+      log?.error?.('%s Failed to set dehumidifier mode on "%s"', logPrefix, systemURL);
     });
   lastMode = MODE.DEHUMIDIFIER;
   lastHumidity = humidity;
@@ -203,20 +209,20 @@ async function fan(speed) {
         throw new Error('Daikin A/C system get failed with error');
       }
 
-      log?.info?.('[External Daikin] Fan mode on "%s" with speed of "%s"', systemURL, rate);
+      log?.debug?.('%s Fan mode on "%s" with speed of "%s"', logPrefix, systemURL, rate);
     })
     // eslint-disable-next-line no-unused-vars
     .catch((error) => {
-      log?.error?.('[External Daikin] Failed to set fan mode on "%s"', systemURL);
+      log?.error?.('%s Failed to set fan mode on "%s"', logPrefix, systemURL);
     });
   lastMode = MODE.FAN;
   lastFanMode = FAN_DIRECTION.SWING;
-  lastFanRate = FAN_RATE.AUTO; // Auto fan mode
+  lastFanRate = rate;
 }
 
 async function off() {
-  // Power off
-  if (systemURL === undefined) {
+  // Power off with all mandatory parameters - if state is invalid, don't send
+  if (systemURL === undefined || lastTemperature === undefined) {
     return;
   }
 
@@ -229,7 +235,9 @@ async function off() {
       lastMode +
       '&stemp=' +
       lastTemperature +
-      '&shum=0&f_rate=' +
+      '&shum=' +
+      (lastHumidity ?? 0) +
+      '&f_rate=' +
       lastFanRate +
       '&f_dir=' +
       lastFanMode,
@@ -241,13 +249,12 @@ async function off() {
         throw new Error('Daikin A/C system get failed with error');
       }
 
-      log?.info?.('[External Daikin] Turned off "%s"', systemURL);
+      log?.debug?.('%s Turned off "%s"', logPrefix, systemURL);
     })
     // eslint-disable-next-line no-unused-vars
     .catch((error) => {
-      log?.error?.('[External Daikin] Failed to turn off "%s"', systemURL);
+      log?.error?.('%s Failed to turn off "%s"', logPrefix, systemURL);
     });
-  lastMode = MODE.OFF;
 }
 
 function setSystemURL(daikinSystemURL) {
@@ -281,66 +288,120 @@ async function fetchWrapper(method, url, options, data) {
     options.signal = AbortSignal.timeout(Number(options.timeout));
   }
 
-  if (isNaN(options.retry) === true || options.retry < 1) {
+  if (isNaN(options.retry) || options.retry < 1) {
     options.retry = 1;
   }
 
-  if (isNaN(options._retryCount) === true) {
+  if (isNaN(options._retryCount)) {
     options._retryCount = 0;
   }
 
   options.method = method;
 
   if (method === 'post' && data !== undefined) {
-    options.body = data;
+    if (typeof data === 'object' && data !== null && data.constructor === Object) {
+      options.body = JSON.stringify(data);
+
+      // Set Content-Type header only if not already set
+      options.headers = options.headers || {};
+      if (options.headers['Content-Type'] === undefined) {
+        options.headers['Content-Type'] = 'application/json';
+      }
+    } else {
+      options.body = data;
+    }
   }
 
-  let response;
   try {
     // eslint-disable-next-line no-undef
-    response = await fetch(url, options);
+    let response = await fetch(url, {
+      ...options,
+      dispatcher: options?.dispatcher ?? defaultFetchAgent, // Always use a secure default agent unless explicitly overridden
+    });
+
+    if (response?.ok === false) {
+      if (options.retry > 1) {
+        options.retry--;
+        options._retryCount++;
+
+        let delay = 500 * Math.pow(2, options._retryCount - 1);
+        await new Promise((resolve) => {
+          setTimeout(resolve, delay);
+        });
+
+        return fetchWrapper(method, url, options, data);
+      }
+
+      // Optionally get response body
+      let body;
+      try {
+        body = await response.text();
+        // eslint-disable-next-line no-unused-vars
+      } catch (error) {
+        body = '';
+      }
+      throw Object.assign(
+        new Error('HTTP ' + response.status + ' on ' + method.toUpperCase() + ' ' + url + ': ' + (response.statusText || 'Unknown error')),
+        { code: response.status, status: response.status, body },
+      );
+    }
+
+    return response;
   } catch (error) {
-    if (options.retry > 1) {
+    let original = error?.cause ?? error;
+
+    // Detect invalid URL and rethrow immediately
+    if (original?.code === 'ERR_INVALID_URL') {
+      throw Object.assign(new Error('Invalid URL: ' + url), { code: 'ERR_INVALID_URL', cause: original });
+    }
+
+    // Retry only on retry-eligible errors
+    if (
+      options.retry > 1 &&
+      (original?.code === 'UND_ERR_HEADERS_TIMEOUT' || original?.name === 'AbortError' || original?.name === 'TypeError')
+    ) {
       options.retry--;
       options._retryCount++;
 
-      const delay = 500 * 2 ** (options._retryCount - 1);
+      let delay = 500 * Math.pow(2, options._retryCount - 1);
       await new Promise((resolve) => setTimeout(resolve, delay));
 
       return fetchWrapper(method, url, options, data);
     }
 
-    error.message = `Fetch failed for ${method.toUpperCase()} ${url} after ${options._retryCount + 1} attempt(s): ${error.message}`;
-    throw error;
+    // Final error wrap
+    throw Object.assign(
+      new Error(
+        method.toUpperCase() +
+          ' ' +
+          url +
+          ' failed after ' +
+          (options._retryCount + 1) +
+          ' attempt' +
+          (options._retryCount + 1 > 1 ? 's' : '') +
+          ': ' +
+          (original?.message || String(original)),
+      ),
+      { code: original?.code, cause: original },
+    );
   }
-
-  if (response?.ok === false) {
-    if (options.retry > 1) {
-      options.retry--;
-      options._retryCount++;
-
-      let delay = 500 * 2 ** (options._retryCount - 1);
-      await new Promise((resolve) => setTimeout(resolve, delay));
-
-      return fetchWrapper(method, url, options, data);
-    }
-
-    let error = new Error(`HTTP ${response.status} on ${method.toUpperCase()} ${url}: ${response.statusText || 'Unknown error'}`);
-    error.code = response.status;
-    throw error;
-  }
-
-  return response;
 }
 
 // Export functions for use in our dynamically loaded library
 //
-// let test = await import('./daikinsystem.js', ['cool', 'off]);
+// let test = await import('./daikinsystem.mjs', ['cool', 'off']);
 // returned = test.default(loggerFunctions, 'http://x.x.x.x');
+// or
+// returned = test.default(loggerFunctions, 'http://x.x.x.x', 'Logging Prefix');
 export default (logger, options) => {
   // Validate the passed in logging object
   if (Object.values(LOG_LEVELS).every((fn) => typeof logger?.[fn] === 'function')) {
     log = logger;
+  }
+
+  // Set log prefix from device name if provided
+  if (typeof options[1] === 'string' && options[1] !== '') {
+    logPrefix = '[' + options[1] + ']';
   }
 
   // Validate the url

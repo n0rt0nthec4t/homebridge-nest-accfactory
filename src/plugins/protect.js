@@ -13,7 +13,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = 'Protect';
-  static VERSION = '2026.03.10'; // Code version
+  static VERSION = '2026.03.11'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -85,7 +85,7 @@ export default class NestProtect extends HomeKitDevice {
     this.batteryService.updateCharacteristic(this.hap.Characteristic.BatteryLevel, deviceData.battery_level);
     this.batteryService.updateCharacteristic(
       this.hap.Characteristic.StatusLowBattery,
-      deviceData.battery_level > LOW_BATTERY_LEVEL && deviceData.battery_health_state === 0
+      deviceData.battery_level > LOW_BATTERY_LEVEL
         ? this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
         : this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW,
     );
@@ -312,11 +312,6 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
 
                 return scaleValue(voltage, 3.3, 4.5, 0, 100);
               })(),
-              battery_health_state:
-                value.value?.battery_voltage_bank0?.faultInformation === undefined &&
-                value.value?.battery_voltage_bank1?.faultInformation === undefined
-                  ? 0
-                  : 1,
               smoke_status: value.value?.safety_alarm_smoke?.alarmState === 'ALARM_STATE_ALARM',
               co_status: value.value?.safety_alarm_co?.alarmState === 'ALARM_STATE_ALARM',
               heat_status: false, // TODO <- need to find in protobuf
@@ -416,7 +411,6 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               // Nest Protect reports an internal battery capacity metric (0–5400)
               // rather than actual voltage. ~5400 = fresh batteries, ~3000 ≈ low battery.
               battery_level: scaleValue(value.value.battery_level, 3000, 5400, 0, 100),
-              battery_health_state: value.value.battery_health_state,
               smoke_status: value.value.smoke_status !== 0,
               co_status: value.value.co_status !== 0,
               heat_status: value.value.heat_status !== 0,

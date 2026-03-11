@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2026.03.09
+// Code version 2026.03.11
 // Mark Hulskamp
 'use strict';
 
@@ -841,15 +841,30 @@ export default class NestAccfactory {
                 this.#rawData[deviceData.nest_google_device_uuid].source !== this.#trackedDevices[deviceData.serialNumber].source
               ) {
                 // Data source for this device has been updated
-                this?.log?.debug?.(
-                  'Using %s API as data source for "%s" from connection "%s"',
-                  this.#rawData[deviceData.nest_google_device_uuid].source,
-                  deviceData.description,
-                  this.#connections[this.#rawData[deviceData.nest_google_device_uuid].connection].name,
-                );
+                // Only allow switch to Google API (upgrade), not from Google to Nest (downgrade)
+                // Exception: Camera, doorbell, and floodlight devices can switch back to Nest
+                let isCameraType =
+                  deviceModule.class.TYPE === DEVICE_TYPE.CAMERA ||
+                  deviceModule.class.TYPE === DEVICE_TYPE.DOORBELL ||
+                  deviceModule.class.TYPE === DEVICE_TYPE.FLOODLIGHT;
 
-                this.#trackedDevices[deviceData.serialNumber].source = this.#rawData[deviceData.nest_google_device_uuid].source;
-                this.#trackedDevices[deviceData.serialNumber].nest_google_device_uuid = deviceData.nest_google_device_uuid;
+                let allowSourceSwitch =
+                  this.#trackedDevices[deviceData.serialNumber].source === undefined ||
+                  (this.#trackedDevices[deviceData.serialNumber].source === DATA_SOURCE.NEST &&
+                    this.#rawData[deviceData.nest_google_device_uuid].source === DATA_SOURCE.GOOGLE) ||
+                  (isCameraType === true && this.#trackedDevices[deviceData.serialNumber].source === DATA_SOURCE.GOOGLE);
+
+                if (allowSourceSwitch === true) {
+                  this?.log?.debug?.(
+                    'Using %s API as data source for "%s" from connection "%s"',
+                    this.#rawData[deviceData.nest_google_device_uuid].source,
+                    deviceData.description,
+                    this.#connections[this.#rawData[deviceData.nest_google_device_uuid].connection].name,
+                  );
+
+                  this.#trackedDevices[deviceData.serialNumber].source = this.#rawData[deviceData.nest_google_device_uuid].source;
+                  this.#trackedDevices[deviceData.serialNumber].nest_google_device_uuid = deviceData.nest_google_device_uuid;
+                }
               }
 
               // For any camera type devices, inject camera API call access credentials for that device

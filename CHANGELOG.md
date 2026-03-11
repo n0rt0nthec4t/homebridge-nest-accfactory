@@ -26,7 +26,7 @@ Recording behaviour is controlled by HomeKit settings in the Apple Home app
 
 - General code cleanup and stability improvements
 - Refactored core modules to use the updated base class
-- Added humidifier support for Nest Thermostats
+- Added humidifier support for Nest Thermostats (experimental)
 - Fixed an issue affecting live view and HKSV recording on migrated Nest / Google cameras
 - Fixed an issue affecting audio talkback on some older migrated Nest / Google cameras
 - Simplified camera motion handling — only a single motion sensor is now exposed per camera

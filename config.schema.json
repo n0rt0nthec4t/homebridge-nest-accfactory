@@ -153,19 +153,7 @@
                         "exclude": {
                             "type": "boolean"
                         },
-                        "externalCool": {
-                            "type": "string"
-                        },
-                        "externalDehumidifier": {
-                            "type": "string"
-                        },
-                        "externalFan": {
-                            "type": "string"
-                        },
-                        "externalHeat": {
-                            "type": "string"
-                        },
-                        "externalHumidifier": {
+                        "external": {
                             "type": "string"
                         },
                         "fanDuration": {

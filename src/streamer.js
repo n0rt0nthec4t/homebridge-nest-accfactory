@@ -118,6 +118,16 @@ export default class Streamer {
     };
   }
 
+  // Capabilities supported by this streamer
+  get capabilities() {
+    return {
+      live: false,
+      record: false,
+      talkback: false,
+      buffering: false,
+    };
+  }
+
   constructor(uuid, deviceData, options) {
     // Setup logger object if passed as option
     if (Object.values(LOG_LEVELS).every((fn) => typeof options?.log?.[fn] === 'function')) {
@@ -218,36 +228,59 @@ export default class Streamer {
       return;
     }
 
-    // Ensure a message with sessionID is always a string
     let sessionID = message?.sessionID !== undefined ? String(message.sessionID) : undefined;
 
     if (type === Streamer.MESSAGE_TYPE.START_BUFFER) {
-      // Start buffering media packets
+      if (this.capabilities.buffering !== true) {
+        this?.log?.debug?.('Buffering is unsupported for "%s"', this.nest_google_device_uuid);
+        return;
+      }
+
       await this.#startBuffering();
     }
 
     if (type === Streamer.MESSAGE_TYPE.STOP_BUFFER) {
-      // Stop buffering media packets
+      if (this.capabilities.buffering !== true) {
+        this?.log?.debug?.('Buffering is unsupported for "%s"', this.nest_google_device_uuid);
+        return;
+      }
+
       await this.#stopBuffering();
     }
 
     if (type === Streamer.MESSAGE_TYPE.START_LIVE) {
-      // Start live HomeKit stream
+      if (this.capabilities.live !== true) {
+        this?.log?.debug?.('Live streaming is unsupported for "%s"', this.nest_google_device_uuid);
+        return;
+      }
+
       return await this.#startLiveStream(sessionID, message?.includeAudio === true);
     }
 
     if (type === Streamer.MESSAGE_TYPE.STOP_LIVE) {
-      // Stop live stream
+      if (this.capabilities.live !== true) {
+        this?.log?.debug?.('Live streaming is unsupported for "%s"', this.nest_google_device_uuid);
+        return;
+      }
+
       await this.#stopLiveStream(sessionID);
     }
 
     if (type === Streamer.MESSAGE_TYPE.START_RECORD) {
-      // Start recording HomeKit stream
+      if (this.capabilities.record !== true) {
+        this?.log?.debug?.('Recording is unsupported for "%s"', this.nest_google_device_uuid);
+        return;
+      }
+
       return await this.#startRecording(sessionID, message?.includeAudio === true);
     }
 
     if (type === Streamer.MESSAGE_TYPE.STOP_RECORD) {
-      // Stop recording stream
+      if (this.capabilities.record !== true) {
+        this?.log?.debug?.('Recording is unsupported for "%s"', this.nest_google_device_uuid);
+        return;
+      }
+
       await this.#stopRecording(sessionID);
     }
   }

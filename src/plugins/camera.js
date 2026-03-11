@@ -34,9 +34,16 @@ import {
 } from '../consts.js';
 
 const MP4BOX = 'mp4box';
+
 const STREAMING_PROTOCOL = {
   WEBRTC: 'PROTOCOL_WEBRTC',
   NEXUSTALK: 'PROTOCOL_NEXUSTALK',
+  MPEGDASH: 'PROTOCOL_MPEGDASH',
+};
+
+const STREAMERS = {
+  [STREAMING_PROTOCOL.WEBRTC]: { module: WebRTC, label: 'WebRTC streamer' },
+  [STREAMING_PROTOCOL.NEXUSTALK]: { module: NexusTalk, label: 'NexusTalk streamer' },
 };
 
 export default class NestCamera extends HomeKitDevice {
@@ -87,13 +94,6 @@ export default class NestCamera extends HomeKitDevice {
 
   // Class functions
   onAdd() {
-    // Remove any old motion services from the accessory before we add our own.
-    // This allows the HomeKit controller to properly link the motion service to the camera controller
-    // and ensures we have a clean setup of the motion service with correct characteristics.
-    // this.accessory.services
-    //  .filter((service) => service.UUID === this.hap.Service.MotionSensor.UUID)
-    //  .forEach((service) => this.accessory.removeService(service));
-
     // Setup the motion service if not already present on the accessory, and link it to the Eve app if configured to do so
     // This needs to be done before we setup the HomeKit camera controller
     this.motionService = this.addHKService(this.hap.Service.MotionSensor, '', 1, {});
@@ -234,25 +234,16 @@ export default class NestCamera extends HomeKitDevice {
       this?.log?.warn?.('Migration between Nest <-> Google Home apps is underway for "%s"', this.deviceData.description);
     }
 
-    if (
-      (this.deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.WEBRTC) === false &&
-        this.deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.NEXUSTALK) === false) ||
-      (this.deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.WEBRTC) === true && WebRTC === undefined) ||
-      (this.deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.NEXUSTALK) === true && NexusTalk === undefined)
-    ) {
+    this.deviceData?.streaming_protocols?.some?.((protocol) => STREAMERS[protocol]?.module !== undefined) !== true &&
       this?.log?.error?.(
         'No suitable streaming protocol is present for "%s". Streaming and recording will be unavailable',
         this.deviceData.description,
       );
-    }
 
     // Extra setup details for output
-    this.deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.WEBRTC) === true &&
-      WebRTC !== undefined &&
-      this.postSetupDetail('WebRTC streamer', LOG_LEVELS.DEBUG);
-    this.deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.NEXUSTALK) === true &&
-      NexusTalk !== undefined &&
-      this.postSetupDetail('NexusTalk streamer', LOG_LEVELS.DEBUG);
+    this.deviceData?.streaming_protocols?.forEach?.((protocol) => {
+      STREAMERS[protocol]?.module !== undefined && this.postSetupDetail(STREAMERS[protocol].label, LOG_LEVELS.DEBUG);
+    });
 
     (this.deviceData?.has_motion_detection !== true || this.deviceData?.motion_detection_enabled !== true) &&
       this.postSetupDetail('Camera motion detection not available', LOG_LEVELS.WARN);
@@ -1525,11 +1516,21 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
                 Math.floor(Date.now() / 1000) < Number(value.value.quiet_time_settings.quietTimeEnds.seconds),
               camera_type: value.value.device_identity.vendorProductId,
               streaming_protocols:
-                value.value?.streaming_protocol?.supportedProtocols !== undefined ? value.value.streaming_protocol.supportedProtocols : [],
-              streaming_host:
+                Array.isArray(value.value?.streaming_protocol?.supportedProtocols) === true
+                  ? value.value.streaming_protocol.supportedProtocols
+                  : [],
+              nexustalk_host:
                 typeof value.value?.streaming_protocol?.directHost?.value === 'string'
                   ? value.value.streaming_protocol.directHost.value
-                  : '',
+                  : undefined,
+              mpegdash_url:
+                typeof value.value?.streaming_protocol?.dashUrl?.value === 'string'
+                  ? value.value.streaming_protocol.dashUrl.value
+                  : undefined,
+              hls_url:
+                typeof value.value?.streaming_protocol?.hlsUrl?.value === 'string'
+                  ? value.value.streaming_protocol.hlsUrl.value
+                  : undefined,
               has_light: typeof value.value?.floodlight_settings === 'object' && typeof value.value?.floodlight_state === 'object',
               light_enabled: value.value?.floodlight_state?.currentState === 'LIGHT_STATE_ON',
               light_brightness:
@@ -1595,7 +1596,9 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
                 value.value?.properties?.['notify.motion.enabled'] === true,
               events: typeof value.value?.events === 'object' ? value.value.events : [],
               streaming_protocols: ['PROTOCOL_NEXUSTALK'],
-              streaming_host: value.value.direct_nexustalk_host,
+              nexustalk_host: value.value.direct_nexustalk_host,
+              mpegdash_url: undefined,
+              hls_url: undefined,
               quiet_time_enabled: false,
               camera_type: value.value.camera_type,
               migrating:

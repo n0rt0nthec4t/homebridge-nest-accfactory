@@ -4,7 +4,7 @@
 // Handles connection and data from Google WebRTC systems
 // Currently a "work in progress"
 //
-// Code version 2026.03.08
+// Code version 2026.03.10
 // Mark Hulskamp
 'use strict';
 
@@ -69,6 +69,16 @@ export default class WebRTC extends Streamer {
       video: Streamer.CODEC_TYPE.H264, // Video is H264
       audio: Streamer.CODEC_TYPE.PCM, // Audio is PCM (we decode Opus to PCM output)
       talkback: Streamer.CODEC_TYPE.OPUS, // Talking is also Opus
+    };
+  }
+
+  // Capabilities supported by this streamer
+  get capabilities() {
+    return {
+      live: true,
+      record: true,
+      talkback: true,
+      buffering: true,
     };
   }
 
@@ -368,12 +378,11 @@ export default class WebRTC extends Streamer {
       deviceData.apiAccess.oauth2 !== '' &&
       deviceData.apiAccess.oauth2 !== this.token
     ) {
-      // OAuth2 token has changed
+      // Just update the token, don't reconnect
+      this?.log?.debug?.('Access token has changed for uuid "%s". Updating token', this.nest_google_device_uuid);
       this.token = deviceData.apiAccess.oauth2;
-      if (this.isStreaming() === true || this.isBuffering() === true) {
-        this?.log?.debug?.('OAuth2 token has been updated for WebRTC on uuid "%s". Restarting connection.', this.nest_google_device_uuid);
-        await this.#peerConnection?.close?.();
-      }
+      // Let the extend timer handle re-auth with new token
+      // If extend fails, the error handling will close and reconnect
     }
   }
 
