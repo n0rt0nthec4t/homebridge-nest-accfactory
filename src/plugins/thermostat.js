@@ -65,9 +65,9 @@ export default class NestThermostat extends HomeKitDevice {
     if (this.deviceData?.hasHumidifier === true || this.deviceData?.hasDehumidifier === true) {
       // Set default value for TargetHumidifierDehumidifierState based on capabilities
       this.hap.Characteristic.TargetHumidifierDehumidifierState.prototype.getDefaultValue = () => {
-        if (this.deviceData?.hasHumidifier === true && this.deviceData?.hasDehumidifier === true) {
+        if (this.deviceData?.has_humidifier === true && this.deviceData?.has_dehumidifier === true) {
           return this.hap.Characteristic.TargetHumidifierDehumidifierState.HUMIDIFIER_OR_DEHUMIDIFIER;
-        } else if (this.deviceData?.hasHumidifier === true) {
+        } else if (this.deviceData?.has_humidifier === true) {
           return this.hap.Characteristic.TargetHumidifierDehumidifierState.HUMIDIFIER;
         } else {
           return this.hap.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER;
@@ -685,13 +685,13 @@ export default class NestThermostat extends HomeKitDevice {
       if (this.humidifierDehumidifierService.testCharacteristic(this.hap.Characteristic.RelativeHumidityHumidifierThreshold) === true) {
         this.humidifierDehumidifierService.updateCharacteristic(
           this.hap.Characteristic.RelativeHumidityHumidifierThreshold,
-          deviceData.humidifier_state === true ? deviceData.target_humidity : 0,
+          deviceData.target_humidity_humidifier,
         );
       }
       if (this.humidifierDehumidifierService.testCharacteristic(this.hap.Characteristic.RelativeHumidityDehumidifierThreshold) === true) {
         this.humidifierDehumidifierService.updateCharacteristic(
           this.hap.Characteristic.RelativeHumidityDehumidifierThreshold,
-          deviceData.dehumidifier_state === true ? deviceData.target_humidity : 0,
+          deviceData.target_humidity_dehumidifier,
         );
       }
 
@@ -849,55 +849,6 @@ export default class NestThermostat extends HomeKitDevice {
           : 'Off',
       );
     }
-  }
-
-  async setHumidifierDehumidifier(state, mode, humidity) {
-    let isActive = state === this.hap.Characteristic.Active.ACTIVE;
-
-    // Determine which states to set based on mode
-    let humidifier_state = mode === this.hap.Characteristic.TargetHumidifierDehumidifierState.HUMIDIFIER && isActive;
-    let dehumidifier_state = mode === this.hap.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER && isActive;
-
-    // Update HomeKit characteristics
-    this.humidifierDehumidifierService.updateCharacteristic(this.hap.Characteristic.Active, state);
-    this.humidifierDehumidifierService.updateCharacteristic(this.hap.Characteristic.TargetHumidifierDehumidifierState, mode);
-
-    // Update target humidity thresholds if available
-    if (this.humidifierDehumidifierService.testCharacteristic(this.hap.Characteristic.RelativeHumidityHumidifierThreshold) === true) {
-      this.humidifierDehumidifierService.updateCharacteristic(
-        this.hap.Characteristic.RelativeHumidityHumidifierThreshold,
-        mode === this.hap.Characteristic.TargetHumidifierDehumidifierState.HUMIDIFIER ? humidity : 0,
-      );
-    }
-    if (this.humidifierDehumidifierService.testCharacteristic(this.hap.Characteristic.RelativeHumidityDehumidifierThreshold) === true) {
-      this.humidifierDehumidifierService.updateCharacteristic(
-        this.hap.Characteristic.RelativeHumidityDehumidifierThreshold,
-        mode === this.hap.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER ? humidity : 0,
-      );
-    }
-
-    // Make separate API calls for humidifier and dehumidifier state
-    if (mode === this.hap.Characteristic.TargetHumidifierDehumidifierState.HUMIDIFIER) {
-      await this.set({
-        uuid: this.deviceData.nest_google_device_uuid,
-        humidifier_state: humidifier_state,
-        target_humidity: humidifier_state ? humidity : 0,
-      });
-    }
-    if (mode === this.hap.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER) {
-      await this.set({
-        uuid: this.deviceData.nest_google_device_uuid,
-        dehumidifier_state: dehumidifier_state,
-        target_humidity: dehumidifier_state ? humidity : 0,
-      });
-    }
-
-    this?.log?.info?.(
-      'Set %s on thermostat "%s" to "%s"',
-      mode === this.hap.Characteristic.TargetHumidifierDehumidifierState.HUMIDIFIER ? 'humidifier' : 'dehumidifier',
-      this.deviceData.description,
-      isActive ? 'On with target humidity level of ' + Math.round(humidity) + '%' : 'Off',
-    );
   }
 
   async setDisplayUnit(temperatureUnit) {
@@ -1097,6 +1048,112 @@ export default class NestThermostat extends HomeKitDevice {
     );
   }
 
+  async setHumidifierDehumidifierMode(state, mode) {
+    if (this.humidifierDehumidifierService === undefined) {
+      return;
+    }
+
+    let isActive = state === this.hap.Characteristic.Active.ACTIVE || state === true;
+    let humidifier_state = false;
+    let dehumidifier_state = false;
+    let modeName = 'humidifier/dehumidifier';
+
+    if (mode === this.hap.Characteristic.TargetHumidifierDehumidifierState.HUMIDIFIER) {
+      humidifier_state = isActive === true;
+      modeName = 'humidifier';
+    }
+
+    if (mode === this.hap.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER) {
+      dehumidifier_state = isActive === true;
+      modeName = 'dehumidifier';
+    }
+
+    if (mode === this.hap.Characteristic.TargetHumidifierDehumidifierState.HUMIDIFIER_OR_DEHUMIDIFIER) {
+      humidifier_state = isActive === true;
+      dehumidifier_state = isActive === true;
+      modeName = 'humidifier/dehumidifier';
+    }
+
+    // Update HomeKit characteristics
+    this.humidifierDehumidifierService.updateCharacteristic(
+      this.hap.Characteristic.Active,
+      isActive === true ? this.hap.Characteristic.Active.ACTIVE : this.hap.Characteristic.Active.INACTIVE,
+    );
+    this.humidifierDehumidifierService.updateCharacteristic(this.hap.Characteristic.TargetHumidifierDehumidifierState, mode);
+
+    if (this.deviceData.has_humidifier === true) {
+      await this.set({
+        uuid: this.deviceData.nest_google_device_uuid,
+        humidifier_state: humidifier_state === true,
+        target_humidity_humidifier: this.deviceData.target_humidity_humidifier,
+      });
+    }
+
+    if (this.deviceData.has_dehumidifier === true) {
+      await this.set({
+        uuid: this.deviceData.nest_google_device_uuid,
+        dehumidifier_state: dehumidifier_state === true,
+        target_humidity_dehumidifier: this.deviceData.target_humidity_dehumidifier,
+      });
+    }
+
+    let statusText =
+      isActive === true
+        ? mode === this.hap.Characteristic.TargetHumidifierDehumidifierState.HUMIDIFIER
+          ? '"On" with target humidity level of ' + Math.round(this.deviceData.target_humidity_humidifier) + '%'
+          : mode === this.hap.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER
+            ? '"On" with target humidity level of ' + Math.round(this.deviceData.target_humidity_dehumidifier) + '%'
+            : '"On" with humidity range of ' +
+              Math.round(this.deviceData.target_humidity_humidifier) +
+              '% to ' +
+              Math.round(this.deviceData.target_humidity_dehumidifier) +
+              '%'
+        : '"Off"';
+
+    this?.log?.info?.('Set %s on thermostat "%s" to %s', modeName, this.deviceData.description, statusText);
+  }
+
+  async setHumidifierDehumidifierThreshold(characteristic, value) {
+    if (
+      typeof characteristic !== 'function' ||
+      typeof characteristic?.UUID !== 'string' ||
+      this.humidifierDehumidifierService === undefined ||
+      isNaN(value) === true
+    ) {
+      return;
+    }
+
+    value = Number(value); // Ensure value is a number
+
+    if (
+      characteristic.UUID === this.hap.Characteristic.RelativeHumidityHumidifierThreshold.UUID &&
+      this.deviceData.has_humidifier === true
+    ) {
+      this.humidifierDehumidifierService.updateCharacteristic(this.hap.Characteristic.RelativeHumidityHumidifierThreshold, value);
+
+      await this.set({
+        uuid: this.deviceData.nest_google_device_uuid,
+        target_humidity_humidifier: value,
+      });
+
+      this?.log?.info?.('Set humidifier target humidity on thermostat "%s" to "%s%%"', this.deviceData.description, Math.round(value));
+    }
+
+    if (
+      characteristic.UUID === this.hap.Characteristic.RelativeHumidityDehumidifierThreshold.UUID &&
+      this.deviceData.has_dehumidifier === true
+    ) {
+      this.humidifierDehumidifierService.updateCharacteristic(this.hap.Characteristic.RelativeHumidityDehumidifierThreshold, value);
+
+      await this.set({
+        uuid: this.deviceData.nest_google_device_uuid,
+        target_humidity_dehumidifier: value,
+      });
+
+      this?.log?.info?.('Set dehumidifier target humidity on thermostat "%s" to "%s%%"', this.deviceData.description, Math.round(value));
+    }
+  }
+
   #setupFan() {
     this.fanService = this.addHKService(this.hap.Service.Fanv2, '', 1);
     this.thermostatService.addLinkedService(this.fanService);
@@ -1131,8 +1188,13 @@ export default class NestThermostat extends HomeKitDevice {
     this.thermostatService.addLinkedService(this.humidifierDehumidifierService);
 
     this.addHKCharacteristic(this.humidifierDehumidifierService, this.hap.Characteristic.Active, {
+      onSet: (value) =>
+        this.setHumidifierDehumidifierMode(
+          value,
+          this.humidifierDehumidifierService.getCharacteristic(this.hap.Characteristic.TargetHumidifierDehumidifierState).value,
+        ),
       onGet: () => {
-        return this.deviceData.dehumidifier_state === true || this.deviceData.humidifier_state === true
+        return this.deviceData.humidifier_enabled === true || this.deviceData.dehumidifier_enabled === true
           ? this.hap.Characteristic.Active.ACTIVE
           : this.hap.Characteristic.Active.INACTIVE;
       },
@@ -1142,11 +1204,12 @@ export default class NestThermostat extends HomeKitDevice {
       onGet: () => {
         if (this.deviceData.humidifier_state === true) {
           return this.hap.Characteristic.CurrentHumidifierDehumidifierState.HUMIDIFYING;
-        } else if (this.deviceData.dehumidifier_state === true) {
-          return this.hap.Characteristic.CurrentHumidifierDehumidifierState.DEHUMIDIFYING;
-        } else {
-          return this.hap.Characteristic.CurrentHumidifierDehumidifierState.IDLE;
         }
+        if (this.deviceData.dehumidifier_state === true) {
+          return this.hap.Characteristic.CurrentHumidifierDehumidifierState.DEHUMIDIFYING;
+        }
+
+        return this.hap.Characteristic.CurrentHumidifierDehumidifierState.IDLE;
       },
     });
 
@@ -1161,41 +1224,41 @@ export default class NestThermostat extends HomeKitDevice {
         ].filter(Boolean),
       },
       onSet: (value) =>
-        this.setHumidifierDehumidifier(
+        this.setHumidifierDehumidifierMode(
           this.humidifierDehumidifierService.getCharacteristic(this.hap.Characteristic.Active).value,
           value,
-          this.deviceData.target_humidity,
         ),
       onGet: () => {
-        if (this.deviceData.humidifier_state === true) {
-          return this.hap.Characteristic.TargetHumidifierDehumidifierState.HUMIDIFIER;
-        } else if (this.deviceData.dehumidifier_state === true) {
-          return this.hap.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER;
-        } else {
-          // Return appropriate default based on capabilities
-          if (hasHumidifier === true && hasDehumidifier === true) {
-            return this.hap.Characteristic.TargetHumidifierDehumidifierState.HUMIDIFIER_OR_DEHUMIDIFIER;
-          } else if (hasHumidifier === true) {
-            return this.hap.Characteristic.TargetHumidifierDehumidifierState.HUMIDIFIER;
-          } else {
-            return this.hap.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER;
-          }
+        let target_mode = this.hap.Characteristic.TargetHumidifierDehumidifierState.HUMIDIFIER_OR_DEHUMIDIFIER;
+        if (this.deviceData.humidifier_state === true && this.deviceData.dehumidifier_state === false) {
+          target_mode = this.hap.Characteristic.TargetHumidifierDehumidifierState.HUMIDIFIER;
         }
+        if (this.deviceData.dehumidifier_state === true && this.deviceData.humidifier_state === false) {
+          target_mode = this.hap.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER;
+        }
+
+        return target_mode;
       },
     });
 
     if (hasHumidifier === true) {
       this.addHKCharacteristic(this.humidifierDehumidifierService, this.hap.Characteristic.RelativeHumidityHumidifierThreshold, {
+        onSet: (value) => {
+          this.setHumidifierDehumidifierThreshold(this.hap.Characteristic.RelativeHumidityHumidifierThreshold, value);
+        },
         onGet: () => {
-          return this.deviceData.humidifier_state === true ? this.deviceData.target_humidity : 0;
+          return this.deviceData.target_humidity_humidifier;
         },
       });
     }
 
     if (hasDehumidifier === true) {
       this.addHKCharacteristic(this.humidifierDehumidifierService, this.hap.Characteristic.RelativeHumidityDehumidifierThreshold, {
+        onSet: (value) => {
+          this.setHumidifierDehumidifierThreshold(this.hap.Characteristic.RelativeHumidityDehumidifierThreshold, value);
+        },
         onGet: () => {
-          return this.deviceData.dehumidifier_state === true ? this.deviceData.target_humidity : 0;
+          return this.deviceData.target_humidity_dehumidifier;
         },
       });
     }
@@ -1574,9 +1637,13 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           // Humidifier/dehumidifier details
           RESTTypeData.has_humidifier = value.value?.hvac_equipment_capabilities?.hasHumidifier === true;
           RESTTypeData.has_dehumidifier = value.value?.hvac_equipment_capabilities?.hasDehumidifier === true;
-          RESTTypeData.target_humidity =
-            isNaN(value.value?.humidity_control_settings?.targetHumidity?.value) === false
-              ? Number(value.value.humidity_control_settings.targetHumidity.value)
+          RESTTypeData.target_humidity_humidifier =
+            isNaN(value.value?.humidity_control_settings?.humidifierTargetHumidity?.value) === false
+              ? Number(value.value.humidity_control_settings.humidifierTargetHumidity.value)
+              : 0.0;
+          RESTTypeData.target_humidity_dehumidifier =
+            isNaN(value.value?.humidity_control_settings?.dehumidifierTargetHumidity?.value) === false
+              ? Number(value.value.humidity_control_settings.dehumidifierTargetHumidity.value)
               : 0.0;
           RESTTypeData.humidifier_state = value.value?.hvac_control?.hvacState?.humidifierActive === true;
           RESTTypeData.dehumidifier_state = value.value?.hvac_control?.hvacState?.dehumidifierActive === true;

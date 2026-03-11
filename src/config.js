@@ -1,7 +1,7 @@
 // Configuration validation and processing
 // Part of homebridge-nest-accfactory
 //
-// Code version 2026.03.04
+// Code version 2026.03.12
 // Mark Hulskamp
 'use strict';
 
@@ -31,6 +31,12 @@ function processConfig(config, log) {
   // Controls what APIs we use, default is to use both Nest and Google APIs
   options.useNestAPI = config.options?.useNestAPI === true || config.options?.useNestAPI === undefined;
   options.useGoogleAPI = config.options?.useGoogleAPI === true || config.options?.useGoogleAPI === undefined;
+
+  // Support data dump
+  options.rawdump = config.options?.rawdump === true;
+  if (options.rawdump === true) {
+    log?.warn?.('Support Dump enabled. For full diagnostic output, ensure Homebridge is started with debug mode enabled.');
+  }
 
   // Get configuration for max number of concurrent 'live view' streams. For HomeKit Secure Video, this will always be 1
   options.maxStreams = isNaN(config.options?.maxStreams) === false ? Number(config.options.maxStreams) : 2;

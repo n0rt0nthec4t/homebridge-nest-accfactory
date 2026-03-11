@@ -93,25 +93,31 @@
                         "type": "boolean"
                     },
                     "ffmpegDebug": {
-                        "description": "Enable ffmpeg output debugging",
-                        "type": "boolean"
+                        "title": "FFmpeg Debug Logging",
+                        "description": "Enable FFmpeg logging output debugging",
+                        "type": "boolean",
+                        "default": false
                     },
                     "ffmpegHWAccel": {
-                        "description": "Enable hardware acceleration for video encoding with ffmpeg",
-                        "type": "boolean"
+                        "title": "FFmpeg Hardware Acceleration",
+                        "description": "Enable hardware acceleration for video encoding with FFmpeg",
+                        "type": "boolean",
+                        "default": false
                     },
                     "ffmpegPath": {
-                        "title": "Path to ffmpeg binary",
+                        "title": "Path to FFmpeg binary",
                         "type": "string",
-                        "placeholder": "Path to ffmpeg binary",
+                        "placeholder": "Path to FFmpeg binary",
                         "default": "/usr/local/bin/ffmpeg"
                     },
                     "maxStreams": {
                         "type": "integer"
                     },
                     "rawdump": {
-                        "description": "Output internal raw data",
-                        "type": "boolean"
+                        "title": "Support Dump",
+                        "description": "Enable additional raw device data logging to assist with troubleshooting and support. Enable this only when requested, as it may produce large log output and include detailed device information.",
+                        "type": "boolean",
+                        "default": false
                     },            
                     "useNestAPI": {
                         "description": "Use Nest backend API",
@@ -251,14 +257,25 @@
         },
         {
             "type": "fieldset",
-            "title": "Options",
+            "title": "General Options",
             "expandable": true,
             "expanded": true,
             "items": [
                 "options.eveHistory",
                 "options.weather",
-                "options.elevation",
-                "options.ffmpegPath"
+                "options.elevation"
+            ]
+        },
+        {
+            "type": "fieldset",
+            "title": "Advanced Options",
+            "expandable": true,
+            "expanded": false,
+            "items": [
+                "options.ffmpegPath",
+                "options.ffmpegDebug",
+                "options.ffmpegHWAccel",
+                "options.rawdump"
             ]
         }
     ]

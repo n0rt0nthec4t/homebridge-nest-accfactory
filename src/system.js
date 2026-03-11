@@ -1,7 +1,7 @@
 // Nest System communications
 // Part of homebridge-nest-accfactory
 //
-// Code version 2026.03.11
+// Code version 2026.03.12
 // Mark Hulskamp
 'use strict';
 
@@ -537,12 +537,17 @@ export default class NestAccfactory {
         // This can be used for user support, rather than specific build to dump this :-)
         if (this?.config?.options?.rawdump === true && this.#connections[uuid]?.doneNestRawDump !== true) {
           this.#connections[uuid].doneNestRawDump = true; // Done once
+          this?.log?.warn?.('Support Dump for Nest API data will be logged below for troubleshooting purposes.');
           Object.entries(this.#rawData)
             .filter(([, data]) => data?.source === DATA_SOURCE.NEST)
             .forEach(([serial, data]) => {
-              this?.log?.debug?.('Raw data [%s]', serial);
-              logJSONObject(this.log, data);
+              this?.log?.debug?.('{');
+              this?.log?.debug?.('  "%s": {', serial);
+              logJSONObject(this.log, data?.value, 4);
+              this?.log?.debug?.('  }');
+              this?.log?.debug?.('}');
             });
+          this?.log?.warn?.('End of Support Dump for Nest API data.');
         }
 
         await this.#processData();
@@ -727,12 +732,17 @@ export default class NestAccfactory {
           // This can be used for user support, rather than specific build to dump this :-)
           if (this?.config?.options?.rawdump === true && this.#connections[uuid]?.doneGoogleRawDump !== true) {
             this.#connections[uuid].doneGoogleRawDump = true; // Done once
+            this?.log?.warn?.('Support Dump for Google API data will be logged below for troubleshooting purposes.');
             Object.entries(this.#rawData)
               .filter(([, data]) => data?.source === DATA_SOURCE.GOOGLE)
               .forEach(([serial, data]) => {
-                this?.log?.debug?.('Raw data [%s]', serial);
-                logJSONObject(this.log, data);
+                this?.log?.debug?.('{');
+                this?.log?.debug?.('  "%s": {', serial);
+                logJSONObject(this.log, data?.value, 4);
+                this?.log?.debug?.('  }');
+                this?.log?.debug?.('}');
               });
+            this?.log?.warn?.('End of Support Dump for Google API data.');
           }
 
           await this.#processData();
@@ -1015,7 +1025,7 @@ export default class NestAccfactory {
           updateElement.traitRequest.traitLabel = 'temperature_lock_settings';
           updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.TemperatureLockSettingsTrait';
           updateElement.state.value = this.#rawData[nest_google_device_uuid].value.temperature_lock_settings;
-          updateElement.state.value.enabled = value === true;
+          updateElement.state.value.enabled = value;
         }
 
         if (key === 'fan_state' && typeof value === 'boolean' && isNaN(values?.fan_duration) === false) {
@@ -1227,29 +1237,61 @@ export default class NestAccfactory {
         if (
           key === 'dehumidifier_state' &&
           typeof value === 'boolean' &&
-          isNaN(values?.target_humidity) === false &&
           this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasDehumidifier === true
         ) {
           // Set dehumidifier on/off on the target thermostat
           updateElement.traitRequest.traitLabel = 'humidity_control_settings';
           updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait';
-          updateElement.state.value = this.#rawData[nest_google_device_uuid].value.humidity_control_settings;
-          updateElement.state.value.dehumidifierTargetHumidity.enabled = value;
-          updateElement.state.value.dehumidifierTargetHumidity.value = Number(values.target_humidity);
+          updateElement.state.value = this.#rawData?.[nest_google_device_uuid]?.value?.humidity_control_settings ?? {};
+          updateElement.state.value.dehumidifierTargetHumidity = {
+            ...(updateElement.state.value.dehumidifierTargetHumidity ?? {}),
+            enabled: value,
+          };
+        }
+
+        if (
+          key === 'target_humidity_dehumidifier' &&
+          isNaN(value) === false &&
+          this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasDehumidifier === true
+        ) {
+          // Set dehumidifier target humidity on the target thermostat
+          updateElement.traitRequest.traitLabel = 'humidity_control_settings';
+          updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait';
+          updateElement.state.value = this.#rawData?.[nest_google_device_uuid]?.value?.humidity_control_settings ?? {};
+          updateElement.state.value.dehumidifierTargetHumidity = {
+            ...(updateElement.state.value.dehumidifierTargetHumidity ?? {}),
+            value: Number(value),
+          };
         }
 
         if (
           key === 'humidifier_state' &&
           typeof value === 'boolean' &&
-          isNaN(values?.target_humidity) === false &&
           this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasHumidifier === true
         ) {
           // Set humidifier on/off on the target thermostat
           updateElement.traitRequest.traitLabel = 'humidity_control_settings';
           updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait';
-          updateElement.state.value = this.#rawData[nest_google_device_uuid].value.humidity_control_settings;
-          updateElement.state.value.humidifierTargetHumidity.enabled = value;
-          updateElement.state.value.humidifierTargetHumidity.value = Number(values.target_humidity);
+          updateElement.state.value = this.#rawData?.[nest_google_device_uuid]?.value?.humidity_control_settings ?? {};
+          updateElement.state.value.humidifierTargetHumidity = {
+            ...(updateElement.state.value.humidifierTargetHumidity ?? {}),
+            enabled: value,
+          };
+        }
+
+        if (
+          key === 'target_humidity_humidifier' &&
+          isNaN(value) === false &&
+          this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasHumidifier === true
+        ) {
+          // Set humidifier target humidity on the target thermostat
+          updateElement.traitRequest.traitLabel = 'humidity_control_settings';
+          updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait';
+          updateElement.state.value = this.#rawData?.[nest_google_device_uuid]?.value?.humidity_control_settings ?? {};
+          updateElement.state.value.humidifierTargetHumidity = {
+            ...(updateElement.state.value.humidifierTargetHumidity ?? {}),
+            value: Number(value),
+          };
         }
 
         if (updateElement.traitRequest.traitLabel !== '' && updateElement.state.type_url !== '') {
