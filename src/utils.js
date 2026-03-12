@@ -1,7 +1,7 @@
 // General helper functions
 // Part of homebridge-nest-accfactory
 //
-// Code version 2025.12.12
+// Code version 2026.03.12
 // Mark Hulskamp
 'use strict';
 
@@ -336,24 +336,5 @@ function processCommonData(deviceUUID, homeUUID, data, config) {
   return processed;
 }
 
-function logJSONObject(log, object) {
-  if (typeof object !== 'object' || object.constructor !== Object) {
-    return;
-  }
-
-  Object.entries(object).forEach(([key, value]) => {
-    if (typeof value === 'object' && value !== null) {
-      log?.debug?.('  %s:', key);
-      String(JSON.stringify(value, null, 2))
-        .split('\n')
-        .forEach((line) => {
-          log?.debug?.('    %s', line);
-        });
-    } else {
-      log?.debug?.('  %s: %j', key, value);
-    }
-  });
-}
-
 // Define exports
-export { processCommonData, adjustTemperature, crc24, scaleValue, fetchWrapper, parseDurationToSeconds, logJSONObject };
+export { processCommonData, adjustTemperature, crc24, scaleValue, fetchWrapper, parseDurationToSeconds };

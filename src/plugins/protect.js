@@ -7,13 +7,14 @@
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
 import { processCommonData, scaleValue } from '../utils.js';
+import { buildMappedObject, createMappingContext } from '../translator.js';
 
 // Define constants
 import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from '../consts.js';
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = 'Protect';
-  static VERSION = '2026.03.11'; // Code version
+  static VERSION = '2026.03.12'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -74,6 +75,7 @@ export default class NestProtect extends HomeKitDevice {
   onUpdate(deviceData) {
     if (
       typeof deviceData !== 'object' ||
+      deviceData?.constructor !== Object ||
       this.smokeService === undefined ||
       this.carbonMonoxideService === undefined ||
       this.batteryService === undefined
@@ -82,13 +84,15 @@ export default class NestProtect extends HomeKitDevice {
     }
 
     // Update battery level and status
-    this.batteryService.updateCharacteristic(this.hap.Characteristic.BatteryLevel, deviceData.battery_level);
-    this.batteryService.updateCharacteristic(
-      this.hap.Characteristic.StatusLowBattery,
-      deviceData.battery_level > LOW_BATTERY_LEVEL
-        ? this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
-        : this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW,
-    );
+    if (deviceData.battery_level !== undefined) {
+      this.batteryService.updateCharacteristic(this.hap.Characteristic.BatteryLevel, deviceData.battery_level);
+      this.batteryService.updateCharacteristic(
+        this.hap.Characteristic.StatusLowBattery,
+        deviceData.battery_level > LOW_BATTERY_LEVEL
+          ? this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
+          : this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW,
+      );
+    }
     this.batteryService.updateCharacteristic(this.hap.Characteristic.ChargingState, this.hap.Characteristic.ChargingState.NOT_CHARGEABLE);
 
     // Update smoke details
@@ -199,6 +203,296 @@ export default class NestProtect extends HomeKitDevice {
   }
 }
 
+// Data translation functions for Nest Protect data.
+// We use this to translate RAW Nest and Google data into the format we want for our
+// Protect device(s) using the field map below.
+//
+// This keeps all translation logic in one place and makes it easier to maintain as
+// Nest and Google sources evolve over time.
+//
+// Field map conventions:
+// - Return undefined for missing values rather than placeholder defaults
+// - processRawData() determines if enough data exists to build the device
+// - Optional fields may remain undefined
+//
+// Protect field translation map
+const PROTECT_FIELD_MAP = {
+  // Identity fields
+  serialNumber: {
+    google: ({ sourceValue }) =>
+      typeof sourceValue?.value?.device_identity?.serialNumber === 'string' && sourceValue.value.device_identity.serialNumber.trim() !== ''
+        ? sourceValue.value.device_identity.serialNumber
+        : undefined,
+    nest: ({ sourceValue }) =>
+      typeof sourceValue?.value?.serial_number === 'string' && sourceValue.value.serial_number.trim() !== ''
+        ? sourceValue.value.serial_number
+        : undefined,
+  },
+
+  nest_google_device_uuid: {
+    google: ({ objectKey }) => objectKey,
+    nest: ({ objectKey }) => objectKey,
+  },
+
+  nest_google_home_uuid: {
+    google: ({ sourceValue }) => sourceValue?.value?.device_info?.pairerId?.resourceId,
+    nest: ({ sourceValue }) => 'structure.' + sourceValue?.value?.structure_id,
+  },
+
+  // Naming / descriptive fields
+  model: {
+    google: ({ sourceValue }) => {
+      let typeName = sourceValue?.value?.device_info?.typeName ?? '';
+
+      return typeName === 'nest.resource.NestProtect1LinePoweredResource'
+        ? 'Protect (1st gen, wired)'
+        : typeName === 'nest.resource.NestProtect1BatteryPoweredResource'
+          ? 'Protect (1st gen, battery)'
+          : typeName === 'nest.resource.NestProtect2LinePoweredResource'
+            ? 'Protect (2nd gen, wired)'
+            : typeName === 'nest.resource.NestProtect2BatteryPoweredResource'
+              ? 'Protect (2nd gen, battery)'
+              : 'Protect (unknown)';
+    },
+
+    nest: ({ sourceValue }) => {
+      let model =
+        sourceValue?.value?.serial_number?.substring?.(0, 2) === '06'
+          ? 'Protect (2nd gen)'
+          : sourceValue?.value?.serial_number?.substring?.(0, 2) === '05'
+            ? 'Protect (1st gen)'
+            : 'Protect (unknown)';
+
+      return sourceValue?.value?.wired_or_battery === true
+        ? model.replace(/\bgen\)/, 'gen, battery)')
+        : sourceValue?.value?.wired_or_battery === false
+          ? model.replace(/\bgen\)/, 'gen, wired)')
+          : model;
+    },
+  },
+
+  softwareVersion: {
+    google: ({ sourceValue }) => sourceValue?.value?.device_identity?.softwareVersion,
+    nest: ({ sourceValue }) => sourceValue?.value?.software_version,
+  },
+
+  description: {
+    google: ({ sourceValue }) => String(sourceValue?.value?.label?.label ?? ''),
+    nest: ({ sourceValue }) => String(sourceValue?.value?.description ?? ''),
+  },
+
+  location: {
+    google: ({ rawData, sourceValue }) =>
+      String(
+        [
+          ...Object.values(
+            rawData?.[sourceValue?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {},
+          ),
+          ...Object.values(
+            rawData?.[sourceValue?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {},
+          ),
+        ].find((where) => where?.whereId?.resourceId === sourceValue?.value?.device_located_settings?.whereAnnotationRid?.resourceId)?.label
+          ?.literal ?? '',
+      ),
+
+    nest: ({ rawData, sourceValue }) =>
+      String(
+        rawData?.['where.' + sourceValue?.value?.structure_id]?.value?.wheres?.find(
+          (where) => where?.where_id === sourceValue?.value?.where_id,
+        )?.name ?? '',
+      ),
+  },
+
+  // Core state
+  online: {
+    google: ({ sourceValue }) => sourceValue?.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
+    nest: ({ rawData, sourceValue }) =>
+      rawData?.['widget_track.' + sourceValue?.value?.thread_mac_address?.toUpperCase?.()]?.value?.online === true,
+  },
+
+  line_power_present: {
+    google: ({ sourceValue }) => sourceValue?.value?.wall_power?.status === 'POWER_SOURCE_STATUS_ACTIVE',
+    nest: ({ sourceValue }) => sourceValue?.value?.line_power_present === true,
+  },
+
+  wired_or_battery: {
+    google: ({ sourceValue }) => sourceValue?.value?.wall_power?.present !== true,
+    nest: ({ sourceValue }) => sourceValue?.value?.wired_or_battery === 1,
+  },
+
+  battery_level: {
+    google: ({ sourceValue }) => {
+      // Check for new firmware battery field first
+      if (typeof sourceValue?.value?.battery?.replacementIndicator === 'string') {
+        if (sourceValue.value.battery.replacementIndicator === 'BATTERY_REPLACEMENT_INDICATOR_NOT_AT_ALL') {
+          return 100;
+        }
+        if (sourceValue.value.battery.replacementIndicator === 'BATTERY_REPLACEMENT_INDICATOR_SOON') {
+          return 50;
+        }
+        if (sourceValue.value.battery.replacementIndicator === 'BATTERY_REPLACEMENT_INDICATOR_NOW') {
+          return 20;
+        }
+      }
+
+      let voltage;
+
+      if (sourceValue?.value?.wall_power?.present !== true) {
+        // Battery-powered Protects expose a battery metric that closely matches the
+        // Nest API value, but in volts instead of millivolts (e.g. 5.137 ↔ 5137).
+        // Use the minimum of both banks if available.
+        if (
+          isNaN(sourceValue?.value?.battery_voltage_bank0?.batteryValue?.batteryVoltage?.value) === false &&
+          isNaN(sourceValue?.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === false
+        ) {
+          voltage = Math.min(
+            Number(sourceValue.value.battery_voltage_bank0.batteryValue.batteryVoltage.value),
+            Number(sourceValue.value.battery_voltage_bank1.batteryValue.batteryVoltage.value),
+          );
+        }
+
+        if (
+          isNaN(sourceValue?.value?.battery_voltage_bank0?.batteryValue?.batteryVoltage?.value) === false &&
+          isNaN(sourceValue?.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === true
+        ) {
+          voltage = Number(sourceValue.value.battery_voltage_bank0.batteryValue.batteryVoltage.value);
+        }
+
+        if (
+          isNaN(sourceValue?.value?.battery_voltage_bank0?.batteryValue?.batteryVoltage?.value) === true &&
+          isNaN(sourceValue?.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === false
+        ) {
+          voltage = Number(sourceValue.value.battery_voltage_bank1.batteryValue.batteryVoltage.value);
+        }
+
+        return isNaN(voltage) === false && voltage > 0 ? scaleValue(voltage, 3.0, 5.4, 0, 100) : undefined;
+      }
+
+      // Wall-powered with backup batteries
+      voltage =
+        isNaN(sourceValue?.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === false
+          ? Number(sourceValue.value.battery_voltage_bank1.batteryValue.batteryVoltage.value)
+          : undefined;
+
+      return isNaN(voltage) === false && voltage > 0 ? scaleValue(voltage, 3.3, 4.5, 0, 100) : undefined;
+    },
+
+    nest: ({ sourceValue }) =>
+      isNaN(sourceValue?.value?.battery_level) === false && Number(sourceValue.value.battery_level) > 0
+        ? scaleValue(Number(sourceValue.value.battery_level), 3000, 5400, 0, 100)
+        : undefined,
+  },
+
+  smoke_status: {
+    google: ({ sourceValue }) => sourceValue?.value?.safety_alarm_smoke?.alarmState === 'ALARM_STATE_ALARM',
+    nest: ({ sourceValue }) => sourceValue?.value?.smoke_status !== 0,
+  },
+
+  co_status: {
+    google: ({ sourceValue }) => sourceValue?.value?.safety_alarm_co?.alarmState === 'ALARM_STATE_ALARM',
+    nest: ({ sourceValue }) => sourceValue?.value?.co_status !== 0,
+  },
+
+  heat_status: {
+    google: () => false, // TODO <- need to find in protobuf
+    nest: ({ sourceValue }) => sourceValue?.value?.heat_status !== 0,
+  },
+
+  hushed_state: {
+    google: ({ sourceValue }) =>
+      sourceValue?.value?.safety_alarm_smoke?.silenceState === 'SILENCE_STATE_SILENCED' ||
+      sourceValue?.value?.safety_alarm_co?.silenceState === 'SILENCE_STATE_SILENCED',
+    nest: ({ sourceValue }) => sourceValue?.value?.hushed_state === true,
+  },
+
+  ntp_green_led_enable: {
+    google: ({ sourceValue }) => sourceValue?.value?.night_time_promise_settings?.greenLedEnabled === true,
+    nest: ({ sourceValue }) => sourceValue?.value?.ntp_green_led_enable === true,
+  },
+
+  smoke_test_passed: {
+    google: ({ sourceValue }) =>
+      sourceValue?.value?.safety_summary?.warningDevices?.failures?.includes?.('FAILURE_TYPE_SMOKE') === false
+        ? true
+        : typeof sourceValue?.value?.smoke !== 'object'
+          ? undefined
+          : sourceValue?.value?.smoke?.infraredLedFault === undefined || sourceValue?.value?.smoke?.blueLedFault === undefined
+            ? true
+            : sourceValue?.value?.smoke?.infraredLedFault?.type === 'SMOKE_FAULT_TYPE_NONE' &&
+              sourceValue?.value?.smoke?.blueLedFault?.type === 'SMOKE_FAULT_TYPE_NONE',
+    nest: ({ sourceValue }) => sourceValue?.value?.component_smoke_test_passed === true,
+  },
+
+  heat_test_passed: {
+    google: ({ sourceValue }) =>
+      sourceValue?.value?.safety_summary?.warningDevices?.failures?.includes?.('FAILURE_TYPE_TEMP') === false
+        ? true
+        : typeof sourceValue?.value?.passive_infrared !== 'object'
+          ? undefined
+          : sourceValue?.value?.passive_infrared?.faultInformation === undefined
+            ? true
+            : sourceValue?.value?.passive_infrared?.faultInformation?.type === 'PASSIVE_INFRARED_FAULT_TYPE_NONE',
+    nest: ({ sourceValue }) => sourceValue?.value?.component_temp_test_passed === true,
+  },
+
+  co_test_passed: {
+    google: ({ sourceValue }) =>
+      typeof sourceValue?.value?.carbon_monoxide !== 'object'
+        ? undefined
+        : sourceValue?.value?.carbon_monoxide?.faultInformation === undefined
+          ? true
+          : sourceValue?.value?.carbon_monoxide?.faultInformation?.type === 'CO_FAULT_TYPE_NONE',
+    nest: ({ sourceValue }) => sourceValue?.value?.component_co_test_passed === true,
+  },
+
+  latest_alarm_test: {
+    google: ({ sourceValue }) =>
+      isNaN(sourceValue?.value?.self_test?.lastMstEnd?.seconds) === false
+        ? Number(sourceValue.value.self_test.lastMstEnd.seconds)
+        : undefined,
+    nest: ({ sourceValue }) =>
+      isNaN(sourceValue?.value?.latest_manual_test_end_utc_secs) === false
+        ? Number(sourceValue.value.latest_manual_test_end_utc_secs)
+        : undefined,
+  },
+
+  self_test_in_progress: {
+    google: ({ sourceValue }) =>
+      sourceValue?.value?.legacy_structure_self_test?.mstInProgress === true ||
+      sourceValue?.value?.legacy_structure_self_test?.astInProgress === true,
+    nest: ({ rawData, sourceValue }) =>
+      rawData?.['safety.' + sourceValue?.value?.structure_id]?.value?.manual_self_test_in_progress === true,
+  },
+
+  replacement_date: {
+    google: ({ sourceValue }) =>
+      isNaN(sourceValue?.value?.legacy_protect_device_settings?.replaceByDate?.seconds) === false
+        ? Number(sourceValue.value.legacy_protect_device_settings.replaceByDate.seconds)
+        : undefined,
+    nest: ({ sourceValue }) =>
+      isNaN(sourceValue?.value?.replace_by_date_utc_secs) === false ? Number(sourceValue.value.replace_by_date_utc_secs) : undefined,
+  },
+
+  topaz_hush_key: {
+    google: ({ sourceValue }) =>
+      typeof sourceValue?.value?.safety_structure_settings?.structureHushKey === 'string'
+        ? sourceValue.value.safety_structure_settings.structureHushKey
+        : '',
+    nest: ({ rawData, sourceValue }) =>
+      typeof rawData?.['structure.' + sourceValue?.value?.structure_id]?.value?.topaz_hush_key === 'string'
+        ? rawData['structure.' + sourceValue.value.structure_id].value.topaz_hush_key
+        : '',
+  },
+
+  detected_motion: {
+    google: ({ sourceValue }) =>
+      typeof sourceValue?.value?.legacy_protect_device_info === 'object'
+        ? sourceValue.value.legacy_protect_device_info.autoAway !== true
+        : false,
+    nest: ({ sourceValue }) => sourceValue?.value?.auto_away === false,
+  },
+};
+
 // Function to process our RAW Nest or Google for this device type
 export function processRawData(log, rawData, config, deviceType = undefined) {
   if (
@@ -213,6 +507,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
 
   // Process data for any smoke detectors we have in the raw data
   let devices = {};
+
   Object.entries(rawData)
     .filter(
       ([key, value]) =>
@@ -221,215 +516,62 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
     )
     .forEach(([object_key, value]) => {
       let tempDevice = {};
+
       try {
         if (
           value?.source === DATA_SOURCE.GOOGLE &&
           value.value?.configuration_done?.deviceReady === true &&
           rawData?.[value.value?.device_info?.pairerId?.resourceId] !== undefined
         ) {
-          tempDevice = processCommonData(
-            object_key,
-            value.value.device_info.pairerId.resourceId,
-            {
-              type: DEVICE_TYPE.PROTECT,
-              model:
-                value.value.device_info.typeName === 'nest.resource.NestProtect1LinePoweredResource'
-                  ? 'Protect (1st gen, wired)'
-                  : value.value.device_info.typeName === 'nest.resource.NestProtect1BatteryPoweredResource'
-                    ? 'Protect (1st gen, battery)'
-                    : value.value.device_info.typeName === 'nest.resource.NestProtect2LinePoweredResource'
-                      ? 'Protect (2nd gen, wired)'
-                      : value.value.device_info.typeName === 'nest.resource.NestProtect2BatteryPoweredResource'
-                        ? 'Protect (2nd gen, battery)'
-                        : 'Protect (unknown)',
-              softwareVersion: value.value.device_identity.softwareVersion,
-              serialNumber: value.value.device_identity.serialNumber,
-              description: String(value.value?.label?.label ?? ''),
-              location: String(
-                [
-                  ...Object.values(
-                    rawData?.[value.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {},
-                  ),
-                  ...Object.values(
-                    rawData?.[value.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {},
-                  ),
-                ].find((where) => where?.whereId?.resourceId === value.value?.device_located_settings?.whereAnnotationRid?.resourceId)
-                  ?.label?.literal ?? '',
-              ),
-              online: value.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
-              line_power_present: value.value?.wall_power?.status === 'POWER_SOURCE_STATUS_ACTIVE',
-              wired_or_battery: value.value?.wall_power?.present !== true,
-              battery_level: (() => {
-                // Check for new firmware battery field first
-                if (typeof value.value?.battery?.replacementIndicator === 'string') {
-                  if (value.value.battery.replacementIndicator === 'BATTERY_REPLACEMENT_INDICATOR_NOT_AT_ALL') {
-                    return 100;
-                  }
-                  if (value.value.battery.replacementIndicator === 'BATTERY_REPLACEMENT_INDICATOR_SOON') {
-                    return 50;
-                  }
-                  if (value.value.battery.replacementIndicator === 'BATTERY_REPLACEMENT_INDICATOR_NOW') {
-                    return 20;
-                  }
-                }
+          let mappedData = buildMappedObject(PROTECT_FIELD_MAP, createMappingContext(rawData, object_key, undefined, value));
 
-                let voltage = 0;
-                if (value.value?.wall_power?.present !== true) {
-                  // Battery-powered (6xAA) - use minimum of both banks if available
-                  if (
-                    isNaN(value.value?.battery_voltage_bank0?.batteryValue?.batteryVoltage?.value) === false &&
-                    isNaN(value.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === false
-                  ) {
-                    voltage = Math.min(
-                      Number(value.value?.battery_voltage_bank0?.batteryValue?.batteryVoltage?.value),
-                      Number(value.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value),
-                    );
-                  }
-
-                  if (
-                    isNaN(value.value?.battery_voltage_bank0?.batteryValue?.batteryVoltage?.value) === false &&
-                    isNaN(value.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === true
-                  ) {
-                    voltage = Number(value.value?.battery_voltage_bank0?.batteryValue?.batteryVoltage?.value);
-                  }
-
-                  if (
-                    isNaN(value.value?.battery_voltage_bank0?.batteryValue?.batteryVoltage?.value) === true &&
-                    isNaN(value.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === false
-                  ) {
-                    voltage = Number(value.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value);
-                  }
-
-                  // 6xAA battery pack
-                  return scaleValue(voltage, 6.6, 9.0, 0, 100);
-                }
-
-                // Wall-powered with backup batteries (3xAA) - use bank1
-                voltage =
-                  isNaN(value.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === false
-                    ? Number(value.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value)
-                    : 0;
-
-                return scaleValue(voltage, 3.3, 4.5, 0, 100);
-              })(),
-              smoke_status: value.value?.safety_alarm_smoke?.alarmState === 'ALARM_STATE_ALARM',
-              co_status: value.value?.safety_alarm_co?.alarmState === 'ALARM_STATE_ALARM',
-              heat_status: false, // TODO <- need to find in protobuf
-              hushed_state:
-                value.value?.safety_alarm_smoke?.silenceState === 'SILENCE_STATE_SILENCED' ||
-                value.value?.safety_alarm_co?.silenceState === 'SILENCE_STATE_SILENCED',
-              ntp_green_led_enable: value.value?.night_time_promise_settings?.greenLedEnabled === true,
-              smoke_test_passed:
-                value.value?.safety_summary?.warningDevices?.failures?.includes('FAILURE_TYPE_SMOKE') === false
-                  ? true
-                  : typeof value.value?.smoke !== 'object'
-                    ? undefined
-                    : value.value?.smoke?.infraredLedFault === undefined || value.value?.smoke?.blueLedFault === undefined
-                      ? true
-                      : (value.value?.smoke?.infraredLedFault?.type === 'SMOKE_FAULT_TYPE_NONE' &&
-                            value.value?.smoke?.blueLedFault?.type === 'SMOKE_FAULT_TYPE_NONE') === true
-                          ? true
-                          : false,
-              heat_test_passed:
-                value.value?.safety_summary?.warningDevices?.failures?.includes('FAILURE_TYPE_TEMP') === false
-                  ? true
-                  : typeof value.value?.passive_infrared !== 'object'
-                    ? undefined
-                    : value.value?.passive_infrared?.faultInformation === undefined
-                      ? true
-                      : (value.value?.passive_infrared?.faultInformation?.type === 'PASSIVE_INFRARED_FAULT_TYPE_NONE') === true
-                          ? true
-                          : false,
-              co_test_passed:
-                typeof value.value?.carbon_monoxide !== 'object'
-                  ? undefined
-                  : value.value?.carbon_monoxide?.faultInformation === undefined
-                    ? true
-                    : (value.value?.carbon_monoxide?.faultInformation?.type === 'CO_FAULT_TYPE_NONE') === true
-                        ? true
-                        : false,
-              latest_alarm_test:
-                isNaN(value.value?.self_test?.lastMstEnd?.seconds) === false ? Number(value.value.self_test.lastMstEnd.seconds) : 0,
-              self_test_in_progress:
-                value.value?.legacy_structure_self_test?.mstInProgress === true ||
-                value.value?.legacy_structure_self_test?.astInProgress === true,
-              replacement_date:
-                isNaN(value.value?.legacy_protect_device_settings?.replaceByDate?.seconds) === false
-                  ? Number(value.value.legacy_protect_device_settings.replaceByDate.seconds)
-                  : 0,
-              topaz_hush_key:
-                typeof value.value?.safety_structure_settings?.structureHushKey === 'string'
-                  ? value.value.safety_structure_settings.structureHushKey
-                  : '',
-              detected_motion:
-                typeof value.value?.legacy_protect_device_info === 'object'
-                  ? value.value?.legacy_protect_device_info?.autoAway !== true
-                  : false,
-            },
-            config,
-          );
+          if (
+            mappedData.serialNumber !== undefined &&
+            mappedData.nest_google_device_uuid !== undefined &&
+            mappedData.nest_google_home_uuid !== undefined &&
+            mappedData.model !== undefined &&
+            mappedData.softwareVersion !== undefined &&
+            (mappedData.description !== undefined || mappedData.location !== undefined)
+          ) {
+            tempDevice = processCommonData(
+              mappedData.nest_google_device_uuid,
+              mappedData.nest_google_home_uuid,
+              {
+                type: DEVICE_TYPE.PROTECT,
+                ...mappedData,
+              },
+              config,
+            );
+          }
         }
 
-        // Only process Nest API data if Google API data wasn't already processed for this device
-        // Google API provides more detailed and up-to-date information (e.g., new firmware sensor diagnostics)
+        // Nest fallback if Google not used or data not available from Google for this device
         if (
           Object.entries(tempDevice).length === 0 &&
           value?.source === DATA_SOURCE.NEST &&
           rawData?.['where.' + value.value?.structure_id] !== undefined &&
           rawData?.['safety.' + value.value?.structure_id] !== undefined &&
-          rawData?.['widget_track.' + value.value?.thread_mac_address?.toUpperCase()] !== undefined &&
-          rawData?.['safety.' + value.value?.structure_id] !== undefined
+          rawData?.['widget_track.' + value.value?.thread_mac_address?.toUpperCase?.()] !== undefined
         ) {
-          tempDevice = processCommonData(
-            object_key,
-            'structure.' + value.value.structure_id,
-            {
-              type: DEVICE_TYPE.PROTECT,
-              model: (() => {
-                let model =
-                  value.value.serial_number.substring(0, 2) === '06'
-                    ? 'Protect (2nd gen)'
-                    : value.value.serial_number.substring(0, 2) === '05'
-                      ? 'Protect (1st gen)'
-                      : 'Protect (unknown)';
-                return value.value.wired_or_battery === true
-                  ? model.replace(/\bgen\)/, 'gen, battery)')
-                  : value.value.wired_or_battery === false
-                    ? model.replace(/\bgen\)/, 'gen, wired)')
-                    : model;
-              })(),
-              softwareVersion: value.value.software_version,
-              serialNumber: value.value.serial_number,
-              description: String(value.value?.description ?? ''),
-              location: String(
-                rawData?.['where.' + value.value.structure_id]?.value?.wheres?.find((where) => where?.where_id === value.value.where_id)
-                  ?.name ?? '',
-              ),
-              online: rawData?.['widget_track.' + value.value.thread_mac_address.toUpperCase()]?.value?.online === true,
-              line_power_present: value.value.line_power_present === true,
-              wired_or_battery: value.value.wired_or_battery === 1,
-              // Nest Protect reports an internal battery capacity metric (0–5400)
-              // rather than actual voltage. ~5400 = fresh batteries, ~3000 ≈ low battery.
-              battery_level: scaleValue(value.value.battery_level, 3000, 5400, 0, 100),
-              smoke_status: value.value.smoke_status !== 0,
-              co_status: value.value.co_status !== 0,
-              heat_status: value.value.heat_status !== 0,
-              hushed_state: value.value.hushed_state === true,
-              ntp_green_led_enable: value.value.ntp_green_led_enable === true,
-              smoke_test_passed: value.value.component_smoke_test_passed === true,
-              heat_test_passed: value.value.component_temp_test_passed === true,
-              co_test_passed: value.value.component_co_test_passed === true,
-              latest_alarm_test: value.value.latest_manual_test_end_utc_secs,
-              self_test_in_progress: rawData?.['safety.' + value.value.structure_id]?.value?.manual_self_test_in_progress === true,
-              replacement_date: value.value.replace_by_date_utc_secs,
-              topaz_hush_key:
-                typeof rawData?.['structure.' + value.value.structure_id]?.value?.topaz_hush_key === 'string'
-                  ? rawData['structure.' + value.value.structure_id].value.topaz_hush_key
-                  : '',
-              detected_motion: value.value.auto_away === false,
-            },
-            config,
-          );
+          let mappedData = buildMappedObject(PROTECT_FIELD_MAP, createMappingContext(rawData, object_key, value, undefined));
+          if (
+            mappedData.serialNumber !== undefined &&
+            mappedData.nest_google_device_uuid !== undefined &&
+            mappedData.nest_google_home_uuid !== undefined &&
+            mappedData.model !== undefined &&
+            mappedData.softwareVersion !== undefined &&
+            (mappedData.description !== undefined || mappedData.location !== undefined)
+          ) {
+            tempDevice = processCommonData(
+              mappedData.nest_google_device_uuid,
+              mappedData.nest_google_home_uuid,
+              {
+                type: DEVICE_TYPE.PROTECT,
+                ...mappedData,
+              },
+              config,
+            );
+          }
         }
         // eslint-disable-next-line no-unused-vars
       } catch (error) {
@@ -446,8 +588,8 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         );
         let homeOptions = config?.homes?.find(
           (home) =>
-            home?.nest_home_uuid?.toUpperCase?.() === 'structure.' + value?.value?.structure_id?.toUpperCase?.() ||
-            home?.google_home_uuid?.toUpperCase?.() === value?.value?.device_info?.pairerId?.resourceId?.toUpperCase?.(),
+            home?.nest_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
+            home?.google_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
         );
 
         // Insert any extra options we've read in from configuration file for this device

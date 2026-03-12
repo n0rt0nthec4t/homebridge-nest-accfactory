@@ -8,6 +8,9 @@
 // Define nodejs module requirements
 import crypto from 'node:crypto';
 
+// Define external library requirements
+import chalk from 'chalk';
+
 // Import our modules
 import FFmpeg from './ffmpeg.js';
 
@@ -32,11 +35,25 @@ function processConfig(config, log) {
   options.useNestAPI = config.options?.useNestAPI === true || config.options?.useNestAPI === undefined;
   options.useGoogleAPI = config.options?.useGoogleAPI === true || config.options?.useGoogleAPI === undefined;
 
-  // Support data dump
-  options.rawdump = config.options?.rawdump === true;
-  if (options.rawdump === true) {
-    log?.warn?.('Support Dump enabled. For full diagnostic output, ensure Homebridge is started with debug mode enabled.');
+  // Verbose Logging. Independent of Homebridge debug mode.
+  options.debug = config.options?.debug === true;
+
+  if (options.debug === true) {
+    // Force chalk to output colours for debug messages even if Homebridge debug mode is not enabled.
+    // This improves readability of verbose logs in some terminals.
+    chalk.level = 1;
+
+    log?.warn?.('Verbose logging enabled via configuration');
   }
+
+  // Override log.debug to output gray coloured messages when verbose logging is enabled.
+  // When disabled, debug logging becomes a no-op.
+  log.debug = options.debug === true ? (message, ...parameters) => log?.info?.(chalk.gray(message), ...parameters) : () => {};
+
+  // Support Dump for Nest and Google API data.
+  // When enabled, the plugin will output raw API objects to the log to assist with troubleshooting.
+  // This may produce a large amount of log output and should normally only be enabled temporarily.
+  options.supportDump = config?.options?.supportDump === true;
 
   // Get configuration for max number of concurrent 'live view' streams. For HomeKit Secure Video, this will always be 1
   options.maxStreams = isNaN(config.options?.maxStreams) === false ? Number(config.options.maxStreams) : 2;

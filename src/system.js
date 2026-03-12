@@ -20,7 +20,7 @@ import { URL } from 'node:url';
 import HomeKitDevice from './HomeKitDevice.js';
 import { loadDeviceModules, getDeviceHKCategory } from './devices.js';
 import { processConfig, buildConnections } from './config.js';
-import { adjustTemperature, scaleValue, fetchWrapper, logJSONObject } from './utils.js';
+import { adjustTemperature, scaleValue, fetchWrapper } from './utils.js';
 
 // Define constants
 import { USER_AGENT, __dirname, DATA_SOURCE, DEVICE_TYPE, ACCOUNT_TYPE, NEST_API_BUCKETS, PROTOBUF_RESOURCES } from './consts.js';
@@ -535,17 +535,28 @@ export default class NestAccfactory {
 
         // Dump the raw data if configured to do so
         // This can be used for user support, rather than specific build to dump this :-)
-        if (this?.config?.options?.rawdump === true && this.#connections[uuid]?.doneNestRawDump !== true) {
-          this.#connections[uuid].doneNestRawDump = true; // Done once
+        if (this?.config?.options?.supportDump === true && this.#connections[uuid]?.doneNestSupportDump !== true) {
+          this.#connections[uuid].doneNestSupportDump = true; // Done once
           this?.log?.warn?.('Support Dump for Nest API data will be logged below for troubleshooting purposes.');
           Object.entries(this.#rawData)
             .filter(([, data]) => data?.source === DATA_SOURCE.NEST)
             .forEach(([serial, data]) => {
-              this?.log?.debug?.('{');
-              this?.log?.debug?.('  "%s": {', serial);
-              logJSONObject(this.log, data?.value, 4);
-              this?.log?.debug?.('  }');
-              this?.log?.debug?.('}');
+              this?.log?.info?.('{');
+              this?.log?.info?.('  "%s": {', serial);
+              Object.entries(data?.value).forEach(([key, value]) => {
+                if (typeof value === 'object' && value !== null) {
+                  this?.log?.info?.('  %s:', key);
+                  String(JSON.stringify(value, null, 2))
+                    .split('\n')
+                    .forEach((line) => {
+                      this?.log?.info?.('    %s', line);
+                    });
+                } else {
+                  this?.log?.info?.('  %s: %j', key, value);
+                }
+              });
+              this?.log?.info?.('  }');
+              this?.log?.info?.('}');
             });
           this?.log?.warn?.('End of Support Dump for Nest API data.');
         }
@@ -708,8 +719,8 @@ export default class NestAccfactory {
                 trait.patch.values.postalCode.value,
                 trait.patch.values.countryCode.value,
               );
-              if (weatherData !== undefined) {
-                this.#rawData[trait.traitId.resourceId].value.weather = weatherData;
+              if (weatherData !== undefined && typeof this.#rawData?.[trait.traitId.resourceId]?.value === 'object') {
+                this.#rawData[trait.traitId.resourceId].value.weather = { ...weatherData };
               }
             }
 
@@ -730,17 +741,28 @@ export default class NestAccfactory {
 
           // Dump the raw data if configured to do so
           // This can be used for user support, rather than specific build to dump this :-)
-          if (this?.config?.options?.rawdump === true && this.#connections[uuid]?.doneGoogleRawDump !== true) {
-            this.#connections[uuid].doneGoogleRawDump = true; // Done once
+          if (this?.config?.options?.supportDump === true && this.#connections[uuid]?.doneGoogleSupportDump !== true) {
+            this.#connections[uuid].doneGoogleSupportDump = true; // Done once
             this?.log?.warn?.('Support Dump for Google API data will be logged below for troubleshooting purposes.');
             Object.entries(this.#rawData)
               .filter(([, data]) => data?.source === DATA_SOURCE.GOOGLE)
               .forEach(([serial, data]) => {
-                this?.log?.debug?.('{');
-                this?.log?.debug?.('  "%s": {', serial);
-                logJSONObject(this.log, data?.value, 4);
-                this?.log?.debug?.('  }');
-                this?.log?.debug?.('}');
+                this?.log?.info?.('{');
+                this?.log?.info?.('  "%s": {', serial);
+                Object.entries(data?.value).forEach(([key, value]) => {
+                  if (typeof value === 'object' && value !== null) {
+                    this?.log?.info?.('  %s:', key);
+                    String(JSON.stringify(value, null, 2))
+                      .split('\n')
+                      .forEach((line) => {
+                        this?.log?.info?.('    %s', line);
+                      });
+                  } else {
+                    this?.log?.info?.('  %s: %j', key, value);
+                  }
+                });
+                this?.log?.info?.('  }');
+                this?.log?.info?.('}');
               });
             this?.log?.warn?.('End of Support Dump for Google API data.');
           }

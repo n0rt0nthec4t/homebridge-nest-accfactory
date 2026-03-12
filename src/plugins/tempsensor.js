@@ -7,13 +7,14 @@
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
 import { processCommonData, adjustTemperature, scaleValue } from '../utils.js';
+import { buildMappedObject, createMappingContext } from '../translator.js';
 
 // Define constants
 import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from '../consts.js';
 
 export default class NestTemperatureSensor extends HomeKitDevice {
   static TYPE = 'TemperatureSensor';
-  static VERSION = '2026.03.10'; // Code version
+  static VERSION = '2026.03.12'; // Code version
 
   batteryService = undefined;
   temperatureService = undefined;
@@ -38,7 +39,12 @@ export default class NestTemperatureSensor extends HomeKitDevice {
   }
 
   onUpdate(deviceData) {
-    if (typeof deviceData !== 'object' || this.temperatureService === undefined || this.batteryService === undefined) {
+    if (
+      typeof deviceData !== 'object' ||
+      deviceData?.constructor !== Object ||
+      this.temperatureService === undefined ||
+      this.batteryService === undefined
+    ) {
       return;
     }
 
@@ -80,6 +86,121 @@ export default class NestTemperatureSensor extends HomeKitDevice {
   }
 }
 
+// Data translation functions for temperature sensor data.
+// We use this to translate RAW Nest and Google data into the format we want for our
+// Nest Temperature Sensor device(s) using the field map below.
+//
+// This keeps all translation logic in one place and makes it easier to maintain as
+// Nest and Google sources evolve over time.
+//
+// Field map conventions:
+// - Return undefined for missing values rather than placeholder defaults
+// - Let processRawData() decide if there is enough data to build the device
+// - Let downstream code decide how to handle optional fields
+//
+// Temperature sensor field translation map
+const TEMPSENSOR_FIELD_MAP = {
+  nest_google_device_uuid: {
+    google: ({ sensorUUID }) => sensorUUID,
+    nest: ({ sensorUUID }) => sensorUUID,
+  },
+
+  nest_google_home_uuid: {
+    google: ({ homeUUID }) => homeUUID,
+    nest: ({ homeUUID }) => homeUUID,
+  },
+
+  serialNumber: {
+    google: ({ sensorData }) =>
+      typeof sensorData?.device_identity?.serialNumber === 'string' && sensorData.device_identity.serialNumber !== ''
+        ? sensorData.device_identity.serialNumber
+        : undefined,
+    nest: ({ sensorData }) =>
+      typeof sensorData?.serial_number === 'string' && sensorData.serial_number !== '' ? sensorData.serial_number : undefined,
+  },
+
+  description: {
+    google: ({ sensorData }) => String(sensorData?.label?.label ?? ''),
+    nest: ({ sensorData }) => String(sensorData?.description?.trim?.() ?? ''),
+  },
+
+  location: {
+    google: ({ rawData, pairerUUID, sensorData }) =>
+      String(
+        [
+          ...Object.values(rawData?.[pairerUUID]?.value?.located_annotations?.predefinedWheres || {}),
+          ...Object.values(rawData?.[pairerUUID]?.value?.located_annotations?.customWheres || {}),
+        ].find((where) => where?.whereId?.resourceId === sensorData?.device_located_settings?.whereAnnotationRid?.resourceId)?.label
+          ?.literal ?? '',
+      ),
+
+    nest: ({ rawData, sensorData }) =>
+      String(
+        rawData?.['where.' + sensorData?.structure_id]?.value?.wheres?.find((where) => where?.where_id === sensorData?.where_id)?.name ??
+          '',
+      ),
+  },
+
+  battery_level: {
+    google: ({ sensorData }) =>
+      // CR2 lithium battery discharge range used by Nest Temperature Sensors
+      // 3.2V ≈ fresh battery
+      // ~2.6V ≈ low battery warning
+      // 2.5V treated as empty
+      isNaN(sensorData?.battery?.assessedVoltage?.value) === false
+        ? scaleValue(Number(sensorData.battery.assessedVoltage.value), 2.5, 3.2, 0, 100)
+        : undefined,
+
+    nest: ({ sensorData }) =>
+      // Nest API already reports battery as percentage (0–100)
+      isNaN(sensorData?.battery_level) === false ? scaleValue(Number(sensorData.battery_level), 0, 100, 0, 100) : undefined,
+  },
+
+  current_temperature: {
+    google: ({ sensorData }) =>
+      // Google API reports temperature as nested protobuf value
+      // temperatureValue.temperature.value (°C)
+      isNaN(sensorData?.current_temperature?.temperatureValue?.temperature?.value) === false
+        ? adjustTemperature(Number(sensorData.current_temperature.temperatureValue.temperature.value), 'C', 'C', true)
+        : undefined,
+
+    nest: ({ sensorData }) =>
+      // Nest API reports temperature directly as °C
+      isNaN(sensorData?.current_temperature) === false
+        ? adjustTemperature(Number(sensorData.current_temperature), 'C', 'C', true)
+        : undefined,
+  },
+
+  online: {
+    google: ({ sensorData }) =>
+      // Google API uses last beacon timestamp to indicate activity
+      // Sensor considered offline if no beacon received within 4 hours
+      isNaN(sensorData?.last_updated_beacon?.lastBeaconTime?.seconds) === false &&
+      Math.floor(Date.now() / 1000) - Number(sensorData.last_updated_beacon.lastBeaconTime.seconds) < 3600 * 4,
+
+    nest: ({ sensorData }) =>
+      // Nest API reports last update timestamp directly
+      // Same 4-hour threshold used for offline detection
+      isNaN(sensorData?.last_updated_at) === false && Math.floor(Date.now() / 1000) - Number(sensorData.last_updated_at) < 3600 * 4,
+  },
+
+  associated_thermostat: {
+    google: ({ parentUUID }) => parentUUID,
+    nest: ({ parentUUID }) => parentUUID,
+  },
+
+  active_sensor: {
+    google: ({ active_sensor }) =>
+      // Indicates whether this temperature sensor is currently selected
+      // by the thermostat's Remote Comfort Sensing feature
+      active_sensor === true,
+
+    nest: ({ active_sensor }) =>
+      // Nest API reports active sensors via rcs_settings.active_rcs_sensors
+      active_sensor === true,
+  },
+};
+
 // Function to process our RAW Nest or Google for this device type
 export function processRawData(log, rawData, config, deviceType = undefined) {
   if (
@@ -98,6 +219,8 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
   // that only exist on one API (e.g., 2 on Google + 1 on Nest), so both APIs are processed and sensors
   // are deduplicated by serialNumber to build a complete sensor list.
   let devices = {};
+  let candidates = {};
+
   Object.entries(rawData)
     .filter(
       ([key, value]) =>
@@ -106,7 +229,6 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
     )
     .forEach(([object_key, value]) => {
       try {
-        // Process Google API temperature sensors for this thermostat
         if (
           value?.source === DATA_SOURCE.GOOGLE &&
           value.value?.configuration_done?.deviceReady === true &&
@@ -114,138 +236,125 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           Array.isArray(value.value?.remote_comfort_sensing_settings?.associatedRcsSensors) === true
         ) {
           value.value.remote_comfort_sensing_settings.associatedRcsSensors.forEach((sensor) => {
-            if (typeof rawData?.[sensor?.deviceId?.resourceId]?.value === 'object') {
-              let sensorData = rawData[sensor.deviceId.resourceId].value;
-              let tempDevice = processCommonData(
-                sensor.deviceId.resourceId,
-                value.value.device_info.pairerId.resourceId,
-                {
-                  type: DEVICE_TYPE.TEMPSENSOR,
-                  model: 'Temperature Sensor',
-                  softwareVersion: NestTemperatureSensor.VERSION, // We'll use our class version here now
-                  serialNumber: sensorData.device_identity.serialNumber,
-                  description: String(sensorData?.label?.label ?? ''),
-                  location: String(
-                    [
-                      ...Object.values(
-                        rawData?.[sensorData?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {},
-                      ),
-                      ...Object.values(
-                        rawData?.[sensorData?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {},
-                      ),
-                    ].find((where) => where?.whereId?.resourceId === sensorData?.device_located_settings?.whereAnnotationRid?.resourceId)
-                      ?.label?.literal ?? '',
-                  ),
-                  // CR2 lithium battery discharge range used by Nest Temperature Sensors
-                  // 3.2V ≈ fresh, ~2.6V ≈ low battery warning, 2.5V treated as empty
-                  battery_level: scaleValue(Number(sensorData.battery.assessedVoltage.value), 2.5, 3.2, 0, 100),
-                  current_temperature: adjustTemperature(sensorData.current_temperature.temperatureValue.temperature.value, 'C', 'C', true),
-                  online:
-                    isNaN(sensorData?.last_updated_beacon?.lastBeaconTime?.seconds) === false &&
-                    Math.floor(Date.now() / 1000) - Number(sensorData.last_updated_beacon.lastBeaconTime.seconds) < 3600 * 4,
-                  associated_thermostat: object_key,
-                  active_sensor:
-                    value.value?.remote_comfort_sensing_settings?.activeRcsSelection?.activeRcsSensor?.resourceId ===
-                    sensor.deviceId.resourceId,
-                },
-                config,
-              );
+            if (typeof rawData?.[sensor?.deviceId?.resourceId]?.value !== 'object') {
+              return;
+            }
 
-              if (
-                Object.entries(tempDevice).length !== 0 &&
-                typeof devices[tempDevice.serialNumber] === 'undefined' &&
-                (deviceType === undefined || (typeof deviceType === 'string' && deviceType !== '' && tempDevice.type === deviceType))
-              ) {
-                // Deduplicate by serialNumber: Google API data processed first takes priority
-                let deviceOptions = config?.devices?.find(
-                  (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
-                );
-                let homeOptions = config?.homes?.find(
-                  (home) => home?.google_home_uuid?.toUpperCase?.() === value.value.device_info.pairerId.resourceId.toUpperCase?.(),
-                );
+            let sensorUUID = sensor.deviceId.resourceId;
+            let sensorData = rawData[sensorUUID].value;
+            let mappedData = buildMappedObject(
+              TEMPSENSOR_FIELD_MAP,
+              createMappingContext(rawData, sensorUUID, undefined, value, {
+                sensorUUID: sensorUUID,
+                homeUUID: value.value.device_info.pairerId.resourceId,
+                parentUUID: object_key,
+                pairerUUID: sensorData?.device_info?.pairerId?.resourceId,
+                sensorData: sensorData,
+                active_sensor: value.value?.remote_comfort_sensing_settings?.activeRcsSelection?.activeRcsSensor?.resourceId === sensorUUID,
+              }),
+            );
 
-                // Insert any extra options we've read in from configuration file for this device
-                tempDevice.eveHistory =
-                  deviceOptions?.eveHistory !== undefined
-                    ? deviceOptions.eveHistory === true
-                    : homeOptions?.eveHistory !== undefined
-                      ? homeOptions.eveHistory === true
-                      : config.options?.eveHistory === true;
-
-                devices[tempDevice.serialNumber] = tempDevice; // Store processed device
-              }
+            if (
+              mappedData.serialNumber !== undefined &&
+              mappedData.current_temperature !== undefined &&
+              mappedData.battery_level !== undefined &&
+              mappedData.nest_google_device_uuid !== undefined &&
+              mappedData.nest_google_home_uuid !== undefined
+            ) {
+              candidates[mappedData.serialNumber] = {
+                type: DEVICE_TYPE.TEMPSENSOR,
+                model: 'Temperature Sensor',
+                softwareVersion: NestTemperatureSensor.VERSION,
+                ...mappedData,
+              };
             }
           });
         }
 
-        // Process Nest API temperature sensors for this thermostat
-        // Skipped if sensor already processed from Google API (serialNumber uniqueness check below prevents duplicates)
-        // This ensures complete sensor coverage when some sensors only exist on Nest API
         if (
           value?.source === DATA_SOURCE.NEST &&
           Array.isArray(rawData?.['rcs_settings.' + value.value?.serial_number]?.value?.associated_rcs_sensors) === true
         ) {
           rawData['rcs_settings.' + value.value.serial_number].value.associated_rcs_sensors.forEach((sensor) => {
             if (
-              typeof rawData[sensor]?.value === 'object' &&
-              (rawData?.[sensor]?.value?.structure_id?.trim() ?? '') !== '' &&
-              typeof rawData?.['where.' + rawData[sensor].value.structure_id] === 'object'
+              typeof rawData?.[sensor]?.value !== 'object' ||
+              (rawData?.[sensor]?.value?.structure_id?.trim() ?? '') === '' ||
+              typeof rawData?.['where.' + rawData[sensor].value.structure_id] !== 'object'
             ) {
-              let sensorData = rawData[sensor].value;
-              let tempDevice = processCommonData(
-                sensor,
-                'structure.' + rawData[sensor].value.structure_id,
-                {
-                  type: DEVICE_TYPE.TEMPSENSOR,
-                  model: 'Temperature Sensor',
-                  softwareVersion: NestTemperatureSensor.VERSION, // We'll use our class version here now
-                  serialNumber: sensorData.serial_number,
-                  battery_level: scaleValue(Number(sensorData.battery_level), 0, 100, 0, 100),
-                  current_temperature: adjustTemperature(sensorData.current_temperature, 'C', 'C', true),
-                  online: Math.floor(Date.now() / 1000) - sensorData.last_updated_at < 3600 * 4,
-                  associated_thermostat: object_key,
-                  description: String(sensorData.description?.trim() ?? ''),
-                  location: String(
-                    rawData?.['where.' + sensorData.structure_id]?.value?.wheres?.find((where) => where?.where_id === sensorData.where_id)
-                      ?.name ?? '',
-                  ),
-                  active_sensor:
-                    rawData?.['rcs_settings.' + value.value.serial_number]?.value?.active_rcs_sensors?.includes?.(object_key) === true,
-                },
-                config,
-              );
+              return;
+            }
 
-              if (
-                Object.entries(tempDevice).length !== 0 &&
-                typeof devices[tempDevice.serialNumber] === 'undefined' &&
-                (deviceType === undefined || (typeof deviceType === 'string' && deviceType !== '' && tempDevice.type === deviceType))
-              ) {
-                // Deduplicate by serialNumber: Nest API fills gaps left by Google API (if not already processed)
-                let deviceOptions = config?.devices?.find(
-                  (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
-                );
-                let homeOptions = config?.homes?.find(
-                  (home) => home?.nest_home_uuid?.toUpperCase?.() === 'structure.' + rawData[sensor].value.structure_id?.toUpperCase?.(),
-                );
+            let sensorData = rawData[sensor].value;
+            let mappedData = buildMappedObject(
+              TEMPSENSOR_FIELD_MAP,
+              createMappingContext(rawData, sensor, value, undefined, {
+                sensorUUID: sensor,
+                homeUUID: 'structure.' + sensorData.structure_id,
+                parentUUID: object_key,
+                pairerUUID: undefined,
+                sensorData: sensorData,
+                active_sensor:
+                  rawData?.['rcs_settings.' + value.value.serial_number]?.value?.active_rcs_sensors?.includes?.(sensor) === true,
+              }),
+            );
 
-                // Insert any extra options we've read in from configuration file for this device
-                tempDevice.eveHistory =
-                  deviceOptions?.eveHistory !== undefined
-                    ? deviceOptions.eveHistory === true
-                    : homeOptions?.eveHistory !== undefined
-                      ? homeOptions.eveHistory === true
-                      : config.options?.eveHistory === true;
-
-                devices[tempDevice.serialNumber] = tempDevice; // Store processed device
-              }
+            if (
+              mappedData.serialNumber !== undefined &&
+              mappedData.current_temperature !== undefined &&
+              mappedData.battery_level !== undefined &&
+              mappedData.nest_google_device_uuid !== undefined &&
+              mappedData.nest_google_home_uuid !== undefined &&
+              candidates[mappedData.serialNumber] === undefined
+            ) {
+              candidates[mappedData.serialNumber] = {
+                type: DEVICE_TYPE.TEMPSENSOR,
+                model: 'Temperature Sensor',
+                softwareVersion: NestTemperatureSensor.VERSION,
+                ...mappedData,
+              };
             }
           });
         }
+
         // eslint-disable-next-line no-unused-vars
       } catch (error) {
         log?.debug?.('Error processing temperature sensor data for "%s"', object_key);
       }
     });
+
+  Object.values(candidates).forEach((candidate) => {
+    let tempDevice = processCommonData(
+      candidate.nest_google_device_uuid,
+      candidate.nest_google_home_uuid,
+      {
+        ...candidate,
+      },
+      config,
+    );
+
+    if (
+      Object.entries(tempDevice).length !== 0 &&
+      (deviceType === undefined || (typeof deviceType === 'string' && deviceType !== '' && tempDevice.type === deviceType))
+    ) {
+      let deviceOptions = config?.devices?.find(
+        (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+      );
+      let homeOptions = config?.homes?.find(
+        (home) =>
+          home?.nest_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
+          home?.google_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
+      );
+
+      tempDevice.eveHistory =
+        deviceOptions?.eveHistory !== undefined
+          ? deviceOptions.eveHistory === true
+          : homeOptions?.eveHistory !== undefined
+            ? homeOptions.eveHistory === true
+            : config.options?.eveHistory === true;
+
+      devices[tempDevice.serialNumber] = tempDevice;
+    }
+  });
 
   return devices;
 }

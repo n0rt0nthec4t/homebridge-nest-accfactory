@@ -71,6 +71,12 @@
                 "expandable": true,
                 "expanded": true,
                 "properties": {
+                    "debug": {
+                        "title": "Verbose Logging",
+                        "description": "Enable additional plugin logging for more verbose output. Independent of Homebridge debug mode.",
+                        "type": "boolean",
+                        "default": false
+                    },
                     "elevation": {
                         "title": "Elevation",
                         "description": "Height above sea level for the weather station",
@@ -113,7 +119,7 @@
                     "maxStreams": {
                         "type": "integer"
                     },
-                    "rawdump": {
+                    "supportDump": {
                         "title": "Support Dump",
                         "description": "Enable additional raw device data logging to assist with troubleshooting and support. Enable this only when requested, as it may produce large log output and include detailed device information.",
                         "type": "boolean",
@@ -263,7 +269,8 @@
             "items": [
                 "options.eveHistory",
                 "options.weather",
-                "options.elevation"
+                "options.elevation",
+                "options.debug"
             ]
         },
         {
@@ -275,7 +282,7 @@
                 "options.ffmpegPath",
                 "options.ffmpegDebug",
                 "options.ffmpegHWAccel",
-                "options.rawdump"
+                "options.supportDump"
             ]
         }
     ]

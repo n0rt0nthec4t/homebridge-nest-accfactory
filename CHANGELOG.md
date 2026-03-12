@@ -20,7 +20,14 @@ From version **0.4.0**, **HomeKit Secure Video (HKSV) support is now mandatory f
 
 This does **not** mean cameras will automatically record video.
 
-Recording behaviour is controlled by HomeKit settings in the Apple Home app
+Recording behaviour is controlled by HomeKit settings in the Apple Home app.
+
+---
+
+Plugin debug logging is now **independent of Homebridge debug mode**.
+
+- Running Homebridge with `-D` will no longer enable debug output for this plugin
+- Debug output is now controlled by the `debug` configuration option (Verbose Logging)
 
 ### Changes
 
@@ -28,12 +35,16 @@ Recording behaviour is controlled by HomeKit settings in the Apple Home app
 - Refactored core modules to use the updated base class
 - Added humidifier support for Nest Thermostats
 - Added `Advanced Options` section to the GUI configuration
+- Added plugin-level verbose logging option
+  - Enables debug output without requiring Homebridge debug mode
+  - Verbose log messages are displayed in gray for easier identification
 - Fixed an issue affecting live view and HKSV recording on migrated Nest / Google cameras
 - Fixed an issue affecting audio talkback on some older migrated Nest / Google cameras
 - Simplified camera motion handling — only a single motion sensor is now exposed per camera
 - Updated support for Nest Hub Max (1st gen, wired)
 - Updated device discovery to prioritise Google API devices over Nest API devices
 - Updated `README.md` to clarify that HKSV recording is triggered by general motion events and does not support individual recording filters
+- Updated `README.md` to document new verbose logging and Support Dump configuration options
 
 ## v0.3.9 (2026/02/18)
 

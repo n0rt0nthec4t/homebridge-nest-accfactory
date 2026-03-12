@@ -111,12 +111,14 @@ The following options are available in the config.json options object. These app
 
 | Name               | Description                                                                                  | Default        |
 |--------------------|----------------------------------------------------------------------------------------------|----------------|
+| debug              | Enable plugin debug logging (ignores Homebridge debug setting)                               | false          |
 | elevation          | Height above sea level for weather station(s)                                                | 0              |
 | eveHistory         | Provide history in EveHome application where applicable                                      | true           |
 | exclude            | Exclude all device(s)                                                                        | false          |
 | ffmpegDebug        | Turns on specific debugging output for when ffmpeg is invoked                                | false          |
 | ffmpegHWaccel      | Enable video hardware acceleration for supported camera(s) and doorbell(s)                   | false          |
 | ffmpegPath         | Path to an ffmpeg binary (looks for binary named `ffmpeg` in path)                           | /usr/local/bin |
+| supportDump        | Enable Support Dump logging of raw Nest and Google API data                                  | false          |
 | weather            | Virtual weather station for each Nest/Google home we discover                                | false          |
 
 #### devices

@@ -19,6 +19,7 @@ import NexusTalk from '../nexustalk.js';
 import WebRTC from '../webrtc.js';
 import FFmpeg from '../ffmpeg.js';
 import { processCommonData, parseDurationToSeconds, scaleValue } from '../utils.js';
+import { buildMappedObject, createMappingContext } from '../translator.js';
 
 // Define constants
 import {
@@ -48,7 +49,7 @@ const STREAMERS = {
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2026.03.10'; // Code version
+  static VERSION = '2026.03.12'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -293,7 +294,7 @@ export default class NestCamera extends HomeKitDevice {
   }
 
   async onUpdate(deviceData) {
-    if (typeof deviceData !== 'object' || this.controller === undefined) {
+    if (typeof deviceData !== 'object' || deviceData?.constructor !== Object || this.controller === undefined) {
       return;
     }
 
@@ -1407,6 +1408,301 @@ export default class NestCamera extends HomeKitDevice {
   }
 }
 
+// Data translation functions for camera, doorbell and floodlight data.
+// We use this to translate RAW Nest and Google data into the format we want for our
+// camera device(s) using the field map below.
+//
+// This keeps all translation logic in one place and makes it easier to maintain as
+// Nest and Google sources evolve over time.
+//
+// Field map conventions:
+// - Return undefined for missing values rather than placeholder defaults
+// - processRawData() determines if enough data exists to build the device
+// - Optional fields may remain undefined
+//
+// Camera field translation map
+const CAMERA_FIELD_MAP = {
+  // Identity fields
+  serialNumber: {
+    google: ({ sourceValue }) =>
+      typeof sourceValue?.value?.device_identity?.serialNumber === 'string' && sourceValue.value.device_identity.serialNumber.trim() !== ''
+        ? sourceValue.value.device_identity.serialNumber
+        : undefined,
+    nest: ({ sourceValue }) =>
+      typeof sourceValue?.value?.serial_number === 'string' && sourceValue.value.serial_number.trim() !== ''
+        ? sourceValue.value.serial_number
+        : undefined,
+  },
+
+  nest_google_device_uuid: {
+    google: ({ objectKey }) => objectKey,
+    nest: ({ objectKey }) => objectKey,
+  },
+
+  nest_google_home_uuid: {
+    google: ({ sourceValue }) => sourceValue?.value?.device_info?.pairerId?.resourceId,
+    nest: ({ sourceValue }) => 'structure.' + sourceValue?.value?.structure_id,
+  },
+
+  // Device classification
+  type: {
+    google: ({ sourceValue }) =>
+      sourceValue?.value?.doorbell_indoor_chime_settings?.chimeType !== undefined
+        ? DEVICE_TYPE.DOORBELL
+        : typeof sourceValue?.value?.floodlight_settings === 'object' && typeof sourceValue?.value?.floodlight_state === 'object'
+          ? DEVICE_TYPE.FLOODLIGHT
+          : DEVICE_TYPE.CAMERA,
+    nest: ({ sourceValue }) =>
+      sourceValue?.value?.capabilities?.includes?.('indoor_chime') === true ? DEVICE_TYPE.DOORBELL : DEVICE_TYPE.CAMERA,
+  },
+
+  model: {
+    google: ({ sourceValue }) => {
+      let typeName = sourceValue?.value?.device_info?.typeName ?? '';
+
+      return typeName === 'google.resource.GreenQuartzResource'
+        ? 'Doorbell (2nd gen, battery)'
+        : typeName === 'google.resource.UsticaResource'
+          ? 'Cam Indoor (3rd gen, wired)'
+          : typeName === 'google.resource.SpencerResource'
+            ? 'Cam (2nd gen, wired)'
+            : typeName === 'google.resource.VenusResource'
+              ? 'Doorbell (2nd gen, wired)'
+              : typeName === 'google.resource.RhodesResource'
+                ? 'Doorbell (3nd gen, wired)'
+                : typeName === 'nest.resource.NestCamOutdoorResource'
+                  ? 'Cam Outdoor (1st gen, wired)'
+                  : typeName === 'google.resource.LinosaResource'
+                    ? 'Cam Outdoor (2nd gen, wired)'
+                    : typeName === 'nest.resource.NestCamIndoorResource'
+                      ? 'Cam Indoor (1st gen)'
+                      : typeName === 'nest.resource.NestCamIQResource'
+                        ? 'Cam IQ Indoor (1st gen)'
+                        : typeName === 'nest.resource.NestCamIQOutdoorResource'
+                          ? 'Cam IQ Outdoor (1st gen, wired)'
+                          : typeName === 'nest.resource.NestHelloResource'
+                            ? 'Doorbell (1st gen, wired)'
+                            : typeName === 'google.resource.NeonQuartzResource'
+                              ? 'Cam with Floodlight (1st gen, wired)'
+                              : typeName === 'google.resource.GoogleNewmanResource'
+                                ? 'Max Hub (1st gen, wired)'
+                                : 'Camera (unknown)';
+    },
+
+    nest: ({ sourceValue }) =>
+      typeof sourceValue?.value?.model === 'string' && sourceValue.value.model !== ''
+        ? sourceValue.value.model.replace(/nest\s*/gi, '')
+        : undefined,
+  },
+
+  softwareVersion: {
+    google: ({ sourceValue }) => sourceValue?.value?.device_identity?.softwareVersion,
+    nest: ({ sourceValue }) => sourceValue?.value?.software_version,
+  },
+
+  // Naming / descriptive fields
+  description: {
+    google: ({ sourceValue }) => String(sourceValue?.value?.label?.label ?? ''),
+    nest: ({ sourceValue }) => (typeof sourceValue?.value?.description === 'string' ? sourceValue.value.description : ''),
+  },
+
+  location: {
+    google: ({ rawData, sourceValue }) =>
+      String(
+        [
+          ...Object.values(
+            rawData?.[sourceValue?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {},
+          ),
+          ...Object.values(
+            rawData?.[sourceValue?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {},
+          ),
+        ].find((where) => where?.whereId?.resourceId === sourceValue?.value?.device_located_settings?.whereAnnotationRid?.resourceId)?.label
+          ?.literal ?? '',
+      ),
+
+    nest: ({ rawData, sourceValue }) =>
+      String(
+        rawData?.['where.' + sourceValue?.value?.structure_id]?.value?.wheres?.find(
+          (where) => where?.where_id === sourceValue?.value?.where_id,
+        )?.name ?? '',
+      ),
+  },
+
+  // Core operational fields
+  online: {
+    google: ({ sourceValue }) => sourceValue?.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
+    nest: ({ sourceValue }) => sourceValue?.value?.streaming_state?.includes?.('offline') === false,
+  },
+
+  streaming_enabled: {
+    google: ({ sourceValue }) => sourceValue?.value?.recording_toggle?.currentCameraState === 'CAMERA_ON',
+    nest: ({ sourceValue }) => sourceValue?.value?.streaming_state?.includes?.('enabled') === true,
+  },
+
+  audio_enabled: {
+    google: ({ sourceValue }) => sourceValue?.value?.microphone_settings?.enableMicrophone === true,
+    nest: ({ sourceValue }) => sourceValue?.value?.audio_input_enabled === true,
+  },
+
+  has_indoor_chime: {
+    google: ({ sourceValue }) =>
+      sourceValue?.value?.doorbell_indoor_chime_settings?.chimeType === 'CHIME_TYPE_MECHANICAL' ||
+      sourceValue?.value?.doorbell_indoor_chime_settings?.chimeType === 'CHIME_TYPE_ELECTRONIC',
+    nest: ({ sourceValue }) => sourceValue?.value?.capabilities?.includes?.('indoor_chime') === true,
+  },
+
+  indoor_chime_enabled: {
+    google: ({ sourceValue }) => sourceValue?.value?.doorbell_indoor_chime_settings?.chimeEnabled === true,
+    nest: ({ sourceValue }) => sourceValue?.value?.properties?.['doorbell.indoor_chime.enabled'] === true,
+  },
+
+  has_irled: {
+    nest: ({ sourceValue }) => sourceValue?.value?.capabilities?.includes?.('irled') === true,
+  },
+
+  irled_enabled: {
+    nest: ({ sourceValue }) => sourceValue?.value?.properties?.['irled.state'] !== 'always_off',
+  },
+
+  has_statusled: {
+    nest: ({ sourceValue }) => sourceValue?.value?.capabilities?.includes?.('statusled') === true,
+  },
+
+  has_video_flip: {
+    nest: ({ sourceValue }) => sourceValue?.value?.capabilities?.includes?.('video.flip') === true,
+  },
+
+  video_flipped: {
+    nest: ({ sourceValue }) => sourceValue?.value?.properties?.['video.flipped'] === true,
+  },
+
+  statusled_brightness: {
+    nest: ({ sourceValue }) =>
+      isNaN(sourceValue?.value?.properties?.['statusled.brightness']) === false
+        ? Number(sourceValue.value.properties['statusled.brightness'])
+        : undefined,
+  },
+
+  has_microphone: {
+    google: ({ sourceValue }) => sourceValue?.value?.microphone_settings?.enableMicrophone === true,
+    nest: ({ sourceValue }) => sourceValue?.value?.capabilities?.includes?.('audio.microphone') === true,
+  },
+
+  has_speaker: {
+    google: ({ sourceValue }) => sourceValue?.value?.speaker_volume?.volume !== undefined,
+    nest: ({ sourceValue }) => sourceValue?.value?.capabilities?.includes?.('audio.speaker') === true,
+  },
+
+  has_motion_detection: {
+    google: ({ sourceValue }) => sourceValue?.value?.observation_trigger_capabilities?.videoEventTypes?.motion?.value === true,
+    nest: ({ sourceValue }) => sourceValue?.value?.capabilities?.includes?.('detectors.on_camera') === true,
+  },
+
+  motion_detection_enabled: {
+    google: ({ sourceValue }) =>
+      sourceValue?.value?.observation_trigger_capabilities?.videoEventTypes?.motion?.value === true &&
+      sourceValue?.value?.observation_trigger_settings?.zoneTriggerSettings?.some?.(
+        (zone) => zone?.zoneSettings?.triggerTypes?.motion?.enabled?.value === true,
+      ) === true,
+    nest: ({ sourceValue }) =>
+      sourceValue?.value?.capabilities?.includes?.('detectors.on_camera') === true &&
+      sourceValue?.value?.properties?.['notify.motion.enabled'] === true,
+  },
+
+  events: {
+    google: ({ sourceValue }) => (typeof sourceValue?.value?.events === 'object' ? sourceValue.value.events : []),
+    nest: ({ sourceValue }) => (typeof sourceValue?.value?.events === 'object' ? sourceValue.value.events : []),
+  },
+
+  quiet_time_enabled: {
+    google: ({ sourceValue }) =>
+      isNaN(sourceValue?.value?.quiet_time_settings?.quietTimeEnds?.seconds) === false &&
+      Number(sourceValue.value.quiet_time_settings.quietTimeEnds.seconds) !== 0 &&
+      Math.floor(Date.now() / 1000) < Number(sourceValue.value.quiet_time_settings.quietTimeEnds.seconds),
+    nest: () => false,
+  },
+
+  camera_type: {
+    google: ({ sourceValue }) => sourceValue?.value?.device_identity?.vendorProductId,
+    nest: ({ sourceValue }) => sourceValue?.value?.camera_type,
+  },
+
+  streaming_protocols: {
+    google: ({ sourceValue }) =>
+      Array.isArray(sourceValue?.value?.streaming_protocol?.supportedProtocols) === true
+        ? sourceValue.value.streaming_protocol.supportedProtocols
+        : [],
+    nest: () => ['PROTOCOL_NEXUSTALK'],
+  },
+
+  nexustalk_host: {
+    google: ({ sourceValue }) =>
+      typeof sourceValue?.value?.streaming_protocol?.directHost?.value === 'string'
+        ? sourceValue.value.streaming_protocol.directHost.value
+        : undefined,
+    nest: ({ sourceValue }) => sourceValue?.value?.direct_nexustalk_host,
+  },
+
+  mpegdash_url: {
+    google: ({ sourceValue }) =>
+      typeof sourceValue?.value?.streaming_protocol?.dashUrl?.value === 'string'
+        ? sourceValue.value.streaming_protocol.dashUrl.value
+        : undefined,
+    nest: () => undefined,
+  },
+
+  hls_url: {
+    google: ({ sourceValue }) =>
+      typeof sourceValue?.value?.streaming_protocol?.hlsUrl?.value === 'string'
+        ? sourceValue.value.streaming_protocol.hlsUrl.value
+        : undefined,
+    nest: () => undefined,
+  },
+
+  has_light: {
+    google: ({ sourceValue }) =>
+      typeof sourceValue?.value?.floodlight_settings === 'object' && typeof sourceValue?.value?.floodlight_state === 'object',
+  },
+
+  light_enabled: {
+    google: ({ sourceValue }) => sourceValue?.value?.floodlight_state?.currentState === 'LIGHT_STATE_ON',
+  },
+
+  light_brightness: {
+    google: ({ sourceValue }) =>
+      isNaN(sourceValue?.value?.floodlight_settings?.brightness) === false
+        ? scaleValue(Number(sourceValue.value.floodlight_settings.brightness), 0, 10, 0, 100)
+        : undefined,
+  },
+
+  migrating: {
+    google: ({ sourceValue }) =>
+      sourceValue?.value?.camera_migration_status?.state?.progress !== undefined &&
+      sourceValue.value.camera_migration_status.state.progress !== 'PROGRESS_COMPLETE' &&
+      sourceValue.value.camera_migration_status.state.progress !== 'PROGRESS_NONE',
+    nest: ({ sourceValue }) =>
+      sourceValue?.value?.properties?.['cc2migration.overview_state'] !== undefined &&
+      sourceValue.value.properties['cc2migration.overview_state'] !== 'NORMAL',
+  },
+
+  battery_level: {
+    google: ({ sourceValue }) =>
+      // Google API reports battery remaining as fractional percentage (0–1)
+      isNaN(sourceValue?.value?.battery_power_source?.remaining?.remainingPercent?.value) === false
+        ? scaleValue(Number(sourceValue.value.battery_power_source.remaining.remainingPercent.value), 0, 1, 0, 100)
+        : undefined,
+    nest: ({ sourceValue }) =>
+      // Nest API reports battery voltage for older battery-powered camera products
+      isNaN(sourceValue?.value?.properties?.['rq_battery_battery_volt']) === false
+        ? scaleValue(Number(sourceValue.value.properties['rq_battery_battery_volt']), 6.2, 8.4, 0, 100)
+        : undefined,
+  },
+
+  nexus_api_http_server_url: {
+    nest: ({ sourceValue }) => sourceValue?.value?.nexus_api_http_server_url ?? '',
+  },
+};
+
 // Function to process our RAW Nest or Google for this device type
 export function processRawData(log, rawData, config, deviceType = undefined) {
   if (
@@ -1433,7 +1729,9 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
     )
     .forEach(([object_key, value]) => {
       let tempDevice = {};
+
       try {
+        // Process Google API camera/doorbell/floodlight data
         if (
           value?.source === DATA_SOURCE.GOOGLE &&
           rawData?.[value.value?.device_info?.pairerId?.resourceId] !== undefined &&
@@ -1442,175 +1740,57 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           (value.value?.configuration_done?.deviceReady === true ||
             value.value?.camera_migration_status?.state?.where === 'MIGRATED_TO_GOOGLE_HOME')
         ) {
-          tempDevice = processCommonData(
-            object_key,
-            value.value.device_info.pairerId.resourceId,
-            {
-              type:
-                value.value?.doorbell_indoor_chime_settings?.chimeType !== undefined
-                  ? DEVICE_TYPE.DOORBELL
-                  : typeof value.value?.floodlight_settings === 'object' && typeof value.value?.floodlight_state === 'object'
-                    ? DEVICE_TYPE.FLOODLIGHT
-                    : DEVICE_TYPE.CAMERA,
-              model:
-                value.value.device_info.typeName === 'google.resource.GreenQuartzResource'
-                  ? 'Doorbell (2nd gen, battery)'
-                  : value.value.device_info.typeName === 'google.resource.UsticaResource'
-                    ? 'Cam Indoor (3rd gen, wired)'
-                    : value.value.device_info.typeName === 'google.resource.SpencerResource'
-                      ? 'Cam (2nd gen, wired)'
-                      : value.value.device_info.typeName === 'google.resource.VenusResource'
-                        ? 'Doorbell (2nd gen, wired)'
-                        : value.value.device_info.typeName === 'google.resource.RhodesResource'
-                          ? 'Doorbell (3nd gen, wired)'
-                          : value.value.device_info.typeName === 'nest.resource.NestCamOutdoorResource'
-                            ? 'Cam Outdoor (1st gen, wired)'
-                            : value.value.device_info.typeName === 'google.resource.LinosaResource'
-                              ? 'Cam Outdoor (2nd gen, wired)'
-                              : value.value.device_info.typeName === 'nest.resource.NestCamIndoorResource'
-                                ? 'Cam Indoor (1st gen)'
-                                : value.value.device_info.typeName === 'nest.resource.NestCamIQResource'
-                                  ? 'Cam IQ Indoor (1st gen)'
-                                  : value.value.device_info.typeName === 'nest.resource.NestCamIQOutdoorResource'
-                                    ? 'Cam IQ Outdoor (1st gen, wired)'
-                                    : value.value.device_info.typeName === 'nest.resource.NestHelloResource'
-                                      ? 'Doorbell (1st gen, wired)'
-                                      : value.value.device_info.typeName === 'google.resource.NeonQuartzResource'
-                                        ? 'Cam with Floodlight (1st gen, wired)'
-                                        : value.value.device_info.typeName === 'google.resource.GoogleNewmanResource'
-                                          ? 'Max Hub (1st gen, wired)'
-                                          : 'Camera (unknown)',
-              softwareVersion: value.value.device_identity.softwareVersion,
-              serialNumber: value.value.device_identity.serialNumber,
-              description: String(value.value?.label?.label ?? ''),
-              location: String(
-                [
-                  ...Object.values(
-                    rawData?.[value.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {},
-                  ),
-                  ...Object.values(
-                    rawData?.[value.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {},
-                  ),
-                ].find((where) => where?.whereId?.resourceId === value.value?.device_located_settings?.whereAnnotationRid?.resourceId)
-                  ?.label?.literal ?? '',
-              ),
-              online: value.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
-              audio_enabled: value.value?.microphone_settings?.enableMicrophone === true,
-              has_indoor_chime:
-                value.value?.doorbell_indoor_chime_settings?.chimeType === 'CHIME_TYPE_MECHANICAL' ||
-                value.value?.doorbell_indoor_chime_settings?.chimeType === 'CHIME_TYPE_ELECTRONIC',
-              indoor_chime_enabled: value.value?.doorbell_indoor_chime_settings?.chimeEnabled === true,
-              streaming_enabled: value.value?.recording_toggle?.currentCameraState === 'CAMERA_ON',
-              has_microphone: value.value?.microphone_settings?.enableMicrophone === true,
-              has_speaker: value.value?.speaker_volume?.volume !== undefined,
-              has_motion_detection: value.value?.observation_trigger_capabilities?.videoEventTypes?.motion?.value === true,
-              motion_detection_enabled:
-                value.value?.observation_trigger_capabilities?.videoEventTypes?.motion?.value === true &&
-                value.value?.observation_trigger_settings?.zoneTriggerSettings?.some?.(
-                  (zone) => zone?.zoneSettings?.triggerTypes?.motion?.enabled?.value === true,
-                ),
-              events: typeof value.value?.events === 'object' ? value.value.events : [],
-              quiet_time_enabled:
-                isNaN(value.value?.quiet_time_settings?.quietTimeEnds?.seconds) === false &&
-                Number(value.value.quiet_time_settings.quietTimeEnds.seconds) !== 0 &&
-                Math.floor(Date.now() / 1000) < Number(value.value.quiet_time_settings.quietTimeEnds.seconds),
-              camera_type: value.value.device_identity.vendorProductId,
-              streaming_protocols:
-                Array.isArray(value.value?.streaming_protocol?.supportedProtocols) === true
-                  ? value.value.streaming_protocol.supportedProtocols
-                  : [],
-              nexustalk_host:
-                typeof value.value?.streaming_protocol?.directHost?.value === 'string'
-                  ? value.value.streaming_protocol.directHost.value
-                  : undefined,
-              mpegdash_url:
-                typeof value.value?.streaming_protocol?.dashUrl?.value === 'string'
-                  ? value.value.streaming_protocol.dashUrl.value
-                  : undefined,
-              hls_url:
-                typeof value.value?.streaming_protocol?.hlsUrl?.value === 'string'
-                  ? value.value.streaming_protocol.hlsUrl.value
-                  : undefined,
-              has_light: typeof value.value?.floodlight_settings === 'object' && typeof value.value?.floodlight_state === 'object',
-              light_enabled: value.value?.floodlight_state?.currentState === 'LIGHT_STATE_ON',
-              light_brightness:
-                isNaN(value.value?.floodlight_settings?.brightness) === false
-                  ? scaleValue(Number(value.value.floodlight_settings.brightness), 0, 10, 0, 100)
-                  : 0,
-              migrating:
-                value.value?.camera_migration_status?.state?.progress !== undefined &&
-                value.value.camera_migration_status.state.progress !== 'PROGRESS_COMPLETE' &&
-                value.value.camera_migration_status.state.progress !== 'PROGRESS_NONE',
-              battery_level:
-                isNaN(value.value?.battery_power_source?.remaining?.remainingPercent?.value) === false
-                  ? scaleValue(Number(value.value?.battery_power_source?.remaining?.remainingPercent?.value), 0, 1, 0, 100)
-                  : 0,
-            },
-            config,
-          );
+          let mappedData = buildMappedObject(CAMERA_FIELD_MAP, createMappingContext(rawData, object_key, undefined, value));
+
+          if (
+            mappedData.serialNumber !== undefined &&
+            mappedData.nest_google_device_uuid !== undefined &&
+            mappedData.nest_google_home_uuid !== undefined &&
+            mappedData.type !== undefined &&
+            mappedData.model !== undefined &&
+            mappedData.softwareVersion !== undefined &&
+            (mappedData.description !== undefined || mappedData.location !== undefined)
+          ) {
+            tempDevice = processCommonData(
+              mappedData.nest_google_device_uuid,
+              mappedData.nest_google_home_uuid,
+              {
+                ...mappedData,
+              },
+              config,
+            );
+          }
         }
 
-        // Only process Nest API data if Google API data wasn't already processed for this device
-        // Google API provides more detailed and up-to-date information
+        // Process Nest API camera/doorbell data
+        // Nest API is used for older NexusTalk-capable cameras and cameras not fully migrated to Google Home
         if (
-          Object.entries(tempDevice).length === 0 &&
           value?.source === DATA_SOURCE.NEST &&
           rawData?.['where.' + value.value.structure_id] !== undefined &&
           value.value?.nexus_api_http_server_url !== undefined &&
           (value.value?.properties?.['cc2migration.overview_state'] === 'NORMAL' ||
             value.value?.properties?.['cc2migration.overview_state'] === 'REVERSE_MIGRATION_IN_PROGRESS')
         ) {
-          // We'll only use the Nest API data for Cameras which have NOT been migrated to Google Home
-          tempDevice = processCommonData(
-            object_key,
-            'structure.' + value.value.structure_id,
-            {
-              type: value.value?.capabilities?.includes?.('indoor_chime') === true ? DEVICE_TYPE.DOORBELL : DEVICE_TYPE.CAMERA,
-              serialNumber: value.value.serial_number,
-              softwareVersion: value.value.software_version,
-              model: value.value.model.replace(/nest\s*/gi, ''), // Use camera/doorbell model that Nest supplies
-              description: typeof value.value?.description === 'string' ? value.value.description : '',
-              location:
-                rawData?.['where.' + value.value.structure_id]?.value?.wheres?.find((where) => where?.where_id === value.value.where_id)
-                  ?.name ?? '',
-              streaming_enabled: value.value.streaming_state.includes('enabled') === true,
-              nexus_api_http_server_url: value.value.nexus_api_http_server_url ?? '',
-              online: value.value.streaming_state.includes('offline') === false,
-              audio_enabled: value.value.audio_input_enabled === true,
-              has_indoor_chime: value.value?.capabilities?.includes?.('indoor_chime') === true,
-              indoor_chime_enabled: value.value?.properties?.['doorbell.indoor_chime.enabled'] === true,
-              has_irled: value.value?.capabilities?.includes?.('irled') === true,
-              irled_enabled: value.value?.properties?.['irled.state'] !== 'always_off',
-              has_statusled: value.value?.capabilities?.includes?.('statusled') === true,
-              has_video_flip: value.value?.capabilities?.includes?.('video.flip') === true,
-              video_flipped: value.value?.properties?.['video.flipped'] === true,
-              statusled_brightness:
-                isNaN(value.value?.properties?.['statusled.brightness']) === false
-                  ? Number(value.value.properties['statusled.brightness'])
-                  : 0,
-              has_microphone: value.value?.capabilities?.includes?.('audio.microphone') === true,
-              has_speaker: value.value?.capabilities?.includes?.('audio.speaker') === true,
-              has_motion_detection: value.value?.capabilities?.includes?.('detectors.on_camera') === true,
-              motion_detection_enabled:
-                value.value?.capabilities?.includes?.('detectors.on_camera') === true &&
-                value.value?.properties?.['notify.motion.enabled'] === true,
-              events: typeof value.value?.events === 'object' ? value.value.events : [],
-              streaming_protocols: ['PROTOCOL_NEXUSTALK'],
-              nexustalk_host: value.value.direct_nexustalk_host,
-              mpegdash_url: undefined,
-              hls_url: undefined,
-              quiet_time_enabled: false,
-              camera_type: value.value.camera_type,
-              migrating:
-                value.value?.properties?.['cc2migration.overview_state'] !== undefined &&
-                value.value?.properties?.['cc2migration.overview_state'] !== 'NORMAL',
-              battery_level:
-                isNaN(value.value?.properties?.['rq_battery_battery_volt']) === false
-                  ? scaleValue(Number(value.value?.properties['rq_battery_battery_volt']), 6.2, 8.4, 0, 100)
-                  : 0,
-            },
-            config,
-          );
+          let mappedData = buildMappedObject(CAMERA_FIELD_MAP, createMappingContext(rawData, object_key, value, undefined));
+
+          if (
+            mappedData.serialNumber !== undefined &&
+            mappedData.nest_google_device_uuid !== undefined &&
+            mappedData.nest_google_home_uuid !== undefined &&
+            mappedData.type !== undefined &&
+            mappedData.model !== undefined &&
+            mappedData.softwareVersion !== undefined &&
+            (mappedData.description !== undefined || mappedData.location !== undefined)
+          ) {
+            tempDevice = processCommonData(
+              mappedData.nest_google_device_uuid,
+              mappedData.nest_google_home_uuid,
+              {
+                ...mappedData,
+              },
+              config,
+            );
+          }
         }
         // eslint-disable-next-line no-unused-vars
       } catch (error) {
@@ -1627,8 +1807,8 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         );
         let homeOptions = config?.homes?.find(
           (home) =>
-            home?.nest_home_uuid?.toUpperCase?.() === 'structure.' + value?.value?.structure_id?.toUpperCase?.() ||
-            home?.google_home_uuid?.toUpperCase?.() === value?.value?.device_info?.pairerId?.resourceId?.toUpperCase?.(),
+            home?.nest_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
+            home?.google_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
         );
 
         // Insert any extra options we've read in from configuration file for this device
@@ -1640,8 +1820,8 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               : config.options?.eveHistory === true;
         tempDevice.doorbellCooldown = parseDurationToSeconds(deviceOptions?.doorbellCooldown, { defaultValue: 60, min: 0, max: 300 });
         tempDevice.motionCooldown = parseDurationToSeconds(deviceOptions?.motionCooldown, { defaultValue: 60, min: 0, max: 300 });
-        tempDevice.chimeSwitch = deviceOptions?.chimeSwitch === true; // Control 'indoor' chime by switch
-        tempDevice.localAccess = deviceOptions?.localAccess === true; // Local network video streaming rather than from cloud
+        tempDevice.chimeSwitch = deviceOptions?.chimeSwitch === true;
+        tempDevice.localAccess = deviceOptions?.localAccess === true;
         tempDevice.ffmpeg = {
           binary: config.options.ffmpeg.binary,
           valid: config.options.ffmpeg.valid === true,
@@ -1653,7 +1833,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         };
         tempDevice.maxStreams = 1; // Always 1 stream since HKSV is mandatory
 
-        devices[tempDevice.serialNumber] = tempDevice; // Store processed device
+        devices[tempDevice.serialNumber] = tempDevice;
       }
     });
 

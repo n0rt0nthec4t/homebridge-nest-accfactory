@@ -7,6 +7,7 @@
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
 import { processCommonData, adjustTemperature, parseDurationToSeconds } from '../utils.js';
+import { buildMappedObject, createMappingContext } from '../translator.js';
 
 // Define constants
 import {
@@ -20,7 +21,7 @@ import {
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = 'Heatlink';
-  static VERSION = '2026.03.10'; // Code version
+  static VERSION = '2026.03.12'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
@@ -231,6 +232,189 @@ export default class NestHeatlink extends HomeKitDevice {
   }
 }
 
+// Data translation functions for Heat Link data.
+// We use this to translate RAW Nest and Google data into the format we want for our
+// Heat Link device(s) using the field map below.
+//
+// This keeps all translation logic in one place and makes it easier to maintain as
+// Nest and Google sources evolve over time.
+//
+// Field map conventions:
+// - Return undefined for missing values rather than placeholder defaults
+// - processRawData() determines if enough data exists to build the device
+// - Optional fields may remain undefined
+//
+// Heat Link field translation map
+const HEATLINK_FIELD_MAP = {
+  // Identity fields
+  serialNumber: {
+    google: ({ sourceValue }) =>
+      (sourceValue?.value?.heat_link?.heatLinkSerialNumber?.value?.trim?.() ?? '') !== ''
+        ? sourceValue.value.heat_link.heatLinkSerialNumber.value
+        : undefined,
+
+    nest: ({ sourceValue }) =>
+      (sourceValue?.value?.heat_link_serial_number?.trim?.() ?? '') !== '' ? sourceValue.value.heat_link_serial_number : undefined,
+  },
+
+  nest_google_device_uuid: {
+    google: ({ objectKey }) => objectKey,
+    nest: ({ objectKey }) => objectKey,
+  },
+
+  nest_google_home_uuid: {
+    google: ({ sourceValue }) => sourceValue?.value?.device_info?.pairerId?.resourceId,
+    nest: ({ rawData, sourceValue }) => rawData?.['link.' + sourceValue?.value?.serial_number]?.value?.structure,
+  },
+
+  // Model identification
+  model: {
+    google: ({ sourceValue }) => {
+      let model = sourceValue?.value?.heat_link?.heatLinkModel?.value ?? '';
+
+      if (model.startsWith('Amber-2') === true) {
+        return 'Heat Link for Learning Thermostat (3rd gen, EU)';
+      }
+
+      if (model.startsWith('Amber-1') === true) {
+        return 'Heat Link for Learning Thermostat (2nd gen, EU)';
+      }
+
+      if (model.includes('Agate') === true) {
+        return 'Heat Link for Thermostat E (1st gen, EU)';
+      }
+
+      return model !== '' ? 'Heat Link (unknown - ' + model + ')' : undefined;
+    },
+
+    nest: ({ sourceValue }) => {
+      let model = sourceValue?.value?.heat_link_model ?? '';
+
+      if (model.startsWith('Amber-2') === true) {
+        return 'Heat Link for Learning Thermostat (3rd gen, EU)';
+      }
+
+      if (model.startsWith('Amber-1') === true) {
+        return 'Heat Link for Learning Thermostat (2nd gen, EU)';
+      }
+
+      if (model.includes('Agate') === true) {
+        return 'Heat Link for Thermostat E (1st gen, EU)';
+      }
+
+      return model !== '' ? 'Heat Link (unknown - ' + model + ')' : undefined;
+    },
+  },
+
+  // Software version
+  softwareVersion: {
+    google: ({ sourceValue }) => sourceValue?.value?.heat_link?.heatLinkSwVersion?.value,
+    nest: ({ sourceValue }) => sourceValue?.value?.heat_link_sw_version,
+  },
+
+  // Thermostat association
+  associated_thermostat: {
+    google: ({ objectKey }) => objectKey,
+    nest: ({ objectKey }) => objectKey,
+  },
+
+  // Temperature scale used by thermostat UI
+  temperature_scale: {
+    google: ({ sourceValue }) => (sourceValue?.value?.display_settings?.temperatureScale === 'TEMPERATURE_SCALE_F' ? 'F' : 'C'),
+
+    nest: ({ sourceValue }) => (sourceValue?.value?.temperature_scale?.toUpperCase?.() === 'F' ? 'F' : 'C'),
+  },
+
+  // Online status (thermostat connectivity reflects Heat Link availability)
+  online: {
+    google: ({ sourceValue }) => sourceValue?.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
+
+    nest: ({ rawData, sourceValue }) => rawData?.['track.' + sourceValue?.value?.serial_number]?.value?.online === true,
+  },
+
+  // Hot water control support
+  has_hot_water_control: {
+    google: ({ sourceValue }) => sourceValue?.value?.hvac_equipment_capabilities?.hasHotWaterControl === true,
+
+    nest: ({ sourceValue }) => sourceValue?.value?.has_hot_water_control === true,
+  },
+
+  hot_water_active: {
+    google: ({ sourceValue }) => sourceValue?.value?.hot_water_trait?.boilerActive === true,
+
+    nest: ({ sourceValue }) => sourceValue?.value?.hot_water_active === true,
+  },
+
+  hot_water_boost_active: {
+    google: ({ sourceValue }) =>
+      isNaN(sourceValue?.value?.hot_water_settings?.boostTimerEnd?.seconds) === false &&
+      Number(sourceValue.value.hot_water_settings.boostTimerEnd.seconds) > 0,
+
+    nest: ({ sourceValue }) =>
+      isNaN(sourceValue?.value?.hot_water_boost_time_to_end) === false && Number(sourceValue.value.hot_water_boost_time_to_end) > 0,
+  },
+
+  has_hot_water_temperature: {
+    google: ({ sourceValue }) => sourceValue?.value?.hvac_equipment_capabilities?.hasHotWaterTemperature === true,
+
+    nest: ({ sourceValue }) => sourceValue?.value?.has_hot_water_temperature === true,
+  },
+
+  // Current water temperature reported by the boiler
+  current_water_temperature: {
+    google: ({ sourceValue }) =>
+      isNaN(sourceValue?.value?.hot_water_trait?.temperature?.value) === false
+        ? adjustTemperature(Number(sourceValue.value.hot_water_trait.temperature.value), 'C', 'C', true)
+        : undefined,
+
+    nest: ({ sourceValue }) =>
+      isNaN(sourceValue?.value?.current_water_temperature) === false
+        ? adjustTemperature(Number(sourceValue.value.current_water_temperature), 'C', 'C', true)
+        : undefined,
+  },
+
+  // Target water temperature
+  hot_water_temperature: {
+    google: ({ sourceValue }) =>
+      isNaN(sourceValue?.value?.hot_water_settings?.temperature?.value) === false
+        ? adjustTemperature(Number(sourceValue.value.hot_water_settings.temperature.value), 'C', 'C', true)
+        : undefined,
+
+    nest: ({ sourceValue }) =>
+      isNaN(sourceValue?.value?.hot_water_temperature) === false
+        ? adjustTemperature(Number(sourceValue.value.hot_water_temperature), 'C', 'C', true)
+        : undefined,
+  },
+
+  // Naming / descriptive fields
+  description: {
+    google: ({ sourceValue }) => String(sourceValue?.value?.label?.label ?? ''),
+    nest: ({ rawData, sourceValue }) => String(rawData?.['shared.' + sourceValue?.value?.serial_number]?.value?.name ?? ''),
+  },
+
+  location: {
+    google: ({ rawData, sourceValue }) =>
+      String(
+        [
+          ...Object.values(
+            rawData?.[sourceValue?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {},
+          ),
+          ...Object.values(
+            rawData?.[sourceValue?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {},
+          ),
+        ].find((where) => where?.whereId?.resourceId === sourceValue?.value?.device_located_settings?.whereAnnotationRid?.resourceId)?.label
+          ?.literal ?? '',
+      ),
+
+    nest: ({ rawData, sourceValue }) =>
+      String(
+        rawData?.[
+          'where.' + rawData?.['link.' + sourceValue?.value?.serial_number]?.value?.structure?.split?.('.')[1]
+        ]?.value?.wheres?.find((where) => where?.where_id === sourceValue?.value?.where_id)?.name ?? '',
+      ),
+  },
+};
+
 // Function to process our RAW Nest or Google for this device type
 export function processRawData(log, rawData, config, deviceType = undefined) {
   if (
@@ -243,9 +427,9 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
     return;
   }
 
-  // Process data for any heatlink devices we have in the raw data
-  // We do this using any thermostat data
+  // Process data for any heat link devices found via thermostat resources
   let devices = {};
+
   Object.entries(rawData)
     .filter(
       ([key, value]) =>
@@ -254,7 +438,19 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
     )
     .forEach(([object_key, value]) => {
       let tempDevice = {};
+
       try {
+        let mappedData = buildMappedObject(
+          HEATLINK_FIELD_MAP,
+          createMappingContext(
+            rawData,
+            object_key,
+            value?.source === DATA_SOURCE.NEST ? value : undefined,
+            value?.source === DATA_SOURCE.GOOGLE ? value : undefined,
+          ),
+        );
+
+        // Google API preferred
         if (
           value?.source === DATA_SOURCE.GOOGLE &&
           value.value?.configuration_done?.deviceReady === true &&
@@ -264,112 +460,37 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               value.value?.heat_link_settings?.heatConnectionType === type ||
               value.value?.heat_link_settings?.hotWaterConnectionType === type,
           ) === true &&
-          (value.value?.heat_link?.heatLinkModel?.value?.trim?.() ?? '') !== '' &&
-          (value.value?.heat_link?.heatLinkSerialNumber?.value?.trim?.() ?? '') !== '' &&
-          (value.value?.heat_link?.heatLinkSwVersion?.value?.trim?.() ?? '') !== ''
+          mappedData.serialNumber !== undefined &&
+          mappedData.model !== undefined &&
+          mappedData.softwareVersion !== undefined
         ) {
           tempDevice = processCommonData(
-            object_key,
-            value.value.device_info.pairerId.resourceId,
+            mappedData.nest_google_device_uuid,
+            mappedData.nest_google_home_uuid,
             {
               type: DEVICE_TYPE.HEATLINK,
-              model:
-                value.value.heat_link.heatLinkModel.value.startsWith('Amber-2') === true
-                  ? 'Heat Link for Learning Thermostat (3rd gen, EU)'
-                  : value.value.heat_link.heatLinkModel.value.startsWith('Amber-1') === true
-                    ? 'Heat Link for Learning Thermostat (2nd gen, EU)'
-                    : value.value.heat_link.heatLinkModel.value.includes('Agate') === true
-                      ? 'Heat Link for Thermostat E (1st gen, EU)'
-                      : 'Heat Link (unknown - ' + value.value.heat_link.heatLinkModel + ')',
-              serialNumber: value.value.heat_link.heatLinkSerialNumber.value,
-              softwareVersion: value.value.heat_link.heatLinkSwVersion.value,
-              associated_thermostat: object_key, // Thermostat linked to
-              temperature_scale: value.value?.display_settings?.temperatureScale === 'TEMPERATURE_SCALE_F' ? 'F' : 'C',
-              online: value.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE', // Use thermostat online status
-              has_hot_water_control: value.value?.hvac_equipment_capabilities?.hasHotWaterControl === true,
-              hot_water_active: value.value?.hot_water_trait?.boilerActive === true,
-              hot_water_boost_active:
-                isNaN(value.value?.hot_water_settings?.boostTimerEnd?.seconds) === false &&
-                Number(value.value.hot_water_settings.boostTimerEnd.seconds) > 0,
-              has_hot_water_temperature: value.value?.hvac_equipment_capabilities?.hasHotWaterTemperature === true,
-              current_water_temperature:
-                isNaN(value.value?.hot_water_trait?.temperature?.value) === false
-                  ? adjustTemperature(Number(value.value.hot_water_trait.temperature.value), 'C', 'C', true)
-                  : 0.0,
-              hot_water_temperature:
-                isNaN(value.value?.hot_water_settings?.temperature?.value) === false
-                  ? adjustTemperature(Number(value.value.hot_water_settings.temperature.value), 'C', 'C', true)
-                  : 0.0,
-              description: String(value.value?.label?.label ?? ''),
-              location: String(
-                [
-                  ...Object.values(
-                    rawData?.[value.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {},
-                  ),
-                  ...Object.values(
-                    rawData?.[value.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {},
-                  ),
-                ].find((where) => where?.whereId?.resourceId === value.value?.device_located_settings?.whereAnnotationRid?.resourceId)
-                  ?.label?.literal ?? '',
-              ),
+              ...mappedData,
             },
             config,
           );
         }
 
-        // Only process Nest API data if Google API data wasn't already processed for this device
-        // Google API provides more detailed and up-to-date information
+        // Nest fallback if Google not used or data not available from Google for this device
         if (
           Object.entries(tempDevice).length === 0 &&
           value?.source === DATA_SOURCE.NEST &&
           typeof rawData?.['track.' + value.value?.serial_number] === 'object' &&
-          typeof rawData?.['link.' + value.value?.serial_number]?.value?.structure === 'string' &&
           typeof rawData?.['shared.' + value.value?.serial_number] === 'object' &&
-          typeof rawData?.['where.' + rawData?.['link.' + value.value?.serial_number]?.value?.structure?.split?.('.')[1]] === 'object' &&
-          ['onoff', 'opentherm'].some(
-            (type) => value?.value?.heat_link_heat_type === type || value?.value?.heat_link_hot_water_type === type,
-          ) === true &&
-          (value.value?.heat_link_model?.trim?.() ?? '') !== '' &&
-          (value.value?.heat_link_serial_number?.trim?.() ?? '') !== '' &&
-          (value.value?.heat_link_sw_version?.trim?.() ?? '') !== ''
+          mappedData.serialNumber !== undefined &&
+          mappedData.model !== undefined &&
+          mappedData.softwareVersion !== undefined
         ) {
           tempDevice = processCommonData(
-            object_key,
-            rawData['link.' + value.value.serial_number].value.structure,
+            mappedData.nest_google_device_uuid,
+            mappedData.nest_google_home_uuid,
             {
               type: DEVICE_TYPE.HEATLINK,
-              model:
-                value.value.heat_link_model.startsWith('Amber-2') === true
-                  ? 'Heat Link for Learning Thermostat (3rd gen, EU)'
-                  : value.value.heat_link_model.startsWith('Amber-1') === true
-                    ? 'Heat Link for Learning Thermostat (2nd gen, EU)'
-                    : value.value.heat_link_model.includes('Agate') === true
-                      ? 'Heat Link for Thermostat E (1st gen, EU)'
-                      : 'Heat Link (unknown - ' + value.value.heat_link_model + ')',
-              serialNumber: value.value.heat_link_serial_number,
-              softwareVersion: value.value.heat_link_sw_version,
-              associated_thermostat: object_key, // Thermostat linked to
-              temperature_scale: value.value.temperature_scale.toUpperCase() === 'F' ? 'F' : 'C',
-              online: rawData?.['track.' + value.value.serial_number]?.value?.online === true, // Use thermostat online status
-              has_hot_water_control: value.value.has_hot_water_control === true,
-              hot_water_active: value.value?.hot_water_active === true,
-              hot_water_boost_active:
-                isNaN(value.value?.hot_water_boost_time_to_end) === false && Number(value.value.hot_water_boost_time_to_end) > 0,
-              has_hot_water_temperature: value.value?.has_hot_water_temperature === true,
-              hot_water_temperature:
-                isNaN(value.value?.hot_water_temperature) === false
-                  ? adjustTemperature(Number(value.value.hot_water_temperature), 'C', 'C', true)
-                  : 0.0,
-              current_water_temperature:
-                isNaN(value.value?.current_water_temperature) === false
-                  ? adjustTemperature(Number(value.value.current_water_temperature), 'C', 'C', true)
-                  : 0.0,
-              description: String(rawData?.['shared.' + value.value.serial_number]?.value?.name ?? ''),
-              location: String(
-                rawData?.[
-                  'where.' + rawData?.['link.' + value.value.serial_number]?.value?.structure?.split?.('.')[1]
-                ]?.value?.wheres?.find((where) => where?.where_id === value.value.where_id)?.name ?? '',
-              ),
+              ...mappedData,
             },
             config,
           );
@@ -387,13 +508,14 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         let deviceOptions = config?.devices?.find(
           (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
         );
+
         let homeOptions = config?.homes?.find(
           (home) =>
-            home?.nest_home_uuid?.toUpperCase?.() === rawData?.['link.' + value?.value?.serial_number]?.value?.structure?.toUpperCase?.() ||
-            home?.google_home_uuid?.toUpperCase?.() === value?.value?.device_info?.pairerId?.resourceId?.toUpperCase?.(),
+            home?.nest_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
+            home?.google_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
         );
 
-        // Insert any extra options we've read in from configuration file for this device
+        // Insert configuration options
         tempDevice.eveHistory =
           deviceOptions?.eveHistory !== undefined
             ? deviceOptions.eveHistory === true
@@ -401,41 +523,29 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
               ? homeOptions.eveHistory === true
               : config.options?.eveHistory === true;
 
-        // Process hotwater boost time.. we only allow values matching app
+        // Hot water boost duration allowed by Nest app presets
         tempDevice.hotwaterBoostTime = parseDurationToSeconds(deviceOptions?.hotwaterBoostTime, {
-          defaultValue: 1800, // 30 mins
-          min: 1800, // 30 mins
-          max: 7200, // 2 hrs
+          defaultValue: 1800,
+          min: 1800,
+          max: 7200,
         });
 
         tempDevice.hotwaterBoostTime = HOTWATER_BOOST_TIMES.reduce((a, b) =>
           Math.abs(tempDevice.hotwaterBoostTime - a) < Math.abs(tempDevice.hotwaterBoostTime - b) ? a : b,
         );
 
+        // Configurable temperature bounds
         tempDevice.hotwaterMinTemp =
           isNaN(deviceOptions?.hotwaterMinTemp) === false
             ? adjustTemperature(deviceOptions.hotwaterMinTemp, 'C', 'C', true)
-            : typeof deviceOptions?.hotwaterMinTemp === 'string' && /^([0-9.]+)\s*([CF])$/i.test(deviceOptions.hotwaterMinTemp)
-              ? adjustTemperature(
-                  parseFloat(deviceOptions.hotwaterMinTemp.match(/^([0-9.]+)\s*([CF])$/i)[1]),
-                  deviceOptions.hotwaterMinTemp.match(/^([0-9.]+)\s*([CF])$/i)[2],
-                  'C',
-                  true,
-                )
-              : HOTWATER_MIN_TEMPERATURE; // 30c minimum
+            : HOTWATER_MIN_TEMPERATURE;
 
         tempDevice.hotwaterMaxTemp =
           isNaN(deviceOptions?.hotwaterMaxTemp) === false
             ? adjustTemperature(deviceOptions.hotwaterMaxTemp, 'C', 'C', true)
-            : typeof deviceOptions?.hotwaterMaxTemp === 'string' && /^([0-9.]+)\s*([CF])$/i.test(deviceOptions.hotwaterMaxTemp)
-              ? adjustTemperature(
-                  parseFloat(deviceOptions.hotwaterMaxTemp.match(/^([0-9.]+)\s*([CF])$/i)[1]),
-                  deviceOptions.hotwaterMaxTemp.match(/^([0-9.]+)\s*([CF])$/i)[2],
-                  'C',
-                  true,
-                )
-              : HOTWATER_MAX_TEMPERATURE; // 70c maximum
-        devices[tempDevice.serialNumber] = tempDevice; // Store processed device
+            : HOTWATER_MAX_TEMPERATURE;
+
+        devices[tempDevice.serialNumber] = tempDevice;
       }
     });
 
