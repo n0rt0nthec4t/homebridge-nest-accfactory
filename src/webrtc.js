@@ -4,7 +4,7 @@
 // Handles connection and data from Google WebRTC systems
 // Currently a "work in progress"
 //
-// Code version 2026.03.11
+// Code version 2026.03.13
 // Mark Hulskamp
 'use strict';
 
@@ -379,7 +379,10 @@ export default class WebRTC extends Streamer {
       deviceData.apiAccess.oauth2 !== this.token
     ) {
       // Just update the token, don't reconnect
-      this?.log?.debug?.('OAuth2 access token has changed for uuid "%s". Updating token', this.nest_google_device_uuid);
+      this?.log?.debug?.(
+        'OAuth2 access token has changed for uuid "%s" while webRTC session is active. Updating stored token.',
+        this.nest_google_device_uuid,
+      );
       this.token = deviceData.apiAccess.oauth2;
       // Let the extend timer handle re-auth with new token
       // If extend fails, the error handling will close and reconnect

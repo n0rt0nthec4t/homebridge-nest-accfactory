@@ -1751,9 +1751,26 @@ export default class NestAccfactory {
 
       if (
         commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.progress === 'COMPLETE' &&
+        commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.event?.event?.status === 'STATUS_SUCCESSFUL' &&
         (this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image?.liveImageUrl ?? '') !== ''
       ) {
-        // The snapshot image has updated, so now attempt to retrieve image from camera via Google API
+        // Wait briefly for the snapshot image URL or timestamp to update before retrieving the image.
+        // The backend may reuse the same URL but update the content, so we also check for a newer timestamp.
+        let previousUploadLiveImage = structuredClone(this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image ?? {});
+        for (let attempt = 0; attempt < 4; attempt++) {
+          if (
+            (this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image?.liveImageUrl ?? '') !== '' &&
+            (this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image?.liveImageUrl !== previousUploadLiveImage?.liveImageUrl ||
+              JSON.stringify(this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image?.timestamp) !==
+                JSON.stringify(previousUploadLiveImage?.timestamp))
+          ) {
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+
+        // After allowing time for the snapshot URL or timestamp to update
+        // Retrieve the snapshot image from the Google API using the URL provided in the upload_live_image trait value
         try {
           let response = await fetchWrapper('get', this.#rawData[nest_google_device_uuid].value.upload_live_image.liveImageUrl, {
             headers: {

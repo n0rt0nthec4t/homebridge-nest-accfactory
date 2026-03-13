@@ -49,7 +49,7 @@ const STREAMERS = {
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2026.03.12'; // Code version
+  static VERSION = '2026.03.13'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -894,7 +894,10 @@ export default class NestCamera extends HomeKitDevice {
       imageBuffer = this.#lastSnapshotImage;
     }
 
-    callback(imageBuffer?.length === 0 ? 'Unable to obtain Camera/Doorbell snapshot' : null, imageBuffer);
+    callback(
+      Buffer.isBuffer(imageBuffer) === true && imageBuffer.length > 0 ? null : new Error('Unable to obtain Camera/Doorbell snapshot'),
+      imageBuffer,
+    );
   }
 
   async prepareStream(request, callback) {

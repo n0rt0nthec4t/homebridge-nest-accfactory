@@ -5,7 +5,7 @@
 //
 // Credit to https://github.com/Brandawg93/homebridge-nest-cam for the work on the Nest Camera comms code on which this is based
 //
-// Code version 2026.03.10
+// Code version 2026.03.13
 // Mark Hulskamp
 'use strict';
 
@@ -222,7 +222,10 @@ export default class NexusTalk extends Streamer {
 
     if (deviceData?.apiAccess?.token !== undefined && deviceData.apiAccess.token !== this.token) {
       // access token has changed so re-authorise
-      this?.log?.debug?.('Access token has changed for uuid "%s". Updating token', this.nest_google_device_uuid);
+      this?.log?.debug?.(
+        'Access token has changed for uuid "%s" while NexusTalk session is active. Updating stored token.',
+        this.nest_google_device_uuid,
+      );
       this.token = deviceData.apiAccess.token;
 
       if (this.#socket !== undefined) {

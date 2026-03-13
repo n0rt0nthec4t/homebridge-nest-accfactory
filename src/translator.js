@@ -74,8 +74,8 @@ function getMappedValue(mapping, context) {
   return undefined;
 }
 
-// Helper to normalize a source object for translation
-function normalizeSourceContext(source, objectKey, sourceValue, extraContext = undefined) {
+// Helper to normalise a source object for translation
+function normaliseSourceContext(source, objectKey, sourceValue, extraContext = undefined) {
   let context = {
     source: source,
     objectKey: objectKey,
@@ -181,8 +181,8 @@ function createMappingContext(rawData, objectKey, nestValue = undefined, googleV
   let context = {
     rawData: rawData,
     objectKey: objectKey,
-    nestValue: normalizeSourceContext(DATA_SOURCE.NEST, objectKey, nestValue),
-    googleValue: normalizeSourceContext(DATA_SOURCE.GOOGLE, objectKey, googleValue),
+    nestValue: normaliseSourceContext(DATA_SOURCE.NEST, objectKey, nestValue),
+    googleValue: normaliseSourceContext(DATA_SOURCE.GOOGLE, objectKey, googleValue),
   };
 
   if (extraContext !== null && typeof extraContext === 'object' && extraContext?.constructor === Object) {
@@ -201,6 +201,6 @@ export {
   getPath,
   hasMappedValue,
   mergeMappedObjects,
-  normalizeSourceContext,
+  normaliseSourceContext,
   resolveMappedField,
 };
