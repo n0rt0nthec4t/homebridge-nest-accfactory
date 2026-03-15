@@ -79,7 +79,7 @@ Each entry defines the account name, account type, and authentication tokens.
 
 Supported account types:
 
-- **Nest** — requires an `accessToken`
+- **Nest** — requires an `access_token`
 - **Google** — requires both `issueToken` and `cookie`
 
 Each account entry may also optionally enable `fieldTest` for testing Nest API endpoints.
