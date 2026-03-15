@@ -30,7 +30,7 @@ The following Nest devices are known to be supported by this Homebridge plugin:
 **Note:** Google has discontinued support for 1st and 2nd generation Nest Thermostats as of **October 25, 2025**.  
 Based on this, these models are expected to stop functioning with this Homebridge plugin.
 
-The accessory supports connection to Nest using a Nest account AND/OR a Google (migrated Nest account) account.
+The accessory supports connections using a Nest account AND/OR a Google (migrated Nest account) account.
 
 ## Configuration
 
@@ -114,10 +114,12 @@ Sample config.json entries below
   "devices": [
     {
       "serialNumber": "XXXXXXXX",
+      "name", "XXXXX Device",
       "exclude": false
     },
     {
       "serialNumber": "YYYYYYYY",
+       "name", "YYYYY Device",
       "humiditySensor": true
     }
   ],
@@ -131,7 +133,7 @@ The following options are available in the config.json options object. These app
 
 | Name               | Description                                                                                  | Default        |
 |--------------------|----------------------------------------------------------------------------------------------|----------------|
-| debug              | Enable plugin debug logging (ignores Homebridge debug setting)                               | false          |
+| debug              | Enable plugin verbose logging (ignores Homebridge debug setting)                               | false          |
 | elevation          | Height above sea level for weather station(s)                                                | 0              |
 | eveHistory         | Provide history in EveHome application where applicable                                      | true           |
 | exclude            | Exclude all device(s)                                                                        | false          |
@@ -143,7 +145,13 @@ The following options are available in the config.json options object. These app
 
 #### devices
 
-The following options are available on a per-device level in the `config.json` `devices` array. Each device is specified as a JSON object, and the device is identified using the `"serialNumber"` key with the value of its serial number (in uppercase).
+Device specific configuration can be applied using the `devices` array. Each entry represents **per-device settings** that are applied when a device with the matching `serialNumber` is discovered. These settings override the global defaults defined in the `options` section.
+
+The **Devices** section in the Homebridge GUI allows basic management of these entries, however **not all device options are available in the GUI**. Advanced options may still need to be configured directly in `config.json`.
+
+The `name` field is optional and is only used to help identify the entry in the configuration. It does **not** rename the device in HomeKit.
+
+Devices are identified using their **serial number**, which must match the serial number reported by the Nest / Google API.
 
 | Name               | Description                                                                                  | Default        |
 |--------------------|----------------------------------------------------------------------------------------------|----------------|
@@ -160,6 +168,7 @@ The following options are available on a per-device level in the `config.json` `
 | humiditySensor     | Separate humidity sensor for supported thermostat(s)                                         | false          |
 | localAccess        | Use direct access to supported camera(s) and doorbell(s) for video streaming and recording   | false          |
 | motionCooldown     | Time between detected motion events                                                          | 60s            |
+| name               | Optional label used to help identify this device entry in configuration                      |                |    
 | serialNumber       | Device serial number to which these settings belong to                                       |                |
 
 #### homes

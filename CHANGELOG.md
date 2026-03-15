@@ -35,17 +35,19 @@ Plugin debug logging is now **independent of Homebridge debug mode**.
 - Refactored core modules to use the updated base class
 - Prefer Google API data when a device is available from both Google and Nest APIs
 - Added support for a new `"accounts"` section in `config.json` to enable multiple Nest and Google accounts
-- Added humidifier support for Nest thermostats
 - Added `Advanced Options` section to the GUI configuration
+- Added `Devices` section to the GUI configuration for per-device options
 - Added plugin-level verbose logging option
   - Enables debug output without requiring Homebridge debug mode
   - Verbose log messages are displayed in gray for easier identification
 - Fixed an issue affecting live view and HKSV recording on migrated Nest / Google cameras
 - Fixed an issue affecting audio talkback on some older migrated Nest / Google cameras
+- Updated Nest/Google account section in the GUI configuration  to combained `Accounts` section
 - Updated camera motion handling, only a single motion sensor is now exposed per camera
 - Updated reliability of camera and doorbell snapshot images
 - Updated support for Nest Hub Max (1st gen, wired)
 - Updated `README.md` with documentation for the new `"accounts"` configuration section (`./README.md#Account Configuration`)
+- Updated `README.md` with documentation around the updated `"devices"` configuration section (`./README.md#devices`)
 - Updated `README.md` to clarify that HKSV recording is triggered by general motion events and does not support individual recording filters
 - Updated `README.md` to document new verbose logging and Support Dump configuration options
 

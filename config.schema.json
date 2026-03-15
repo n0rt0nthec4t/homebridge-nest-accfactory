@@ -22,7 +22,7 @@
             "name": {
               "title": "Name",
               "type": "string",
-              "placeholder": "Name for this account (for your reference only)"
+              "placeholder": "Account description for configuration"
             },
             "type": {
               "title": "Type",
@@ -180,8 +180,8 @@
           "type": "object",
           "properties": {
             "serialNumber": {
-              "title": "Device Serial Number",
               "type": "string",
+              "placeholder": "Device serial number",
               "required": true
             },
             "chimeSwitch": {
@@ -194,6 +194,7 @@
               "type": "boolean"
             },
             "exclude": {
+              "title": "Exclude this device",
               "type": "boolean"
             },
             "external": {
@@ -225,6 +226,11 @@
             },
             "motionCooldown": {
               "type": "number"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string",
+              "placeholder": "Device description for configuration"
             }
           }
         }
@@ -281,6 +287,29 @@
       "expandable": true,
       "expanded": true,
       "items": ["options.eveHistory", "options.weather", "options.elevation", "options.debug"]
+    },
+    {
+    "type": "fieldset",
+    "title": "Devices",
+    "expandable": true,
+    "expanded": false,
+    "items": [
+        {
+        "key": "options.exclude",
+        "title": "Exclude All Devices"
+        },
+        {
+        "type": "array",
+        "title": "Per Device Options",
+        "add": "Add Device",
+        "key": "devices",
+        "items": [
+            "devices[].serialNumber",
+            "devices[].name",
+            "devices[].exclude"
+        ]
+        }
+    ]
     },
     {
       "type": "fieldset",

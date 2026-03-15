@@ -1,7 +1,35 @@
-// Thermostat external control plugin for homebridge-nest-accfactory
-// Controls a daikin wifi connected a/c system via thermostat with no physical connection to it
+// Daikin system external control module for homebridge-nest-accfactory
+// Part of homebridge-nest-accfactory
 //
-// Code version 2026.03.11
+// External thermostat automation module that controls a Daikin WiFi-connected air conditioning system
+// through the Daikin `/aircon/set_control_info` HTTP API. Intended for use with the thermostat
+// plugin external module hook, allowing HomeKit thermostat mode changes to drive an independent HVAC system.
+//
+// Exported control functions:
+// - cool(targetTemperature): Power on and switch to cooling mode
+// - heat(targetTemperature): Power on and switch to heating mode
+// - dehumidifier(targetHumidity): Power on and switch to dehumidifier mode
+// - fan(speed): Power on and switch to fan mode with HomeKit percentage mapped to Daikin fan rates
+// - off(): Power off using the last known operating mode and settings required by the Daikin API
+//
+// Features:
+// - Validates HTTP/HTTPS Daikin system URL before enabling control
+// - Maps HomeKit fan percentages to Daikin discrete fan levels
+// - Tracks last mode, temperature, humidity, fan rate, and fan direction for safe power-off requests
+// - Supports optional export filtering with `modes=` argument so only selected functions are exposed
+// - Includes retry-aware HTTP helper with timeout support and exponential backoff for transient failures
+//
+// Usage:
+// - default(logger, [url])
+// - default(logger, [url, deviceDescription])
+// - default(logger, [url, deviceDescription, 'modes=cool,fan,off'])
+//
+// Limitations:
+// - No humidifier function is exported; only dehumidifier mode is supported
+// - off() requires a previously known operating state and does nothing until one has been established
+// - Commands are sent independently; no state is read back from the Daikin system
+//
+// Code version 2026.03.15
 // Mark Hulskamp
 'use strict';
 
@@ -257,27 +285,6 @@ async function off() {
     });
 }
 
-function setSystemURL(daikinSystemURL) {
-  let validatedSystemURL = undefined;
-
-  if (typeof daikinSystemURL !== 'string' || daikinSystemURL === '') {
-    return;
-  }
-
-  try {
-    let url = new URL(daikinSystemURL);
-    if (url.protocol === 'http:' || url.protocol === 'https:') {
-      validatedSystemURL = daikinSystemURL;
-      systemURL = daikinSystemURL;
-    }
-    // eslint-disable-next-line no-unused-vars
-  } catch (error) {
-    // Empty
-  }
-
-  return validatedSystemURL;
-}
-
 async function fetchWrapper(method, url, options, data) {
   if ((method !== 'get' && method !== 'post') || typeof url !== 'string' || url === '' || typeof options !== 'object') {
     return;
@@ -389,10 +396,18 @@ async function fetchWrapper(method, url, options, data) {
 
 // Export functions for use in our dynamically loaded library
 //
-// let test = await import('./daikinsystem.mjs', ['cool', 'off']);
-// returned = test.default(loggerFunctions, 'http://x.x.x.x');
+// Example usage:
+//
+// let test = await import('./daikinsystem.mjs');
+//
+// returned = test.default(loggerFunctions, ['http://x.x.x.x']);
 // or
-// returned = test.default(loggerFunctions, 'http://x.x.x.x', 'Logging Prefix');
+// returned = test.default(loggerFunctions, ['http://x.x.x.x', 'Logging Prefix']);
+// or with mode filtering
+// returned = test.default(loggerFunctions, ['http://x.x.x.x', 'Logging Prefix', 'modes=cool,fan,off']);
+//
+// When the optional "modes=" argument is provided, only the listed
+// functions will be returned to the caller.
 export default (logger, options) => {
   // Validate the passed in logging object
   if (Object.values(LOG_LEVELS).every((fn) => typeof logger?.[fn] === 'function')) {
@@ -400,18 +415,58 @@ export default (logger, options) => {
   }
 
   // Set log prefix from device name if provided
+  // options[1] is passed in from the thermostat as the device description
   if (typeof options[1] === 'string' && options[1] !== '') {
     logPrefix = '[' + options[1] + ']';
   }
 
-  // Validate the url
-  systemURL = setSystemURL(options[0]);
+  // Reset system URL before validation so that if the module is reloaded with new options, the URL will be updated correctly
+  systemURL = undefined;
 
-  return {
+  // Validate and normalise the system URL passed in as the first argument
+  if (typeof options[0] === 'string' && options[0] !== '') {
+    try {
+      let url = new URL(options[0]);
+      if (url.protocol === 'http:' || url.protocol === 'https:') {
+        systemURL = url.origin;
+      }
+    } catch {
+      // Invalid URL
+    }
+  }
+
+  // Define the full set of supported control functions for this module
+  // These may be filtered later based on the optional "modes=" argument
+  let moduleFunctions = {
     cool,
     heat,
     dehumidifier,
     fan,
     off,
   };
+
+  // Look for an optional "modes=" argument in the options list
+  // Example: modes=cool,fan,off
+  let allowedModes = options.find((value) => typeof value === 'string' && value.toLowerCase().startsWith('modes=') === true);
+
+  // If valid modes were provided, filter the exported functions
+  // so only those listed in "modes=" are returned to the caller
+  if (typeof allowedModes === 'string') {
+    allowedModes = new Set(
+      allowedModes
+        .slice(6)
+        .split(',')
+        .map((value) => value.trim().toLowerCase())
+        .filter((mode) => typeof moduleFunctions?.[mode] === 'function'),
+    );
+
+    if (allowedModes.size > 0) {
+      moduleFunctions = Object.fromEntries(
+        Object.entries(moduleFunctions).filter(([mode, fn]) => allowedModes.has(mode) && typeof fn === 'function'),
+      );
+    }
+  }
+
+  // Return the filtered (or full) set of functions to the thermostat module
+  return moduleFunctions;
 };

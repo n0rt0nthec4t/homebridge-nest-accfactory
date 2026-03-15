@@ -357,70 +357,47 @@ const PROTECT_FIELD_MAP = {
   },
 
   wired_or_battery: {
+    // Device power source:
+    // true  = battery powered
+    // false = wired / mains powered
     google: ({ sourceValue }) => sourceValue?.value?.wall_power?.present !== true,
     nest: ({ sourceValue }) => sourceValue?.value?.wired_or_battery === 1,
   },
 
   battery_level: {
     google: ({ sourceValue }) => {
-      // Check for new firmware battery field first
-      if (typeof sourceValue?.value?.battery?.replacementIndicator === 'string') {
-        if (sourceValue.value.battery.replacementIndicator === 'BATTERY_REPLACEMENT_INDICATOR_NOT_AT_ALL') {
-          return 100;
-        }
-        if (sourceValue.value.battery.replacementIndicator === 'BATTERY_REPLACEMENT_INDICATOR_SOON') {
-          return 50;
-        }
-        if (sourceValue.value.battery.replacementIndicator === 'BATTERY_REPLACEMENT_INDICATOR_NOW') {
-          return 20;
-        }
-      }
+      let bank0 =
+        isNaN(sourceValue?.value?.battery_voltage_bank0?.batteryValue?.batteryVoltage?.value) === false &&
+        Number(sourceValue.value.battery_voltage_bank0.batteryValue.batteryVoltage.value) > 0
+          ? Number(sourceValue.value.battery_voltage_bank0.batteryValue.batteryVoltage.value)
+          : undefined;
 
-      let voltage;
-
-      if (sourceValue?.value?.wall_power?.present !== true) {
-        // Battery-powered Protects expose a battery metric that closely matches the
-        // Nest API value, but in volts instead of millivolts (e.g. 5.137 ↔ 5137).
-        // Use the minimum of both banks if available.
-        if (
-          isNaN(sourceValue?.value?.battery_voltage_bank0?.batteryValue?.batteryVoltage?.value) === false &&
-          isNaN(sourceValue?.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === false
-        ) {
-          voltage = Math.min(
-            Number(sourceValue.value.battery_voltage_bank0.batteryValue.batteryVoltage.value),
-            Number(sourceValue.value.battery_voltage_bank1.batteryValue.batteryVoltage.value),
-          );
-        }
-
-        if (
-          isNaN(sourceValue?.value?.battery_voltage_bank0?.batteryValue?.batteryVoltage?.value) === false &&
-          isNaN(sourceValue?.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === true
-        ) {
-          voltage = Number(sourceValue.value.battery_voltage_bank0.batteryValue.batteryVoltage.value);
-        }
-
-        if (
-          isNaN(sourceValue?.value?.battery_voltage_bank0?.batteryValue?.batteryVoltage?.value) === true &&
-          isNaN(sourceValue?.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === false
-        ) {
-          voltage = Number(sourceValue.value.battery_voltage_bank1.batteryValue.batteryVoltage.value);
-        }
-
-        return isNaN(voltage) === false && voltage > 0 ? scaleValue(voltage, 3.0, 5.4, 0, 100) : undefined;
-      }
-
-      // Wall-powered with backup batteries
-      voltage =
-        isNaN(sourceValue?.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === false
+      let bank1 =
+        isNaN(sourceValue?.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === false &&
+        Number(sourceValue.value.battery_voltage_bank1.batteryValue.batteryVoltage.value) > 0
           ? Number(sourceValue.value.battery_voltage_bank1.batteryValue.batteryVoltage.value)
           : undefined;
 
-      return isNaN(voltage) === false && voltage > 0 ? scaleValue(voltage, 3.3, 4.5, 0, 100) : undefined;
+      // Battery-powered Protects expose two battery banks. The reported value
+      // closely matches the Nest API value but is in volts instead of millivolts
+      // (e.g. 5.137 ↔ 5137). Use the minimum of both banks if available.
+      let voltage =
+        isNaN(bank0) === false && isNaN(bank1) === false
+          ? Math.min(bank0, bank1)
+          : isNaN(bank0) === false
+            ? bank0
+            : isNaN(bank1) === false
+              ? bank1
+              : undefined;
+
+      // Scale Protect battery voltage to HomeKit percentage. The typical range
+      // for the lithium cells is ~4.5V (empty) to ~5.4V (fresh).
+      return isNaN(voltage) === false ? scaleValue(voltage, 4.5, 5.4, 0, 100) : undefined;
     },
 
     nest: ({ sourceValue }) =>
       isNaN(sourceValue?.value?.battery_level) === false && Number(sourceValue.value.battery_level) > 0
-        ? scaleValue(Number(sourceValue.value.battery_level), 3000, 5400, 0, 100)
+        ? scaleValue(Number(sourceValue.value.battery_level), 4500, 5400, 0, 100)
         : undefined,
   },
 
