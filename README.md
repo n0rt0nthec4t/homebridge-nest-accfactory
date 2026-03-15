@@ -95,7 +95,7 @@ Sample config.json entries below
     {
       "name": "Nest",
       "type": "nest",
-      "accessToken": "<nest access token>",
+      "access_token": "<nest access token>",
       "fieldTest": false
     },
     {
