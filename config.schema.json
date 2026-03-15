@@ -1,289 +1,293 @@
 {
-    "pluginAlias": "NestAccfactory",
-    "pluginType": "platform",
-    "singular": true,
-    "schema": {
-        "type": "object",
-        "properties": {
+  "pluginAlias": "NestAccfactory",
+  "pluginType": "platform",
+  "singular": true,
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "default": "NestAccfactory",
+        "condition": "1=2"
+      },
+      "accounts": {
+        "title": "Accounts",
+        "type": "array",
+        "items": {
+          "title": "Account",
+          "type": "object",
+          "headerTemplate": "{{ self.type === 'google' ? 'Google' : 'Nest' }} • {{ self.name }}",
+          "properties": {
             "name": {
-                "title": "Name",
-                "type": "string",
-                "default": "NestAccfactory",
-                "condition": "1=2"
+              "title": "Name",
+              "type": "string",
+              "placeholder": "Name for this account (for your reference only)"
             },
-            "nest": {
-                "title": "Nest Account",
-                "type": "object",
-                "expandable": true,
-                "expanded": {
-                    "functionBody": "return model.nest && model.nest.access_token"
+            "type": {
+              "title": "Type",
+              "type": "string",
+              "default": "google",
+              "oneOf": [
+                {
+                  "title": "Google",
+                  "enum": ["google"]
                 },
-                "properties": {
-                    "access_token": {
-                        "title": "Access Token",
-                        "type": "string",
-                        "placeholder": "See https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/#nest-account"
-                    },
-                    "fieldTest" : {
-                        "title": "Field Test",
-                        "type": "boolean",
-                        "description": "Use field test API endpoints",
-                        "default": false,
-                        "condition": {
-                            "functionBody": "return model.nest.access_token"
-                        }
-                    }
-                } 
-            },
-            "google": {
-                "title": "Google Account",
-                "type": "object",
-                "expandable": true,
-                "expanded": {
-                    "functionBody": "return model.google && model.google.issuetoken && model.google.cookie"
-                },
-                "properties": {
-                    "issuetoken": {
-                        "title": "Issue Token",
-                        "type": "string",
-                        "placeholder": "See https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/#google-account"
-                    },
-                    "cookie": {
-                        "title": "Cookie",
-                        "type": "string",
-                        "placeholder": "See https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/#google-account"
-
-                    },
-                    "fieldTest" : {
-                        "title": "Field Test",
-                        "type": "boolean",
-                        "description": "Use field test API endpoints",
-                        "default": false,
-                        "condition": {
-                            "functionBody": "return model.google.issuetoken && model.google.cookie"
-                        }
-                    }
+                {
+                  "title": "Nest",
+                  "enum": ["nest"]
                 }
+              ]
             },
-            "options": {
-                "title": "Options",
-                "type": "object",
-                "expandable": true,
-                "expanded": true,
-                "properties": {
-                    "debug": {
-                        "title": "Verbose Logging",
-                        "description": "Enable additional plugin logging for more verbose output. Independent of Homebridge debug mode.",
-                        "type": "boolean",
-                        "default": false
-                    },
-                    "elevation": {
-                        "title": "Elevation",
-                        "description": "Height above sea level for the weather station",
-                        "type": "integer",
-                        "default": 0,
-                        "minimum": 0,
-                        "maximum": 8848,
-                        "condition": {
-                            "functionBody": "return model.options.weather"
-                        }
-                    },
-                    "eveHistory": {
-                        "title": "EveHome History",
-                        "description": "Provide history in EveHome application where applicable",
-                        "type": "boolean",
-                        "default": true
-                    },
-                    "exclude": {
-                        "description": "Exclude all devices",
-                        "type": "boolean"
-                    },
-                    "ffmpegDebug": {
-                        "title": "FFmpeg Debug Logging",
-                        "description": "Enable FFmpeg logging output debugging",
-                        "type": "boolean",
-                        "default": false
-                    },
-                    "ffmpegHWAccel": {
-                        "title": "FFmpeg Hardware Acceleration",
-                        "description": "Enable hardware acceleration for video encoding with FFmpeg",
-                        "type": "boolean",
-                        "default": false
-                    },
-                    "ffmpegPath": {
-                        "title": "Path to FFmpeg binary",
-                        "type": "string",
-                        "placeholder": "Path to FFmpeg binary",
-                        "default": "/usr/local/bin/ffmpeg"
-                    },
-                    "maxStreams": {
-                        "type": "integer"
-                    },
-                    "supportDump": {
-                        "title": "Support Dump",
-                        "description": "Enable additional raw device data logging to assist with troubleshooting and support. Enable this only when requested, as it may produce large log output and include detailed device information.",
-                        "type": "boolean",
-                        "default": false
-                    },            
-                    "useNestAPI": {
-                        "description": "Use Nest backend API",
-                        "type": "boolean"
-                    },
-                    "useGoogleAPI": {
-                        "description": "Use Google backend API",
-                        "type": "boolean"
-                    },
-                    "weather": {
-                        "title": "Virtual Weather",
-                        "description": "Virtual weather station",
-                        "type": "boolean",
-                        "default": false
-                    }
-                }
+            "access_token": {
+              "title": "Access Token",
+              "type": "string",
+              "placeholder": "See https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/#nest-account",
+              "condition": {
+                "functionBody": "return model.accounts && model.accounts[arrayIndices] && model.accounts[arrayIndices].type === 'nest';"
+              }
             },
-            "devices": {
-                "title": "Per device configuration options",
-                "type": "array",
-                "items": {
-                    "title": "Device",
-                    "type": "object",
-                    "properties": {
-                        "serialNumber": {
-                            "title": "Device Serial Number",
-                            "type": "string",
-                            "required": true
-                        },
-                        "chimeSwitch": {
-                            "type": "boolean"
-                        },
-                        "doorbellCooldown": {
-                            "type": "number"
-                        },
-                        "eveHistory": {
-                            "type": "boolean"
-                        },
-                        "exclude": {
-                            "type": "boolean"
-                        },
-                        "external": {
-                            "type": "string"
-                        },
-                        "fanDuration": {
-                            "type": "boolean"
-                        },
-                        "ffmpegDebug": {
-                            "type": "boolean"
-                        },
-                        "ffmpegHWAccel": {
-                            "type": "boolean"
-                        },
-                        "hotwaterBoostTime": {
-                            "type": "number"
-                        },
-                        "hotwaterMaxTemp": {
-                            "type": "string"
-                        },
-                        "hotwaterMinTemp": {
-                            "type": "string"
-                        },
-                        "humiditySensor": {
-                            "type": "boolean"
-                        },
-                        "localAccess": {
-                            "type": "boolean"
-                        },
-                        "motionCooldown": {
-                            "type": "number"
-                        }
-                    }
-                }
+            "issueToken": {
+              "title": "Issue Token",
+              "type": "string",
+              "placeholder": "See https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/#google-account",
+              "condition": {
+                "functionBody": "return model.accounts && model.accounts[arrayIndices] && model.accounts[arrayIndices].type === 'google';"
+              }
             },
-            "homes": {
-                "title": "Per home configuration options",
-                "type": "array",
-                "items": {
-                    "title": "Home",
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "title": "Home name",
-                            "type": "string",
-                            "required": true
-                        },
-                        "elevation": {
-                            "type": "number"
-                        },
-                        "eveHistory": {
-                            "type": "boolean"
-                        },
-                        "exclude": {
-                            "type": "boolean"
-                        },
-                        "weather": {
-                            "type": "boolean"
-                        }
-                    }
-                }
+            "cookie": {
+              "title": "Cookie",
+              "type": "string",
+              "placeholder": "See https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/#google-account",
+              "condition": {
+                "functionBody": "return model.accounts && model.accounts[arrayIndices] && model.accounts[arrayIndices].type === 'google';"
+              }
+            },
+            "fieldTest": {
+              "title": "Field Test",
+              "description": "Use field test API endpoints",
+              "type": "boolean",
+              "default": false
             }
+          },
+          "required": ["name", "type"],
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "nest"
+                  }
+                }
+              },
+              "then": {
+                "required": ["access_token"]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "type": {
+                    "const": "google"
+                  }
+                }
+              },
+              "then": {
+                "required": ["issueToken", "cookie"]
+              }
+            }
+          ]
         }
+      },
+      "options": {
+        "title": "Options",
+        "type": "object",
+        "expandable": true,
+        "expanded": true,
+        "properties": {
+          "debug": {
+            "title": "Verbose Logging",
+            "description": "Enable additional plugin logging for more verbose output. Independent of Homebridge debug mode.",
+            "type": "boolean",
+            "default": false
+          },
+          "elevation": {
+            "title": "Elevation",
+            "description": "Height above sea level for the weather station",
+            "type": "integer",
+            "default": 0,
+            "minimum": 0,
+            "maximum": 8848,
+            "condition": {
+              "functionBody": "return model.options.weather"
+            }
+          },
+          "eveHistory": {
+            "title": "EveHome History",
+            "description": "Provide history in EveHome application where applicable",
+            "type": "boolean",
+            "default": true
+          },
+          "exclude": {
+            "description": "Exclude all devices",
+            "type": "boolean"
+          },
+          "ffmpegDebug": {
+            "title": "FFmpeg Debug Logging",
+            "description": "Enable FFmpeg logging output debugging",
+            "type": "boolean",
+            "default": false
+          },
+          "ffmpegHWAccel": {
+            "title": "FFmpeg Hardware Acceleration",
+            "description": "Enable hardware acceleration for video encoding with FFmpeg",
+            "type": "boolean",
+            "default": false
+          },
+          "ffmpegPath": {
+            "title": "Path to FFmpeg binary",
+            "type": "string",
+            "placeholder": "Path to FFmpeg binary",
+            "default": "/usr/local/bin/ffmpeg"
+          },
+          "supportDump": {
+            "title": "Support Dump",
+            "description": "Enable additional raw device data logging to assist with troubleshooting and support. Enable this only when requested, as it may produce large log output and include detailed device information.",
+            "type": "boolean",
+            "default": false
+          },
+          "useNestAPI": {
+            "description": "Use Nest backend API",
+            "type": "boolean"
+          },
+          "useGoogleAPI": {
+            "description": "Use Google backend API",
+            "type": "boolean"
+          },
+          "weather": {
+            "title": "Virtual Weather",
+            "description": "Virtual weather station",
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "devices": {
+        "title": "Per device configuration options",
+        "type": "array",
+        "items": {
+          "title": "Device",
+          "type": "object",
+          "properties": {
+            "serialNumber": {
+              "title": "Device Serial Number",
+              "type": "string",
+              "required": true
+            },
+            "chimeSwitch": {
+              "type": "boolean"
+            },
+            "doorbellCooldown": {
+              "type": "number"
+            },
+            "eveHistory": {
+              "type": "boolean"
+            },
+            "exclude": {
+              "type": "boolean"
+            },
+            "external": {
+              "type": "string"
+            },
+            "fanDuration": {
+              "type": "boolean"
+            },
+            "ffmpegDebug": {
+              "type": "boolean"
+            },
+            "ffmpegHWAccel": {
+              "type": "boolean"
+            },
+            "hotwaterBoostTime": {
+              "type": "number"
+            },
+            "hotwaterMaxTemp": {
+              "type": "string"
+            },
+            "hotwaterMinTemp": {
+              "type": "string"
+            },
+            "humiditySensor": {
+              "type": "boolean"
+            },
+            "localAccess": {
+              "type": "boolean"
+            },
+            "motionCooldown": {
+              "type": "number"
+            }
+          }
+        }
+      },
+      "homes": {
+        "title": "Per home configuration options",
+        "type": "array",
+        "items": {
+          "title": "Home",
+          "type": "object",
+          "properties": {
+            "name": {
+              "title": "Home name",
+              "type": "string",
+              "required": true
+            },
+            "elevation": {
+              "type": "number"
+            },
+            "eveHistory": {
+              "type": "boolean"
+            },
+            "exclude": {
+              "type": "boolean"
+            },
+            "weather": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  },
+  "layout": [
+    {
+      "type": "fieldset",
+      "title": "Accounts",
+      "expandable": true,
+      "expanded": false,
+      "add": "Add Account",
+      "key": "accounts",
+      "items": [
+        "accounts[].name",
+        "accounts[].type",
+        "accounts[].access_token",
+        "accounts[].issueToken",
+        "accounts[].cookie",
+        "accounts[].fieldTest"
+      ]
     },
-    "oneOf": [
-        {
-            "required": ["nest"]
-        },
-        {
-            "required": ["google"]
-        }
-    ],
-    "layout": [
-        {
-            "type": "fieldset",
-            "title": "Nest Account",
-            "expandable": true,
-            "expanded": {
-                "functionBody": "return model.nest && model.nest.access_token"
-            },
-            "items": [
-                "nest.access_token",
-                "nest.fieldTest"
-            ]
-        },
-        {
-            "type": "fieldset",
-            "title": "Google Account",
-            "expandable": true,
-            "expanded": {
-                "functionBody": "return model.google && model.google.issuetoken && model.google.cookie"
-            },
-            "items": [
-                "google.issuetoken",
-                "google.cookie",
-                "google.fieldTest"
-            ]
-        },
-        {
-            "type": "fieldset",
-            "title": "General Options",
-            "expandable": true,
-            "expanded": true,
-            "items": [
-                "options.eveHistory",
-                "options.weather",
-                "options.elevation",
-                "options.debug"
-            ]
-        },
-        {
-            "type": "fieldset",
-            "title": "Advanced Options",
-            "expandable": true,
-            "expanded": false,
-            "items": [
-                "options.ffmpegPath",
-                "options.ffmpegDebug",
-                "options.ffmpegHWAccel",
-                "options.supportDump"
-            ]
-        }
-    ]
+    {
+      "type": "fieldset",
+      "title": "General Options",
+      "expandable": true,
+      "expanded": true,
+      "items": ["options.eveHistory", "options.weather", "options.elevation", "options.debug"]
+    },
+    {
+      "type": "fieldset",
+      "title": "Advanced Options",
+      "expandable": true,
+      "expanded": false,
+      "items": ["options.ffmpegPath", "options.ffmpegDebug", "options.ffmpegHWAccel", "options.supportDump"]
+    }
+  ]
 }

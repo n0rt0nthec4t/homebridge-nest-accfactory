@@ -70,6 +70,20 @@ If you did not use Safari, re-capture the tokens using Safari.
 
 **Note:** Do **not** log out of [home.nest.com](https://home.nest.com), as this will invalidate your credentials.
 
+## Account Configuration
+
+The plugin now supports **multiple Nest and Google accounts**.
+
+Accounts are configured using the `"accounts"` array in `config.json`.  
+Each entry defines the account name, account type, and authentication tokens.
+
+Supported account types:
+
+- **Nest** — requires an `accessToken`
+- **Google** — requires both `issueToken` and `cookie`
+
+Each account entry may also optionally enable `fieldTest` for testing Nest API endpoints.
+
 ## config.json configuration
 
 When using the plugin configuration with [homebridge-config-ui-x](https://github.com/homebridge/homebridge-config-ui-x), the config.json will be updated/generated with the configuration options available via the web-form. Additional options can be specified in the config.json directly.
@@ -77,31 +91,37 @@ When using the plugin configuration with [homebridge-config-ui-x](https://github
 Sample config.json entries below
 ```
 {
-    "nest": {
-        "access_token": "<nest access token>",
-        "fieldTest": false
+  "accounts": [
+    {
+      "name": "Nest",
+      "type": "nest",
+      "accessToken": "<nest access token>",
+      "fieldTest": false
     },
-    "google": {
-        "issuetoken": "<google issue token>",
-        "cookie": "<google cookie>",
-        "fieldTest": false
+    {
+      "name": "Google",
+      "type": "google",
+      "issueToken": "<google issue token>",
+      "cookie": "<google cookie>",
+      "fieldTest": false
+    }
+  ],
+  "options": {
+    "eveHistory": true,
+    "weather": true,
+    "elevation": 600
+  },
+  "devices": [
+    {
+      "serialNumber": "XXXXXXXX",
+      "exclude": false
     },
-    "options": {
-        "eveHistory": true,
-        "weather": true,
-        "elevation": 600,
-    },
-    "devices": [
-        {
-            "serialNumber": "XXXXXXXX",
-            "exclude": false
-        },
-        {
-            "serialNumber": "YYYYYYYY",
-            "humiditySensor": true
-        }
-    ],
-    "platform": "NestAccfactory"
+    {
+      "serialNumber": "YYYYYYYY",
+      "humiditySensor": true
+    }
+  ],
+  "platform": "NestAccfactory"
 }
 ```
 

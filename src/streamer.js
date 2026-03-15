@@ -6,20 +6,24 @@
 // Buffers a single audio/video stream which allows multiple HomeKit devices to connect to the single stream
 // for live viewing and/or recording
 //
-// The following functions should be defined in your class which extends this
+// The following functions should be defined in your class which extends this:
 //
 // streamer.connect()
 // streamer.close()
 // streamer.sendTalkback(talkingBuffer)
 // streamer.onUpdate(deviceData)
 // streamer.onShutdown() <- should stop all streaming and buffering and clean up resources
-// streamer.codecs() <- return codecs beeing used in
 //
-// The following defines should be overriden in your class which extends this
+// The following getters should be overridden in your class which extends this:
+//
+// streamer.codecs <- return object with codecs being used (video, audio, talkback)
+// streamer.capabilities <- return object with streaming capabilities (live, record, talkback, buffering)
+//
+// The following properties should be overridden in your class which extends this:
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2026.03.08
+// Code version 2026.03.15
 // Mark Hulskamp
 'use strict';
 

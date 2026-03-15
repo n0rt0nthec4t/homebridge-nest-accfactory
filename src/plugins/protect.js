@@ -1,5 +1,46 @@
-// Nest Protect
+// Nest Protect - HomeKit integration
 // Part of homebridge-nest-accfactory
+//
+// HomeKit accessory for Nest Protect smoke and carbon monoxide detector.
+// Supports 1st and 2nd generation units with battery status, self-test, and motion detection (wired models).
+//
+// Services:
+// - SmokeSensor (primary service with Eve custom characteristics)
+// - CarbonMonoxideSensor (CO detection status)
+// - Battery (hidden, battery level and low battery alerts)
+// - MotionSensor (optional, wired models only)
+//
+// Characteristics:
+// - SmokeDetected: Smoke alarm status (detected/not detected)
+// - CarbonMonoxideDetected: CO alarm status (detected/not detected)
+// - StatusActive: Online status and replacement-date validity
+// - StatusFault: General fault detection (offline or replacement date past)
+// - BatteryLevel and StatusLowBattery: Battery status (not rechargeable)
+// - MotionDetected: Motion sensor (wired models only, cleared on shutdown)
+//
+// Eve Custom Characteristics:
+// - LastAlarmTest: Timestamp of last self-test
+// - AlarmTest: Self-test in progress indicator
+// - HeatStatus: Heat detection status
+// - HushedState: Alarm hushed indicator
+// - StatusLED: Green LED enable state
+// - SmokeTestPassed: Smoke sensor test result
+// - HeatTestPassed: Heat sensor test result
+//
+// Features:
+// - Dual smoke and CO detection with separate alarms
+// - Battery status tracking (wired and battery models)
+// - Automatic detector replacement date monitoring
+// - Self-test information and heat status
+// - Motion detection on wired units
+// - Online/offline status with fault reporting
+// - Motion sensor reset on plugin shutdown (prevents stale state)
+//
+// Data processing:
+// - Translates raw Nest Protobuf detector data to HomeKit format
+// - Field mapping decouples API changes from HomeKit presentation
+// - Supports both 1st gen (battery) and 2nd gen (wired/battery) models
+// - Timestamp-based replacement date validation
 //
 // Mark Hulskamp
 'use strict';
@@ -14,7 +55,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = 'Protect';
-  static VERSION = '2026.03.12'; // Code version
+  static VERSION = '2026.03.15'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;

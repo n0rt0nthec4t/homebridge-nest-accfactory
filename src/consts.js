@@ -1,7 +1,21 @@
 // Common defines
 // Part of homebridge-nest-accfactory
 //
-// Code version 2026.03.04
+// Global constants used throughout the plugin
+// Includes timer intervals, device types, API buckets, protobuf resources, temperature limits
+// Logging levels, resource paths, and configuration defaults
+//
+// Key exports:
+// - TIMERS: Polling and timeout intervals for various operations
+// - DEVICE_TYPE: Supported device classes (Thermostat, Camera, Doorbell, etc.)
+// - PROTOBUF_RESOURCES: Device-to-protobuf resource mappings for Nest and Google APIs
+// - NEST_API_BUCKETS: Data buckets available from Nest REST API
+// - ACCOUNT_TYPE: Authentication types (Nest legacy, Google)
+// - RESOURCE_FRAMES: Fallback H264 video frames for offline/disabled states
+// - FFMPEG_VERSION: Minimum FFmpeg version required for video streaming
+// - Temperature/elevation constraints for thermostats and sensors
+//
+// Code version 2026.03.15
 // Mark Hulskamp
 'use strict';
 

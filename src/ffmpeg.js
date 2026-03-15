@@ -1,7 +1,39 @@
-// FFmpeg manager for binary probing + session tracking
+// FFmpeg manager for binary probing and session tracking
 // Part of homebridge-nest-accfactory
 //
-// Code version 2026.02.15
+// Utility class that locates and probes FFmpeg binary for version, features, and codec capabilities.
+// Validates minimum version and required codecs for camera streaming support. Detects and selects
+// platform-specific hardware H264 encoders. Manages FFmpeg child process sessions with configurable
+// stdio piping for encoding/transcoding.
+//
+// Constructor accepts optional binaryPath (expanded if starts with ~) and log callback function.
+// If no path provided, searches system PATH. Private #probeBinary() method validates binary on init
+// and populates features object; if binary not found or probe fails, class degrades gracefully
+// (features empty, hasMinimumSupport() returns false).
+//
+// Hardware H264 codec selection priority:
+// - macOS: videotoolbox
+// - Linux: nvenc > qsv > vaapi > v4l2m2m (only if required /dev/* exists)
+// - Windows: qsv
+//
+// Session key format: "uuid:sessionID:sessionType" (used internally for tracking spawned processes)
+//
+// Exported properties:
+// - binary: Path to FFmpeg executable (string)
+// - version: Detected version string (e.g., "6.1.1")
+// - features: Object with encoders[], decoders[], muxers[], demuxers[], enabled[], h264_* flags
+// - supportsHardwareH264: Boolean indicating if any hardware encoder is available
+// - hardwareH264Codec: Selected hardware codec name or undefined
+//
+// Public methods:
+// - hasMinimumSupport(minReqs): Validate version and required codecs
+// - createSession(uuid, sessionID, args, sessionType, errorCallback, pipeCount): Spawn FFmpeg
+// - killSession(uuid, sessionID, sessionType, signal): Terminate FFmpeg process
+// - hasSession(uuid, sessionID, sessionType): Check if session exists
+// - listSessions(): Get all active session keys
+// - killAllSessions(uuid, signal): Terminate all sessions for UUID
+//
+// Code version 2026.03.15
 // Mark Hulskamp
 'use strict';
 
@@ -23,7 +55,7 @@ export default class FFmpeg {
   constructor(binaryPath = undefined, log = undefined) {
     this.#log = log;
 
-    if ((binaryPath.trim() ?? '') !== '') {
+    if ((binaryPath?.trim?.() ?? '') !== '') {
       // If path starts with '~' expand to user home directory
       binaryPath = binaryPath.trim();
       if (binaryPath.startsWith('~') === true) {
@@ -31,10 +63,22 @@ export default class FFmpeg {
       }
 
       let resolved = path.resolve(binaryPath);
-      if (resolved.endsWith('/ffmpeg') === false) {
-        resolved += '/ffmpeg';
+
+      // Check if the resolved path points to a directory or a file
+      // If directory, append binary name; if file, use as-is
+      // Use path-aware string comparison that handles both forward and backward slashes
+      let binaryName = 'ffmpeg' + (os.platform() === 'win32' ? '.exe' : '');
+      let resolvedNormalised = resolved.replace(/[\\/]+$/, ''); // Remove trailing slashes
+      if (fs.existsSync(resolvedNormalised) === true && fs.statSync(resolvedNormalised).isDirectory() === true) {
+        // Path is a directory, append binary name
+        this.#binary = path.join(resolvedNormalised, binaryName);
+      } else if (path.basename(resolvedNormalised).toLowerCase() === 'ffmpeg' || resolvedNormalised.endsWith(binaryName) === true) {
+        // Path already points to ffmpeg binary
+        this.#binary = resolvedNormalised;
+      } else {
+        // Assume it's a directory and append binary name
+        this.#binary = path.join(resolvedNormalised, binaryName);
       }
-      this.#binary = resolved;
     } else {
       this.#binary = 'ffmpeg'; // Fallback to system PATH
     }
@@ -65,18 +109,31 @@ export default class FFmpeg {
     let enabledLibs = stdout.match(/--enable-[^\s]+/g) || [];
     this.#features.enabled = enabledLibs.map((f) => f.replace('--enable-', ''));
 
-    // Parse encoders (for HW accel + audio)
-    let encodersOutput = child_process.spawnSync(this.#binary, ['-encoders'], { env: process.env });
-    if (encodersOutput?.stdout !== null && encodersOutput.status === 0) {
-      let encoders = String(encodersOutput.stdout);
-      this.#features.encoders = [];
-      for (let line of encoders.split('\n')) {
-        let match = line.match(/^\s*[A-Z.]+\s+([^\s]+)/);
-        if ((match?.[1] ?? '') !== '') {
-          this.#features.encoders.push(match[1]);
+    // Helper function to parse feature lists with different regex patterns
+    const parseFeatures = (command, regex) => {
+      let output = child_process.spawnSync(this.#binary, [command], { env: process.env });
+      if (output?.stdout === null || output.status !== 0) {
+        return [];
+      }
+      let features = [];
+      for (let line of String(output.stdout).split('\n')) {
+        let m = line.match(regex);
+        if ((m?.[1] ?? '') !== '') {
+          features.push(m[1]);
         }
       }
+      return features;
+    };
 
+    // Parse feature lists (encoders, decoders, muxers, demuxers)
+    this.#features.encoders = parseFeatures('-encoders', /^\s*[A-Z.]+\s+([^\s]+)/);
+    this.#features.decoders = parseFeatures('-decoders', /^\s*[A-Z.]+\s+([^\s]+)/);
+    this.#features.muxers = parseFeatures('-muxers', /^\s*[E][A-Z.]*\s+([^\s]+)/);
+    this.#features.demuxers = parseFeatures('-demuxers', /^\s*[D][A-Z.]*\s+([^\s]+)/);
+
+    // Detect hardware H264 codec flags
+    let encoders = String(child_process.spawnSync(this.#binary, ['-encoders'], { env: process.env })?.stdout ?? '');
+    if (encoders !== '') {
       this.#features.h264_nvenc = encoders.includes('h264_nvenc') === true;
       this.#features.h264_vaapi = encoders.includes('h264_vaapi') === true;
       this.#features.h264_v4l2m2m = encoders.includes('h264_v4l2m2m') === true;
@@ -120,45 +177,6 @@ export default class FFmpeg {
         this.#features.hardwareH264Codec = 'h264_qsv';
       }
     }
-
-    // Parse decoders
-    let decoderOutput = child_process.spawnSync(this.#binary, ['-decoders'], { env: process.env });
-    if (decoderOutput?.stdout !== null && decoderOutput.status === 0) {
-      this.#features.decoders = [];
-      let lines = String(decoderOutput.stdout).split('\n');
-      for (let line of lines) {
-        let match = line.match(/^\s*[A-Z.]+\s+([^\s]+)/);
-        if ((match?.[1] ?? '') !== '') {
-          this.#features.decoders.push(match[1]);
-        }
-      }
-    }
-
-    // Parse muxers
-    let muxerOutput = child_process.spawnSync(this.#binary, ['-muxers'], { env: process.env });
-    if (muxerOutput?.stdout !== null && muxerOutput.status === 0) {
-      this.#features.muxers = [];
-      let lines = String(muxerOutput.stdout).split('\n');
-      for (let line of lines) {
-        let match = line.match(/^\s*[E][A-Z.]*\s+([^\s]+)/);
-        if ((match?.[1] ?? '') !== '') {
-          this.#features.muxers.push(match[1]);
-        }
-      }
-    }
-
-    // Parse demuxers
-    let demuxerOutput = child_process.spawnSync(this.#binary, ['-demuxers'], { env: process.env });
-    if (demuxerOutput?.stdout !== null && demuxerOutput.status === 0) {
-      this.#features.demuxers = [];
-      let lines = String(demuxerOutput.stdout).split('\n');
-      for (let line of lines) {
-        let match = line.match(/^\s*[D][A-Z.]*\s+([^\s]+)/);
-        if ((match?.[1] ?? '') !== '') {
-          this.#features.demuxers.push(match[1]);
-        }
-      }
-    }
   }
 
   hasMinimumSupport(min = {}) {
@@ -177,32 +195,29 @@ export default class FFmpeg {
       return false;
     }
 
+    // Helper to check if all required items are in available list
+    const hasAllRequired = (required, available) => {
+      if (Array.isArray(required) === false || required.length === 0) {
+        return true;
+      }
+      return required.every((item) => available.includes(item) === true);
+    };
+
     let encoders = this.#features.encoders || [];
     let decoders = this.#features.decoders || [];
     let muxers = this.#features.muxers || [];
 
-    if (Array.isArray(min?.encoders) === true) {
-      for (let encoder of min.encoders) {
-        if (encoders.includes(encoder) === false) {
-          return false;
-        }
-      }
+    // Check all feature requirements
+    if (hasAllRequired(min?.encoders, encoders) === false) {
+      return false;
     }
 
-    if (Array.isArray(min?.decoders) === true) {
-      for (let decoder of min.decoders) {
-        if (decoders.includes(decoder) === false) {
-          return false;
-        }
-      }
+    if (hasAllRequired(min?.decoders, decoders) === false) {
+      return false;
     }
 
-    if (Array.isArray(min?.muxers) === true) {
-      for (let muxer of min.muxers) {
-        if (muxers.includes(muxer) === false) {
-          return false;
-        }
-      }
+    if (hasAllRequired(min?.muxers, muxers) === false) {
+      return false;
     }
 
     return true;

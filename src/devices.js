@@ -1,7 +1,23 @@
 // Device support loader
 // Part of homebridge-nest-accfactory
 //
-// Code version 2026.03.04
+// Dynamically discovers and loads device plugin modules from the plugins directory
+// Each plugin module exports a device class extending HomeKitDevice
+// Manages device instantiation, initialization, and lifecycle across Nest and Google APIs
+//
+// Device plugins supported:
+// - Camera, Doorbell: WebRTC and legacy Nest streaming
+// - Thermostat: HVAC control with humidity management
+// - Lock: Door unlock control
+// - Floodlight: Camera with lighting control
+// - Protect: Security/smoke detection
+// - TempSensor, Weather: Environmental sensors
+// - Others: Platform-specific devices (Heatlink, etc.)
+//
+// Module exports:
+// - loadDeviceModules(log, pluginDir) - asynchronously load all device plugin classes
+//
+// Code version 2026.03.15
 // Mark Hulskamp
 'use strict';
 

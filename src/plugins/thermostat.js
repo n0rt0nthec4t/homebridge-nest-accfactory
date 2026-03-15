@@ -1,5 +1,82 @@
-// Nest Thermostat
+// Nest Thermostats - HomeKit integration
 // Part of homebridge-nest-accfactory
+//
+// HomeKit accessory for Nest Thermostats providing comprehensive climate control
+// with intelligent mode switching, occupancy detection, fan control, humidifier/dehumidifier support,
+// and Eve Home integration. Supports external automation modules for custom climate logic.
+//
+// Services:
+// - Thermostat (primary climate control service)
+// - Fan (if has_fan - variable or single speed control)
+// - OccupancySensor (away/home detection)
+// - Battery (hidden, for battery-powered models)
+// - HumiditySensor (optional, if humiditySensor config enabled)
+// - HumidifierDehumidifier (optional, if has_humidifier or has_dehumidifier)
+//
+// Thermostat Characteristics:
+// - CurrentTemperature: Active sensor reading with 0.5°C/F resolution
+// - TargetTemperature: Single target (HEAT/COOL modes) or midpoint (AUTO mode)
+// - HeatingThresholdTemperature: Minimum comfort temperature in AUTO mode
+// - CoolingThresholdTemperature: Maximum comfort temperature in AUTO mode
+// - CurrentHeatingCoolingState: Active operation mode (off/heat/cool)
+// - TargetHeatingCoolingState: Requested mode (off/heat/cool/auto)
+// - TemperatureDisplayUnits: Celsius/Fahrenheit display preference
+// - CurrentRelativeHumidity: Active humidity sensor reading
+// - StatusActive: True when using thermostat temperature (false if external sensor active)
+// - StatusFault: Set when thermostat offline or removed from base station
+// - LockPhysicalControls: Child lock for physical controls (PIN support planned)
+// - FilterChangeIndication: Air filter replacement status
+//
+// Fan Characteristics (if has_fan):
+// - Active: Fan on/off control
+// - RotationSpeed: Variable speed 0-100% (if fan_max_speed > 1)
+//
+// HumidifierDehumidifier Characteristics (if configured):
+// - Active: Humidifier/dehumidifier on/off
+// - CurrentHumidifierDehumidifierState: Operation mode (humidifying/dehumidifying/idle)
+// - TargetHumidifierDehumidifierState: Humidifier-only, dehumidifier-only, or both
+// - RelativeHumidityHumidifierThreshold: Target percentage for humidifying
+// - RelativeHumidityDehumidifierThreshold: Target percentage for dehumidifying
+// - CurrentRelativeHumidity: Current humidity reading for the accessory
+//
+// Features:
+// - Four operation modes: Heat, Cool, Auto/Range, Off (eco variants internally mapped to standard modes)
+// - Dynamic mode validation: Only valid modes offered based on device capabilities (can_heat, can_cool)
+// - Temperature control with 0.5°C/F increments and configurable min/max boundaries
+// - Smart temperature mapping: HeatingThresholdTemperature/CoolingThresholdTemperature in AUTO mode
+// - Fan control with variable speed (if fan_max_speed > 1) and duration-based timeout
+// - Humidifier/dehumidifier control with independent target levels and dual-mode support
+// - Occupancy detection: Away (no occupancy) vs Home (occupancy detected)
+// - Battery monitoring with low-battery threshold (for battery-powered models)
+// - Child lock: Physical control locking with optional PIN (implementation planned)
+// - Air filter replacement tracking and HomeKit notification
+// - External module automation: Custom .mjs functions for heat/cool/fan/dehumidifier/humidifier/off
+// - Eve Home integration: Schedule readout, vacation mode, and eco/comfort temperature payloads
+// - Temperature sensor linking: Can use external temperature sensor (e.g., Nest Temperature Sensor)
+// - Mode change logging: Tracks source (HomeKit vs Thermostat device); temperature logs preserve eco context
+//
+// Data processing:
+// - HVAC modes normalised to uppercase and eco prefix stripped for HomeKit compatibility
+// - Temperature thresholds dynamically updated based on active mode configuration
+// - Fan speed scaled between 0-100% and device max_speed boundary
+// - Humidity control state transitions trigger external module functions
+// - Eve Home payloads include schedule day entries with eco/comfort temperature settings
+// - Translates raw Nest and Google API structures into unified HomeKit format
+//
+// External Module Support:
+// Flexible JavaScript (.mjs) modules in plugin directory supporting function signatures:
+// - cool(targetTemperature): Called when cooling activated
+// - heat(targetTemperature): Called when heating activated
+// - fan(value): Called when fan activated
+// - dehumidifier(value): Called when dehumidifying
+// - humidifier(value): Called when humidifying
+// - off(): Called to stop any active operation
+//
+// Limitations:
+// - PIN-based child lock implementation pending API support
+// - Humidifier/dehumidifier mode changes trigger both .set() and external module calls
+// - Fan/humidifier/dehumidifier callbacks currently receive a generic value rather than target metadata
+// - Temperature locking is characteristic-only (no backend PIN encryption yet)
 //
 // Mark Hulskamp
 'use strict';
@@ -30,7 +107,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2026.03.12'; // Code version
+  static VERSION = '2026.03.15'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;

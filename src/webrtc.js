@@ -1,10 +1,24 @@
 // WebRTC
 // Part of homebridge-nest-accfactory
 //
-// Handles connection and data from Google WebRTC systems
-// Currently a "work in progress"
+// Handles WebRTC peer connection and streaming with Google Nest API
+// Manages bidirectional media streams (audio/video) using SRTP encryption
+// Handles connection lifecycle, ICE candidates, and stream synchronization
 //
-// Code version 2026.03.13
+// Extends Streamer base class to provide WebRTC-specific streaming capabilities
+// Supports live streaming and talkback audio over WebRTC connections
+//
+// Key features:
+// - WebRTC peer connection management using werift library
+// - SRTP encryption for secure media transport
+// - Opus audio codec support with decoder
+// - Protobuf message handling for protocol communication
+// - ICE candidate exchange and connection state tracking
+// - Two-way audio (talkback) support over bidirectional media streams
+//
+// Note: Currently a "work in progress" - feature set may expand
+//
+// Code version 2026.03.15
 // Mark Hulskamp
 'use strict';
 

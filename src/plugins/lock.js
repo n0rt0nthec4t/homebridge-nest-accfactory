@@ -1,5 +1,36 @@
-// Nest x Yale Lock (initial class - protobuf support only)
+// Nest × Yale Lock - HomeKit integration
 // Part of homebridge-nest-accfactory
+//
+// HomeKit accessory for Nest × Yale smart lock (protobuf API support only, REST API not supported).
+// Provides secure lock control with battery monitoring, auto-relock, and activity tracking.
+//
+// Services:
+// - LockMechanism (primary service with target and current state)
+// - Battery (hidden, for battery level and low battery alerts)
+//
+// Characteristics:
+// - LockCurrentState: Reports actual lock position (locked/unlocked/jammed/locking/unlocking)
+// - LockTargetState: Control lock (locked/unlocked via HomeKit)
+// - LockLastKnownAction: Track action source (physical, remote, keypad, voice, implicit)
+// - LockManagementAutoSecurityTimeout: Configure auto-relock duration (0 to max_auto_relock_duration seconds)
+// - StatusTampered: Reports if lock has been physically tampered
+// - StatusFault: Reports online/offline status
+// - BatteryLevel and StatusLowBattery: Battery status (not rechargeable)
+//
+// Features:
+// - Real-time lock state synchronisation with HomeKit
+// - Configurable auto-relock with timeout control
+// - Action history tracking (who/what locked or unlocked)
+// - Tamper detection support
+// - Battery monitoring with low battery alerts
+//
+// Data processing:
+// - Translates raw Protobuf lock data to HomeKit lock states
+// - Field mapping decouples API changes from HomeKit presentation
+// - Supports local and remote lock control
+//
+// Limitations:
+// - Protobuf API only (no REST API support)
 //
 // Mark Hulskamp
 'use strict';
@@ -14,7 +45,7 @@ import { DATA_SOURCE, DEVICE_TYPE, PROTOBUF_RESOURCES, LOW_BATTERY_LEVEL } from 
 
 export default class NestLock extends HomeKitDevice {
   static TYPE = 'Lock';
-  static VERSION = '2026.03.12'; // Code version
+  static VERSION = '2026.03.15'; // Code version
 
   // Define lock bolt states
   static STATE = {

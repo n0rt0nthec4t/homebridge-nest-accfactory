@@ -1,7 +1,33 @@
-// Nest System communications
+// Overall system communications and device management
 // Part of homebridge-nest-accfactory
 //
-// Code version 2026.03.12
+// Core system manager for bi-directional communication with Nest and Google APIs
+// Handles device discovery, synchronisation, and data updates
+// Instantiates and manages individual device objects for HomeKit integration
+//
+// Primary responsibilities:
+// - Manage connections to Nest REST API and Google Protobuf API
+// - Discover and enumerate all devices (thermostats, cameras, doorbells, locks, etc.)
+// - Maintain synchronised device state between Nest/Google APIs
+// - Process device trait updates from cloud APIs in real-time
+// - Handle user commands from HomeKit plugins and send to appropriate API
+// - Manage device add/remove/update lifecycle
+// - Instantiate HomeKitDevice objects that plugins extend for HomeKit integration
+//
+// Key features:
+// - Multi-account support (multiple Google and/or Nest accounts simultaneously)
+// - Real-time event handling and state synchronisation
+// - Device trait validation
+//
+// Note: HomeKit characteristic management and service creation is handled by
+// individual device plugins (thermostat.js, camera.js, etc.) not by this module
+//
+// Architecture:
+// Exports NestAccfactory main class - instantiated once per platform
+// Creates HomeKitDevice instances for each Nest/Google device
+// Manages connection objects for each account (credentials, API endpoints)
+//
+// Code version 2026.03.15
 // Mark Hulskamp
 'use strict';
 
@@ -42,7 +68,7 @@ export default class NestAccfactory {
     this.api = api;
 
     // Perform validation on the configuration passed into us and set defaults if not present
-    this.config = processConfig(config, this.log);
+    this.config = processConfig(config, this.log, this.api);
     this.#connections = buildConnections(this.config);
 
     // Check for valid connections, either a Nest and/or Google one specified. Otherwise, return back.
@@ -131,7 +157,7 @@ export default class NestAccfactory {
     if (this.#connections[uuid].type === ACCOUNT_TYPE.GOOGLE) {
       // Authorisation using Google account (cookie-based since 2022)
       try {
-        let tokenResponse = await fetchWrapper('get', this.#connections[uuid].issuetoken, {
+        let tokenResponse = await fetchWrapper('get', this.#connections[uuid].issueToken, {
           headers: {
             Referer: 'https://accounts.google.com/',
             Cookie: this.#connections[uuid].cookie,

@@ -1,23 +1,10 @@
-// Homebridge platform allowing Nest devices to be used with HomeKit
-// This is a port from my standalone project, NestAccfactory to Homebridge
+// Homebridge platform plugin entry point: NestAccfactory
+// Part of homebridge-nest-accfactory
 //
-// This includes having support for HomeKit Secure Video (HKSV) on doorbells and cameras
+// Exports default function that validates Homebridge API and registers the NestAccfactory platform.
+// Delegates all platform logic to system manager (system.js) and device wrapper (HomeKitDevice.js).
 //
-// The following Nest devices are supported
-//
-// Nest Thermostats (1st gen, 2nd gen, 3rd gen, E, 2020 mirror edition, 4th gen)
-// Nest Protects (1st and 2nd gen)
-// Nest Temp Sensors (1st gen)
-// Nest Cameras (Cam Indoor, IQ Indoor, Outdoor, IQ Outdoor, Cam with Floodlight)
-// Nest Doorbells (wired 1st gen)
-// Nest HeatLink
-//
-// The accessory supports authentication to Nest/Google using either a Nest account OR Google (migrated Nest account) account.
-// "preliminary" support for using FieldTest account types also.
-//
-// Supports both Nest REST and Protobuf APIs for communication
-//
-// Code version 2025.09.08
+// Code version 2026.03.15
 // Mark Hulskamp
 'use strict';
 
@@ -31,6 +18,11 @@ import HomeKitHistory from './HomeKitHistory.js';
 HomeKitDevice.EVEHOME = HomeKitHistory;
 
 export default (api) => {
+  // Validate Homebridge API object
+  if (typeof api?.registerPlatform !== 'function') {
+    throw new Error('NestAccfactory: Invalid Homebridge API object - registerPlatform method not found');
+  }
+
   // Register our platform with Homebridge
   api.registerPlatform(HomeKitDevice.PLATFORM_NAME, NestAccfactory);
 };

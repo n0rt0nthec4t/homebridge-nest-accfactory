@@ -1,5 +1,37 @@
-// Nest Heatlink
+// Nest HeatLink - HomeKit integration
 // Part of homebridge-nest-accfactory
+//
+// HomeKit accessory for Nest HeatLink hot water heating control system.
+// Provides temperature control and heating boost management with real-time status monitoring.
+//
+// Services:
+// - Thermostat (optional, if hot water temperature control enabled)
+// - Switch (optional, for hot water heating boost control)
+//
+// Thermostat Characteristics (when enabled):
+// - CurrentTemperature: Real-time water temperature monitoring
+// - TargetTemperature: Set desired water temperature (min-max range configurable)
+// - CurrentHeatingCoolingState: Reports if heating is active (HEAT/OFF)
+// - TargetHeatingCoolingState: Heat mode only (no cooling support)
+// - TemperatureDisplayUnits: Celsius or Fahrenheit display
+// - StatusActive: Reports online/offline status
+//
+// Switch Characteristics (boost control):
+// - On: Controls hot water heating boost (on/off)
+//
+// Features:
+// - Temperature range: Configurable per device (hotwaterMinTemp - hotwaterMaxTemp)
+// - Thermal history recording for Eve Home (temperature, target, heating status)
+// - Hot water heating boost with configurable duration
+// - Real-time water temperature display and control
+// - Online/offline status monitoring
+// - Dynamic service creation based on device capabilities
+//
+// Data processing:
+// - Translates raw Nest Protobuf hot water data to HomeKit format
+// - Supports both temperature control and boost-only configurations
+// - Celsius/Fahrenheit temperature unit conversion
+// - History recording at 5-minute intervals (Eve Home integration)
 //
 // Mark Hulskamp
 'use strict';
@@ -21,7 +53,7 @@ import {
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = 'Heatlink';
-  static VERSION = '2026.03.12'; // Code version
+  static VERSION = '2026.03.15'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control

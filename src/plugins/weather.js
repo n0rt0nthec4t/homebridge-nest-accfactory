@@ -1,5 +1,23 @@
-// Nest 'virtual' weather station
+// Nest weather station - virtual accessory for HomeKit
 // Part of homebridge-nest-accfactory
+//
+// Creates a virtual weather station accessory from Nest/Google location and weather data.
+// Exposes temperature, humidity, and optional air pressure/elevation via HomeKit services.
+//
+// Services:
+// - TemperatureSensor (primary service with custom Eve characteristics)
+// - HumiditySensor
+// - Battery (hidden, required for Eve Home support)
+// - EveAirPressureSensor (optional, if available in HAP)
+//
+// Custom Eve characteristics: ForecastDay, ObservationStation, Condition, WindDirection,
+// WindSpeed, SunriseTime, SunsetTime
+//
+// Data processing:
+// - Translates raw Nest and Google API structures into unified HomeKit format
+// - Field mapping decouples API changes from HomeKit presentation
+// - Polling timer fetches fresh weather data from remote API
+// - History recording enabled for temperature and humidity trends
 //
 // Mark Hulskamp
 'use strict';
@@ -14,7 +32,7 @@ import { DATA_SOURCE, DEVICE_TYPE, MAX_ELEVATION, MIN_ELEVATION, NESTLABS_MAC_PR
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = 'Weather';
-  static VERSION = '2026.03.12'; // Code version
+  static VERSION = '2026.03.15'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;

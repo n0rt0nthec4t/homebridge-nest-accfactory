@@ -1,11 +1,23 @@
 // NexusTalk
 // Part of homebridge-nest-accfactory
 //
-// Handles connection and data from Nest 'nexus' systems
+// Handles streaming connections with Nest legacy 'Nexus' systems
+// Manages bidirectional media streams (audio/video) over secure TLS connections
+// Implements Nest proprietary protocol using protobuf message serialization
 //
-// Credit to https://github.com/Brandawg93/homebridge-nest-cam for the work on the Nest Camera comms code on which this is based
+// Extends Streamer base class to provide Nest API-specific streaming capabilities
+// Supports live streaming and talkback audio over Nest legacy infrastructure
 //
-// Code version 2026.03.13
+// Key features:
+// - TLS-encrypted connection management with Nest backend
+// - Protobuf message serialization for Nest protocol communication
+// - Stream multiplexing over single connection
+// - Audio/video packet handling and synchronization
+// - Talkback (two-way audio) support
+//
+// Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
+//
+// Code version 2026.03.15
 // Mark Hulskamp
 'use strict';
 

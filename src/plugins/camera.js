@@ -1,5 +1,43 @@
-// Nest Cameras
+// Nest Cameras and Doorbells - HomeKit integration
 // Part of homebridge-nest-accfactory
+//
+// HomeKit accessory for Nest Cameras (Indoor, Outdoor, IQ, etc.).
+// Provides robust video streaming, HomeKit Secure Video (HKSV),
+// motion detection with configurable cooldown handling, night vision, and statusLED control.
+//
+// Services:
+// - CameraController or DoorbellController (primary streaming service)
+// - MotionSensor (motion detection with eventSnapshot support)
+// - RecordingManagement (HomeKit Secure Video configuration and history)
+// - Battery (optional, for battery-powered camera models)
+//
+// Camera Characteristics (via RecordingManagement):
+// - HomeKitCameraActive: Enable/disable streaming (on/off)
+// - NightVision: Control IR LED night vision mode (requires has_irled)
+// - CameraOperatingModeIndicator: Control recording status LED (requires has_statusled)
+// - ImageRotation: Flip video 180° (requires has_video_flip)
+//
+// Features:
+// - Dual streaming protocols: WebRTC and NexusTalk
+// - HomeKit Secure Video with recorded to HomeKit feature
+// - Live stream sessions with crypto, RTP, and multiplexing
+// - Motion detection with cooldown and smart alerts
+// - Advanced night mode and IR LED control
+// - Recording status LED indicator
+// - Video flip/rotation support
+// - Snapshot caching with automatic refresh (30-second retention)
+// - FFmpeg integration for video codec verification and hardware acceleration
+// - Activity recording for Eve Home history when configured
+// - Offline video fallback images
+// - Battery level monitoring (for battery-powered models)
+//
+// Data processing:
+// - Field mapping translates raw Nest Protobuf camera data to HomeKit format
+// - Lazy-loads snapshot images from resources directory (offline, off, transfer states)
+// - Validates FFmpeg binary at init or on config change
+// - Manages streaming sessions with lifecycle cleanup
+// - Supports both wired and battery-powered camera variants
+//
 //
 // Mark Hulskamp
 'use strict';
@@ -49,7 +87,7 @@ const STREAMERS = {
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2026.03.13'; // Code version
+  static VERSION = '2026.03.15'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream

@@ -1,7 +1,20 @@
 // General helper functions
 // Part of homebridge-nest-accfactory
 //
-// Code version 2026.03.12
+// Utility functions for common operations across the plugin
+// Temperature conversion, CRC hashing, HTTP request handling with retries
+// Duration parsing, value scaling, and device data processing
+//
+// Exported functions:
+//
+// adjustTemperature(temp, currentUnit, targetUnit, round) - convert between Celsius and Fahrenheit
+// crc24(valueToHash) - compute CRC24 hash for value validation (6-digit hex string)
+// scaleValue(value, srcMin, srcMax, tgtMin, tgtMax) - scale value from source range to target range
+// fetchWrapper(method, url, options, data) - fetch with automatic retry, timeout, and error handling
+// parseDurationToSeconds(duration, options) - parse duration strings (e.g. "1w3d2h15m30s") to seconds
+// processCommonData(deviceUUID, homeUUID, data, config) - normalize device data and apply config overrides
+//
+// Code version 2026.03.15
 // Mark Hulskamp
 'use strict';
 
