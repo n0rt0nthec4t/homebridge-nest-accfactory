@@ -40,3 +40,5 @@ import "weave/trait/time.proto";
 import "nest/services/apigateway.proto";
 import "nestlabs/gateway/v2.proto";
 import "nestlabs/history/v1.proto";
+import "nestlabs/eventingapi/v1.proto";
+import "home/event/common.proto";

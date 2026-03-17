@@ -184,6 +184,11 @@
               "placeholder": "Device serial number",
               "required": true
             },
+            "name": {
+              "title": "Name",
+              "type": "string",
+              "placeholder": "Device description for configuration"
+            },
             "chimeSwitch": {
               "type": "boolean"
             },
@@ -226,11 +231,6 @@
             },
             "motionCooldown": {
               "type": "number"
-            },
-            "name": {
-              "title": "Name",
-              "type": "string",
-              "placeholder": "Device description for configuration"
             }
           }
         }

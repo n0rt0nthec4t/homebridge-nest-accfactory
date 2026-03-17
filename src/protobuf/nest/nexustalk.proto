@@ -20,6 +20,16 @@ enum Profile {
     VIDEO_H264_L40 = 15;
 }
 
+enum CodecType {
+    SPEEX = 0;
+    PCM_S16_LE = 1;
+    H264 = 2;
+    AAC = 3;
+    OPUS = 4;
+    META = 5;
+    DIRECTORS_CUT = 6;
+}
+
 message Hello {
     enum ProtocolVersion {
         VERSION_1 = 1;
@@ -97,19 +107,9 @@ message PlaybackEnd {
 }
 
 message PlaybackBegin {
-    enum CodecType {
-        SPEEX = 0;
-        PCM_S16_LE = 1;
-        H264 = 2;
-        AAC = 3;
-        OPUS = 4;
-        META = 5;
-        DIRECTORS_CUT = 6;
-    }
-
     message Channels {
         uint32 channelId = 1;
-        CodecType codecType = 2;
+        CodecType codec = 2;
         uint32 sampleRate = 3;
         bytes privateData = 4;
         double startTime = 5;

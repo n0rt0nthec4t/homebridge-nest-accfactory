@@ -27,7 +27,7 @@
 // Creates HomeKitDevice instances for each Nest/Google device
 // Manages connection objects for each account (credentials, API endpoints)
 //
-// Code version 2026.03.15
+// Code version 2026.03.16
 // Mark Hulskamp
 'use strict';
 
@@ -559,35 +559,7 @@ export default class NestAccfactory {
           };
         }
 
-        // Dump the raw data if configured to do so
-        // This can be used for user support, rather than specific build to dump this :-)
-        if (this?.config?.options?.supportDump === true && this.#connections[uuid]?.doneNestSupportDump !== true) {
-          this.#connections[uuid].doneNestSupportDump = true; // Done once
-          this?.log?.warn?.('Support Dump for Nest API data will be logged below for troubleshooting purposes.');
-          Object.entries(this.#rawData)
-            .filter(([, data]) => data?.source === DATA_SOURCE.NEST)
-            .forEach(([serial, data]) => {
-              this?.log?.info?.('{');
-              this?.log?.info?.('  "%s": {', serial);
-              Object.entries(data?.value).forEach(([key, value]) => {
-                if (typeof value === 'object' && value !== null) {
-                  this?.log?.info?.('  %s:', key);
-                  String(JSON.stringify(value, null, 2))
-                    .split('\n')
-                    .forEach((line) => {
-                      this?.log?.info?.('    %s', line);
-                    });
-                } else {
-                  this?.log?.info?.('  %s: %j', key, value);
-                }
-              });
-              this?.log?.info?.('  }');
-              this?.log?.info?.('}');
-            });
-          this?.log?.warn?.('End of Support Dump for Nest API data.');
-        }
-
-        await this.#processData();
+        await this.#processData(uuid);
       })
       .catch((error) => {
         // Attempt to extract HTTP status code from error cause or error object
@@ -651,9 +623,6 @@ export default class NestAccfactory {
     // Dynamically build the 'observe' post body data
     let observeTraitsList = [];
     traverseTypes(this.#protobufRoot, (type) => {
-      // We only want to have certain trait 'families' in our observe reponse we are building
-      // This also depends on the account type we connected with
-      // Nest accounts cannot observe camera/doorbell product traits
       if (
         (this.#connections[uuid].type === ACCOUNT_TYPE.NEST &&
           type.fullName.startsWith('.nest.trait.product.camera') === false &&
@@ -668,6 +637,10 @@ export default class NestAccfactory {
       }
     });
 
+    // Dedupe the observe traits list since there can be some overlap in the traits
+    // due to the dynamic nature of the protobuf loading and trait type matching
+    observeTraitsList = [...new Map(observeTraitsList.map((entry) => [entry.traitType, entry])).values()];
+
     if (firstRun === true || firstRun === undefined) {
       this?.log?.debug?.('Starting Google API observe for connection "%s"', this.#connections[uuid].name);
     }
@@ -681,120 +654,101 @@ export default class NestAccfactory {
         // We'll use the resource status message to look for structure and/or device removals
         // We could also check for structure and/or device additions here, but we'll want to be flagged
         // that a device is 'ready' for use before we add in. This data is populated in the trait data
-        if (Array.isArray(message?.observeResponse?.[0]?.resourceMetas) === true) {
-          message.observeResponse[0].resourceMetas.map(async (resource) => {
-            if (
-              resource.status === 'REMOVED' &&
-              (resource.resourceId.startsWith('STRUCTURE_') || resource.resourceId.startsWith('DEVICE_'))
-            ) {
-              // We have the removal of a 'home' and/or device
-              // Tidy up tracked devices since this one is removed
-              if (this.#trackedDevices[this.#rawData?.[resource.resourceId]?.value?.device_identity?.serialNumber] !== undefined) {
-                // Send removed notice onto HomeKit device for it to process
-                HomeKitDevice.message(
-                  this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber].uuid,
-                  HomeKitDevice.REMOVE,
-                  {},
+        for (let observeResponse of message?.observeResponse ?? []) {
+          // resourceMetas
+          if (Array.isArray(observeResponse?.resourceMetas) === true) {
+            for (let resource of observeResponse.resourceMetas) {
+              if (
+                resource.status === 'REMOVED' &&
+                (resource.resourceId.startsWith('STRUCTURE_') === true || resource.resourceId.startsWith('DEVICE_') === true)
+              ) {
+                // We have the removal of a 'home' and/or device
+                // Tidy up tracked devices since this one is removed
+                if (this.#trackedDevices[this.#rawData?.[resource.resourceId]?.value?.device_identity?.serialNumber] !== undefined) {
+                  // Send removed notice onto HomeKit device for it to process
+                  HomeKitDevice.message(
+                    this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber].uuid,
+                    HomeKitDevice.REMOVE,
+                    {},
+                  );
+
+                  // Finally, remove from tracked devices
+                  delete this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber];
+                }
+                delete this.#rawData[resource.resourceId];
+              }
+            }
+          }
+
+          // traitStates
+          if (Array.isArray(observeResponse?.traitStates) === true) {
+            // Tidy up our received trait states. This ensures we only have one status for the trait in the data we process
+            // We'll favour a trait with accepted status over the same with confirmed status
+            let traits = observeResponse.traitStates;
+            let acceptedKeys = new Set(
+              traits
+                .filter((trait) => trait.stateTypes.includes('ACCEPTED') === true)
+                .map((trait) => trait.traitId.resourceId + '/' + trait.traitId.traitLabel),
+            );
+            observeResponse.traitStates = [
+              ...traits.filter((trait) => acceptedKeys.has(trait.traitId.resourceId + '/' + trait.traitId.traitLabel) === false),
+              ...traits.filter((trait) => trait.stateTypes.includes('ACCEPTED') === true),
+            ];
+
+            for (let trait of observeResponse.traitStates) {
+              // Create or update trait entry and assign latest patch values
+              this.#rawData[trait.traitId.resourceId] = {
+                connection: uuid,
+                source: DATA_SOURCE.GOOGLE,
+                value: Object.assign(
+                  {}, // base object
+                  this.#rawData?.[trait.traitId.resourceId]?.value, // existing values (if any)
+                  {
+                    [trait.traitId.traitLabel]: trait?.patch?.values ?? {}, // latest patch for this trait
+                  },
+                ),
+              };
+
+              // Remove trait type metadata — we don't need to store it
+              delete this.#rawData[trait.traitId.resourceId]?.value?.[trait.traitId.traitLabel]?.['@type'];
+
+              // If we have structure location details and associated geo-location details, get the weather data for the location
+              // We'll store this in the object key/value as per Nest API
+              if (
+                trait.traitId.resourceId.startsWith('STRUCTURE_') === true &&
+                trait.traitId.traitLabel === 'structure_location' &&
+                (trait.patch.values?.postalCode?.value?.trim?.() ?? '') !== '' &&
+                (trait.patch.values?.countryCode?.value?.trim?.() ?? '') !== ''
+              ) {
+                let weatherData = await this.#getLocationWeather(
+                  uuid,
+                  trait.traitId.resourceId,
+                  trait.patch.values.postalCode.value,
+                  trait.patch.values.countryCode.value,
                 );
-
-                // Finally, remove from tracked devices
-                delete this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber];
+                if (weatherData !== undefined && typeof this.#rawData?.[trait.traitId.resourceId]?.value === 'object') {
+                  this.#rawData[trait.traitId.resourceId].value.weather = { ...weatherData };
+                }
               }
-              delete this.#rawData[resource.resourceId];
-            }
-          });
-        }
 
-        if (Array.isArray(message?.observeResponse?.[0]?.traitStates) === true) {
-          // Tidy up our received trait states. This ensures we only have one status for the trait in the data we process
-          // We'll favour a trait with accepted status over the same with confirmed status
-          let traits = message.observeResponse[0].traitStates;
-          let accepted = traits.filter((trait) => trait.stateTypes.includes('ACCEPTED') === true);
-          let acceptedKeys = new Set(accepted.map((t) => t.traitId.resourceId + '/' + t.traitId.traitLabel));
-          let others = traits.filter((trait) => acceptedKeys.has(trait.traitId.resourceId + '/' + trait.traitId.traitLabel) === false);
-          message.observeResponse[0].traitStates = [...others, ...accepted];
-
-          for (let trait of message.observeResponse[0].traitStates) {
-            // Create or update trait entry and assign latest patch values
-            this.#rawData[trait.traitId.resourceId] = {
-              connection: uuid,
-              source: DATA_SOURCE.GOOGLE,
-              value: Object.assign(
-                {}, // base object
-                this.#rawData?.[trait.traitId.resourceId]?.value, // existing values (if any)
-                {
-                  [trait.traitId.traitLabel]: trait?.patch?.values ?? {}, // latest patch for this trait
-                },
-              ),
-            };
-
-            // Remove trait type metadata — we don't need to store it
-            delete this.#rawData[trait.traitId.resourceId]?.value?.[trait.traitId.traitLabel]?.['@type'];
-
-            // If we have structure location details and associated geo-location details, get the weather data for the location
-            // We'll store this in the object key/value as per Nest API
-            if (
-              trait.traitId.resourceId.startsWith('STRUCTURE_') === true &&
-              trait.traitId.traitLabel === 'structure_location' &&
-              (trait.patch.values?.postalCode?.value?.trim?.() ?? '') !== '' &&
-              (trait.patch.values?.countryCode?.value?.trim?.() ?? '') !== ''
-            ) {
-              let weatherData = await this.#getLocationWeather(
-                uuid,
-                trait.traitId.resourceId,
-                trait.patch.values.postalCode.value,
-                trait.patch.values.countryCode.value,
-              );
-              if (weatherData !== undefined && typeof this.#rawData?.[trait.traitId.resourceId]?.value === 'object') {
-                this.#rawData[trait.traitId.resourceId].value.weather = { ...weatherData };
+              // Store the internal Nest and Google structure uuids if matched to a defined home array entry
+              if (
+                trait.traitId.resourceId.startsWith('STRUCTURE_') === true &&
+                trait.traitId.traitLabel === 'structure_info' &&
+                (trait.patch.values?.name?.trim?.() ?? '') !== ''
+              ) {
+                Object.assign(
+                  this.config?.homes?.find(
+                    (home) => home?.name?.trim?.().toUpperCase() === trait.patch.values.name?.trim?.().toUpperCase(),
+                  ) || {},
+                  { nest_home_uuid: trait.patch.values.rtsStructureId, google_home_uuid: trait.traitId.resourceId },
+                );
               }
             }
-
-            // Store the internal Nest and Google structure uuids if matched to a defined home array entry
-            if (
-              trait.traitId.resourceId.startsWith('STRUCTURE_') === true &&
-              trait.traitId.traitLabel === 'structure_info' &&
-              (trait.patch.values?.name?.trim?.() ?? '') !== ''
-            ) {
-              Object.assign(
-                this.config?.homes?.find(
-                  (home) => home?.name?.trim?.().toUpperCase() === trait.patch.values.name?.trim?.().toUpperCase(),
-                ) || {},
-                { nest_home_uuid: trait.patch.values.rtsStructureId, google_home_uuid: trait.traitId.resourceId },
-              );
-            }
           }
-
-          // Dump the raw data if configured to do so
-          // This can be used for user support, rather than specific build to dump this :-)
-          if (this?.config?.options?.supportDump === true && this.#connections[uuid]?.doneGoogleSupportDump !== true) {
-            this.#connections[uuid].doneGoogleSupportDump = true; // Done once
-            this?.log?.warn?.('Support Dump for Google API data will be logged below for troubleshooting purposes.');
-            Object.entries(this.#rawData)
-              .filter(([, data]) => data?.source === DATA_SOURCE.GOOGLE)
-              .forEach(([serial, data]) => {
-                this?.log?.info?.('{');
-                this?.log?.info?.('  "%s": {', serial);
-                Object.entries(data?.value).forEach(([key, value]) => {
-                  if (typeof value === 'object' && value !== null) {
-                    this?.log?.info?.('  %s:', key);
-                    String(JSON.stringify(value, null, 2))
-                      .split('\n')
-                      .forEach((line) => {
-                        this?.log?.info?.('    %s', line);
-                      });
-                  } else {
-                    this?.log?.info?.('  %s: %j', key, value);
-                  }
-                });
-                this?.log?.info?.('  }');
-                this?.log?.info?.('}');
-              });
-            this?.log?.warn?.('End of Support Dump for Google API data.');
-          }
-
-          await this.#processData();
         }
+
+        await this.#processData(uuid);
       },
     ).finally(() => {
       // Only continue the observe loop if the connection is still authorised
@@ -804,9 +758,83 @@ export default class NestAccfactory {
     });
   }
 
-  async #processData() {
+  async #processData(uuid) {
+    const dumpSupportData = (source) => {
+      let sourceName;
+      let doneFlag;
+
+      if (
+        this?.config?.options?.supportDump !== true ||
+        typeof uuid !== 'string' ||
+        uuid.trim() === '' ||
+        typeof this.#connections?.[uuid] !== 'object'
+      ) {
+        return;
+      }
+
+      if (source === DATA_SOURCE.GOOGLE) {
+        sourceName = 'Google API';
+        doneFlag = 'doneGoogleSupportDump';
+      }
+
+      if (source === DATA_SOURCE.NEST) {
+        sourceName = 'Nest API';
+        doneFlag = 'doneNestSupportDump';
+      }
+
+      if (typeof sourceName !== 'string' || typeof doneFlag !== 'string') {
+        return;
+      }
+
+      if (this.#connections[uuid]?.[doneFlag] === true) {
+        return;
+      }
+
+      let sourceData = Object.entries(this.#rawData).filter(
+        ([, data]) =>
+          data?.source === source &&
+          data?.connection === uuid &&
+          typeof data?.value === 'object' &&
+          data.value !== null &&
+          Object.keys(data.value).length !== 0,
+      );
+
+      if (sourceData.length === 0) {
+        return;
+      }
+
+      this.#connections[uuid][doneFlag] = true;
+
+      this?.log?.warn?.('Support Dump for %s data will be logged below for troubleshooting purposes.', sourceName);
+
+      sourceData.forEach(([serial, data]) => {
+        this?.log?.info?.('{');
+        this?.log?.info?.('  "%s": {', serial);
+        Object.entries(data?.value).forEach(([key, value]) => {
+          if (typeof value === 'object' && value !== null) {
+            this?.log?.info?.('  %s:', key);
+            String(JSON.stringify(value, null, 2))
+              .split('\n')
+              .forEach((line) => {
+                this?.log?.info?.('    %s', line);
+              });
+            return;
+          }
+          this?.log?.info?.('  %s: %j', key, value);
+        });
+        this?.log?.info?.('  }');
+        this?.log?.info?.('}');
+      });
+
+      this?.log?.warn?.('End of Support Dump for %s data.', sourceName);
+    };
+
+    // Run support dumps once per connection
+    dumpSupportData(DATA_SOURCE.NEST);
+    dumpSupportData(DATA_SOURCE.GOOGLE);
+
+    // Process the raw data through each of the device modules to get the latest device details and states
     for (let [deviceType, deviceModule] of this.#deviceModules) {
-      // At start of processRawData function
       if (typeof deviceModule?.processRawData === 'function') {
         let devices = {};
         try {

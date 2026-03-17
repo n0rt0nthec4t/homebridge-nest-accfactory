@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package home.event.common;
+
+import "google/protobuf/any.proto";
+
+message Event {
+  string publisher = 1;
+  bytes metadata = 2;
+  google.protobuf.Any payload = 3;
+}

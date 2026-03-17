@@ -1,29 +1,29 @@
 // Configuration validation and processing
 // Part of homebridge-nest-accfactory
 //
-// Validates and processes the platform configuration from Homebridge settings
-// Handles account configuration (supports multiple accounts of mixed types)
-// Migrates legacy single account format to new accounts array format
-// Processes options (logging, elevation, FFmpeg, API selection, etc.)
+// Validates, normalises, and migrates the platform configuration loaded from Homebridge
+// Handles multiple Nest and Google account definitions, per-device settings, and per-home settings
+// Migrates legacy nest/google account objects and legacy keyed device objects to current array-based formats
+// Processes runtime options such as logging, elevation, API selection, weather/history support, and FFmpeg capability checks
 //
 // Exported functions:
 //
-// processConfig(config, log) - validates and normalizes config object
-//   Returns: normalized config with accounts array, options object, devices array, homes array
-//   Performs legacy account format migration (nest/google objects -> accounts array)
+// processConfig(config, log, api) - validates and normalises the platform config in place
+//   Returns: normalised config with accounts/devices/homes arrays and processed options
+//   Migrates legacy account/device formats, configures debug logging, and probes FFmpeg support
+//   May persist migrated config.json changes when Homebridge storage access is available
 //
 // buildConnections(config) - creates connection objects from accounts array
-//   Returns: connections object with UUID keys, each containing account credentials and settings
-//   Prepares connections for use with Nest and Google APIs
+//   Returns: connection map keyed by UUID, each containing trimmed credentials, account metadata, retry state, and API host selection
+//   Prepares Nest and Google account sessions, including field-test endpoint selection when enabled
 //
-// Code version 2026.03.15
+// Code version 2026.03.17
 // Mark Hulskamp
 'use strict';
 
 // Define nodejs module requirements
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import path from 'node:path';
 
 // Define external library requirements
 import chalk from 'chalk';
@@ -35,6 +35,9 @@ import FFmpeg from './ffmpeg.js';
 import { FFMPEG_VERSION, ACCOUNT_TYPE, MIN_ELEVATION, MAX_ELEVATION } from './consts.js';
 
 function processConfig(config, log, api) {
+  let migratedAccounts = false;
+  let migratedDevices = false;
+
   // Process account configuration(s)
   if (Array.isArray(config?.accounts) === false) {
     config.accounts = [];
@@ -56,15 +59,16 @@ function processConfig(config, log, api) {
 
     if (
       typeof config?.google === 'object' &&
-      typeof config.google?.issueToken === 'string' &&
-      config.google.issueToken.trim() !== '' &&
+      config.google !== null &&
+      typeof config.google?.issuetoken === 'string' &&
+      config.google.issuetoken.trim() !== '' &&
       typeof config.google?.cookie === 'string' &&
       config.google.cookie.trim() !== ''
     ) {
       newAccounts.push({
         name: 'Google',
         type: 'google',
-        issueToken: config.google.issueToken.trim(),
+        issueToken: config.google.issuetoken.trim(),
         cookie: config.google.cookie.trim(),
         fieldTest: config.google.fieldTest === true,
       });
@@ -72,16 +76,7 @@ function processConfig(config, log, api) {
 
     if (newAccounts.length > 0) {
       config.accounts = newAccounts;
-
-      if (persistMigratedAccounts(config, newAccounts, log, api) === false) {
-        log?.warn?.('');
-        log?.warn?.('NOTICE');
-        log?.warn?.('> Legacy account configuration detected');
-        log?.warn?.('> Nest / Google account settings have been migrated in memory for this startup');
-        log?.warn?.('> Please review and re-save your configuration using the Homebridge UI');
-        log?.warn?.('> See README for updated configuration examples');
-        log?.warn?.('');
-      }
+      migratedAccounts = true;
     }
   }
 
@@ -191,13 +186,52 @@ function processConfig(config, log, api) {
   }
 
   // Process per device configuration(s)
-  if (Array.isArray(config?.devices) === false) {
+  if (config?.devices === undefined) {
     config.devices = [];
+  }
+
+  if (
+    config?.devices !== undefined &&
+    Array.isArray(config.devices) === false &&
+    typeof config.devices === 'object' &&
+    config.devices !== null
+  ) {
+    let newDeviceArray = [];
+    let validLegacyDeviceConfig = true;
+
+    for (const [serialNumber, props] of Object.entries(config.devices)) {
+      if (typeof props !== 'object' || props === null || Array.isArray(props) === true) {
+        validLegacyDeviceConfig = false;
+        break;
+      }
+
+      newDeviceArray.push({
+        serialNumber,
+        ...props,
+      });
+    }
+
+    if (validLegacyDeviceConfig === true) {
+      config.devices = newDeviceArray;
+      migratedDevices = true;
+    }
   }
 
   // Per home configuration(s)
   if (Array.isArray(config?.homes) === false) {
     config.homes = [];
+  }
+
+  if (migratedAccounts === true || migratedDevices === true) {
+    if (persistMigratedConfig(config, log, api) === false) {
+      log?.warn?.('');
+      log?.warn?.('NOTICE');
+      log?.warn?.('> Legacy configuration detected');
+      log?.warn?.('> Account and/or device settings have been migrated in memory for this startup');
+      log?.warn?.('> Please review and re-save your configuration using the Homebridge UI');
+      log?.warn?.('> See README for updated configuration examples');
+      log?.warn?.('');
+    }
   }
 
   return config;
@@ -255,114 +289,89 @@ function buildConnections(config) {
   return connections;
 }
 
-function persistMigratedAccounts(config, newAccounts, log, api) {
-  if (typeof api?.user?.storagePath !== 'function' || Array.isArray(newAccounts) === false || newAccounts.length === 0) {
+function persistMigratedConfig(config, log, api) {
+  // Ensure Homebridge API supports configPath()
+  if (typeof api?.user?.configPath !== 'function') {
     return false;
   }
 
   try {
-    let configPath = path.join(api.user.storagePath(), 'config.json');
+    // Resolve config paths (current, backup, temp)
+    let configPath = api.user.configPath();
     let backupPath = configPath + '.bak';
     let tempPath = configPath + '.tmp';
+
+    // Load existing Homebridge config
     let rawConfig = fs.readFileSync(configPath, 'utf8');
     let jsonConfig = JSON.parse(rawConfig);
     let matchingPlatforms = [];
 
+    // Ensure platforms array exists
     if (Array.isArray(jsonConfig?.platforms) === false) {
-      log?.warn?.('Unable to automatically update config.json: no platforms array found');
       return false;
     }
 
     jsonConfig.platforms.forEach((platform, index) => {
-      let nestMatches = false;
-      let googleMatches = false;
-
+      // Only consider our platform name
       if (platform?.platform !== 'NestAccfactory') {
         return;
       }
 
-      if (
-        typeof config?.nest?.access_token === 'string' &&
-        config.nest.access_token.trim() !== '' &&
-        typeof platform?.nest?.access_token === 'string' &&
-        platform.nest.access_token.trim() === config.nest.access_token.trim()
-      ) {
-        nestMatches = true;
-      }
+      // Check for legacy Nest config
+      let hasLegacyNest =
+        typeof platform?.nest === 'object' &&
+        platform.nest !== null &&
+        typeof platform.nest?.access_token === 'string' &&
+        platform.nest.access_token.trim() !== '';
 
-      if (
-        typeof config?.google?.issueToken === 'string' &&
-        config.google.issueToken.trim() !== '' &&
-        typeof config?.google?.cookie === 'string' &&
-        config.google.cookie.trim() !== '' &&
-        typeof platform?.google?.issueToken === 'string' &&
-        platform.google.issueToken.trim() === config.google.issueToken.trim() &&
-        typeof platform?.google?.cookie === 'string' &&
-        platform.google.cookie.trim() === config.google.cookie.trim()
-      ) {
-        googleMatches = true;
-      }
+      // Check for legacy Google config
+      let hasLegacyGoogle =
+        typeof platform?.google === 'object' &&
+        platform.google !== null &&
+        typeof platform.google?.issuetoken === 'string' &&
+        platform.google.issuetoken.trim() !== '' &&
+        typeof platform.google?.cookie === 'string' &&
+        platform.google.cookie.trim() !== '';
 
-      // If both legacy account types exist in the current config, require both to match.
-      if (
-        typeof config?.nest?.access_token === 'string' &&
-        config.nest.access_token.trim() !== '' &&
-        typeof config?.google?.issueToken === 'string' &&
-        config.google.issueToken.trim() !== '' &&
-        typeof config?.google?.cookie === 'string' &&
-        config.google.cookie.trim() !== ''
-      ) {
-        if (nestMatches === true && googleMatches === true) {
-          matchingPlatforms.push(index);
-        }
+      // Check for legacy devices block
+      let hasLegacyDevices =
+        typeof platform?.devices === 'object' && platform.devices !== null && Array.isArray(platform.devices) === false;
+
+      // Skip entries with nothing to migrate
+      if (hasLegacyNest === false && hasLegacyGoogle === false && hasLegacyDevices === false) {
         return;
       }
 
-      // If only Nest exists, match only Nest.
-      if (typeof config?.nest?.access_token === 'string' && config.nest.access_token.trim() !== '') {
-        if (nestMatches === true) {
-          matchingPlatforms.push(index);
-        }
-        return;
-      }
-
-      // If only Google exists, match only Google.
-      if (
-        typeof config?.google?.issueToken === 'string' &&
-        config.google.issueToken.trim() !== '' &&
-        typeof config?.google?.cookie === 'string' &&
-        config.google.cookie.trim() !== ''
-      ) {
-        if (googleMatches === true) {
-          matchingPlatforms.push(index);
-        }
-      }
+      matchingPlatforms.push(index);
     });
 
-    // Secondary disambiguation by name if required
-    if (matchingPlatforms.length > 1 && typeof config?.name === 'string' && config.name.trim() !== '') {
-      matchingPlatforms = matchingPlatforms.filter((index) => {
-        return jsonConfig.platforms[index]?.name === config.name;
-      });
-    }
-
+    // Must resolve to exactly one platform to proceed safely
     if (matchingPlatforms.length !== 1) {
-      log?.warn?.('Unable to automatically update config.json because the matching platform entry was not unique');
       return false;
     }
 
-    jsonConfig.platforms[matchingPlatforms[0]].accounts = newAccounts;
+    // Apply migrated structure
+    jsonConfig.platforms[matchingPlatforms[0]].accounts = config.accounts;
+    jsonConfig.platforms[matchingPlatforms[0]].devices = config.devices;
+
+    // Remove legacy config blocks
     delete jsonConfig.platforms[matchingPlatforms[0]].nest;
     delete jsonConfig.platforms[matchingPlatforms[0]].google;
 
+    // Backup original config before modifying
     fs.writeFileSync(backupPath, rawConfig, 'utf8');
+
+    // Write updated config to temp file first (safer write)
     fs.writeFileSync(tempPath, JSON.stringify(jsonConfig, null, 2), 'utf8');
+
+    // Atomically replace original config
     fs.renameSync(tempPath, configPath);
 
+    // Inform user of automatic migration
     log?.warn?.('');
     log?.warn?.('NOTICE');
-    log?.warn?.('> Legacy account configuration detected');
-    log?.warn?.('> Nest / Google account settings have been migrated to the new "accounts" array format');
+    log?.warn?.('> Legacy configuration detected');
+    log?.warn?.('> Account and/or device settings have been migrated to the current configuration format');
     log?.warn?.('> Homebridge configuration has been automatically updated');
     log?.warn?.('> A backup of the previous config has been saved as "config.json.bak"');
     log?.warn?.('');
@@ -370,16 +379,18 @@ function persistMigratedAccounts(config, newAccounts, log, api) {
     return true;
   } catch (error) {
     try {
-      let configPath = path.join(api.user.storagePath(), 'config.json');
+      // Cleanup temp file if something failed mid-write
+      let configPath = api.user.configPath();
       let tempPath = configPath + '.tmp';
 
       if (fs.existsSync(tempPath) === true) {
         fs.unlinkSync(tempPath);
       }
     } catch {
-      // Ignore errors from cleanup
+      // Ignore cleanup errors
     }
 
+    // Log failure but do not crash plugin
     log?.warn?.('Unable to automatically update config.json: %s', error?.message || error);
     return false;
   }

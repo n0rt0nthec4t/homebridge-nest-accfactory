@@ -91,45 +91,45 @@ When using the plugin configuration with [homebridge-config-ui-x](https://github
 Sample config.json entries below
 ```
 {
-  "accounts": [
-    {
-      "name": "Nest",
-      "type": "nest",
-      "access_token": "<nest access token>",
-      "fieldTest": false
+    "accounts": [
+        {
+            "name": "Nest",
+            "type": "nest",
+            "access_token": "<nest access token>",
+            "fieldTest": false
+        },
+        {
+            "name": "Google",
+            "type": "google",
+            "issueToken": "<google issue token>",
+            "cookie": "<google cookie>",
+            "fieldTest": false
+        }
+    ],
+    "options": {
+        "eveHistory": true,
+        "weather": true,
+        "elevation": 600
     },
-    {
-      "name": "Google",
-      "type": "google",
-      "issueToken": "<google issue token>",
-      "cookie": "<google cookie>",
-      "fieldTest": false
-    }
-  ],
-  "options": {
-    "eveHistory": true,
-    "weather": true,
-    "elevation": 600
-  },
-  "devices": [
-    {
-      "serialNumber": "XXXXXXXX",
-      "name", "XXXXX Device",
-      "exclude": false
-    },
-    {
-      "serialNumber": "YYYYYYYY",
-       "name", "YYYYY Device",
-      "humiditySensor": true
-    }
-  ],
-  "platform": "NestAccfactory"
+    "devices": [
+        {
+            "serialNumber": "XXXXXXXX",
+            "name", "XXXXX Device",
+            "exclude": false
+        },
+        {
+            "serialNumber": "YYYYYYYY",
+            "name", "YYYYY Device",
+            "humiditySensor": true
+        }
+    ],
+    "platform": "NestAccfactory"
 }
 ```
 
 #### options
 
-The following options are available in the config.json options object. These apply to all discovered devices and homes.
+The following options are available in the `config.json` `"options"` object. These apply to all discovered devices and homes.
 
 | Name               | Description                                                                                  | Default        |
 |--------------------|----------------------------------------------------------------------------------------------|----------------|
@@ -145,11 +145,11 @@ The following options are available in the config.json options object. These app
 
 #### devices
 
-Device specific configuration can be applied using the `devices` array. Each entry represents **per-device settings** that are applied when a device with the matching `serialNumber` is discovered. These settings override the global defaults defined in the `options` section.
+Device specific configuration can be applied using the `"devices"` array. Each entry represents **per-device settings** that are applied when a device with the matching `"serialNumber"` is discovered. These settings override the global defaults defined in the `"options"` section.
 
 The **Devices** section in the Homebridge GUI allows basic management of these entries, however **not all device options are available in the GUI**. Advanced options may still need to be configured directly in `config.json`.
 
-The `name` field is optional and is only used to help identify the entry in the configuration. It does **not** rename the device in HomeKit.
+The `"name"` field is optional and is only used to help identify the entry in the configuration. It does **not** rename the device in HomeKit.
 
 Devices are identified using their **serial number**, which must match the serial number reported by the Nest / Google API.
 
@@ -173,7 +173,7 @@ Devices are identified using their **serial number**, which must match the seria
 
 #### homes
 
-The following options are available on a per-home level in the `config.json` `homes` array. Each home is specified as a JSON object, and the home is identified using the `"name"` key.
+The following options are available on a per-home level in the `config.json` `"homes"` array. Each home is specified as a JSON object, and the home is identified using the `"name"` key.
 
 | Name               | Description                                                                                  | Default        |
 |--------------------|----------------------------------------------------------------------------------------------|----------------|

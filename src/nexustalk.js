@@ -17,7 +17,7 @@
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.03.15
+// Code version 2026.03.17
 // Mark Hulskamp
 'use strict';
 
@@ -386,7 +386,7 @@ export default class NexusTalk extends Streamer {
               protocolVersion: 'VERSION_3',
               uuid: this.nest_google_device_uuid.split(/[._]+/)[1],
               requireConnectedCamera: false,
-              USER_AGENT: USER_AGENT,
+              userAgent: USER_AGENT,
               deviceId: crypto.randomUUID(),
               clientType: 'IOS',
               authoriseRequest: authoriseRequest,
@@ -428,7 +428,7 @@ export default class NexusTalk extends Streamer {
       let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.PlaybackBegin').decode(payload).toJSON();
       decodedMessage.channels.forEach((stream) => {
         // Find which channels match our video and audio streams
-        if (stream.codecType === this.codecs.video.toUpperCase()) {
+        if (stream.codec === this.codecs.video.toUpperCase()) {
           this.video = {
             id: stream.channelId,
             baseTimestamp: stream.startTimestamp,
@@ -436,7 +436,7 @@ export default class NexusTalk extends Streamer {
             sampleRate: stream.sampleRate,
           };
         }
-        if (stream.codecType === this.codecs.audio.toUpperCase()) {
+        if (stream.codec === this.codecs.audio.toUpperCase()) {
           this.audio = {
             id: stream.channelId,
             baseTimestamp: stream.startTimestamp,
