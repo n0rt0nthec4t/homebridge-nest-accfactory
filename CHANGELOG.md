@@ -9,7 +9,9 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 - HomeKit Secure Video (HKSV) can be enabled on battery powered cameras, which will significantly reduce battery life
 - Motion sensing on wired Nest Protect devices may report incorrect states due to recent firmware changes
 
-## v0.4.0 (xxxx/xx/xx)
+## v0.4.0-alpha (in development)
+
+> ⚠️ This is a pre-release version. Expect instability and breaking changes.
 
 ### ⚠️ Breaking Changes
 
