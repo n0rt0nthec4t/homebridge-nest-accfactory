@@ -1,55 +1,144 @@
 name: Publish homebridge-nest-accfactory
 
 on:
+  # Trigger automatic prerelease publish when package.json version changes on main
+  push:
+    branches:
+      - main
+    paths:
+      - package.json
+
+  # Trigger stable publish when a GitHub Release is created
   release:
-    types: [published]
+    types:
+      - published
+
+  # Allow manual trigger if needed
   workflow_dispatch:
 
 permissions:
-  id-token: write  # Required for OIDC
+  id-token: write   # Required for npm trusted publishing (OIDC)
   contents: read
 
 env:
   NODE_VERSION: 22
-  
+
+# Prevent overlapping publishes for same ref
+concurrency:
+  group: npm-publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  build:
+  # ------------------------------------------------------------
+  # Validate job
+  # Runs on multiple OS to ensure install/build works everywhere
+  # ------------------------------------------------------------
+  validate:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+
     runs-on: ${{ matrix.os }}
+
     steps:
+      # Checkout repo
       - uses: actions/checkout@v4
+
+      # Setup Node with npm cache
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-      - run: npm install -g npm@latest
+          cache: npm
+
+      # Install dependencies from lockfile
       - run: npm ci
 
-  publish-npm:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with: 
-          submodules: true
-      
-      # Extract version number from package.json
-      - name: Extract version
-        id: extract_version
-        run: |
-          VERSION=$(grep -oP '"version": "\K(.*)(?=")' package.json)
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
+      # Lint source code
+      - run: npm run lint
 
+      # Build dist output (ensures dist is valid before publish)
+      - run: npm run build
+
+      # Optional: show audit results but do not fail build
+      - run: npm audit --audit-level=high || true
+
+  # ------------------------------------------------------------
+  # Publish job
+  # Handles both prerelease (alpha/beta) and stable publishing
+  # ------------------------------------------------------------
+  publish-npm:
+    needs: validate
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout repo (again, clean environment)
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      # --------------------------------------------------------
+      # Extract version + determine npm dist-tag
+      #
+      # Examples:
+      #   0.4.0-alpha.15 → alpha
+      #   0.4.0-beta.1   → beta
+      #   0.4.0          → latest
+      # --------------------------------------------------------
+      - name: Read version and determine npm tag
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+          TAG=$(node -e "const v=require('./package.json').version; const m=v.match(/^[0-9]+\.[0-9]+\.[0-9]+(?:-([A-Za-z]+)\.[0-9]+)?$/); process.stdout.write(m && m[1] ? m[1] : 'latest')")
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+          echo "Detected version: $VERSION"
+          echo "Publishing with tag: $TAG"
+
+      # --------------------------------------------------------
+      # Safety: prevent publishing prerelease via GitHub release
+      # --------------------------------------------------------
+      - name: Enforce stable release rules
+        if: github.event_name == 'release'
+        run: |
+          if [[ "$VERSION" == *-* ]]; then
+            echo "❌ Cannot publish prerelease ($VERSION) via GitHub Release"
+            exit 1
+          fi
+
+      # --------------------------------------------------------
+      # Safety: prevent publishing stable version on push
+      # --------------------------------------------------------
+      - name: Enforce prerelease push rules
+        if: github.event_name == 'push'
+        run: |
+          if [[ "$VERSION" != *-* ]]; then
+            echo "❌ Push publish only allowed for prerelease versions (got $VERSION)"
+            exit 1
+          fi
+
+      # Setup Node for npm publish (OIDC trusted publishing)
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: https://registry.npmjs.org/
+          cache: npm
 
-      - run: npm install -g npm@latest
+      # Install dependencies
       - run: npm ci
-      - run: |
-          TAG=$(echo ${{env.VERSION}} | grep -oP '^\d+\.\d+\.\d+-?\K(\w+)?')
-          npm publish --tag ${TAG:-latest} --access public
-        env:
-          NODE_AUTH_TOKEN: ${{secrets.NPM_TOKEN}}
+
+      # Build dist (ensures publish uses fresh build)
+      - run: npm run build
+
+      # Preview package contents before publish
+      - run: npm pack --dry-run
+
+      # --------------------------------------------------------
+      # Publish to npm
+      #
+      # Uses OIDC (no NODE_AUTH_TOKEN required)
+      # Tag is derived from version automatically
+      # --------------------------------------------------------
+      - name: Publish to npm
+        run: npm publish --tag "$TAG" --access public
