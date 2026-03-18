@@ -49,9 +49,9 @@
     "scripts": {
         "clean": "rimraf ./dist*",
         "format": "prettier --write \"src/**/*.{js,mjs}\" && eslint --fix \"src/**/*.{js,mjs}\"",
-        "lint": "eslint \"src/**/*.{js,mjs}\" --fix --max-warnings=20",
+        "lint": "eslint \"src/**/*.{js,mjs}\" --max-warnings=20",
         "build": "npm run clean && copyfiles -u 1 src/*.js dist && copyfiles -u 2 src/HomeKitDevice/*.js dist && copyfiles -u 2 src/HomeKitHistory/*.js dist && copyfiles -u 1 src/res/*.h264 dist && copyfiles -u 1 src/res/*.jpg dist && copyfiles -u 1 'src/protobuf/**/*.proto' dist && copyfiles -u 1 src/plugins/*.js dist && copyfiles -u 1 src/plugins/*.mjs dist",
-        "prepublishOnly": "npm run lint && npm run build"
+        "prepublishOnly": "npm run format && npm run lint && npm run build"
     },
     "devDependencies": {
         "@eslint/js": "^10.0.1",
