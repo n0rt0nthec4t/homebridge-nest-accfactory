@@ -144,6 +144,12 @@
             "type": "boolean",
             "default": false
           },
+          "logMotionEvents": {
+            "title": "Log Motion Events",
+            "description": "Enable logging of motion events",
+            "type": "boolean",
+            "default": true
+          },
           "ffmpegPath": {
             "title": "Path to FFmpeg binary",
             "type": "string",
@@ -228,6 +234,9 @@
             },
             "localAccess": {
               "type": "boolean"
+            },
+            "logMotionEvents": {
+               "type": "boolean"
             },
             "motionCooldown": {
               "type": "number"
@@ -316,7 +325,7 @@
       "title": "Advanced Options",
       "expandable": true,
       "expanded": false,
-      "items": ["options.ffmpegPath", "options.ffmpegDebug", "options.ffmpegHWAccel", "options.supportDump"]
+      "items": ["options.ffmpegPath", "options.ffmpegDebug", "options.ffmpegHWAccel", "options.logMotionEvents", "options.supportDump"]
     }
   ]
 }

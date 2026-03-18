@@ -539,7 +539,9 @@ export default class NestCamera extends HomeKitDevice {
           // Only set motion to true on first detection
           if (this.#motionCooldownActive === false) {
             if (typeof this.motionService === 'object') {
-              this?.log?.info?.('Motion detected at "%s"', deviceData.description);
+              if (this.deviceData?.logMotionEvents === true) {
+                this?.log?.info?.('Motion detected in "%s"', deviceData.description);
+              }
 
               // Trigger motion
               this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, true);
@@ -1899,6 +1901,12 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
             config.options.ffmpeg.hwaccel === true,
         };
         tempDevice.maxStreams = 1; // Always 1 stream since HKSV is mandatory
+        tempDevice.logMotionEvents =
+          deviceOptions?.logMotionEvents !== undefined
+            ? deviceOptions.logMotionEvents === true
+            : config.options?.logMotionEvents === false
+              ? false
+              : true;
 
         devices[tempDevice.serialNumber] = tempDevice;
       }

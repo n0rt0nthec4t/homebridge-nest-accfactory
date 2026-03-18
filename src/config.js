@@ -17,7 +17,7 @@
 //   Returns: connection map keyed by UUID, each containing trimmed credentials, account metadata, retry state, and API host selection
 //   Prepares Nest and Google account sessions, including field-test endpoint selection when enabled
 //
-// Code version 2026.03.17
+// Code version 2026.03.18
 // Mark Hulskamp
 'use strict';
 
@@ -82,9 +82,10 @@ function processConfig(config, log, api) {
 
   let options = (config.options = typeof config?.options === 'object' ? config.options : {});
 
-  options.eveHistory = config.options?.eveHistory === true;
-  options.weather = config.options?.weather === true;
-  options.exclude = config.options?.exclude === true;
+  options.eveHistory = config.options?.eveHistory !== false; // Default to true if not explicitly set to false
+  options.weather = config.options?.weather === true; // Default to false if not explicitly set to true
+  options.exclude = config.options?.exclude === true; // Default to false if not explicitly set to true
+  options.logMotionEvents = config.options?.logMotionEvents !== false; // Default to true if not explicitly set to false
 
   options.elevation =
     isNaN(config.options?.elevation) === false &&
@@ -99,7 +100,6 @@ function processConfig(config, log, api) {
 
   // Verbose Logging. Independent of Homebridge debug mode.
   options.debug = config.options?.debug === true;
-
   if (options.debug === true) {
     // Force chalk to output colours for debug messages even if Homebridge debug mode is not enabled.
     // This improves readability of verbose logs in some terminals.
@@ -124,7 +124,7 @@ function processConfig(config, log, api) {
   options.ffmpeg = {
     binary: undefined,
     valid: false,
-    debug: config.options?.ffmpegDebug === true,
+    debug: config.options?.ffmpegDebug === true, // Default to false if not explicitly set to true
     hwaccel: false,
   };
 
@@ -241,7 +241,7 @@ function buildConnections(config) {
   let connections = {};
 
   (config.accounts || []).forEach((account) => {
-    let fieldTest = account?.fieldTest === true;
+    let fieldTest = account?.fieldTest === true; // Default to false if not explicitly set to true
     let accountName = typeof account?.name === 'string' ? account.name.trim() : '';
 
     if (accountName === '') {

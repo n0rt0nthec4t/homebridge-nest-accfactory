@@ -55,7 +55,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = 'Protect';
-  static VERSION = '2026.03.15'; // Code version
+  static VERSION = '2026.03.18'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -194,7 +194,7 @@ export default class NestProtect extends HomeKitDevice {
     if (this.motionService !== undefined) {
       this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, deviceData.detected_motion === true);
 
-      if (deviceData.detected_motion === true && this.deviceData.detected_motion === false) {
+      if (this.deviceData?.logMotionEvents === true && deviceData?.detected_motion === true && this.deviceData?.detected_motion !== true) {
         this?.log?.info?.('Motion detected in "%s"', deviceData.description);
       }
 
@@ -617,6 +617,12 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
             : homeOptions?.eveHistory !== undefined
               ? homeOptions.eveHistory === true
               : config.options?.eveHistory === true;
+        tempDevice.logMotionEvents =
+          deviceOptions?.logMotionEvents !== undefined
+            ? deviceOptions.logMotionEvents === true
+            : config.options?.logMotionEvents === false
+              ? false
+              : true;
 
         devices[tempDevice.serialNumber] = tempDevice; // Store processed device
       }

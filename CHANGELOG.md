@@ -9,7 +9,7 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 - HomeKit Secure Video (HKSV) can be enabled on battery powered cameras, which will significantly reduce battery life
 - Motion sensing on wired Nest Protect devices may report incorrect states due to recent firmware changes
 
-## v0.4.0-alpha (in development)
+## v0.4.0-alpha (xxxx/xx/xx)
 
 > ⚠️ This is a pre-release version. Expect instability and breaking changes.
 
@@ -29,27 +29,34 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
   - Running Homebridge with `-D` will no longer enable debug output for this plugin
   - Debug output is now controlled by the `debug` configuration option (Verbose Logging)
 
-### Changes
+### 🔧 Changes
 
 - General code cleanup and stability improvements
-- Refactored core modules to use the updated base class
+- Refactored core modules to align with the updated base class
 - Prefer Google API data when a device is available from both Google and Nest APIs
+
 - Added support for a new `"accounts"` section in `config.json` to enable multiple Nest and Google accounts
-- Added `Advanced Options` section to the GUI configuration
-- Added `Devices` section to the GUI configuration for per-device options
+- Added **Advanced Options** section to the GUI configuration
+- Added **Devices** section to the GUI configuration for per-device options
 - Added plugin-level verbose logging option
   - Enables debug output without requiring Homebridge debug mode
   - Verbose log messages are displayed in gray for easier identification
+- Added `logMotionEvents` option (global and per-device), enabled by default
+  - Enables or disables logging of motion events for camera(s), doorbell(s) and Nest Protect device(s)
+
 - Fixed an issue affecting live view and HKSV recording on migrated Nest / Google cameras
 - Fixed an issue affecting audio talkback on some older migrated Nest / Google cameras
-- Updated Nest/Google account section in the GUI configuration  to combained `Accounts` section
-- Updated camera motion handling, only a single motion sensor is now exposed per camera
-- Updated reliability of camera and doorbell snapshot images
-- Updated support for Nest Hub Max (1st gen, wired)
-- Updated `README.md` with documentation for the new `"accounts"` configuration section (`./README.md#Account Configuration`)
-- Updated `README.md` with documentation around the updated `"devices"` configuration section (`./README.md#devices`)
-- Updated `README.md` to clarify that HKSV recording is triggered by general motion events and does not support individual recording filters
-- Updated `README.md` to document new verbose logging and Support Dump configuration options
+
+- Updated Nest/Google account configuration in the GUI to a combined **Accounts** section
+- Updated camera motion handling — only a single motion sensor is now exposed per camera
+- Improved reliability of camera and doorbell snapshot images
+- Added support for Nest Hub Max (1st gen, wired)
+
+- Updated `README.md` with documentation for:
+  - `"accounts"` configuration section (`./README.md#Account Configuration`)
+  - Updated `"devices"` configuration section (`./README.md#devices`)
+  - Verbose logging and Support Dump options
+  - HKSV behaviour (recording is triggered by general motion events and does not support individual recording filters)
 
 ## v0.3.9 (2026/02/18)
 

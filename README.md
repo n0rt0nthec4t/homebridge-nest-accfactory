@@ -134,15 +134,16 @@ The following options are available in the `config.json` `"options"` object. The
 
 | Name               | Description                                                                                  | Default        |
 |--------------------|----------------------------------------------------------------------------------------------|----------------|
-| debug              | Enable plugin verbose logging (ignores Homebridge debug setting)                               | false          |
+| debug              | Enable plugin verbose logging (independent of Homebridge debug setting)                      | false          |
 | elevation          | Height above sea level for weather station(s)                                                | 0              |
 | eveHistory         | Provide history in EveHome application where applicable                                      | true           |
 | exclude            | Exclude all device(s)                                                                        | false          |
-| ffmpegDebug        | Turns on specific debugging output for when ffmpeg is invoked                                | false          |
+| ffmpegDebug        | Enable additional debugging output when ffmpeg is invoked                                    | false          |
 | ffmpegHWaccel      | Enable video hardware acceleration for supported camera(s) and doorbell(s)                   | false          |
-| ffmpegPath         | Path to an ffmpeg binary (looks for binary named `ffmpeg` in path)                           | /usr/local/bin |
+| ffmpegPath         | Path to an ffmpeg binary (defaults to `ffmpeg` in system path)                               | /usr/local/bin |
+| logMotionEvents    | Enable logging of motion events for camera(s), doorbell(s) and Nest Protect device(s)        | true           |
 | supportDump        | Enable Support Dump logging of raw Nest and Google API data                                  | false          |
-| weather            | Virtual weather station for each Nest/Google home we discover                                | false          |
+| weather            | Create a virtual weather station for each Nest/Google home                                   | false          |
 
 #### devices
 
@@ -156,21 +157,22 @@ Devices are identified using their **serial number**, which must match the seria
 
 | Name               | Description                                                                                  | Default        |
 |--------------------|----------------------------------------------------------------------------------------------|----------------|
-| chimeSwitch        | Switch to allow the indoor doorbell chime to be turned on/off                                | false          |
+| chimeSwitch        | Enable a switch to control the indoor doorbell chime                                         | false          |
 | doorbellCooldown   | Time between doorbell press events                                                           | 60s            |
 | eveHistory         | Provide history in EveHome application where applicable for this device                      | true           |
 | exclude            | Exclude this device                                                                          | false          |
 | fanDuration        | Fan runtime duration                                                                         |                |
-| ffmpegDebug        | Turns on specific debugging output for when ffmpeg is invoked                                | false          |
+| ffmpegDebug        | Enable additional debugging output when ffmpeg is invoked                                    | false          |
 | ffmpegHWaccel      | Enable video hardware acceleration for supported camera(s) and doorbell(s)                   | false          |
-| hotwaterBoostTime  | Time for hotwater boost heating (30, 160, 120mins)                                           | 30mins         |
-| hotwaterMaxTemp    | Maximum supported temperature for hotwater heating                                           | 70c            |
-| hotwaterMinTemp    | Minimum supported temperature for hotwater heating                                           | 30c            |
-| humiditySensor     | Separate humidity sensor for supported thermostat(s)                                         | false          |
-| localAccess        | Use direct access to supported camera(s) and doorbell(s) for video streaming and recording   | false          |
+| hotwaterBoostTime  | Duration for hot water boost heating (30, 60, 120 mins)                                      | 30mins         |
+| hotwaterMaxTemp    | Maximum supported temperature for hot water heating                                          | 70c            |
+| hotwaterMinTemp    | Minimum supported temperature for hot water heating                                          | 30c            |
+| humiditySensor     | Enable a separate humidity sensor for supported thermostat(s)                                | false          |
+| localAccess        | Enable direct access for supported camera(s) and doorbell(s) streaming and recording         | false          |
+| logMotionEvents    | Enable logging of motion events for camera(s), doorbell(s) and Nest Protect device(s)        | true           |
 | motionCooldown     | Time between detected motion events                                                          | 60s            |
-| name               | Optional label used to help identify this device entry in configuration                      |                |    
-| serialNumber       | Device serial number to which these settings belong to                                       |                |
+| name               | Optional label to help identify this device entry                                            |                |
+| serialNumber       | Device serial number this configuration applies to                                           |                |
 
 #### homes
 
