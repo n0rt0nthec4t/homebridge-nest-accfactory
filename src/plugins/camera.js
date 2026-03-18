@@ -87,7 +87,7 @@ const STREAMERS = {
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2026.03.15'; // Code version
+  static VERSION = '2026.03.18'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -133,6 +133,32 @@ export default class NestCamera extends HomeKitDevice {
 
   // Class functions
   onAdd() {
+    // Pre-0.4.0 cleanup
+    // Remove legacy extra motion services so only the primary motion service remains
+    this.accessory.services
+      .filter((service) => service.UUID === this.hap.Service.MotionSensor.UUID)
+      .forEach((service) => {
+        if (service.subtype !== 1) {
+          this?.log?.debug?.(
+            'Removing legacy extra motion service from "%s" with id of "%s"',
+            this.deviceData.description,
+            service.subtype,
+          );
+          this.accessory.removeService(service);
+        }
+      });
+
+    // Remove legacy CameraOperatingMode service which was created when HKSV was disabled
+    if (this.accessory?.context?.hksv === false) {
+      this.accessory.services
+        .filter((service) => service.UUID === this.hap.Service.CameraOperatingMode.UUID)
+        .forEach((service) => {
+          this?.log?.debug?.('Removing legacy CameraOperatingMode service from "%s"', this.deviceData.description);
+          this.accessory.removeService(service);
+        });
+    }
+    // End of pre-0.4.0 cleanup
+
     // Setup the motion service if not already present on the accessory, and link it to the Eve app if configured to do so
     // This needs to be done before we setup the HomeKit camera controller
     this.motionService = this.addHKService(this.hap.Service.MotionSensor, '', 1, {});

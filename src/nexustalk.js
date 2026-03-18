@@ -3,7 +3,7 @@
 //
 // Handles streaming connections with Nest legacy 'Nexus' systems
 // Manages bidirectional media streams (audio/video) over secure TLS connections
-// Implements Nest proprietary protocol using protobuf message serialization
+// Implements Nest proprietary protocol using protobuf message serialisation
 //
 // Extends Streamer base class to provide Nest API-specific streaming capabilities
 // Supports live streaming and talkback audio over Nest legacy infrastructure
@@ -17,7 +17,7 @@
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.03.17
+// Code version 2026.03.18
 // Mark Hulskamp
 'use strict';
 
@@ -92,7 +92,9 @@ export default class NexusTalk extends Streamer {
   #host = undefined; // Current host connected to
   #pingTimer = undefined; // Timer object for ping interval
   #stalledTimer = undefined; // Timer object for no received data
-  #redirectPending = false; // Flag to track if REDIRECT packet received
+  #reconnectPending = false; // Reconnect requested once socket closes
+  #reconnectHost = undefined; // Host to reconnect to
+  #reconnectReason = undefined; // Reason for reconnect
 
   // Codecs being used for video, audio and talking
   get codecs() {
@@ -130,15 +132,21 @@ export default class NexusTalk extends Streamer {
 
   // Class functions
   async connect(host) {
-    // Clear any timers we have running
-    clearInterval(this.#pingTimer);
-    clearTimeout(this.#stalledTimer);
-    this.#pingTimer = undefined;
-    this.#stalledTimer = undefined;
-    this.#sessionId = undefined; // No session ID yet
-    this.#redirectPending = false; // Reset redirect flag for new connection
-
     if (this.online === true && this.videoEnabled === true) {
+      if (this.#socket !== undefined && this.#socket.destroyed === false) {
+        // Existing socket is still opening/open, avoid duplicate concurrent connects.
+        return;
+      }
+
+      clearInterval(this.#pingTimer);
+      clearTimeout(this.#stalledTimer);
+      this.#pingTimer = undefined;
+      this.#stalledTimer = undefined;
+      this.#sessionId = undefined; // No session ID yet
+      this.#reconnectPending = false;
+      this.#reconnectHost = undefined;
+      this.#reconnectReason = undefined;
+
       if (typeof host === 'undefined' || host === null) {
         // No host parameter passed in, so we'll set this to our internally stored host
         host = this.nexustalk_host;
@@ -151,30 +159,53 @@ export default class NexusTalk extends Streamer {
       // Wrap tls.connect() in a Promise so we can await the TLS handshake
       try {
         await new Promise((resolve, reject) => {
-          this.#socket = tls.connect({ host: host, port: 1443 }, () => {
+          let socket = tls.connect({ host: host, port: 1443 }, () => {
+            if (this.#socket !== socket) {
+              resolve();
+              return;
+            }
             // Opened connection to Nexus server, so now need to authenticate ourselves
             this?.log?.debug?.('Connection established to "%s"', host);
 
-            this.#socket.setKeepAlive(true); // Keep socket connection alive
+            socket.setKeepAlive(true); // Keep socket connection alive
             this.connected = true;
+            this.#reconnectPending = false;
+            this.#reconnectHost = undefined;
+            this.#reconnectReason = undefined;
             this.#Authenticate(false); // Send authentication request
             resolve(); // Allow await connect() to continue
           });
+          this.#socket = socket;
 
-          this.#socket.on('error', (err) => {
+          socket.on('error', (error) => {
+            if (this.#socket !== socket) {
+              return;
+            }
+
             // TLS error (could be refused, timeout, etc.)
-            this?.log?.warn?.('TLS error on connect to "%s": %s', host, err?.message || err);
+            this?.log?.warn?.('TLS error on connect to "%s": %s', host, String(error));
             this.connected = undefined;
-            reject(err);
+            this.#authorised = false; // Since we had an error, we can't be authorised
+            reject(error);
           });
 
-          this.#socket.on('end', () => {});
+          socket.on('end', () => {
+            // Do nothing
+          });
 
-          this.#socket.on('data', (data) => {
+          socket.on('data', (data) => {
+            if (this.#socket !== socket) {
+              return;
+            }
+
             this.#handleNexusData(data);
           });
 
-          this.#socket.on('close', () => {
+          socket.on('close', () => {
+            if (this.#socket !== socket) {
+              return;
+            }
+
             this?.log?.debug?.('Connection closed to "%s"', host);
 
             clearInterval(this.#pingTimer);
@@ -185,13 +216,27 @@ export default class NexusTalk extends Streamer {
             this.#socket = undefined; // Clear socket object
             this.connected = undefined; // We're no longer connected
             this.#sessionId = undefined; // Not an active session anymore
+            this.#host = undefined;
 
-            // Only auto-reconnect if no redirect is pending (otherwise redirect listener will handle it)
-            if (this.#redirectPending === false && (this.isStreaming() === true || this.isBuffering() === true)) {
-              this?.log?.debug?.('Connection closed, attempting reconnection to "%s"', host);
-              this.connect(host);
+            if ((this.isStreaming() === true || this.isBuffering() === true) && this.#reconnectPending === false) {
+              this.#requestReconnect(host, 'service-close');
             }
-            this.#redirectPending = false; // Clear flag after close event
+
+            if (this.#reconnectPending === true && typeof this.#reconnectHost === 'string' && this.#reconnectHost !== '') {
+              let reconnectHost = this.#reconnectHost;
+              let reconnectReason = this.#reconnectReason;
+
+              this.#reconnectPending = false;
+              this.#reconnectHost = undefined;
+              this.#reconnectReason = undefined;
+
+              this?.log?.debug?.(
+                'Connection closed, %s to "%s"',
+                reconnectReason === 'redirect' ? 'redirecting' : 'attempting reconnection',
+                reconnectHost,
+              );
+              this.connect(reconnectHost);
+            }
           });
         });
       } catch (error) {
@@ -209,22 +254,26 @@ export default class NexusTalk extends Streamer {
     this.#stalledTimer = undefined;
 
     if (this.#socket !== undefined) {
+      let socket = this.#socket;
+
       if (stopStreamFirst === true) {
-        // Send a notification to nexus that we've finished playback
         await this.#stopNexusData();
       }
-      this.#socket.destroy();
+
+      try {
+        socket.destroy();
+      } catch {
+        // Empty
+      }
     }
 
     this.connected = undefined;
-    this.#socket = undefined;
     this.#sessionId = undefined; // Not an active session anymore
     this.#packetBuffer = undefined;
     this.#packetOffset = undefined;
     this.#messages = [];
     this.video = {};
     this.audio = {};
-    this.#host = undefined; // No longer connected to this host
   }
 
   async onUpdate(deviceData) {
@@ -251,11 +300,8 @@ export default class NexusTalk extends Streamer {
       if (this.isStreaming() === true || this.isBuffering() === true) {
         this?.log?.debug?.('New host has been requested for connection. Host requested is "%s"', this.nexustalk_host);
 
-        // Setup listener for socket close event. Once socket is closed, we'll perform the redirect
-        this.#socket?.on?.('close', () => {
-          this.connect(this.nexustalk_host); // Connect to new host
-        });
-        this.close(true); // Close existing socket
+        this.#requestReconnect(this.nexustalk_host, 'host-change');
+        this.close(true);
       }
     }
   }
@@ -267,6 +313,7 @@ export default class NexusTalk extends Streamer {
   sendTalkback(talkingBuffer) {
     if (
       Buffer.isBuffer(talkingBuffer) === false ||
+      talkingBuffer.length === 0 ||
       this.#protobufNexusTalk === undefined ||
       this.#protobufNexusTalk === null ||
       this.#sessionId === undefined
@@ -275,18 +322,28 @@ export default class NexusTalk extends Streamer {
     }
 
     // Encode audio packet for sending to camera
-    let TraitMap = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.AudioPayload');
-    if (TraitMap !== null) {
-      let encodedData = TraitMap.encode(
-        TraitMap.fromObject({
+    let AudioPayload = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.AudioPayload');
+    if (AudioPayload === null) {
+      return;
+    }
+
+    let encodedData = null;
+
+    try {
+      encodedData = AudioPayload.encode(
+        AudioPayload.fromObject({
           payload: talkingBuffer,
           sessionId: this.#sessionId,
           codec: Streamer.CODEC_TYPE.SPEEX,
           sampleRate: 16000,
         }),
       ).finish();
-      this.#sendMessage(PACKET_TYPE.AUDIO_PAYLOAD, encodedData);
+    } catch (error) {
+      this?.log?.debug?.('AudioPayload encode failed for uuid "%s": %s', this.nest_google_device_uuid, String(error));
+      return;
     }
+
+    this.#sendMessage(PACKET_TYPE.AUDIO_PAYLOAD, encodedData);
   }
 
   #startNexusData() {
@@ -303,108 +360,159 @@ export default class NexusTalk extends Streamer {
       otherProfiles.push('AUDIO_AAC');
     }
 
-    let TraitMap = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.StartPlayback');
-    if (TraitMap !== null) {
-      let encodedData = TraitMap.encode(
-        TraitMap.fromObject({
-          sessionId: Math.floor(Math.random() * (100 - 1) + 1),
+    let StartPlayback = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.StartPlayback');
+    if (StartPlayback === null) {
+      return;
+    }
+
+    let encodedData = null;
+
+    try {
+      encodedData = StartPlayback.encode(
+        StartPlayback.fromObject({
+          sessionId: Math.floor(Math.random() * 1000000), // larger range to reduce collisions
           profile: 'VIDEO_H264_2MBIT_L40',
           otherProfiles: otherProfiles,
           profileNotFoundAction: 'REDIRECT',
         }),
       ).finish();
-      this.#sendMessage(PACKET_TYPE.START_PLAYBACK, encodedData);
+    } catch (error) {
+      this?.log?.debug?.('StartPlayback encode failed for uuid "%s": %s', this.nest_google_device_uuid, String(error));
+      return;
     }
+
+    this.#sendMessage(PACKET_TYPE.START_PLAYBACK, encodedData);
   }
 
   #stopNexusData() {
-    if (this.#sessionId !== undefined && this.#protobufNexusTalk !== undefined && this.#protobufNexusTalk !== null) {
-      let TraitMap = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.StopPlayback');
-      if (TraitMap !== null) {
-        let encodedData = TraitMap.encode(
-          TraitMap.fromObject({
-            sessionId: this.#sessionId,
-          }),
-        ).finish();
-        this.#sendMessage(PACKET_TYPE.STOP_PLAYBACK, encodedData);
-      }
+    if (this.#sessionId === undefined || this.#protobufNexusTalk === undefined || this.#protobufNexusTalk === null) {
+      return;
     }
+
+    let StopPlayback = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.StopPlayback');
+    if (StopPlayback === null) {
+      return;
+    }
+
+    let encodedData = null;
+    try {
+      encodedData = StopPlayback.encode(
+        StopPlayback.fromObject({
+          sessionId: this.#sessionId,
+        }),
+      ).finish();
+    } catch (error) {
+      this?.log?.debug?.('StopPlayback encode failed for uuid "%s": %s', this.nest_google_device_uuid, String(error));
+      return;
+    }
+
+    this.#sendMessage(PACKET_TYPE.STOP_PLAYBACK, encodedData);
   }
 
   #sendMessage(type, data) {
+    if (Buffer.isBuffer(data) !== true) {
+      return;
+    }
+
     if (this.#socket?.readyState !== 'open' || (type !== PACKET_TYPE.HELLO && this.#authorised === false)) {
       // We're not connected and/or authorised yet, so 'cache' message for processing once this occurs
       this.#messages.push({ type: type, data: data });
       return;
     }
 
-    // Create nexusTalk message header
-    let header = Buffer.alloc(3);
-    if (type !== PACKET_TYPE.LONG_PLAYBACK_PACKET) {
-      header.writeUInt8(type, 0);
-      header.writeUInt16BE(data.length, 1);
-    }
+    let header = undefined;
+
     if (type === PACKET_TYPE.LONG_PLAYBACK_PACKET) {
       header = Buffer.alloc(5);
       header.writeUInt8(type, 0);
       header.writeUInt32BE(data.length, 1);
+    } else {
+      header = Buffer.alloc(3);
+      header.writeUInt8(type, 0);
+      header.writeUInt16BE(data.length, 1);
     }
 
     // write our composed message out to the socket back to NexusTalk
-    this.#socket.write(Buffer.concat([header, Buffer.from(data)]), () => {
+    this.#socket.write(Buffer.concat([header, data]), () => {
       // Message sent. Don't do anything?
     });
   }
 
   #Authenticate(reauthorise) {
     // Authenticate over created socket connection
-    if (this.#protobufNexusTalk !== undefined && this.#protobufNexusTalk !== null) {
-      this.#authorised = false; // We're no longer authorised
+    if (this.#protobufNexusTalk === undefined || this.#protobufNexusTalk === null) {
+      return;
+    }
 
-      let authoriseRequest = null;
-      let TraitMap = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.AuthoriseRequest');
-      if (TraitMap !== null) {
-        authoriseRequest = TraitMap.encode(
-          TraitMap.fromObject(this.useGoogleAuth === true ? { oliveToken: this.token } : { sessionToken: this.token }),
+    this.#authorised = false; // We're no longer authorised
+
+    let authoriseRequest = null;
+    let AuthoriseRequest = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.AuthoriseRequest');
+    if (AuthoriseRequest !== null) {
+      try {
+        authoriseRequest = AuthoriseRequest.encode(
+          AuthoriseRequest.fromObject(this.useGoogleAuth === true ? { oliveToken: this.token } : { sessionToken: this.token }),
         ).finish();
-      }
-
-      if (reauthorise === true && authoriseRequest !== null) {
-        // Request to re-authorise only
-        this?.log?.debug?.('Re-authentication requested to "%s"', this.#host);
-        this.#sendMessage(PACKET_TYPE.AUTHORIZE_REQUEST, authoriseRequest);
-      }
-
-      if (reauthorise === false && authoriseRequest !== null) {
-        // This isn't a re-authorise request, so perform 'Hello' packet
-        let TraitMap = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.Hello');
-        if (TraitMap !== null) {
-          this?.log?.debug?.('Performing authentication to "%s"', this.#host);
-
-          let encodedData = TraitMap.encode(
-            TraitMap.fromObject({
-              protocolVersion: 'VERSION_3',
-              uuid: this.nest_google_device_uuid.split(/[._]+/)[1],
-              requireConnectedCamera: false,
-              userAgent: USER_AGENT,
-              deviceId: crypto.randomUUID(),
-              clientType: 'IOS',
-              authoriseRequest: authoriseRequest,
-            }),
-          ).finish();
-          this.#sendMessage(PACKET_TYPE.HELLO, encodedData);
-        }
+      } catch (error) {
+        this?.log?.debug?.('AuthoriseRequest encode failed for uuid "%s": %s', this.nest_google_device_uuid, String(error));
+        return;
       }
     }
+
+    if (authoriseRequest === null) {
+      return;
+    }
+
+    if (reauthorise === true) {
+      // Request to re-authorise only
+      this?.log?.debug?.('Re-authentication requested to "%s"', this.#host);
+      this.#sendMessage(PACKET_TYPE.AUTHORIZE_REQUEST, authoriseRequest);
+      return;
+    }
+
+    // This isn't a re-authorise request, so perform 'Hello' packet
+    let Hello = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.Hello');
+    if (Hello === null) {
+      return;
+    }
+
+    let encodedData = null;
+    try {
+      encodedData = Hello.encode(
+        Hello.fromObject({
+          protocolVersion: 'VERSION_3',
+          uuid: this.nest_google_device_uuid.split(/[._]+/)[1],
+          requireConnectedCamera: false,
+          userAgent: USER_AGENT,
+          deviceId: crypto.randomUUID(),
+          clientType: 'IOS',
+          authoriseRequest: authoriseRequest,
+        }),
+      ).finish();
+    } catch (error) {
+      this?.log?.debug?.('Hello encode failed for uuid "%s": %s', this.nest_google_device_uuid, String(error));
+      return;
+    }
+
+    this?.log?.debug?.('Performing authentication to "%s"', this.#host);
+    this.#sendMessage(PACKET_TYPE.HELLO, encodedData);
   }
 
   #handleRedirect(payload) {
     let redirectToHost = undefined;
-    if (typeof payload === 'object' && this.#protobufNexusTalk !== undefined && this.#protobufNexusTalk !== null) {
-      let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.Redirect').decode(payload).toJSON();
+
+    if (Buffer.isBuffer(payload) === true && this.#protobufNexusTalk !== undefined && this.#protobufNexusTalk !== null) {
+      let decodedMessage = undefined;
+
+      try {
+        decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.Redirect').decode(payload).toJSON();
+      } catch (error) {
+        this?.log?.debug?.('Redirect packet decode failed for uuid "%s": %s', this.nest_google_device_uuid, String(error));
+        return;
+      }
+
       redirectToHost = decodedMessage?.newHost;
-    }
-    if (typeof payload === 'string') {
+    } else if (typeof payload === 'string' && payload !== '') {
       // Payload parameter is a string, we'll assume this is a direct hostname
       redirectToHost = payload;
     }
@@ -414,46 +522,57 @@ export default class NexusTalk extends Streamer {
     }
 
     this?.log?.debug?.('Redirect requested from "%s" to "%s"', this.#host, redirectToHost);
-    this.#redirectPending = true; // Mark that redirect is pending
-
-    // Setup listener for socket close event. Once socket is closed, we'll perform the redirect
-    this.#socket?.on?.('close', () => {
-      this.connect(redirectToHost); // Connect to new host
-    });
-    this.close(true); // Close existing socket
+    this.#requestReconnect(redirectToHost, 'redirect');
+    this.close(true);
   }
 
   #handlePlaybackBegin(payload) {
-    if (typeof payload === 'object' && this.#protobufNexusTalk !== undefined && this.#protobufNexusTalk !== null) {
-      let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.PlaybackBegin').decode(payload).toJSON();
+    if (Buffer.isBuffer(payload) !== true || this.#protobufNexusTalk === undefined || this.#protobufNexusTalk === null) {
+      return;
+    }
+
+    let decodedMessage = undefined;
+    try {
+      decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.PlaybackBegin').decode(payload).toJSON();
+    } catch (error) {
+      this?.log?.debug?.('PlaybackBegin decode failed for uuid "%s": %s', this.nest_google_device_uuid, String(error));
+      return;
+    }
+
+    // Get the current time to use as a base for calculating packet timestamps as they come in
+    // since they are rolling timestamps based on when playback started
+    let now = Date.now();
+
+    if (Array.isArray(decodedMessage?.channels) === true) {
       decodedMessage.channels.forEach((stream) => {
         // Find which channels match our video and audio streams
         if (stream.codec === this.codecs.video.toUpperCase()) {
           this.video = {
             id: stream.channelId,
             baseTimestamp: stream.startTimestamp,
-            baseTime: Date.now(),
+            baseTime: now,
             sampleRate: stream.sampleRate,
           };
         }
+
         if (stream.codec === this.codecs.audio.toUpperCase()) {
           this.audio = {
             id: stream.channelId,
             baseTimestamp: stream.startTimestamp,
-            baseTime: Date.now(),
+            baseTime: now,
             sampleRate: stream.sampleRate,
           };
         }
       });
-
-      // Since this is the beginning of playback, clear any active buffers contents
-      this.#sessionId = decodedMessage.sessionId;
-      this.#packetBuffer = undefined;
-      this.#packetOffset = undefined;
-      this.#messages = [];
-
-      this?.log?.debug?.('Playback started from "%s" with session ID "%s"', this.#host, this.#sessionId);
     }
+
+    // Since this is the beginning of playback, clear any active buffers contents
+    this.#sessionId = decodedMessage?.sessionId;
+    this.#packetBuffer = undefined;
+    this.#packetOffset = undefined;
+    this.#messages = [];
+
+    this?.log?.debug?.('Playback started from "%s" with session ID "%s"', this.#host, this.#sessionId);
   }
 
   #handlePlaybackPacket(payload) {
@@ -473,8 +592,17 @@ export default class NexusTalk extends Streamer {
     };
 
     // Decode playback packet
-    if (typeof payload === 'object' && this.#protobufNexusTalk !== undefined && this.#protobufNexusTalk !== null) {
-      let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.PlaybackPacket').decode(payload).toJSON();
+    if (Buffer.isBuffer(payload) === true && this.#protobufNexusTalk !== undefined && this.#protobufNexusTalk !== null) {
+      let decodedMessage = undefined;
+      let Type = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.PlaybackPacket');
+      let reader = new protobuf.Reader(payload);
+
+      try {
+        decodedMessage = Type.decode(reader).toJSON();
+      } catch (error) {
+        this?.log?.debug?.('Playback packet decode failed for uuid "%s": %s', this.nest_google_device_uuid, String(error));
+        return;
+      }
 
       // Set up a timeout to monitor for no packets received in a certain period
       // If it's triggered, we'll attempt to restart the stream and/or connection
@@ -487,11 +615,8 @@ export default class NexusTalk extends Streamer {
           this.nest_google_device_uuid,
         );
 
-        // Setup listener for socket close event. Once socket is closed, we'll perform the re-connection
-        this.#socket?.on?.('close', () => {
-          this.connect(); // try reconnection
-        });
-        this.close(false); // Close existing socket
+        this.#requestReconnect(this.#host, 'stalled');
+        this.close(false); // Close existing socket and reconnect
       }, 10000);
 
       // Timestamps are rolling — incremented from startTime using timestampDelta per packet
@@ -512,8 +637,14 @@ export default class NexusTalk extends Streamer {
 
   #handlePlaybackEnd(payload) {
     // Decode playback ended packet
-    if (typeof payload === 'object' && this.#protobufNexusTalk !== undefined && this.#protobufNexusTalk !== null) {
-      let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.PlaybackEnd').decode(payload).toJSON();
+    if (Buffer.isBuffer(payload) === true && this.#protobufNexusTalk !== undefined && this.#protobufNexusTalk !== null) {
+      let decodedMessage = undefined;
+      try {
+        decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.PlaybackEnd').decode(payload).toJSON();
+      } catch (error) {
+        this?.log?.debug?.('PlaybackEnd decode failed for uuid "%s": %s', this.nest_google_device_uuid, String(error));
+        return;
+      }
 
       if (this.#sessionId !== undefined && decodedMessage.reason === 'USER_ENDED_SESSION') {
         // Normal playback ended ie: when we stopped playback
@@ -524,19 +655,23 @@ export default class NexusTalk extends Streamer {
         // Error during playback, so we'll attempt to restart by reconnection to host
         this?.log?.debug?.('Playback ended on "%s" with error "%s". Attempting reconnection', this.#host, decodedMessage.reason);
 
-        // Setup listener for socket close event. Once socket is closed, we'll perform the re-connection
-        this.#socket?.on?.('close', () => {
-          this.connect(); // try reconnection to existing host
-        });
-        this.close(false); // Close existing socket
+        this.#requestReconnect(this.#host, 'playback-end');
+        this.close(false); // Close existing socket and reconnect
       }
     }
   }
 
   #handleNexusError(payload) {
     // Decode error packet
-    if (typeof payload === 'object' && this.#protobufNexusTalk !== undefined && this.#protobufNexusTalk !== null) {
-      let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.Error').decode(payload).toJSON();
+    if (Buffer.isBuffer(payload) === true && this.#protobufNexusTalk !== undefined && this.#protobufNexusTalk !== null) {
+      let decodedMessage = undefined;
+      try {
+        decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.Error').decode(payload).toJSON();
+      } catch (error) {
+        this?.log?.debug?.('Error packet decode failed for uuid "%s": %s', this.nest_google_device_uuid, String(error));
+        return;
+      }
+
       if (decodedMessage.code === 'ERROR_AUTHORIZATION_FAILED') {
         // NexusStreamer Updating authentication
         this.#Authenticate(true); // Update authorisation only
@@ -549,7 +684,7 @@ export default class NexusTalk extends Streamer {
 
   #handleTalkbackBegin(payload) {
     // Decode talk begin packet
-    if (typeof payload === 'object' && this.#protobufNexusTalk !== undefined && this.#protobufNexusTalk !== null) {
+    if (Buffer.isBuffer(payload) === true && this.#protobufNexusTalk !== undefined && this.#protobufNexusTalk !== null) {
       //let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.TalkbackBegin').decode(payload).toJSON();
       this.audio.talking = true;
       this?.log?.debug?.('Talking started on uuid "%s"', this.nest_google_device_uuid);
@@ -558,7 +693,7 @@ export default class NexusTalk extends Streamer {
 
   #handleTalkbackEnd(payload) {
     // Decode talk end packet
-    if (typeof payload === 'object' && this.#protobufNexusTalk !== undefined && this.#protobufNexusTalk !== null) {
+    if (Buffer.isBuffer(payload) === true && this.#protobufNexusTalk !== undefined && this.#protobufNexusTalk !== null) {
       //let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.TalkbackEnd').decode(payload).toJSON();
       this.audio.talking = false;
       this?.log?.debug?.('Talking ended on uuid "%s"', this.nest_google_device_uuid);
@@ -566,6 +701,10 @@ export default class NexusTalk extends Streamer {
   }
 
   #handleNexusData(data) {
+    if (Buffer.isBuffer(data) !== true || data.length === 0) {
+      return;
+    }
+
     if (this.#packetOffset === undefined) {
       this.#packetBuffer = Buffer.allocUnsafe(256 * 1024);
       this.#packetOffset = 0;
@@ -658,5 +797,26 @@ export default class NexusTalk extends Streamer {
         }
       }
     }
+  }
+
+  #requestReconnect(host, reason) {
+    // Request a reconnect once the current socket is closed.
+    // This does NOT perform the reconnect immediately.
+    // The actual reconnect is handled centrally in the socket 'close' handler.
+    if (typeof host === 'string' && host !== '') {
+      // Use provided host for reconnect (e.g. redirect, host change)
+      this.#reconnectHost = host;
+    }
+
+    if ((this.#reconnectHost ?? '') === '') {
+      // No explicit host provided, fallback to current or configured host
+      this.#reconnectHost = this.#host ?? this.nexustalk_host;
+    }
+
+    // Mark reconnect as pending so the close handler can action it
+    this.#reconnectPending = true;
+
+    // Store reason for reconnect (debugging / logging purposes)
+    this.#reconnectReason = reason;
   }
 }

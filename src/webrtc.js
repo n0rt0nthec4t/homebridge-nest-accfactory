@@ -18,7 +18,7 @@
 //
 // Note: Currently a "work in progress" - feature set may expand
 //
-// Code version 2026.03.15
+// Code version 2026.03.18
 // Mark Hulskamp
 'use strict';
 
@@ -332,6 +332,8 @@ export default class WebRTC extends Streamer {
       });
     }
 
+    clearInterval(this.#pingTimer);
+    this.#pingTimer = undefined;
     this.#googleHomeFoyer?.destroy?.();
 
     await this.#peerConnection?.close?.();
@@ -816,11 +818,19 @@ export default class WebRTC extends Streamer {
 
             clearInterval(this.#pingTimer);
             this.#pingTimer = setInterval(() => {
-              if (this.#googleHomeFoyer !== undefined) {
+              let session = this.#googleHomeFoyer;
+              if (session === undefined || session.destroyed === true || session.closed === true) {
+                return;
+              }
+
+              try {
                 // eslint-disable-next-line no-unused-vars
-                this.#googleHomeFoyer.ping((error, duration, payload) => {
+                session.ping((error, duration, payload) => {
                   // Do we log error to debug?
                 });
+              } catch {
+                clearInterval(this.#pingTimer);
+                this.#pingTimer = undefined;
               }
             }, 60000); // Every minute?
           });
@@ -832,6 +842,8 @@ export default class WebRTC extends Streamer {
 
           this.#googleHomeFoyer.on('error', (error) => {
             this?.log?.debug?.('Google Home Foyer connection error: %s', String(error));
+            clearInterval(this.#pingTimer);
+            this.#pingTimer = undefined;
             try {
               this.#googleHomeFoyer.destroy();
             } catch {
@@ -949,6 +961,8 @@ export default class WebRTC extends Streamer {
         commandResponse.data = [];
 
         this?.log?.debug?.('Google Home Foyer request failed: %s', commandResponse.message);
+        clearInterval(this.#pingTimer);
+        this.#pingTimer = undefined;
         try {
           this.#googleHomeFoyer?.destroy();
         } catch {
