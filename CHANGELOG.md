@@ -15,21 +15,19 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 ### ⚠️ Breaking Changes
 
-From version **0.4.0**, **HomeKit Secure Video (HKSV) support is now mandatory for all cameras**.
+- Dropped support for Node.js 20
+  - Minimum supported Node.js version is now **22**
+  - Node.js 20 is approaching end-of-life and is no longer actively tested
+  - This plugin is now tested against Node.js **22 and 24**, aligning with newer Homebridge environments
 
-- The `hksv` configuration option has been removed
-- All cameras now expose HKSV capability by default
+- **HomeKit Secure Video (HKSV) is now mandatory for all cameras**
+  - The `hksv` configuration option has been removed
+  - All cameras now expose HKSV capability by default
+  - Recording behaviour is controlled via HomeKit settings in the Apple Home app
 
-This does **not** mean cameras will automatically record video.
-
-Recording behaviour is controlled by HomeKit settings in the Apple Home app.
-
----
-
-Plugin debug logging is now **independent of Homebridge debug mode**.
-
-- Running Homebridge with `-D` will no longer enable debug output for this plugin
-- Debug output is now controlled by the `debug` configuration option (Verbose Logging)
+- Plugin debug logging is now **independent of Homebridge debug mode**
+  - Running Homebridge with `-D` will no longer enable debug output for this plugin
+  - Debug output is now controlled by the `debug` configuration option (Verbose Logging)
 
 ### Changes
 

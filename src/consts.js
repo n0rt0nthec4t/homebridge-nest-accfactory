@@ -15,7 +15,7 @@
 // - FFMPEG_VERSION: Minimum FFmpeg version required for video streaming
 // - Temperature/elevation constraints for thermostats and sensors
 //
-// Code version 2026.03.15
+// Code version 2026.03.18
 // Mark Hulskamp
 'use strict';
 
@@ -24,6 +24,8 @@ import path from 'node:path';
 import url from 'node:url';
 
 // Define constants
+export const MIN_NODE_VERSION = 22; // Minimum required Node.js version
+
 export const TIMERS = {
   CAMERA_EVENTS: { name: 'camera_events', interval: 2000 }, // Camera events polling interval (ms)
   WEATHER: { name: 'weather', interval: 300000 }, // Weather location data refresh interval (ms)

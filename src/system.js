@@ -27,7 +27,7 @@
 // Creates HomeKitDevice instances for each Nest/Google device
 // Manages connection objects for each account (credentials, API endpoints)
 //
-// Code version 2026.03.16
+// Code version 2026.03.18
 // Mark Hulskamp
 'use strict';
 
@@ -40,6 +40,7 @@ import { setTimeout, clearTimeout } from 'node:timers';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import process from 'node:process';
 import { URL } from 'node:url';
 
 // Import our modules
@@ -49,7 +50,16 @@ import { processConfig, buildConnections } from './config.js';
 import { adjustTemperature, scaleValue, fetchWrapper } from './utils.js';
 
 // Define constants
-import { USER_AGENT, __dirname, DATA_SOURCE, DEVICE_TYPE, ACCOUNT_TYPE, NEST_API_BUCKETS, PROTOBUF_RESOURCES } from './consts.js';
+import {
+  MIN_NODE_VERSION,
+  USER_AGENT,
+  __dirname,
+  DATA_SOURCE,
+  DEVICE_TYPE,
+  ACCOUNT_TYPE,
+  NEST_API_BUCKETS,
+  PROTOBUF_RESOURCES,
+} from './consts.js';
 
 // We handle the connections to Nest/Google
 // Perform device management (additions/removals/updates)
@@ -66,6 +76,21 @@ export default class NestAccfactory {
   constructor(log, config, api) {
     this.log = log;
     this.api = api;
+
+    // Validate required version of Node.js that we're running on.
+    // If less than our minimum required version, log an error and stop initialisation
+    let nodeVersion = Number(process.versions.node.split('.')[0]);
+
+    if (nodeVersion < MIN_NODE_VERSION) {
+      this.log.error(
+        'We no longer support running on Node.js %s. Please upgrade to Node.js %s or newer. The plugin will not be started.',
+        process.versions.node,
+        MIN_NODE_VERSION,
+      );
+      return;
+    }
+
+    this.log.debug('Running with Node.js version %s', process.versions.node);
 
     // Perform validation on the configuration passed into us and set defaults if not present
     this.config = processConfig(config, this.log, this.api);
