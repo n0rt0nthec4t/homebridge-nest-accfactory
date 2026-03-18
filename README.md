@@ -6,6 +6,7 @@
 # Nest Accfactory
 
 [![npm](https://img.shields.io/npm/v/homebridge-nest-accfactory/latest)](https://www.npmjs.com/package/homebridge-nest-accfactory)
+[![npm](https://img.shields.io/npm/v/homebridge-nest-accfactory/alpha)](https://www.npmjs.com/package/homebridge-nest-accfactory)
 [![npm](https://img.shields.io/npm/dt/homebridge-nest-accfactory?label=downloads)](https://www.npmjs.com/package/homebridge-nest-accfactory)
 [![verified-by-homebridge](https://img.shields.io/badge/homebridge-verified-blueviolet?color=%23491F59&style=flat)](https://github.com/homebridge/homebridge/wiki/Verified-Plugins)
 
