@@ -1,19 +1,19 @@
 name: Publish homebridge-nest-accfactory
 
 on:
-  # Trigger automatic prerelease publish when package.json version changes on main
+  # Trigger prerelease publish when package.json changes on main
   push:
     branches:
       - main
     paths:
       - package.json
 
-  # Trigger stable publish when a GitHub Release is created
+  # Trigger stable publish when GitHub Release is created
   release:
     types:
       - published
 
-  # Allow manual trigger if needed
+  # Manual trigger if needed
   workflow_dispatch:
 
 permissions:
@@ -21,9 +21,9 @@ permissions:
   contents: read
 
 env:
-  NODE_VERSION: 22
+  NODE_PUBLISH_VERSION: 24
 
-# Prevent overlapping publishes for same ref
+# Prevent overlapping publishes
 concurrency:
   group: npm-publish-${{ github.ref }}
   cancel-in-progress: false
@@ -31,58 +31,61 @@ concurrency:
 jobs:
   # ------------------------------------------------------------
   # Validate job
-  # Runs on multiple OS to ensure install/build works everywhere
+  # Test install/format/lint/build across OS + Node versions
   # ------------------------------------------------------------
   validate:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [22, 24]
 
     runs-on: ${{ matrix.os }}
 
     steps:
-      # Checkout repo
-      - uses: actions/checkout@v4
+      # Checkout repository
+      - uses: actions/checkout@v5
 
-      # Setup Node with npm cache
-      - uses: actions/setup-node@v4
+      # Setup Node (matrix version)
+      - uses: actions/setup-node@v5
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ matrix.node }}
           cache: npm
 
-      # Install dependencies from lockfile
+      # Install dependencies
       - run: npm ci
 
-      # Lint source code
+      # Format code (auto-fix style issues)
+      - run: npm run format
+
+      # Validate lint (should now be clean after format)
       - run: npm run lint
 
-      # Build dist output (ensures dist is valid before publish)
+      # Build dist output
       - run: npm run build
 
-      # Optional: show audit results but do not fail build
+      # Optional audit (non-blocking)
       - run: npm audit --audit-level=high || true
 
   # ------------------------------------------------------------
   # Publish job
-  # Handles both prerelease (alpha/beta) and stable publishing
+  # Handles prerelease + stable publishing
   # ------------------------------------------------------------
   publish-npm:
     needs: validate
     runs-on: ubuntu-latest
 
     steps:
-      # Checkout repo (again, clean environment)
-      - uses: actions/checkout@v4
+      # Checkout repo again for clean publish environment
+      - uses: actions/checkout@v5
         with:
           submodules: true
 
       # --------------------------------------------------------
-      # Extract version + determine npm dist-tag
+      # Extract version and determine npm tag
       #
-      # Examples:
-      #   0.4.0-alpha.15 → alpha
-      #   0.4.0-beta.1   → beta
-      #   0.4.0          → latest
+      # 0.4.0-alpha.18 -> alpha
+      # 0.4.0-beta.1   -> beta
+      # 0.4.0          -> latest
       # --------------------------------------------------------
       - name: Read version and determine npm tag
         shell: bash
@@ -96,9 +99,7 @@ jobs:
           echo "Detected version: $VERSION"
           echo "Publishing with tag: $TAG"
 
-      # --------------------------------------------------------
-      # Safety: prevent publishing prerelease via GitHub release
-      # --------------------------------------------------------
+      # Prevent prerelease publish via GitHub Release
       - name: Enforce stable release rules
         if: github.event_name == 'release'
         run: |
@@ -107,9 +108,7 @@ jobs:
             exit 1
           fi
 
-      # --------------------------------------------------------
-      # Safety: prevent publishing stable version on push
-      # --------------------------------------------------------
+      # Prevent stable publish via push
       - name: Enforce prerelease push rules
         if: github.event_name == 'push'
         run: |
@@ -118,27 +117,24 @@ jobs:
             exit 1
           fi
 
-      # Setup Node for npm publish (OIDC trusted publishing)
-      - uses: actions/setup-node@v4
+      # Setup Node for publish (always Node 24)
+      - uses: actions/setup-node@v5
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ env.NODE_PUBLISH_VERSION }}
           registry-url: https://registry.npmjs.org/
           cache: npm
 
       # Install dependencies
       - run: npm ci
 
-      # Build dist (ensures publish uses fresh build)
+      # Ensure clean formatted + built output
+      - run: npm run format
+      - run: npm run lint
       - run: npm run build
 
-      # Preview package contents before publish
+      # Preview package contents
       - run: npm pack --dry-run
 
-      # --------------------------------------------------------
-      # Publish to npm
-      #
-      # Uses OIDC (no NODE_AUTH_TOKEN required)
-      # Tag is derived from version automatically
-      # --------------------------------------------------------
+      # Publish to npm using OIDC
       - name: Publish to npm
         run: npm publish --tag "$TAG" --access public
