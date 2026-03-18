@@ -1,29 +1,30 @@
 name: Publish homebridge-nest-accfactory
 
 on:
-  # Trigger prerelease publish when package.json changes on main
+  # Trigger prerelease publish when package.json or changelog changes on main
   push:
     branches:
       - main
     paths:
       - package.json
+      - CHANGELOG.md
 
-  # Trigger stable publish when GitHub Release is created
+  # Trigger stable publish when a GitHub Release is published
   release:
     types:
       - published
 
-  # Manual trigger if needed
+  # Allow manual trigger if needed
   workflow_dispatch:
 
 permissions:
   id-token: write   # Required for npm trusted publishing (OIDC)
-  contents: read
+  contents: write   # Required to create tags and GitHub releases
 
 env:
   NODE_PUBLISH_VERSION: 24
 
-# Prevent overlapping publishes
+# Prevent overlapping publishes for the same ref
 concurrency:
   group: npm-publish-${{ github.ref }}
   cancel-in-progress: false
@@ -35,6 +36,7 @@ jobs:
   # ------------------------------------------------------------
   validate:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         node: [22, 24]
@@ -57,7 +59,7 @@ jobs:
       # Format code (auto-fix style issues)
       - run: npm run format
 
-      # Validate lint (should now be clean after format)
+      # Validate lint after formatting
       - run: npm run lint
 
       # Build dist output
@@ -68,7 +70,7 @@ jobs:
 
   # ------------------------------------------------------------
   # Publish job
-  # Handles prerelease + stable publishing
+  # Handles prerelease publish on push and stable publish on release
   # ------------------------------------------------------------
   publish-npm:
     needs: validate
@@ -78,44 +80,185 @@ jobs:
       # Checkout repo again for clean publish environment
       - uses: actions/checkout@v5
         with:
+          fetch-depth: 0
           submodules: true
 
       # --------------------------------------------------------
-      # Extract version and determine npm tag
+      # Read version and derive publish metadata
       #
-      # 0.4.0-alpha.18 -> alpha
-      # 0.4.0-beta.1   -> beta
-      # 0.4.0          -> latest
+      # Examples:
+      #   0.4.0-alpha.18 -> prerelease=true, channel=alpha, npm_tag=alpha
+      #   0.4.0-beta.1   -> prerelease=true, channel=beta,  npm_tag=beta
+      #   0.4.0          -> prerelease=false, channel=stable, npm_tag=latest
       # --------------------------------------------------------
-      - name: Read version and determine npm tag
+      - name: Read version and determine publish metadata
+        id: meta
         shell: bash
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          TAG_NAME="v${VERSION}"
 
-          TAG=$(node -e "const v=require('./package.json').version; const m=v.match(/^[0-9]+\.[0-9]+\.[0-9]+(?:-([A-Za-z]+)\.[0-9]+)?$/); process.stdout.write(m && m[1] ? m[1] : 'latest')")
-          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-([A-Za-z]+)\.([0-9]+)$ ]]; then
+            BASE_VERSION="${BASH_REMATCH[1]}"
+            CHANNEL="${BASH_REMATCH[2]}"
+            IS_PRERELEASE="true"
+            NPM_TAG="$CHANNEL"
+          else
+            BASE_VERSION="$VERSION"
+            CHANNEL="stable"
+            IS_PRERELEASE="false"
+            NPM_TAG="latest"
+          fi
+
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG_NAME=$TAG_NAME" >> "$GITHUB_ENV"
+          echo "BASE_VERSION=$BASE_VERSION" >> "$GITHUB_ENV"
+          echo "CHANNEL=$CHANNEL" >> "$GITHUB_ENV"
+          echo "IS_PRERELEASE=$IS_PRERELEASE" >> "$GITHUB_ENV"
+          echo "NPM_TAG=$NPM_TAG" >> "$GITHUB_ENV"
 
           echo "Detected version: $VERSION"
-          echo "Publishing with tag: $TAG"
+          echo "Detected base version: $BASE_VERSION"
+          echo "Detected channel: $CHANNEL"
+          echo "Publishing with npm tag: $NPM_TAG"
 
-      # Prevent prerelease publish via GitHub Release
-      - name: Enforce stable release rules
-        if: github.event_name == 'release'
-        run: |
-          if [[ "$VERSION" == *-* ]]; then
-            echo "❌ Cannot publish prerelease ($VERSION) via GitHub Release"
-            exit 1
-          fi
-
-      # Prevent stable publish via push
+      # --------------------------------------------------------
+      # Safety checks
+      # - Push-based publish is only for prerelease versions
+      # - Release-based publish is only for stable versions
+      # --------------------------------------------------------
       - name: Enforce prerelease push rules
         if: github.event_name == 'push'
+        shell: bash
         run: |
-          if [[ "$VERSION" != *-* ]]; then
-            echo "❌ Push publish only allowed for prerelease versions (got $VERSION)"
+          if [[ "$IS_PRERELEASE" != "true" ]]; then
+            echo "Push publish is only allowed for prerelease versions (got $VERSION)"
             exit 1
           fi
+
+      - name: Enforce stable release rules
+        if: github.event_name == 'release'
+        shell: bash
+        run: |
+          if [[ "$IS_PRERELEASE" != "false" ]]; then
+            echo "GitHub Release publish is only allowed for stable versions (got $VERSION)"
+            exit 1
+          fi
+
+          if [[ "${{ github.event.release.tag_name }}" != "$TAG_NAME" ]]; then
+            echo "GitHub Release tag (${{ github.event.release.tag_name }}) does not match package.json version tag ($TAG_NAME)"
+            exit 1
+          fi
+
+      # --------------------------------------------------------
+      # Extract release notes from CHANGELOG.md
+      #
+      # Expected changelog headings:
+      #   ## v0.4.0-alpha (in development)
+      #   ## v0.4.0-beta (in development)
+      #   ## v0.4.0 (2026/03/18)
+      #
+      # Release notes are built as:
+      #   1. matching version section
+      #   2. global "Known Issues" section appended at the end
+      # --------------------------------------------------------
+      - name: Extract release notes from CHANGELOG.md
+        shell: bash
+        run: |
+          node <<'EOF'
+          const fs = require('fs');
+
+          const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
+          const baseVersion = process.env.BASE_VERSION;
+          const channel = process.env.CHANNEL;
+          const isPrerelease = process.env.IS_PRERELEASE === 'true';
+
+          const lines = changelog.split(/\r?\n/);
+
+          let output = [];
+
+          // -----------------------------------------
+          // 1. Extract version section FIRST
+          // -----------------------------------------
+          let targetHeading;
+
+          if (isPrerelease === true) {
+            targetHeading = `## v${baseVersion}-${channel} (in development)`;
+          } else {
+            targetHeading = `## v${baseVersion} `;
+          }
+
+          let start = -1;
+
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+
+            if (isPrerelease === true && line.trim() === targetHeading) {
+              start = i;
+              continue;
+            }
+
+            if (isPrerelease === false && line.startsWith(targetHeading) === true) {
+              start = i;
+              continue;
+            }
+
+            if (start !== -1) {
+              if (i > start && line.startsWith('## ') === true) {
+                break;
+              }
+
+              output.push(line);
+            }
+          }
+
+          // -----------------------------------------
+          // 2. Extract global Known Issues
+          // -----------------------------------------
+          let knownIssues = [];
+          let inKnownIssues = false;
+
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+
+            if (line.startsWith('### Known Issues')) {
+              inKnownIssues = true;
+              knownIssues.push(line);
+              continue;
+            }
+
+            if (inKnownIssues === true) {
+              if (line.startsWith('## ') === true) {
+                break;
+              }
+
+              knownIssues.push(line);
+            }
+          }
+
+          // -----------------------------------------
+          // 3. Append Known Issues at END
+          // -----------------------------------------
+          if (knownIssues.length > 0) {
+            output.push('');
+            output.push('---');
+            output.push('');
+            output.push(...knownIssues);
+          }
+
+          // -----------------------------------------
+          // 4. Fallback
+          // -----------------------------------------
+          if (output.length === 0) {
+            output = [
+              `## v${baseVersion}`,
+              '',
+              'Release notes unavailable. See CHANGELOG.md'
+            ];
+          }
+
+          fs.writeFileSync('RELEASE_NOTES.md', output.join('\n').trim() + '\n');
+          EOF
 
       # Setup Node for publish (always Node 24)
       - uses: actions/setup-node@v5
@@ -132,9 +275,58 @@ jobs:
       - run: npm run lint
       - run: npm run build
 
-      # Preview package contents
+      # Preview package contents before publish
       - run: npm pack --dry-run
 
-      # Publish to npm using OIDC
+      # --------------------------------------------------------
+      # Publish to npm using trusted publishing (OIDC)
+      # Npm tag is derived automatically from package.json version
+      # --------------------------------------------------------
       - name: Publish to npm
-        run: npm publish --tag "$TAG" --access public
+        run: npm publish --tag "$NPM_TAG" --access public
+
+      # --------------------------------------------------------
+      # Create git tag for prerelease push publishes
+      # This is skipped for stable release publishes because the
+      # GitHub Release already exists and is tied to its tag
+      # --------------------------------------------------------
+      - name: Create and push git tag
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Tag $TAG_NAME already exists"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag "$TAG_NAME"
+          git push origin "$TAG_NAME"
+
+      # --------------------------------------------------------
+      # Create GitHub prerelease for alpha/beta push publishes
+      # --------------------------------------------------------
+      - name: Create GitHub prerelease
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: ${{ env.TAG_NAME }}
+          body_path: RELEASE_NOTES.md
+          prerelease: true
+          generate_release_notes: false
+
+      # --------------------------------------------------------
+      # Update stable GitHub Release notes from CHANGELOG.md
+      # --------------------------------------------------------
+      - name: Update GitHub Release notes
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: ${{ env.TAG_NAME }}
+          body_path: RELEASE_NOTES.md
+          prerelease: false
+          generate_release_notes: false
