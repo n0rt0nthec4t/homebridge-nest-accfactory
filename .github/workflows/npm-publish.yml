@@ -174,18 +174,17 @@ jobs:
           const isPrerelease = process.env.IS_PRERELEASE === 'true';
 
           const lines = changelog.split(/\r?\n/);
-
           let output = [];
 
           // -----------------------------------------
           // 1. Extract version section FIRST
           // -----------------------------------------
-          let targetHeading;
+          let headingRegex;
 
           if (isPrerelease === true) {
-            targetHeading = `## v${baseVersion}-${channel} (in development)`;
+            headingRegex = new RegExp(`^## v${baseVersion}-${channel}\\s*\$begin:math:text$\.\+\\$end:math:text$$`);
           } else {
-            targetHeading = `## v${baseVersion} `;
+            headingRegex = new RegExp(`^## v${baseVersion}\\s*\$begin:math:text$\.\+\\$end:math:text$$`);
           }
 
           let start = -1;
@@ -193,13 +192,9 @@ jobs:
           for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
 
-            if (isPrerelease === true && line.trim() === targetHeading) {
+            if (start === -1 && headingRegex.test(line.trim()) === true) {
               start = i;
-              continue;
-            }
-
-            if (isPrerelease === false && line.startsWith(targetHeading) === true) {
-              start = i;
+              output.push(line);
               continue;
             }
 
@@ -221,7 +216,7 @@ jobs:
           for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
 
-            if (line.startsWith('### Known Issues')) {
+            if (line.trim() === '### Known Issues') {
               inKnownIssues = true;
               knownIssues.push(line);
               continue;
@@ -251,7 +246,7 @@ jobs:
           // -----------------------------------------
           if (output.length === 0) {
             output = [
-              `## v${baseVersion}`,
+              `## v${baseVersion}${isPrerelease === true ? '-' + channel : ''}`,
               '',
               'Release notes unavailable. See CHANGELOG.md'
             ];
