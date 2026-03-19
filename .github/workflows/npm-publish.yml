@@ -154,9 +154,17 @@ jobs:
       # Extract release notes from CHANGELOG.md
       #
       # Expected changelog headings:
-      #   ## v0.4.0-alpha (in development)
-      #   ## v0.4.0-beta (in development)
-      #   ## v0.4.0 (2026/03/18)
+      #   ## v<version>
+      #   ## v<version>-<channel>
+      #
+      # Examples:
+      #   ## v0.4.0
+      #   ## v0.4.0-beta
+      #   ## v0.4.0-beta (2026/03/20)
+      #
+      # Notes:
+      # - Any additional text after the version (e.g. dates or labels)
+      #   is preserved in the release notes
       #
       # Release notes are built as:
       #   1. matching version section
@@ -182,9 +190,9 @@ jobs:
           let headingRegex;
 
           if (isPrerelease === true) {
-            headingRegex = new RegExp(`^## v${baseVersion}-${channel}\\s*\$begin:math:text$\.\+\\$end:math:text$$`);
+            headingRegex = new RegExp(`^## v${baseVersion}-${channel}\\b`);
           } else {
-            headingRegex = new RegExp(`^## v${baseVersion}\\s*\$begin:math:text$\.\+\\$end:math:text$$`);
+            headingRegex = new RegExp(`^## v${baseVersion}\\b`);
           }
 
           let start = -1;
@@ -199,7 +207,7 @@ jobs:
             }
 
             if (start !== -1) {
-              if (i > start && line.startsWith('## ') === true) {
+              if (i > start && line.trimStart().startsWith('## ') === true) {
                 break;
               }
 
@@ -223,7 +231,7 @@ jobs:
             }
 
             if (inKnownIssues === true) {
-              if (line.startsWith('## ') === true) {
+              if (line.trimStart().startsWith('## ') === true) {
                 break;
               }
 
@@ -232,24 +240,22 @@ jobs:
           }
 
           // -----------------------------------------
-          // 3. Append Known Issues at END
+          // 3. Fallback if version section not found
           // -----------------------------------------
-          if (knownIssues.length > 0) {
-            output.push('');
-            output.push('---');
-            output.push('');
-            output.push(...knownIssues);
-          }
-
-          // -----------------------------------------
-          // 4. Fallback
-          // -----------------------------------------
-          if (output.length === 0) {
+          if (start === -1) {
             output = [
               `## v${baseVersion}${isPrerelease === true ? '-' + channel : ''}`,
               '',
               'Release notes unavailable. See CHANGELOG.md'
             ];
+          }
+
+          // -----------------------------------------
+          // 4. Append Known Issues at END
+          // -----------------------------------------
+          if (knownIssues.length > 0) {
+            output.push('');
+            output.push(...knownIssues);
           }
 
           fs.writeFileSync('RELEASE_NOTES.md', output.join('\n').trim() + '\n');
