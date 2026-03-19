@@ -14,7 +14,7 @@
 // parseDurationToSeconds(duration, options) - parse duration strings (e.g. "1w3d2h15m30s") to seconds
 // processCommonData(deviceUUID, homeUUID, data, config) - normalize device data and apply config overrides
 //
-// Code version 2026.03.15
+// Code version 2026.03.20
 // Mark Hulskamp
 'use strict';
 
@@ -179,7 +179,10 @@ async function fetchWrapper(method, url, options, data) {
     // Retry only on retry-eligible errors
     if (
       options.retry > 1 &&
-      (original?.code === 'UND_ERR_HEADERS_TIMEOUT' || original?.name === 'AbortError' || original?.name === 'TypeError')
+      (original?.code === 'UND_ERR_HEADERS_TIMEOUT' ||
+        original?.code === 'UND_ERR_CONNECT_TIMEOUT' ||
+        original?.name === 'AbortError' ||
+        original?.name === 'TypeError')
     ) {
       options.retry--;
       options._retryCount++;

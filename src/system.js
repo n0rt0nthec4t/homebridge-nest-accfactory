@@ -27,7 +27,7 @@
 // Creates HomeKitDevice instances for each Nest/Google device
 // Manages connection objects for each account (credentials, API endpoints)
 //
-// Code version 2026.03.18
+// Code version 2026.03.20
 // Mark Hulskamp
 'use strict';
 
@@ -775,12 +775,20 @@ export default class NestAccfactory {
 
         await this.#processData(uuid);
       },
-    ).finally(() => {
-      // Only continue the observe loop if the connection is still authorised
-      if (this.#connections?.[uuid]?.authorised === true) {
-        setTimeout(() => this.#observeGoogleAPI(uuid, false), 1000);
-      }
-    });
+    )
+      .catch((error) => {
+        this?.log?.debug?.(
+          'Google API observe failed for connection "%s": %s',
+          this.#connections?.[uuid]?.name,
+          typeof error?.message === 'string' ? error.message : String(error),
+        );
+      })
+      .finally(() => {
+        // Only continue the observe loop if the connection is still authorised
+        if (this.#connections?.[uuid]?.authorised === true) {
+          setTimeout(() => this.#observeGoogleAPI(uuid, false), 1000);
+        }
+      });
   }
 
   async #processData(uuid) {
@@ -2342,19 +2350,21 @@ export default class NestAccfactory {
           }
         })
         .catch((error) => {
-          if (
-            error?.cause === undefined ||
-            (error.cause?.message?.toUpperCase?.()?.includes('TIMEOUT') === false &&
-              error.cause?.code?.toUpperCase?.()?.includes('TIMEOUT') === false)
-          ) {
-            this?.log?.debug?.(
-              'Protobuf command "%s" failed for service "%s": %s',
-              command,
-              service,
-              typeof error?.message === 'string' ? error.message : String(error),
-            );
-            return undefined;
-          }
+          let isTimeout =
+            error?.cause?.message?.toUpperCase?.()?.includes('TIMEOUT') === true ||
+            error?.cause?.code?.toUpperCase?.()?.includes('TIMEOUT') === true ||
+            error?.message?.toUpperCase?.()?.includes('TIMEOUT') === true ||
+            error?.code?.toUpperCase?.()?.includes('TIMEOUT') === true;
+
+          this?.log?.debug?.(
+            'Protobuf command "%s" %s for service "%s": %s',
+            command,
+            isTimeout === true ? 'timed out' : 'failed',
+            service,
+            typeof error?.message === 'string' ? error.message : String(error),
+          );
+
+          return undefined;
         });
     }
   }
@@ -2364,13 +2374,21 @@ export default class NestAccfactory {
       return;
     }
 
-    // Attempt to load in required protobuf files
     if (fs.existsSync(path.join(__dirname, 'protobuf/root.proto')) === true) {
-      protobuf.util.Long = null;
-      protobuf.configure();
-      this.#protobufRoot = protobuf.loadSync(path.join(__dirname, 'protobuf/root.proto'));
-      if (this.#protobufRoot !== null) {
-        this?.log?.debug?.('Loaded protobuf support files for Google API');
+      try {
+        protobuf.util.Long = null;
+        protobuf.configure();
+        this.#protobufRoot = protobuf.loadSync(path.join(__dirname, 'protobuf/root.proto'));
+
+        if (this.#protobufRoot !== null) {
+          this?.log?.debug?.('Loaded protobuf support files for Google API');
+        }
+      } catch (error) {
+        this.#protobufRoot = null;
+        this?.log?.warn?.(
+          'Failed to load protobuf support files for Google API. Error was "%s"',
+          typeof error?.message === 'string' ? error.message : String(error),
+        );
       }
     }
 

@@ -55,7 +55,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = 'Protect';
-  static VERSION = '2026.03.18'; // Code version
+  static VERSION = '2026.03.20'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -604,6 +604,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         let deviceOptions = config?.devices?.find(
           (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
         );
+        // eslint-disable-next-line no-unused-vars
         let homeOptions = config?.homes?.find(
           (home) =>
             home?.nest_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
@@ -612,11 +613,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
 
         // Insert any extra options we've read in from configuration file for this device
         tempDevice.eveHistory =
-          deviceOptions?.eveHistory !== undefined
-            ? deviceOptions.eveHistory === true
-            : homeOptions?.eveHistory !== undefined
-              ? homeOptions.eveHistory === true
-              : config.options?.eveHistory === true;
+          deviceOptions?.eveHistory !== undefined ? deviceOptions.eveHistory === true : config.options?.eveHistory === true;
         tempDevice.logMotionEvents =
           deviceOptions?.logMotionEvents !== undefined
             ? deviceOptions.logMotionEvents === true

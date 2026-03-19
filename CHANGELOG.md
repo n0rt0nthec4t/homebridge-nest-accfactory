@@ -29,37 +29,56 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
   - Running Homebridge with `-D` will no longer enable debug output for this plugin
   - Debug output is now controlled by the `debug` configuration option (Verbose Logging)
 
-### Changes
+### ✨ New Features
 
 - Added support for a new `"accounts"` section in `config.json` to enable multiple Nest and Google accounts  
+- Added plugin-level **verbose logging** option  
+  - Enables debug output without requiring Homebridge debug mode  
+  - Verbose log messages are displayed in gray to mirror Homebridge debug mode for easier identification  
+- Added `logMotionEvents` option (global and per-device, enabled by default)  
+  - Controls logging of motion events for cameras, doorbells, and Nest Protect devices  
+- Added support for Nest Hub Max (1st gen, wired)  
+
+### ⚙️ Configuration & GUI
+
+- Updated Nest/Google account configuration in the GUI to a combined **Accounts** section  
 - Added **Home Settings** section to the GUI configuration  
   - Configure global home-level options  
   - Supports per-home overrides  
 - Added **Device Settings** section to the GUI configuration  
   - Configure global device-level options  
   - Supports per-device overrides  
-  - Not all configuration options are exposed in the GUI and may require manual configuration 
-- Added plugin-level **verbose logging** option  
-  - Enables debug output without requiring Homebridge debug mode  
-  - Verbose log messages are displayed in gray to mirror Homebridge debug mode for easier identification
-- Added `logMotionEvents` option (global and per-device, enabled by default)  
-  - Controls logging of motion events for cameras, doorbells, and Nest Protect devices  
-- Refactored core modules to align with the updated base class  
-- General code cleanup and stability improvements  
-- Prefer Google API data when a device is available from both Google and Nest APIs  
-- Updated Nest/Google account configuration in the GUI to a combined **Accounts** section  
+  - Not all configuration options are exposed in the GUI and may require manual configuration  
+
+### 🎥 Camera & Motion
+
 - Updated camera motion handling — only a single motion sensor is now exposed per camera  
 - Improved reliability of camera and doorbell snapshot images  
-- Added support for Nest Hub Max (1st gen, wired)  
+
+### 🔁 Behaviour Changes / Improvements
+
+- Prefer Google API data when a device is available from both Google and Nest APIs
+- Disabled weather stations are no longer reported as "excluded" in logs  
+
+### 🛠️ Fixes
+
 - Fixed an issue affecting live view and HKSV recording on migrated Nest/Google cameras  
-- Fixed an issue affecting audio talkback on some older migrated Nest/Google cameras
-- Fixed an issue where the Google API observe connection could terminate on slow networks, causing the plugin to stop
+- Fixed an issue affecting audio talkback on some older migrated Nest/Google cameras  
+- Fixed an issue where the Google API observe connection could terminate on slow networks, causing the plugin to stop  
+
+### 🧹 Internal Changes
+
+- Refactored core modules to align with the updated base class  
+- General code cleanup and stability improvements  
+
+### 📚 Documentation
+
 - Updated `README.md` with documentation for:  
   - `"accounts"` configuration section (`./README.md#Account Configuration`)  
   - Updated `"devices"` configuration section (`./README.md#devices`)  
   - Home and device settings, including override behaviour  
   - Verbose logging and Support Dump options  
-  - HKSV behaviour (recording is triggered by general motion events and does not support individual recording filters)  
+  - HKSV behaviour (recording is triggered by general motion events and does not support individual recording filters)   
 
 ## v0.3.9 (2026/02/18)
 

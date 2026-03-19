@@ -32,7 +32,7 @@ import { DATA_SOURCE, DEVICE_TYPE, MAX_ELEVATION, MIN_ELEVATION, NESTLABS_MAC_PR
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = 'Weather';
-  static VERSION = '2026.03.15'; // Code version
+  static VERSION = '2026.03.20'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -404,11 +404,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
 
         // Insert any extra options we've read in from configuration file for this device or its associated home
         tempDevice.eveHistory =
-          deviceOptions?.eveHistory !== undefined
-            ? deviceOptions.eveHistory === true
-            : homeOptions?.eveHistory !== undefined
-              ? homeOptions.eveHistory === true
-              : config.options.eveHistory === true;
+          deviceOptions?.eveHistory !== undefined ? deviceOptions.eveHistory === true : config.options.eveHistory === true;
 
         tempDevice.elevation =
           isNaN(homeOptions?.elevation) === false &&
@@ -418,9 +414,15 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
             : config.options.elevation;
 
         // Process additional exclusion details based on weather station setting
-        tempDevice.excluded = tempDevice.excluded === true || config.options?.weather !== true || homeOptions?.weather === false;
+        tempDevice.excluded = tempDevice.excluded === true;
 
-        devices[tempDevice.serialNumber] = tempDevice; // Store processed device
+        if (
+          tempDevice.excluded !== true &&
+          homeOptions?.weather !== false &&
+          (config.options?.weather === true || homeOptions?.weather === true)
+        ) {
+          devices[tempDevice.serialNumber] = tempDevice; // Store processed device
+        }
       }
     });
 
