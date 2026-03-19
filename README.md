@@ -5,9 +5,10 @@
 
 # Nest Accfactory
 
-[![npm](https://img.shields.io/npm/v/homebridge-nest-accfactory/latest)](https://www.npmjs.com/package/homebridge-nest-accfactory)
-[![npm](https://img.shields.io/npm/v/homebridge-nest-accfactory/alpha)](https://www.npmjs.com/package/homebridge-nest-accfactory)
-[![npm](https://img.shields.io/npm/dt/homebridge-nest-accfactory?label=downloads)](https://www.npmjs.com/package/homebridge-nest-accfactory)
+
+![npm](https://img.shields.io/npm/v/homebridge-nest-accfactory/latest?label=npm%40latest&color=%234CAF50)
+![npm](https://img.shields.io/npm/v/homebridge-nest-accfactory/beta?label=npm%40beta&color=%23FF9800)
+![npm](https://img.shields.io/npm/v/homebridge-nest-accfactory/alpha?label=npm%40alpha&color=%239E9E9E
 [![verified-by-homebridge](https://img.shields.io/badge/homebridge-verified-blueviolet?color=%23491F59&style=flat)](https://github.com/homebridge/homebridge/wiki/Verified-Plugins)
 
 </span>
@@ -149,7 +150,7 @@ The following options are available in the `config.json` `"options"` object. The
 
 Device-specific configuration can be applied using the `"devices"` array. Each entry represents **per-device settings** that are applied when a device with the matching `"serialNumber"` is discovered.
 
-Some options (such as `exclude` and `eveHistory`) override the global defaults defined in the `"options"` section. Other settings are device-specific and enable or control features available for that particular device type.
+Some options (such as `exclude`, `eveHistory` and `logMotionEvents`) override the global defaults defined in the `"options"` section. Other settings are device-specific and enable or control features available for that particular device type.
 
 The **Device Settings** section in the Homebridge GUI provides basic management of these entries. However, **not all device options are exposed in the GUI**, and some advanced options may need to be configured directly in `config.json`.
 

@@ -29,7 +29,7 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
   - Running Homebridge with `-D` will no longer enable debug output for this plugin
   - Debug output is now controlled by the `debug` configuration option (Verbose Logging)
 
-### 🔧 Changes
+### Changes
 
 - Added support for a new `"accounts"` section in `config.json` to enable multiple Nest and Google accounts  
 - Added **Home Settings** section to the GUI configuration  
