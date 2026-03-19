@@ -2248,61 +2248,75 @@ export default class NestAccfactory {
 
           if (TraitMapService?.methods?.[command]?.responseStream === true && typeof response.body?.getReader === 'function') {
             let reader = response.body.getReader();
-            while (true) {
-              let { done, value } = await reader.read();
-              if (done === true) {
-                break;
-              }
-
-              if (value instanceof Uint8Array === false || value.length === 0) {
-                continue;
-              }
-
-              buffer = Buffer.concat([buffer, Buffer.from(value)]);
-
-              while (buffer.length >= 5) {
-                // Decode gRPC-Web message length (varint after tag byte)
-                let msgLen = 0;
-                let shift = 0;
-                let varintLen = 0;
-                for (varintLen = 1; varintLen <= 5; varintLen++) {
-                  if (varintLen >= buffer.length) {
-                    break;
-                  }
-                  let byte = buffer[varintLen];
-                  msgLen |= (byte & 0x7f) << shift;
-                  if ((byte & 0x80) === 0) {
-                    break;
-                  }
-                  shift += 7;
-                }
-
-                let totalLen = 1 + varintLen + msgLen;
-                if (buffer.length < totalLen) {
+            try {
+              while (true) {
+                let { done, value } = await reader.read();
+                if (done === true) {
                   break;
                 }
 
-                let payload = buffer.subarray(0, totalLen);
-                buffer = buffer.subarray(totalLen);
+                if (value instanceof Uint8Array === false || value.length === 0) {
+                  continue;
+                }
 
-                try {
-                  // Attempt to decode the assembled response buffer (so far) into a JSON object
-                  // If successful, send onto callback if defined.
-                  // We don't return the response via function by return
-                  let decoded = TraitMapResponse.decode(payload).toJSON();
-                  await onMessage?.(decoded);
-                } catch (error) {
-                  this?.log?.debug?.(
-                    'Failed to decode protobuf message for command "%s" in service "%s": %s',
-                    command,
-                    service,
-                    typeof error?.message === 'string' ? error.message : String(error),
-                  );
+                buffer = Buffer.concat([buffer, Buffer.from(value)]);
+
+                while (buffer.length >= 5) {
+                  // Decode gRPC-Web message length (varint after tag byte)
+                  let msgLen = 0;
+                  let shift = 0;
+                  let varintLen = 0;
+                  for (varintLen = 1; varintLen <= 5; varintLen++) {
+                    if (varintLen >= buffer.length) {
+                      break;
+                    }
+                    let byte = buffer[varintLen];
+                    msgLen |= (byte & 0x7f) << shift;
+                    if ((byte & 0x80) === 0) {
+                      break;
+                    }
+                    shift += 7;
+                  }
+
+                  let totalLen = 1 + varintLen + msgLen;
+                  if (buffer.length < totalLen) {
+                    break;
+                  }
+
+                  let payload = buffer.subarray(0, totalLen);
+                  buffer = buffer.subarray(totalLen);
+
+                  try {
+                    // Attempt to decode the assembled response buffer (so far) into a JSON object
+                    // If successful, send onto callback if defined.
+                    // We don't return the response via function by return
+                    let decoded = TraitMapResponse.decode(payload).toJSON();
+                    await onMessage?.(decoded);
+                  } catch (error) {
+                    this?.log?.debug?.(
+                      'Failed to decode protobuf message for command "%s" in service "%s": %s',
+                      command,
+                      service,
+                      typeof error?.message === 'string' ? error.message : String(error),
+                    );
+                  }
                 }
               }
+            } catch (error) {
+              this?.log?.debug?.(
+                'Streaming protobuf read error for command "%s" in service "%s": %s',
+                command,
+                service,
+                typeof error?.message === 'string' ? error.message : String(error),
+              );
+            } finally {
+              try {
+                await reader.cancel();
+              } catch {
+                // Empty
+              }
             }
-
-            return; // No return value — messages handled via onMessage()
+            return;
           }
 
           if (TraitMapService?.methods?.[command]?.responseStream !== true) {

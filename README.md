@@ -147,13 +147,15 @@ The following options are available in the `config.json` `"options"` object. The
 
 #### devices
 
-Device specific configuration can be applied using the `"devices"` array. Each entry represents **per-device settings** that are applied when a device with the matching `"serialNumber"` is discovered. These settings override the global defaults defined in the `"options"` section.
+Device-specific configuration can be applied using the `"devices"` array. Each entry represents **per-device settings** that are applied when a device with the matching `"serialNumber"` is discovered.
 
-The **Devices** section in the Homebridge GUI allows basic management of these entries, however **not all device options are available in the GUI**. Advanced options may still need to be configured directly in `config.json`.
+Some options (such as `exclude` and `eveHistory`) override the global defaults defined in the `"options"` section. Other settings are device-specific and enable or control features available for that particular device type.
+
+The **Device Settings** section in the Homebridge GUI provides basic management of these entries. However, **not all device options are exposed in the GUI**, and some advanced options may need to be configured directly in `config.json`.
+
+Devices are identified using their **serial number**, which must match the value reported by the Nest or Google API. This value is **case-sensitive and must be in uppercase**.
 
 The `"name"` field is optional and is only used to help identify the entry in the configuration. It does **not** rename the device in HomeKit.
-
-Devices are identified using their **serial number**, which must match the serial number reported by the Nest / Google API.
 
 | Name               | Description                                                                                  | Default        |
 |--------------------|----------------------------------------------------------------------------------------------|----------------|
@@ -176,12 +178,17 @@ Devices are identified using their **serial number**, which must match the seria
 
 #### homes
 
-The following options are available on a per-home level in the `config.json` `"homes"` array. Each home is specified as a JSON object, and the home is identified using the `"name"` key.
+Home settings can be configured globally via the GUI **Home Settings** section, or overridden per-home using the `"homes"` array in `config.json`.
+
+The **Home Settings** section in the Homebridge GUI provides basic management of these entries. However, **not all home options are exposed in the GUI**, and some advanced options may need to be configured directly in `config.json`.
+
+Each entry in the `"homes"` array represents **per-home settings** that are applied to devices belonging to the specified Home. These settings override the global defaults defined in the `"options"` section.
+
+Homes are identified using the `"name"` field, which must match the Home name as shown in the Nest or Google Home app. This match is **case-sensitive**.
 
 | Name               | Description                                                                                  | Default        |
 |--------------------|----------------------------------------------------------------------------------------------|----------------|
 | elevation          | Height above sea level for the weather station                                               | 0              |
-| eveHistory         | Provide history in EveHome application where applicable for all devices                      | false          |
 | name               | Name of home (from Nest/Google App) to which these settings belong to                        |                |
 | weather            | Virtual weather station for this Home                                                        | false          |
 
