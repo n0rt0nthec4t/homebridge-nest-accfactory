@@ -219,7 +219,7 @@ export default class NestProtect extends HomeKitDevice {
       return;
     }
 
-    if (type === HomeKitDevice?.HISTORY?.GET) {
+    if (type === HomeKitDevice?.EVEHOME?.GET) {
       // Pass back extra data for Eve Smoke onGet() to process command
       // Data will already be an object, our only job is to add/modify to it
       message.lastalarmtest = this.deviceData.latest_alarm_test;
@@ -232,7 +232,7 @@ export default class NestProtect extends HomeKitDevice {
       return message;
     }
 
-    if (type === HomeKitDevice?.HISTORY?.SET) {
+    if (type === HomeKitDevice?.EVEHOME?.SET) {
       if (typeof message?.alarmtest === 'boolean') {
         // TODO - How do we trigger an alarm test :-)
         //this?.log?.info?.('Eve Smoke Alarm test', (message.alarmtest === true ? 'start' : 'stop'));

@@ -65,6 +65,7 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 - Fixed an issue affecting live view and HKSV recording on migrated Nest/Google cameras  
 - Fixed an issue affecting audio talkback on some older migrated Nest/Google cameras  
 - Fixed an issue where the Google API observe connection could terminate on slow networks, causing the plugin to stop  
+- Fixed an issue where Nest Protect settings would not update when Eve history integration was enabled
 
 ### 🧹 Internal Changes
 

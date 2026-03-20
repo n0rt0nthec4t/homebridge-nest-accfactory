@@ -1016,441 +1016,433 @@ export default class NestAccfactory {
     }
 
     for (let [key, value] of Object.entries(values)) {
-      if (key === 'uuid') {
-        // We don't do anything with the key containing the uuid
-        continue;
-      }
+      try {
+        if (key === 'uuid') {
+          // We don't do anything with the key containing the uuid
+          continue;
+        }
 
-      if (this.#rawData?.[nest_google_device_uuid]?.source === DATA_SOURCE.GOOGLE) {
-        let updatedTraits = [];
-        let commandTraits = [];
+        if (this.#rawData?.[nest_google_device_uuid]?.source === DATA_SOURCE.GOOGLE) {
+          let updatedTraits = [];
+          let commandTraits = [];
 
-        let updateElement = {
-          traitRequest: {
-            resourceId: nest_google_device_uuid,
-            traitLabel: '',
-            requestId: crypto.randomUUID(),
-          },
-          state: {
-            type_url: '',
-            value: {},
-          },
-        };
-        let commandElement = {
-          resourceRequest: {
-            resourceId: nest_google_device_uuid,
-            requestId: crypto.randomUUID(),
-          },
-          resourceCommands: [],
-        };
-
-        if (
-          (key === 'hvac_mode' && ['OFF', 'COOL', 'HEAT', 'RANGE'].includes(value?.toUpperCase?.())) ||
-          (['target_temperature', 'target_temperature_low', 'target_temperature_high'].includes(key) === true &&
-            this.#rawData?.[nest_google_device_uuid]?.value?.eco_mode_state?.ecoMode === 'ECO_MODE_INACTIVE' &&
-            isNaN(value) === false)
-        ) {
-          // Set either the 'mode' and/or non-eco temperatures on the target thermostat
-          updateElement.traitRequest.traitLabel = 'target_temperature_settings';
-          updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.TargetTemperatureSettingsTrait';
-          updateElement.state.value = this.#rawData[nest_google_device_uuid].value.target_temperature_settings;
-
-          if (
-            (key === 'target_temperature_low' || key === 'target_temperature') &&
-            (updateElement.state.value.targetTemperature.setpointType === 'SET_POINT_TYPE_HEAT' ||
-              updateElement.state.value.targetTemperature.setpointType === 'SET_POINT_TYPE_RANGE')
-          ) {
-            // Changing heating target temperature
-            updateElement.state.value.targetTemperature.heatingTarget = { value: value };
-          }
-          if (
-            (key === 'target_temperature_high' || key === 'target_temperature') &&
-            (updateElement.state.value.targetTemperature.setpointType === 'SET_POINT_TYPE_COOL' ||
-              updateElement.state.value.targetTemperature.setpointType === 'SET_POINT_TYPE_RANGE')
-          ) {
-            // Changing cooling target temperature
-            updateElement.state.value.targetTemperature.coolingTarget = { value: value };
-          }
-
-          if (key === 'hvac_mode' && value.toUpperCase() !== 'OFF') {
-            updateElement.state.value.targetTemperature.setpointType = 'SET_POINT_TYPE_' + value.toUpperCase();
-            updateElement.state.value.enabled = { value: true };
-          }
-
-          if (key === 'hvac_mode' && value.toUpperCase() === 'OFF') {
-            updateElement.state.value.enabled = { value: false };
-          }
-
-          // Tag 'who' is doing the temperature/mode change. We are ie: the device :-)
-          updateElement.state.value.targetTemperature.currentActorInfo = {
-            method: 'HVAC_ACTOR_METHOD_IOS',
-            originator: { resourceId: nest_google_device_uuid },
-            timeOfAction: { seconds: Math.floor(Date.now() / 1000), nanos: (Date.now() % 1000) * 1e6 },
+          let updateElement = {
+            traitRequest: {
+              resourceId: nest_google_device_uuid,
+              traitLabel: '',
+              requestId: crypto.randomUUID(),
+            },
+            state: {
+              type_url: '',
+              value: {},
+            },
           };
-        }
-
-        if (
-          ['target_temperature', 'target_temperature_low', 'target_temperature_high'].includes(key) === true &&
-          this.#rawData?.[nest_google_device_uuid]?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE' &&
-          isNaN(value) === false
-        ) {
-          // Set eco mode temperatures on the target thermostat
-          updateElement.traitRequest.traitLabel = 'eco_mode_settings';
-          updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.EcoModeSettingsTrait';
-          updateElement.state.value = this.#rawData[nest_google_device_uuid].value.eco_mode_settings;
-
-          updateElement.state.value.ecoTemperatureHeat.value.value =
-            updateElement.state.value.ecoTemperatureHeat.enabled === true && updateElement.state.value.ecoTemperatureCool.enabled === false
-              ? value
-              : updateElement.state.value.ecoTemperatureHeat.value.value;
-          updateElement.state.value.ecoTemperatureCool.value.value =
-            updateElement.state.value.ecoTemperatureHeat.enabled === false && updateElement.state.value.ecoTemperatureCool.enabled === true
-              ? value
-              : updateElement.state.value.ecoTemperatureCool.value.value;
-          updateElement.state.value.ecoTemperatureHeat.value.value =
-            updateElement.state.value.ecoTemperatureHeat.enabled === true &&
-            updateElement.state.value.ecoTemperatureCool.enabled === true &&
-            key === 'target_temperature_low'
-              ? value
-              : updateElement.state.value.ecoTemperatureHeat.value.value;
-          updateElement.state.value.ecoTemperatureCool.value.value =
-            updateElement.state.value.ecoTemperatureHeat.enabled === true &&
-            updateElement.state.value.ecoTemperatureCool.enabled === true &&
-            key === 'target_temperature_high'
-              ? value
-              : updateElement.state.value.ecoTemperatureCool.value.value;
-        }
-
-        if (key === 'temperature_scale' && (value?.toUpperCase?.() === 'C' || value?.toUpperCase?.() === 'F')) {
-          // Set the temperature scale on the target thermostat
-          updateElement.traitRequest.traitLabel = 'display_settings';
-          updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.DisplaySettingsTrait';
-          updateElement.state.value = this.#rawData[nest_google_device_uuid].value.display_settings;
-          updateElement.state.value.temperatureScale = value.toUpperCase() === 'F' ? 'TEMPERATURE_SCALE_F' : 'TEMPERATURE_SCALE_C';
-        }
-
-        if (key === 'temperature_lock' && typeof value === 'boolean') {
-          // Set lock mode on the target thermostat
-          updateElement.traitRequest.traitLabel = 'temperature_lock_settings';
-          updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.TemperatureLockSettingsTrait';
-          updateElement.state.value = this.#rawData[nest_google_device_uuid].value.temperature_lock_settings;
-          updateElement.state.value.enabled = value;
-        }
-
-        if (key === 'fan_state' && typeof value === 'boolean' && isNaN(values?.fan_duration) === false) {
-          // Set fan mode on the target thermostat, including runtime if turning on
-          updateElement.traitRequest.traitLabel = 'fan_control_settings';
-          updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.FanControlSettingsTrait';
-          updateElement.state.value = this.#rawData[nest_google_device_uuid].value.fan_control_settings;
-          updateElement.state.value.timerEnd =
-            value === true
-              ? {
-                  seconds: Number(Math.floor(Date.now() / 1000) + Number(values.fan_duration)),
-                  nanos: Number(((Math.floor(Date.now() / 1000) + Number(values.fan_duration)) % 1000) * 1e6),
-                }
-              : { seconds: 0, nanos: 0 };
-          if (values?.fan_timer_speed !== undefined) {
-            // We have a value to set fan speed also, so handle here as combined setting
-            updateElement.state.value.timerSpeed =
-              values?.fan_timer_speed !== 0
-                ? 'FAN_SPEED_SETTING_STAGE' + values?.fan_timer_speed
-                : this.#rawData[nest_google_device_uuid].value.fan_control_settings.timerSpeed;
-          }
-        }
-
-        if (key === 'fan_timer_speed' && isNaN(value) === false && values?.fan_state === undefined) {
-          // Set fan speed on the target thermostat only if we're not changing fan on/off state also
-          updateElement.traitRequest.traitLabel = 'fan_control_settings';
-          updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.FanControlSettingsTrait';
-          updateElement.state.value = this.#rawData[nest_google_device_uuid].value.fan_control_settings;
-          updateElement.state.value.timerSpeed =
-            value !== 0 ? 'FAN_SPEED_SETTING_STAGE' + value : this.#rawData[nest_google_device_uuid].value.fan_control_settings.timerSpeed;
-        }
-
-        if (key === 'statusled_brightness' && isNaN(value) === false) {
-          // 0
-          // 1
-        }
-
-        if (key === 'irled_enabled' && typeof value === 'string') {
-          // 'auto_on'
-          // 'always_off'
-        }
-
-        if (key === 'streaming_enabled' && typeof value === 'boolean') {
-          // Turn camera video on/off
-          updateElement.traitRequest.traitLabel = 'recording_toggle_settings';
-          updateElement.state.type_url = 'type.nestlabs.com/nest.trait.product.camera.RecordingToggleSettingsTrait';
-          updateElement.state.value = this.#rawData[nest_google_device_uuid].value.recording_toggle_settings;
-          updateElement.state.value.targetCameraState = value === true ? 'CAMERA_ON' : 'CAMERA_OFF';
-          updateElement.state.value.changeModeReason = 2;
-          updateElement.state.value.settingsUpdated = {
-            seconds: Math.floor(Date.now() / 1000),
-            nanos: (Date.now() % 1000) * 1e6,
+          let commandElement = {
+            resourceRequest: {
+              resourceId: nest_google_device_uuid,
+              requestId: crypto.randomUUID(),
+            },
+            resourceCommands: [],
           };
-        }
 
-        if (key === 'audio_enabled' && typeof value === 'boolean') {
-          // Enable/disable microphone on camera/doorbell
-          updateElement.traitRequest.traitLabel = 'microphone_settings';
-          updateElement.state.type_url = 'type.nestlabs.com/nest.trait.audio.MicrophoneSettingsTrait';
-          updateElement.state.value = this.#rawData[nest_google_device_uuid].value.microphone_settings;
-          updateElement.state.value.enableMicrophone = value;
-        }
+          // Helper function to set the update trait details based on the key/value passed in.
+          // with optional explicit trait value and updates to merge in
+          let setUpdateTrait = (traitLabel, typeURL, traitValue = undefined, updates = undefined) => {
+            updateElement.traitRequest.traitLabel = traitLabel;
+            updateElement.state.type_url = typeURL;
 
-        if (key === 'indoor_chime_enabled' && typeof value === 'boolean') {
-          // Enable/disable chime status on doorbell
-          updateElement.traitRequest.traitLabel = 'doorbell_indoor_chime_settings';
-          updateElement.state.type_url = 'type.nestlabs.com/nest.trait.product.doorbell.DoorbellIndoorChimeSettingsTrait';
-          updateElement.state.value = this.#rawData[nest_google_device_uuid].value.doorbell_indoor_chime_settings;
-          updateElement.state.value.chimeEnabled = value;
-        }
+            // If no explicit value passed, infer from rawData
+            if (traitValue === undefined) {
+              traitValue = this.#rawData?.[nest_google_device_uuid]?.value?.[traitLabel];
+            }
 
-        if (
-          key === 'light_enabled' &&
-          typeof value === 'boolean' &&
-          typeof this.#rawData?.[nest_google_device_uuid]?.value?.related_resources?.relatedResources === 'object'
-        ) {
-          // Turn on/off light on supported camera devices. Need to find the related SERVICE_ object
-          let serviceUUID = Object.values(this.#rawData[nest_google_device_uuid].value.related_resources.relatedResources).find(
-            (resource) =>
-              resource?.resourceTypeName?.resourceName === 'google.resource.AzizResource' &&
-              resource?.resourceId?.resourceId?.startsWith('SERVICE_') === true,
-          )?.resourceId?.resourceId;
+            updateElement.state.value = typeof traitValue === 'object' && traitValue !== null ? structuredClone(traitValue) : {};
 
-          if ((serviceUUID ?? '') !== '') {
-            commandElement.resourceRequest.resourceId = serviceUUID;
+            // Optionally merge in simple top-level updates
+            if (typeof updates === 'object' && updates !== null) {
+              Object.assign(updateElement.state.value, updates);
+            }
+          };
+
+          // Helper function to set the command trait details based on the key/value passed in (optional explicit resourceId override)
+          let setCommandTrait = (traitLabel, typeURL, commandValue, resourceId = nest_google_device_uuid) => {
+            commandElement.resourceRequest.resourceId = resourceId;
             commandElement.resourceCommands = [
               {
-                traitLabel: 'on_off',
+                traitLabel,
                 command: {
-                  type_url: 'type.nestlabs.com/weave.trait.actuator.OnOffTrait.SetStateRequest',
-                  value: { on: value },
+                  type_url: typeURL,
+                  value: commandValue,
                 },
               },
             ];
-          }
-        }
-
-        if (key === 'light_brightness' && isNaN(value) === false) {
-          // Set light brightness on supported camera devices
-          updateElement.traitRequest.traitLabel = 'floodlight_settings';
-          updateElement.state.type_url = 'type.nestlabs.com/google.trait.product.camera.FloodlightSettingsTrait';
-          updateElement.state.value = this.#rawData[nest_google_device_uuid].value.floodlight_settings;
-          updateElement.state.value.brightness = scaleValue(Number(value), 0, 100, 0, 10); // Scale to required level
-        }
-
-        if (
-          key === 'active_sensor' &&
-          typeof value === 'boolean' &&
-          typeof this.#rawData?.[this.#rawData[nest_google_device_uuid]?.value?.associated_thermostat]?.value
-            ?.remote_comfort_sensing_settings === 'object'
-        ) {
-          // Set active temperature sensor for associated thermostat
-          updateElement.traitRequest.resourceId = this.#rawData[nest_google_device_uuid].value.associated_thermostat;
-          updateElement.traitRequest.traitLabel = 'remote_comfort_sensing_settings';
-          updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.RemoteComfortSensingSettingsTrait';
-          updateElement.state.value =
-            this.#rawData[this.#rawData[nest_google_device_uuid].value.associated_thermostat].value.remote_comfort_sensing_settings;
-          updateElement.state.value.activeRcsSelection =
-            value === true
-              ? { rcsSourceType: 'RCS_SOURCE_TYPE_SINGLE_SENSOR', activeRcsSensor: { resourceId: nest_google_device_uuid } }
-              : { rcsSourceType: 'RCS_SOURCE_TYPE_BACKPLATE' };
-        }
-
-        if (
-          key === 'hot_water_boost_active' &&
-          typeof value === 'object' &&
-          this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasHotWaterControl === true
-        ) {
-          // Turn hotwater boost heating on/off
-          updateElement.traitRequest.traitLabel = 'hot_water_settings';
-          updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.HotWaterSettingsTrait';
-          updateElement.state.value = this.#rawData[nest_google_device_uuid].value.hot_water_settings;
-          updateElement.state.value.boostTimerEnd =
-            value?.state === true
-              ? {
-                  seconds: Number(Math.floor(Date.now() / 1000) + Number(isNaN(value?.time) === false ? value?.time : 30 * 60)),
-                  nanos: Number(
-                    (Math.floor(Date.now() / 1000) + (Number(isNaN(value?.time) === false ? value?.time : 30 * 60) % 1000)) * 1e6,
-                  ),
-                }
-              : { seconds: 0, nanos: 0 };
-        }
-
-        if (
-          key === 'hot_water_temperature' &&
-          isNaN(value) === false &&
-          this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasHotWaterTemperature === true
-        ) {
-          // Set hotwater boiler temperature
-          updateElement.traitRequest.traitLabel = 'hot_water_settings';
-          updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.HotWaterSettingsTrait';
-          updateElement.state.value = this.#rawData[nest_google_device_uuid].value.hot_water_settings;
-          updateElement.state.value.temperature.value = value;
-        }
-
-        if (key === 'bolt_lock' && typeof value === 'boolean') {
-          // Set lock state
-          commandElement.resourceCommands = [
-            {
-              traitLabel: 'bolt_lock',
-              command: {
-                type_url: 'type.nestlabs.com/weave.trait.security.BoltLockTrait.BoltLockChangeRequest',
-                value: {
-                  state: value === true ? 'BOLT_STATE_EXTENDED' : 'BOLT_STATE_RETRACTED',
-                  boltLockActor: {
-                    method: 'BOLT_LOCK_ACTOR_METHOD_REMOTE_USER_EXPLICIT',
-                    originator: { resourceId: nest_google_device_uuid },
-                    agent: null,
-                  },
-                },
-              },
-            },
-          ];
-        }
-
-        if (key === 'auto_relock_duration' && isNaN(value) === false) {
-          // Set lock auto-relock duration
-          updateElement.traitRequest.traitLabel = 'bolt_lock_settings';
-          updateElement.state.type_url = 'type.nestlabs.com/weave.trait.security.BoltLockSettingsTrait';
-          updateElement.state.value = this.#rawData[nest_google_device_uuid].value.bolt_lock_settings;
-          updateElement.state.value.autoRelockDuration.seconds = value;
-        }
-
-        if (
-          key === 'vacation_mode' &&
-          typeof value === 'boolean' &&
-          (this.#rawData?.[nest_google_device_uuid]?.value?.device_info?.pairerId?.resourceId ?? '') !== ''
-        ) {
-          // Set vaction mode on structure
-          // let userID = Object.entries(this.#rawData).find(([key, value]) => key.startsWith('USER_') && value?.connection === uuid)?.[0];
-          commandElement.resourceRequest.resourceId = this.#rawData[nest_google_device_uuid].value.device_info.pairerId.resourceId;
-          commandElement.resourceCommands = [
-            {
-              traitLabel: 'structure_mode',
-              command: {
-                type_url: 'type.nestlabs.com/nest.trait.occupancy.StructureModeTrait.StructureModeChangeRequest',
-                value: {
-                  structureMode: value === true ? 'STRUCTURE_MODE_VACATION' : 'STRUCTURE_MODE_HOME',
-                  reason: 'STRUCTURE_MODE_REASON_EXPLICIT_INTENT',
-                  userId: {
-                    resourceId: nest_google_device_uuid,
-                  },
-                },
-              },
-            },
-          ];
-        }
-
-        if (
-          key === 'dehumidifier_state' &&
-          typeof value === 'boolean' &&
-          this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasDehumidifier === true
-        ) {
-          // Set dehumidifier on/off on the target thermostat
-          updateElement.traitRequest.traitLabel = 'humidity_control_settings';
-          updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait';
-          updateElement.state.value = this.#rawData?.[nest_google_device_uuid]?.value?.humidity_control_settings ?? {};
-          updateElement.state.value.dehumidifierTargetHumidity = {
-            ...(updateElement.state.value.dehumidifierTargetHumidity ?? {}),
-            enabled: value,
           };
-        }
 
-        if (
-          key === 'target_humidity_dehumidifier' &&
-          isNaN(value) === false &&
-          this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasDehumidifier === true
-        ) {
-          // Set dehumidifier target humidity on the target thermostat
-          updateElement.traitRequest.traitLabel = 'humidity_control_settings';
-          updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait';
-          updateElement.state.value = this.#rawData?.[nest_google_device_uuid]?.value?.humidity_control_settings ?? {};
-          updateElement.state.value.dehumidifierTargetHumidity = {
-            ...(updateElement.state.value.dehumidifierTargetHumidity ?? {}),
-            value: Number(value),
-          };
-        }
-
-        if (
-          key === 'humidifier_state' &&
-          typeof value === 'boolean' &&
-          this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasHumidifier === true
-        ) {
-          // Set humidifier on/off on the target thermostat
-          updateElement.traitRequest.traitLabel = 'humidity_control_settings';
-          updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait';
-          updateElement.state.value = this.#rawData?.[nest_google_device_uuid]?.value?.humidity_control_settings ?? {};
-          updateElement.state.value.humidifierTargetHumidity = {
-            ...(updateElement.state.value.humidifierTargetHumidity ?? {}),
-            enabled: value,
-          };
-        }
-
-        if (
-          key === 'target_humidity_humidifier' &&
-          isNaN(value) === false &&
-          this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasHumidifier === true
-        ) {
-          // Set humidifier target humidity on the target thermostat
-          updateElement.traitRequest.traitLabel = 'humidity_control_settings';
-          updateElement.state.type_url = 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait';
-          updateElement.state.value = this.#rawData?.[nest_google_device_uuid]?.value?.humidity_control_settings ?? {};
-          updateElement.state.value.humidifierTargetHumidity = {
-            ...(updateElement.state.value.humidifierTargetHumidity ?? {}),
-            value: Number(value),
-          };
-        }
-
-        if (updateElement.traitRequest.traitLabel !== '' && updateElement.state.type_url !== '') {
-          updatedTraits.push(structuredClone(updateElement));
-        }
-
-        if (Array.isArray(commandElement?.resourceCommands) === true && commandElement.resourceCommands.length !== 0) {
-          commandTraits.push(structuredClone(commandElement));
-        }
-
-        // Perform any direct trait updates we have to do. This can be done via a single call in a batch
-        if (updatedTraits.length !== 0) {
-          let commandResponse = await this.#protobufCommand(uuid, 'nestlabs.gateway.v1.TraitBatchApi', 'BatchUpdateState', {
-            batchUpdateStateRequest: updatedTraits,
-          });
           if (
-            commandResponse === undefined ||
-            commandResponse?.batchUpdateStateResponse?.[0]?.traitOperations?.[0]?.progress !== 'COMPLETE'
+            (key === 'hvac_mode' && ['OFF', 'COOL', 'HEAT', 'RANGE'].includes(value?.toUpperCase?.())) ||
+            (['target_temperature', 'target_temperature_low', 'target_temperature_high'].includes(key) === true &&
+              this.#rawData?.[nest_google_device_uuid]?.value?.eco_mode_state?.ecoMode === 'ECO_MODE_INACTIVE' &&
+              isNaN(value) === false)
           ) {
-            this?.log?.debug?.('Google API had error updating traits for device uuid "%s"', nest_google_device_uuid);
+            // Set either the 'mode' and/or non-eco temperatures on the target thermostat
+            setUpdateTrait('target_temperature_settings', 'type.nestlabs.com/nest.trait.hvac.TargetTemperatureSettingsTrait');
+
+            if (
+              (key === 'target_temperature_low' || key === 'target_temperature') &&
+              (updateElement.state.value.targetTemperature.setpointType === 'SET_POINT_TYPE_HEAT' ||
+                updateElement.state.value.targetTemperature.setpointType === 'SET_POINT_TYPE_RANGE')
+            ) {
+              // Changing heating target temperature
+              updateElement.state.value.targetTemperature.heatingTarget = { value: value };
+            }
+            if (
+              (key === 'target_temperature_high' || key === 'target_temperature') &&
+              (updateElement.state.value.targetTemperature.setpointType === 'SET_POINT_TYPE_COOL' ||
+                updateElement.state.value.targetTemperature.setpointType === 'SET_POINT_TYPE_RANGE')
+            ) {
+              // Changing cooling target temperature
+              updateElement.state.value.targetTemperature.coolingTarget = { value: value };
+            }
+
+            if (key === 'hvac_mode' && value.toUpperCase() !== 'OFF') {
+              updateElement.state.value.targetTemperature.setpointType = 'SET_POINT_TYPE_' + value.toUpperCase();
+              updateElement.state.value.enabled = { value: true };
+            }
+
+            if (key === 'hvac_mode' && value.toUpperCase() === 'OFF') {
+              updateElement.state.value.enabled = { value: false };
+            }
+
+            // Tag 'who' is doing the temperature/mode change. We are ie: the device :-)
+            updateElement.state.value.targetTemperature.currentActorInfo = {
+              method: 'HVAC_ACTOR_METHOD_IOS',
+              originator: { resourceId: nest_google_device_uuid },
+              timeOfAction: { seconds: Math.floor(Date.now() / 1000), nanos: (Date.now() % 1000) * 1e6 },
+            };
           }
-        }
-        // Perform any trait updates required via resource commands. Each one is done separately
-        if (commandTraits.length !== 0) {
-          for (let command of commandTraits) {
+
+          if (
+            ['target_temperature', 'target_temperature_low', 'target_temperature_high'].includes(key) === true &&
+            this.#rawData?.[nest_google_device_uuid]?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE' &&
+            isNaN(value) === false
+          ) {
+            // Set eco mode temperatures on the target thermostat
+            setUpdateTrait('eco_mode_settings', 'type.nestlabs.com/nest.trait.hvac.EcoModeSettingsTrait');
+
+            updateElement.state.value.ecoTemperatureHeat.value.value =
+              updateElement.state.value.ecoTemperatureHeat.enabled === true &&
+              updateElement.state.value.ecoTemperatureCool.enabled === false
+                ? value
+                : updateElement.state.value.ecoTemperatureHeat.value.value;
+            updateElement.state.value.ecoTemperatureCool.value.value =
+              updateElement.state.value.ecoTemperatureHeat.enabled === false &&
+              updateElement.state.value.ecoTemperatureCool.enabled === true
+                ? value
+                : updateElement.state.value.ecoTemperatureCool.value.value;
+            updateElement.state.value.ecoTemperatureHeat.value.value =
+              updateElement.state.value.ecoTemperatureHeat.enabled === true &&
+              updateElement.state.value.ecoTemperatureCool.enabled === true &&
+              key === 'target_temperature_low'
+                ? value
+                : updateElement.state.value.ecoTemperatureHeat.value.value;
+            updateElement.state.value.ecoTemperatureCool.value.value =
+              updateElement.state.value.ecoTemperatureHeat.enabled === true &&
+              updateElement.state.value.ecoTemperatureCool.enabled === true &&
+              key === 'target_temperature_high'
+                ? value
+                : updateElement.state.value.ecoTemperatureCool.value.value;
+          }
+
+          if (key === 'temperature_scale' && (value?.toUpperCase?.() === 'C' || value?.toUpperCase?.() === 'F')) {
+            // Set the temperature scale on the target thermostat
+            setUpdateTrait('display_settings', 'type.nestlabs.com/nest.trait.hvac.DisplaySettingsTrait', undefined, {
+              temperatureScale: value.toUpperCase() === 'F' ? 'TEMPERATURE_SCALE_F' : 'TEMPERATURE_SCALE_C',
+            });
+          }
+
+          if (key === 'temperature_lock' && typeof value === 'boolean') {
+            // Set lock mode on the target thermostat
+            setUpdateTrait('temperature_lock_settings', 'type.nestlabs.com/nest.trait.hvac.TemperatureLockSettingsTrait', undefined, {
+              enabled: value,
+            });
+          }
+
+          if (key === 'fan_state' && typeof value === 'boolean' && isNaN(values?.fan_duration) === false) {
+            // Set fan mode on the target thermostat, including runtime if turning on
+            setUpdateTrait('fan_control_settings', 'type.nestlabs.com/nest.trait.hvac.FanControlSettingsTrait');
+            updateElement.state.value.timerEnd =
+              value === true
+                ? {
+                    seconds: Number(Math.floor(Date.now() / 1000) + Number(values.fan_duration)),
+                    nanos: Number(((Math.floor(Date.now() / 1000) + Number(values.fan_duration)) % 1000) * 1e6),
+                  }
+                : { seconds: 0, nanos: 0 };
+            if (values?.fan_timer_speed !== undefined) {
+              // We have a value to set fan speed also, so handle here as combined setting
+              updateElement.state.value.timerSpeed =
+                values?.fan_timer_speed !== 0
+                  ? 'FAN_SPEED_SETTING_STAGE' + values?.fan_timer_speed
+                  : this.#rawData[nest_google_device_uuid].value.fan_control_settings.timerSpeed;
+            }
+          }
+
+          if (key === 'fan_timer_speed' && isNaN(value) === false && values?.fan_state === undefined) {
+            // Set fan speed on the target thermostat only if we're not changing fan on/off state also
+            setUpdateTrait('fan_control_settings', 'type.nestlabs.com/nest.trait.hvac.FanControlSettingsTrait');
+            updateElement.state.value.timerSpeed =
+              value !== 0
+                ? 'FAN_SPEED_SETTING_STAGE' + value
+                : this.#rawData[nest_google_device_uuid].value.fan_control_settings.timerSpeed;
+          }
+
+          if (key === 'statusled_brightness' && isNaN(value) === false) {
+            // 0
+            // 1
+          }
+
+          if (key === 'irled_enabled' && typeof value === 'string') {
+            // 'auto_on'
+            // 'always_off'
+          }
+
+          if (key === 'streaming_enabled' && typeof value === 'boolean') {
+            // Turn camera video on/off
+            setUpdateTrait('recording_toggle_settings', 'type.nestlabs.com/nest.trait.product.camera.RecordingToggleSettingsTrait');
+            updateElement.state.value.targetCameraState = value === true ? 'CAMERA_ON' : 'CAMERA_OFF';
+            updateElement.state.value.changeModeReason = 2;
+            updateElement.state.value.settingsUpdated = {
+              seconds: Math.floor(Date.now() / 1000),
+              nanos: (Date.now() % 1000) * 1e6,
+            };
+          }
+
+          if (key === 'audio_enabled' && typeof value === 'boolean') {
+            // Enable/disable microphone on camera/doorbell
+            setUpdateTrait('microphone_settings', 'type.nestlabs.com/nest.trait.audio.MicrophoneSettingsTrait', undefined, {
+              enableMicrophone: value,
+            });
+          }
+
+          if (key === 'indoor_chime_enabled' && typeof value === 'boolean') {
+            // Enable/disable chime status on doorbell
+            setUpdateTrait(
+              'doorbell_indoor_chime_settings',
+              'type.nestlabs.com/nest.trait.product.doorbell.DoorbellIndoorChimeSettingsTrait',
+              undefined,
+              { chimeEnabled: value },
+            );
+          }
+
+          if (
+            key === 'light_enabled' &&
+            typeof value === 'boolean' &&
+            typeof this.#rawData?.[nest_google_device_uuid]?.value?.related_resources?.relatedResources === 'object'
+          ) {
+            // Turn on/off light on supported camera devices. Need to find the related SERVICE_ object
+            let serviceUUID = Object.values(this.#rawData[nest_google_device_uuid].value.related_resources.relatedResources).find(
+              (resource) =>
+                resource?.resourceTypeName?.resourceName === 'google.resource.AzizResource' &&
+                resource?.resourceId?.resourceId?.startsWith('SERVICE_') === true,
+            )?.resourceId?.resourceId;
+
+            if ((serviceUUID ?? '') !== '') {
+              setCommandTrait('on_off', 'type.nestlabs.com/weave.trait.actuator.OnOffTrait.SetStateRequest', { on: value }, serviceUUID);
+            }
+          }
+
+          if (key === 'light_brightness' && isNaN(value) === false) {
+            // Set light brightness on supported camera devices. Needs to be scaled to 0-10 for the API
+            setUpdateTrait('floodlight_settings', 'type.nestlabs.com/google.trait.product.camera.FloodlightSettingsTrait', undefined, {
+              brightness: scaleValue(Number(value), 0, 100, 0, 10),
+            });
+          }
+
+          if (
+            key === 'active_sensor' &&
+            typeof value === 'boolean' &&
+            typeof this.#rawData?.[this.#rawData[nest_google_device_uuid]?.value?.associated_thermostat]?.value
+              ?.remote_comfort_sensing_settings === 'object'
+          ) {
+            // Set active temperature sensor for associated thermostat
+            updateElement.traitRequest.resourceId = this.#rawData[nest_google_device_uuid].value.associated_thermostat;
+            setUpdateTrait(
+              'remote_comfort_sensing_settings',
+              'type.nestlabs.com/nest.trait.hvac.RemoteComfortSensingSettingsTrait',
+              this.#rawData[this.#rawData[nest_google_device_uuid].value.associated_thermostat].value.remote_comfort_sensing_settings,
+            );
+            updateElement.state.value.activeRcsSelection =
+              value === true
+                ? { rcsSourceType: 'RCS_SOURCE_TYPE_SINGLE_SENSOR', activeRcsSensor: { resourceId: nest_google_device_uuid } }
+                : { rcsSourceType: 'RCS_SOURCE_TYPE_BACKPLATE' };
+          }
+
+          if (
+            key === 'hot_water_boost_active' &&
+            typeof value === 'object' &&
+            this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasHotWaterControl === true
+          ) {
+            // Turn hotwater boost heating on/off
+            setUpdateTrait('hot_water_settings', 'type.nestlabs.com/nest.trait.hvac.HotWaterSettingsTrait');
+            updateElement.state.value.boostTimerEnd =
+              value?.state === true
+                ? {
+                    seconds: Number(Math.floor(Date.now() / 1000) + Number(isNaN(value?.time) === false ? value?.time : 30 * 60)),
+                    nanos: Number(
+                      (Math.floor(Date.now() / 1000) + (Number(isNaN(value?.time) === false ? value?.time : 30 * 60) % 1000)) * 1e6,
+                    ),
+                  }
+                : { seconds: 0, nanos: 0 };
+          }
+
+          if (
+            key === 'hot_water_temperature' &&
+            isNaN(value) === false &&
+            this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasHotWaterTemperature === true
+          ) {
+            // Set hotwater boiler temperature
+            setUpdateTrait('hot_water_settings', 'type.nestlabs.com/nest.trait.hvac.HotWaterSettingsTrait');
+            updateElement.state.value.temperature = {
+              ...(updateElement.state.value.temperature ?? {}),
+              value: value,
+            };
+          }
+
+          if (key === 'bolt_lock' && typeof value === 'boolean') {
+            // Set lock state
+            setCommandTrait('bolt_lock', 'type.nestlabs.com/weave.trait.security.BoltLockTrait.BoltLockChangeRequest', {
+              state: value === true ? 'BOLT_STATE_EXTENDED' : 'BOLT_STATE_RETRACTED',
+              boltLockActor: {
+                method: 'BOLT_LOCK_ACTOR_METHOD_REMOTE_USER_EXPLICIT',
+                originator: { resourceId: nest_google_device_uuid },
+                agent: null,
+              },
+            });
+          }
+
+          if (key === 'auto_relock_duration' && isNaN(value) === false) {
+            // Set lock auto-relock duration
+            setUpdateTrait('bolt_lock_settings', 'type.nestlabs.com/weave.trait.security.BoltLockSettingsTrait');
+            updateElement.state.value.autoRelockDuration = {
+              ...(updateElement.state.value.autoRelockDuration ?? {}),
+              seconds: value,
+            };
+          }
+
+          if (
+            key === 'vacation_mode' &&
+            typeof value === 'boolean' &&
+            (this.#rawData?.[nest_google_device_uuid]?.value?.device_info?.pairerId?.resourceId ?? '') !== ''
+          ) {
+            // Set vacation mode on structure
+            setCommandTrait(
+              'structure_mode',
+              'type.nestlabs.com/nest.trait.occupancy.StructureModeTrait.StructureModeChangeRequest',
+              {
+                structureMode: value === true ? 'STRUCTURE_MODE_VACATION' : 'STRUCTURE_MODE_HOME',
+                reason: 'STRUCTURE_MODE_REASON_EXPLICIT_INTENT',
+                userId: {
+                  resourceId: nest_google_device_uuid,
+                },
+              },
+              this.#rawData[nest_google_device_uuid].value.device_info.pairerId.resourceId,
+            );
+          }
+
+          if (
+            key === 'dehumidifier_state' &&
+            typeof value === 'boolean' &&
+            this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasDehumidifier === true
+          ) {
+            // Set dehumidifier on/off on the target thermostat
+            setUpdateTrait('humidity_control_settings', 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait');
+            updateElement.state.value.dehumidifierTargetHumidity = {
+              ...(updateElement.state.value.dehumidifierTargetHumidity ?? {}),
+              enabled: value,
+            };
+          }
+
+          if (
+            key === 'target_humidity_dehumidifier' &&
+            isNaN(value) === false &&
+            this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasDehumidifier === true
+          ) {
+            // Set dehumidifier target humidity on the target thermostat
+            setUpdateTrait('humidity_control_settings', 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait');
+            updateElement.state.value.dehumidifierTargetHumidity = {
+              ...(updateElement.state.value.dehumidifierTargetHumidity ?? {}),
+              value: Number(value),
+            };
+          }
+
+          if (
+            key === 'humidifier_state' &&
+            typeof value === 'boolean' &&
+            this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasHumidifier === true
+          ) {
+            // Set humidifier on/off on the target thermostat
+            setUpdateTrait('humidity_control_settings', 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait');
+            updateElement.state.value.humidifierTargetHumidity = {
+              ...(updateElement.state.value.humidifierTargetHumidity ?? {}),
+              enabled: value,
+            };
+          }
+
+          if (
+            key === 'target_humidity_humidifier' &&
+            isNaN(value) === false &&
+            this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasHumidifier === true
+          ) {
+            // Set humidifier target humidity on the target thermostat
+            setUpdateTrait('humidity_control_settings', 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait');
+            updateElement.state.value.humidifierTargetHumidity = {
+              ...(updateElement.state.value.humidifierTargetHumidity ?? {}),
+              value: Number(value),
+            };
+          }
+
+          if (updateElement.traitRequest.traitLabel !== '' && updateElement.state.type_url !== '') {
+            updatedTraits.push(structuredClone(updateElement));
+          }
+
+          if (Array.isArray(commandElement?.resourceCommands) === true && commandElement.resourceCommands.length !== 0) {
+            commandTraits.push(structuredClone(commandElement));
+          }
+
+          // Perform any direct trait updates we have to do. This can be done via a single call in a batch
+          if (updatedTraits.length !== 0) {
+            let commandResponse = await this.#protobufCommand(uuid, 'nestlabs.gateway.v1.TraitBatchApi', 'BatchUpdateState', {
+              batchUpdateStateRequest: updatedTraits,
+            });
+            if (commandResponse?.batchUpdateStateResponse?.[0]?.traitOperations?.[0]?.progress !== 'COMPLETE') {
+              this?.log?.debug?.('Google API had error updating traits for device uuid "%s"', nest_google_device_uuid);
+            }
+          }
+
+          // Perform any trait updates required via resource commands. Each one is done separately
+          for (let command of commandTraits ?? []) {
             let commandResponse = await this.#protobufCommand(uuid, 'nestlabs.gateway.v1.ResourceApi', 'SendCommand', command);
-            if (commandResponse === undefined || commandResponse.sendCommandResponse?.[0]?.traitOperations?.[0]?.progress !== 'COMPLETE') {
+            if (commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.progress !== 'COMPLETE') {
               this?.log?.debug?.(
                 'Google API had error setting "%s" for device uuid "%s"',
-                command.resourceCommands?.[0].traitLabel,
+                command?.resourceCommands?.[0]?.traitLabel,
                 nest_google_device_uuid,
               );
             }
           }
         }
-      }
 
-      if (this.#rawData?.[nest_google_device_uuid]?.source === DATA_SOURCE.NEST) {
-        if (nest_google_device_uuid.startsWith('quartz.') === true) {
-          // Set value on Nest Camera/Doorbell
-          let mappedKey =
-            {
-              indoor_chime_enabled: 'doorbell.indoor_chime.enabled',
-              statusled_brightness: 'statusled.brightness',
-              irled_enabled: 'irled.state',
-              streaming_enabled: 'streaming.enabled',
-              audio_enabled: 'audio.enabled',
-            }[key] ?? key;
+        if (this.#rawData?.[nest_google_device_uuid]?.source === DATA_SOURCE.NEST) {
+          if (nest_google_device_uuid.startsWith('quartz.') === true) {
+            // Set value on Nest Camera/Doorbell
+            let mappedKey =
+              {
+                indoor_chime_enabled: 'doorbell.indoor_chime.enabled',
+                statusled_brightness: 'statusled.brightness',
+                irled_enabled: 'irled.state',
+                streaming_enabled: 'streaming.enabled',
+                audio_enabled: 'audio.enabled',
+              }[key] ?? key;
 
-          try {
             let response = await fetchWrapper(
               'post',
               new URL('/api/dropcams.set_properties', 'https://webapi.' + this.#connections[uuid].cameraAPIHost).href,
@@ -1474,193 +1466,184 @@ export default class NestAccfactory {
             if (data?.status !== 0) {
               throw new Error('Nest API camera update failed');
             }
-          } catch (error) {
-            // Log unexpected errors (excluding timeouts) for debugging
-            this?.log?.debug?.(
-              'Nest API camera update failed for device uuid "%s". Error was "%s"',
-              nest_google_device_uuid,
-              typeof error?.message === 'string' ? error.message : String(error),
-            );
-          }
-        }
-
-        if (nest_google_device_uuid.startsWith('quartz.') === false) {
-          // set values on other Nest devices besides cameras/doorbells
-          let subscribeJSONData = { objects: [] };
-
-          if (
-            key === 'active_sensor' &&
-            typeof value === 'boolean' &&
-            typeof this.#rawData?.['rcs_settings.' + this.#rawData?.[nest_google_device_uuid]?.value?.associated_thermostat.split('.')[1]]
-              ?.value?.active_rcs_sensors === 'object' &&
-            nest_google_device_uuid.startsWith('kryptonite.') === true
-          ) {
-            // Set active temperature sensor for associated thermostat
-            subscribeJSONData.objects.push({
-              object_key: 'rcs_settings.' + this.#rawData[nest_google_device_uuid].value.associated_thermostat.split('.')[1],
-              op: 'MERGE',
-              value:
-                value === true
-                  ? { active_rcs_sensors: [nest_google_device_uuid], rcs_control_setting: 'OVERRIDE' }
-                  : { active_rcs_sensors: [], rcs_control_setting: 'OFF' },
-            });
           }
 
-          if (
-            ['target_temperature', 'target_temperature_low', 'target_temperature_high'].includes(key) === true &&
-            isNaN(value) === false &&
-            nest_google_device_uuid.startsWith('device.') === true
-          ) {
-            // Set temperatures on thermostat
-            subscribeJSONData.objects.push({
-              object_key: 'shared.' + nest_google_device_uuid.trim().split('.')[1],
-              op: 'MERGE',
-              value: { target_change_pending: true, [key]: value },
-            });
-          }
+          if (nest_google_device_uuid.startsWith('quartz.') === false) {
+            // set values on other Nest devices besides cameras/doorbells
+            let subscribeJSONData = { objects: [] };
 
-          if (
-            key === 'hvac_mode' &&
-            ['off', 'cool', 'heat', 'range'].includes(value?.toLowerCase?.()) === true &&
-            nest_google_device_uuid.startsWith('device.') === true
-          ) {
-            // Set hvac mode on thermostat
-            subscribeJSONData.objects.push({
-              object_key: 'shared.' + nest_google_device_uuid.trim().split('.')[1],
-              op: 'MERGE',
-              value: { target_change_pending: true, target_temperature_type: value.toLowerCase() },
-            });
-          }
+            if (
+              key === 'active_sensor' &&
+              typeof value === 'boolean' &&
+              typeof this.#rawData?.['rcs_settings.' + this.#rawData?.[nest_google_device_uuid]?.value?.associated_thermostat.split('.')[1]]
+                ?.value?.active_rcs_sensors === 'object' &&
+              nest_google_device_uuid.startsWith('kryptonite.') === true
+            ) {
+              // Set active temperature sensor for associated thermostat
+              subscribeJSONData.objects.push({
+                object_key: 'rcs_settings.' + this.#rawData[nest_google_device_uuid].value.associated_thermostat.split('.')[1],
+                op: 'MERGE',
+                value:
+                  value === true
+                    ? { active_rcs_sensors: [nest_google_device_uuid], rcs_control_setting: 'OVERRIDE' }
+                    : { active_rcs_sensors: [], rcs_control_setting: 'OFF' },
+              });
+            }
 
-          if (
-            key === 'fan_state' &&
-            typeof value === 'boolean' &&
-            isNaN(values?.fan_duration) === false &&
-            nest_google_device_uuid.startsWith('device.') === true
-          ) {
-            // Set fan on/off on thermostat
-            // Duration also needs to be passed in
-            subscribeJSONData.objects.push({
-              object_key: nest_google_device_uuid,
-              op: 'MERGE',
-              value: {
-                fan_state: value,
-                fan_timer_timeout: value === true ? values.fan_duration + Math.floor(Date.now() / 1000) : 0,
-              },
-            });
-          }
+            if (
+              ['target_temperature', 'target_temperature_low', 'target_temperature_high'].includes(key) === true &&
+              isNaN(value) === false &&
+              nest_google_device_uuid.startsWith('device.') === true
+            ) {
+              // Set temperatures on thermostat
+              subscribeJSONData.objects.push({
+                object_key: 'shared.' + nest_google_device_uuid.trim().split('.')[1],
+                op: 'MERGE',
+                value: { target_change_pending: true, [key]: value },
+              });
+            }
 
-          if (key === 'fan_timer_speed' && isNaN(value) === false && nest_google_device_uuid.startsWith('device.') === true) {
-            // Set fan speed on thermostat
-            subscribeJSONData.objects.push({
-              object_key: nest_google_device_uuid,
-              op: 'MERGE',
-              value: { fan_timer_speed: value !== 0 ? 'stage' + value : 'stage1' },
-            });
-          }
+            if (
+              key === 'hvac_mode' &&
+              ['off', 'cool', 'heat', 'range'].includes(value?.toLowerCase?.()) === true &&
+              nest_google_device_uuid.startsWith('device.') === true
+            ) {
+              // Set hvac mode on thermostat
+              subscribeJSONData.objects.push({
+                object_key: 'shared.' + nest_google_device_uuid.trim().split('.')[1],
+                op: 'MERGE',
+                value: { target_change_pending: true, target_temperature_type: value.toLowerCase() },
+              });
+            }
 
-          if (
-            key === 'hot_water_boost_active' &&
-            typeof value?.state === 'boolean' &&
-            isNaN(value?.time) === false &&
-            nest_google_device_uuid.startsWith('device.') === true &&
-            this.#rawData?.[nest_google_device_uuid]?.value?.has_hot_water_control === true
-          ) {
-            // Set hotwater boost time on heatlink (associated thermostat)
-            subscribeJSONData.objects.push({
-              object_key: nest_google_device_uuid,
-              op: 'MERGE',
-              value: {
-                hot_water_boost_time_to_end: value.state === true ? value.time + Math.floor(Date.now() / 1000) : 0,
-              },
-            });
-          }
+            if (
+              key === 'fan_state' &&
+              typeof value === 'boolean' &&
+              isNaN(values?.fan_duration) === false &&
+              nest_google_device_uuid.startsWith('device.') === true
+            ) {
+              // Set fan on/off on thermostat
+              // Duration also needs to be passed in
+              subscribeJSONData.objects.push({
+                object_key: nest_google_device_uuid,
+                op: 'MERGE',
+                value: {
+                  fan_state: value,
+                  fan_timer_timeout: value === true ? values.fan_duration + Math.floor(Date.now() / 1000) : 0,
+                },
+              });
+            }
 
-          if (
-            key === 'hot_water_temperature' &&
-            isNaN(value) === false &&
-            nest_google_device_uuid.startsWith('device.') === true &&
-            this.#rawData?.[nest_google_device_uuid]?.value?.has_hot_water_temperature === true
-          ) {
-            // Set hotwater temperature on heatlink (associated thermostat)
-            subscribeJSONData.objects.push({
-              object_key: nest_google_device_uuid,
-              op: 'MERGE',
-              value: {
-                hot_water_temperature: value,
-              },
-            });
-          }
+            if (key === 'fan_timer_speed' && isNaN(value) === false && nest_google_device_uuid.startsWith('device.') === true) {
+              // Set fan speed on thermostat
+              subscribeJSONData.objects.push({
+                object_key: nest_google_device_uuid,
+                op: 'MERGE',
+                value: { fan_timer_speed: value !== 0 ? 'stage' + value : 'stage1' },
+              });
+            }
 
-          if (key === 'temperature_lock' && typeof value === 'boolean' && nest_google_device_uuid.startsWith('device.') === true) {
-            // Set lock controls on thermostat
-            subscribeJSONData.objects.push({ object_key: nest_google_device_uuid, op: 'MERGE', value: { temperature_lock: value } });
-          }
+            if (
+              key === 'hot_water_boost_active' &&
+              typeof value?.state === 'boolean' &&
+              isNaN(value?.time) === false &&
+              nest_google_device_uuid.startsWith('device.') === true &&
+              this.#rawData?.[nest_google_device_uuid]?.value?.has_hot_water_control === true
+            ) {
+              // Set hotwater boost time on heatlink (associated thermostat)
+              subscribeJSONData.objects.push({
+                object_key: nest_google_device_uuid,
+                op: 'MERGE',
+                value: {
+                  hot_water_boost_time_to_end: value.state === true ? value.time + Math.floor(Date.now() / 1000) : 0,
+                },
+              });
+            }
 
-          if (
-            key === 'temperature_scale' &&
-            (value?.toUpperCase?.() === 'C' || value?.toUpperCase?.() === 'F') &&
-            nest_google_device_uuid.startsWith('device.') === true
-          ) {
-            // Set temperature scale on thermostat
-            subscribeJSONData.objects.push({
-              object_key: nest_google_device_uuid,
-              op: 'MERGE',
-              value: { temperature_scale: value.toUpperCase() },
-            });
-          }
+            if (
+              key === 'hot_water_temperature' &&
+              isNaN(value) === false &&
+              nest_google_device_uuid.startsWith('device.') === true &&
+              this.#rawData?.[nest_google_device_uuid]?.value?.has_hot_water_temperature === true
+            ) {
+              // Set hotwater temperature on heatlink (associated thermostat)
+              subscribeJSONData.objects.push({
+                object_key: nest_google_device_uuid,
+                op: 'MERGE',
+                value: {
+                  hot_water_temperature: value,
+                },
+              });
+            }
 
-          if (
-            key === 'dehumidifier_state' &&
-            typeof value === 'boolean' &&
-            isNaN(values?.target_humidity) === false &&
-            nest_google_device_uuid.startsWith('device.') === true &&
-            this.#rawData?.[nest_google_device_uuid]?.value?.has_dehumidifier === true
-          ) {
-            // Set dehumidifier state on thermostat
-            subscribeJSONData.objects.push({
-              object_key: nest_google_device_uuid,
-              op: 'MERGE',
-              value: { dehumidifier_state: value, target_humidity: Number(values.target_humidity) },
-            });
-          }
+            if (key === 'temperature_lock' && typeof value === 'boolean' && nest_google_device_uuid.startsWith('device.') === true) {
+              // Set lock controls on thermostat
+              subscribeJSONData.objects.push({ object_key: nest_google_device_uuid, op: 'MERGE', value: { temperature_lock: value } });
+            }
 
-          if (
-            key === 'humidifier_state' &&
-            typeof value === 'boolean' &&
-            isNaN(values?.target_humidity) === false &&
-            nest_google_device_uuid.startsWith('device.') === true &&
-            this.#rawData?.[nest_google_device_uuid]?.value?.has_dehumidifier === true
-          ) {
-            // Set humidifier state on thermostat
-            subscribeJSONData.objects.push({
-              object_key: nest_google_device_uuid,
-              op: 'MERGE',
-              value: { humidifier_state: value, target_humidity: Number(values.target_humidity) },
-            });
-          }
+            if (
+              key === 'temperature_scale' &&
+              (value?.toUpperCase?.() === 'C' || value?.toUpperCase?.() === 'F') &&
+              nest_google_device_uuid.startsWith('device.') === true
+            ) {
+              // Set temperature scale on thermostat
+              subscribeJSONData.objects.push({
+                object_key: nest_google_device_uuid,
+                op: 'MERGE',
+                value: { temperature_scale: value.toUpperCase() },
+              });
+            }
 
-          if (
-            key === 'vacation_mode' &&
-            typeof value === 'boolean' &&
-            typeof this.#rawData?.['link.' + nest_google_device_uuid?.split('.')[1]]?.value?.structure === 'string'
-          ) {
-            // Set vacation mode on structure associated with thermostat
-            subscribeJSONData.objects.push({
-              object_key: this.#rawData['link.' + nest_google_device_uuid.split('.')[1]].value.structure,
-              op: 'MERGE',
-              value: { vacation_mode: value },
-            });
-          }
+            if (
+              key === 'dehumidifier_state' &&
+              typeof value === 'boolean' &&
+              isNaN(values?.target_humidity) === false &&
+              nest_google_device_uuid.startsWith('device.') === true &&
+              this.#rawData?.[nest_google_device_uuid]?.value?.has_dehumidifier === true
+            ) {
+              // Set dehumidifier state on thermostat
+              subscribeJSONData.objects.push({
+                object_key: nest_google_device_uuid,
+                op: 'MERGE',
+                value: { dehumidifier_state: value, target_humidity: Number(values.target_humidity) },
+              });
+            }
 
-          if (key === 'ntp_green_led_enable' && typeof value === 'boolean' && nest_google_device_uuid.startsWith('topaz.') === true) {
-            // Set night time promise Led status on Protect
-            subscribeJSONData.objects.push({ object_key: nest_google_device_uuid, op: 'MERGE', value: { ntp_green_led_enable: value } });
-          }
+            if (
+              key === 'humidifier_state' &&
+              typeof value === 'boolean' &&
+              isNaN(values?.target_humidity) === false &&
+              nest_google_device_uuid.startsWith('device.') === true &&
+              this.#rawData?.[nest_google_device_uuid]?.value?.has_humidifier === true
+            ) {
+              // Set humidifier state on thermostat
+              subscribeJSONData.objects.push({
+                object_key: nest_google_device_uuid,
+                op: 'MERGE',
+                value: { humidifier_state: value, target_humidity: Number(values.target_humidity) },
+              });
+            }
 
-          if (subscribeJSONData.objects.length !== 0) {
-            try {
-              await fetchWrapper(
+            if (
+              key === 'vacation_mode' &&
+              typeof value === 'boolean' &&
+              typeof this.#rawData?.['link.' + nest_google_device_uuid?.split('.')[1]]?.value?.structure === 'string'
+            ) {
+              // Set vacation mode on structure associated with thermostat
+              subscribeJSONData.objects.push({
+                object_key: this.#rawData['link.' + nest_google_device_uuid.split('.')[1]].value.structure,
+                op: 'MERGE',
+                value: { vacation_mode: value },
+              });
+            }
+
+            if (key === 'ntp_green_led_enable' && typeof value === 'boolean' && nest_google_device_uuid.startsWith('topaz.') === true) {
+              // Set night time promise Led status on Protect
+              subscribeJSONData.objects.push({ object_key: nest_google_device_uuid, op: 'MERGE', value: { ntp_green_led_enable: value } });
+            }
+
+            if (subscribeJSONData.objects.length !== 0) {
+              let response = await fetchWrapper(
                 'post',
                 new URL('/v5/put', this.#connections[uuid].transport_url).href,
                 {
@@ -1678,16 +1661,20 @@ export default class NestAccfactory {
                 },
                 JSON.stringify(subscribeJSONData),
               );
-            } catch (error) {
-              // Log unexpected errors (excluding timeouts) for debugging
-              this?.log?.debug?.(
-                'Nest API property update failed for device uuid "%s". Error was "%s"',
-                nest_google_device_uuid,
-                typeof error?.message === 'string' ? error.message : String(error),
-              );
+              let data = await response.json();
+              if (Array.isArray(data?.objects) === false || data.objects.length === 0) {
+                throw new Error('Nest API property update failed');
+              }
             }
           }
         }
+      } catch (error) {
+        this?.log?.debug?.(
+          'Failed processing set request for key "%s" on device uuid "%s". Error was "%s"',
+          key,
+          nest_google_device_uuid,
+          typeof error?.message === 'string' ? error.message : String(error),
+        );
       }
     }
   }
@@ -1715,9 +1702,11 @@ export default class NestAccfactory {
             new Promise((_, reject) => setTimeout(() => reject(new Error('Snapshot request timeout')), 10000)),
           ]);
         } catch (error) {
-          if (error?.message === 'Snapshot request timeout') {
-            this?.log?.debug?.('Camera snapshot request timed out for device uuid "%s"', nest_google_device_uuid);
-          }
+          this?.log?.debug?.(
+            'Camera snapshot request failed for device uuid "%s". Error was "%s"',
+            nest_google_device_uuid,
+            typeof error?.message === 'string' ? error.message : String(error),
+          );
           values[key] = undefined;
         }
       }
@@ -1725,22 +1714,40 @@ export default class NestAccfactory {
       if (key === 'location_weather') {
         // Weather data requested.
         // We'll pass in the postal code and country code for the device if available to get localised weather data
-        values[key] = await this.#getLocationWeather(
-          uuid,
-          nest_google_device_uuid,
-          this.#rawData[nest_google_device_uuid].value?.weather?.postal_code,
-          this.#rawData[nest_google_device_uuid].value?.weather?.country_code,
-        );
+        try {
+          values[key] = await this.#getLocationWeather(
+            uuid,
+            nest_google_device_uuid,
+            this.#rawData[nest_google_device_uuid].value?.weather?.postal_code,
+            this.#rawData[nest_google_device_uuid].value?.weather?.country_code,
+          );
+        } catch (error) {
+          this?.log?.debug?.(
+            'Weather request failed for device uuid "%s". Error was "%s"',
+            nest_google_device_uuid,
+            typeof error?.message === 'string' ? error.message : String(error),
+          );
+          values[key] = undefined;
+        }
       }
 
       if (key === 'camera_events') {
         // Camera events requested.
         // We'll pass in the nexus api server url for Nest API devices
-        values[key] = await this.#getCameraEvents(
-          uuid,
-          nest_google_device_uuid,
-          this.#rawData[nest_google_device_uuid]?.value?.nexus_api_http_server_url ?? undefined,
-        );
+        try {
+          values[key] = await this.#getCameraEvents(
+            uuid,
+            nest_google_device_uuid,
+            this.#rawData[nest_google_device_uuid]?.value?.nexus_api_http_server_url ?? undefined,
+          );
+        } catch (error) {
+          this?.log?.debug?.(
+            'Camera events request failed for device uuid "%s". Error was "%s"',
+            nest_google_device_uuid,
+            typeof error?.message === 'string' ? error.message : String(error),
+          );
+          values[key] = undefined;
+        }
       }
     }
 
@@ -1811,7 +1818,6 @@ export default class NestAccfactory {
     }
 
     if (
-      snapshot === undefined &&
       this.config?.options?.useGoogleAPI === true &&
       nest_google_device_uuid.startsWith('DEVICE_') === true &&
       (this.#connections?.[uuid]?.token ?? '') !== '' &&
@@ -2226,147 +2232,151 @@ export default class NestAccfactory {
     let TraitMapRequest = this.#protobufRoot.lookup(TraitMapService?.methods?.[command]?.requestType);
     let TraitMapResponse = this.#protobufRoot.lookup(TraitMapService?.methods?.[command]?.responseType);
 
-    if (TraitMapRequest !== null && TraitMapResponse !== null) {
-      // Encode any trait values in our passed in object
-      encodeValues(values);
-      let encodedRequest = TraitMapRequest.encode(TraitMapRequest.fromObject(values)).finish();
+    if (TraitMapRequest === null || TraitMapResponse === null) {
+      return undefined;
+    }
 
-      return fetchWrapper(
-        'post',
-        new URL('/' + service + '/' + command, 'https://' + this.#connections[uuid].protobufAPIHost).href,
-        {
-          headers: {
-            Referer: 'https://' + this.#connections[uuid].referer,
-            Origin: 'https://' + this.#connections[uuid].referer,
-            Authorization: 'Basic ' + this.#connections[uuid].token,
-            Connection: 'keep-alive',
-            'User-Agent': USER_AGENT,
-            'Content-Type': 'application/x-protobuf',
-            'X-Accept-Content-Transfer-Encoding': 'binary',
-            'X-Accept-Response-Streaming': 'true',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-origin',
-          },
-          retry: 3,
+    // Encode any trait values in our passed in object
+    encodeValues(values);
+    let encodedRequest = TraitMapRequest.encode(TraitMapRequest.fromObject(values)).finish();
+
+    return fetchWrapper(
+      'post',
+      new URL('/' + service + '/' + command, 'https://' + this.#connections[uuid].protobufAPIHost).href,
+      {
+        headers: {
+          Referer: 'https://' + this.#connections[uuid].referer,
+          Origin: 'https://' + this.#connections[uuid].referer,
+          Authorization: 'Basic ' + this.#connections[uuid].token,
+          Connection: 'keep-alive',
+          'User-Agent': USER_AGENT,
+          'Content-Type': 'application/x-protobuf',
+          'X-Accept-Content-Transfer-Encoding': 'binary',
+          'X-Accept-Response-Streaming': 'true',
+          'Sec-Fetch-Mode': 'cors',
+          'Sec-Fetch-Site': 'same-origin',
         },
-        encodedRequest,
-      )
-        .then(async (response) => {
-          let buffer = Buffer.alloc(0);
+        retry: 3,
+      },
+      encodedRequest,
+    )
+      .then(async (response) => {
+        let buffer = Buffer.alloc(0);
 
-          if (TraitMapService?.methods?.[command]?.responseStream === true && typeof response.body?.getReader === 'function') {
-            let reader = response.body.getReader();
-            try {
-              while (true) {
-                let { done, value } = await reader.read();
-                if (done === true) {
+        if (TraitMapService?.methods?.[command]?.responseStream === true && typeof response.body?.getReader === 'function') {
+          let reader = response.body.getReader();
+          try {
+            while (true) {
+              let { done, value } = await reader.read();
+              if (done === true) {
+                break;
+              }
+
+              if (value instanceof Uint8Array === false || value.length === 0) {
+                continue;
+              }
+
+              buffer = Buffer.concat([buffer, Buffer.from(value)]);
+
+              while (buffer.length >= 5) {
+                // Decode gRPC-Web message length (varint after tag byte)
+                let msgLen = 0;
+                let shift = 0;
+                let varintLen = 0;
+                for (varintLen = 1; varintLen <= 5; varintLen++) {
+                  if (varintLen >= buffer.length) {
+                    break;
+                  }
+                  let byte = buffer[varintLen];
+                  msgLen |= (byte & 0x7f) << shift;
+                  if ((byte & 0x80) === 0) {
+                    break;
+                  }
+                  shift += 7;
+                }
+
+                let totalLen = 1 + varintLen + msgLen;
+                if (buffer.length < totalLen) {
                   break;
                 }
 
-                if (value instanceof Uint8Array === false || value.length === 0) {
-                  continue;
+                let payload = buffer.subarray(0, totalLen);
+                buffer = buffer.subarray(totalLen);
+
+                try {
+                  // Attempt to decode the assembled response buffer (so far) into a JSON object
+                  // If successful, send onto callback if defined.
+                  // We don't return the response via function by return
+                  let decoded = TraitMapResponse.decode(payload).toJSON();
+                  await onMessage?.(decoded);
+                } catch (error) {
+                  this?.log?.debug?.(
+                    'Failed to decode protobuf message for command "%s" in service "%s": %s',
+                    command,
+                    service,
+                    typeof error?.message === 'string' ? error.message : String(error),
+                  );
                 }
-
-                buffer = Buffer.concat([buffer, Buffer.from(value)]);
-
-                while (buffer.length >= 5) {
-                  // Decode gRPC-Web message length (varint after tag byte)
-                  let msgLen = 0;
-                  let shift = 0;
-                  let varintLen = 0;
-                  for (varintLen = 1; varintLen <= 5; varintLen++) {
-                    if (varintLen >= buffer.length) {
-                      break;
-                    }
-                    let byte = buffer[varintLen];
-                    msgLen |= (byte & 0x7f) << shift;
-                    if ((byte & 0x80) === 0) {
-                      break;
-                    }
-                    shift += 7;
-                  }
-
-                  let totalLen = 1 + varintLen + msgLen;
-                  if (buffer.length < totalLen) {
-                    break;
-                  }
-
-                  let payload = buffer.subarray(0, totalLen);
-                  buffer = buffer.subarray(totalLen);
-
-                  try {
-                    // Attempt to decode the assembled response buffer (so far) into a JSON object
-                    // If successful, send onto callback if defined.
-                    // We don't return the response via function by return
-                    let decoded = TraitMapResponse.decode(payload).toJSON();
-                    await onMessage?.(decoded);
-                  } catch (error) {
-                    this?.log?.debug?.(
-                      'Failed to decode protobuf message for command "%s" in service "%s": %s',
-                      command,
-                      service,
-                      typeof error?.message === 'string' ? error.message : String(error),
-                    );
-                  }
-                }
-              }
-            } catch (error) {
-              this?.log?.debug?.(
-                'Streaming protobuf read error for command "%s" in service "%s": %s',
-                command,
-                service,
-                typeof error?.message === 'string' ? error.message : String(error),
-              );
-            } finally {
-              try {
-                await reader.cancel();
-              } catch {
-                // Empty
               }
             }
-            return;
+          } catch (error) {
+            this?.log?.debug?.(
+              'Streaming protobuf read error for command "%s" in service "%s": %s',
+              command,
+              service,
+              typeof error?.message === 'string' ? error.message : String(error),
+            );
+          } finally {
+            try {
+              await reader.cancel();
+            } catch {
+              // Empty
+            }
           }
+          return undefined;
+        }
 
-          if (TraitMapService?.methods?.[command]?.responseStream !== true) {
+        if (TraitMapService?.methods?.[command]?.responseStream !== true) {
+          try {
             // If the trait response is not a readable stream, treat as a normal array buffer
             buffer = Buffer.from(await response.arrayBuffer());
 
-            try {
-              // Attempt to decode the response buffer into a JSON object.
-              // If successful, send onto callback if defined
-              // We'll also return the response by function return
-              let decoded = TraitMapResponse.decode(buffer).toJSON();
-              await onMessage?.(decoded);
-              return decoded;
-            } catch (error) {
-              this?.log?.debug?.(
-                'Failed to decode protobuf response for command "%s" in service "%s": %s',
-                command,
-                service,
-                typeof error?.message === 'string' ? error.message : String(error),
-              );
-              return undefined;
-            }
+            // Attempt to decode the response buffer into a JSON object.
+            // If successful, send onto callback if defined
+            // We'll also return the response by function return
+            let decoded = TraitMapResponse.decode(buffer).toJSON();
+            await onMessage?.(decoded);
+            return decoded;
+          } catch (error) {
+            this?.log?.debug?.(
+              'Failed to decode protobuf response for command "%s" in service "%s": %s',
+              command,
+              service,
+              typeof error?.message === 'string' ? error.message : String(error),
+            );
+            return undefined;
           }
-        })
-        .catch((error) => {
-          let isTimeout =
-            error?.cause?.message?.toUpperCase?.()?.includes('TIMEOUT') === true ||
-            error?.cause?.code?.toUpperCase?.()?.includes('TIMEOUT') === true ||
-            error?.message?.toUpperCase?.()?.includes('TIMEOUT') === true ||
-            error?.code?.toUpperCase?.()?.includes('TIMEOUT') === true;
+        }
 
-          this?.log?.debug?.(
-            'Protobuf command "%s" %s for service "%s": %s',
-            command,
-            isTimeout === true ? 'timed out' : 'failed',
-            service,
-            typeof error?.message === 'string' ? error.message : String(error),
-          );
+        return undefined;
+      })
+      .catch((error) => {
+        let isTimeout =
+          error?.cause?.message?.toUpperCase?.()?.includes('TIMEOUT') === true ||
+          error?.cause?.code?.toUpperCase?.()?.includes('TIMEOUT') === true ||
+          error?.message?.toUpperCase?.()?.includes('TIMEOUT') === true ||
+          error?.code?.toUpperCase?.()?.includes('TIMEOUT') === true;
 
-          return undefined;
-        });
-    }
+        this?.log?.debug?.(
+          'Protobuf command "%s" %s for service "%s": %s',
+          command,
+          isTimeout === true ? 'timed out' : 'failed',
+          service,
+          typeof error?.message === 'string' ? error.message : String(error),
+        );
+
+        return undefined;
+      });
   }
 
   #loadProtobufRoot() {
