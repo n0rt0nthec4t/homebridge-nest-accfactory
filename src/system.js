@@ -931,7 +931,7 @@ export default class NestAccfactory {
                     .replace(/\b\w/g, (character) => character.toUpperCase());
 
                 let tempDevice = new deviceModule.class(this.cachedAccessories, this.api, this.log, deviceData);
-                tempDevice.add(accessoryName, getDeviceHKCategory(deviceModule.class.TYPE), true);
+                tempDevice.add(accessoryName, getDeviceHKCategory(deviceModule.class.TYPE), deviceData?.eveHistory === true);
 
                 // Register per-device set/get handlers
                 HomeKitDevice.message(tempDevice.uuid, HomeKitDevice.SET, async (values) => {
