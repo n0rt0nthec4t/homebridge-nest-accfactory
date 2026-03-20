@@ -32,7 +32,7 @@ import { DATA_SOURCE, DEVICE_TYPE, MAX_ELEVATION, MIN_ELEVATION, NESTLABS_MAC_PR
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = 'Weather';
-  static VERSION = '2026.03.20'; // Code version
+  static VERSION = '2026.03.21'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -411,16 +411,12 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           Number(homeOptions.elevation) >= MIN_ELEVATION &&
           Number(homeOptions.elevation) <= MAX_ELEVATION
             ? Number(homeOptions.elevation)
-            : config.options.elevation;
+            : MIN_ELEVATION; // Default to minimum elevation if not set or invalid
 
         // Process additional exclusion details based on weather station setting
         tempDevice.excluded = tempDevice.excluded === true;
 
-        if (
-          tempDevice.excluded !== true &&
-          homeOptions?.weather !== false &&
-          (config.options?.weather === true || homeOptions?.weather === true)
-        ) {
+        if (tempDevice.excluded !== true && homeOptions?.weather === true) {
           devices[tempDevice.serialNumber] = tempDevice; // Store processed device
         }
       }

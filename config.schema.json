@@ -78,11 +78,6 @@
             "type": "boolean",
             "default": false
           },
-          "elevation": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 8848
-          },
           "eveHistory": {
             "type": "boolean",
             "default": true
@@ -115,10 +110,6 @@
           },
           "useGoogleAPI": {
             "type": "boolean"
-          },
-          "weather": {
-            "type": "boolean",
-            "default": false
           }
         }
       },
@@ -277,49 +268,38 @@
     {
       "type": "fieldset",
       "title": "Home Settings",
-      "description": "Configure global settings or override them for specific homes.",
+      "description": "Add and configure settings for specific Nest or Google homes.",
       "expandable": true,
       "expanded": false,
       "items": [
-          {
-            "key": "options.weather",
-            "title": "Enable Weather Station for All Homes"
-          },
-          {
-            "key": "options.elevation",
-            "title": "Weather Station Default Elevation",
-            "condition": {
-                  "functionBody": "return (model && model.options && model.options.weather === true);"
-                }
-          },
-          {
-            "type": "array",
-            "title": "Home Overrides",
-            "key": "homes",
-            "description": "Override settings for specific homes",
-            "items": [
-              {
-                "key": "homes[].name",
-                "title": "Home Name",
-                "placeholder": "Home name for configuration. Must match the name of the Home in the Nest or Google Home apps to apply these options to devices in that Home."
-              },
-              {
-                "key": "homes[].weather",
-                "title": "Enable Weather Station"
-              },
-              {
-                "key": "homes[].elevation",
-                "title": "Elevation",
-                "condition": {
-                  "functionBody": "return ((model && model.homes && model.homes[arrayIndices] && model.homes[arrayIndices].weather === true) || (model && model.options && model.options.weather === true));"
-                }
-              },
-              {
-                "key": "homes[].exclude",
-                "title": "Exclude All Devices from Home"
+        {
+          "type": "array",
+          "title": "Homes",
+          "key": "homes",
+          "description": "Each entry applies to a home. The name must match the home name in the Nest or Google Home apps.",
+          "items": [
+            {
+              "key": "homes[].name",
+              "title": "Home Name",
+              "placeholder": "Must match the home name in the Nest or Google Home apps"
+            },
+            {
+              "key": "homes[].weather",
+              "title": "Enable Weather Station"
+            },
+            {
+              "key": "homes[].elevation",
+              "title": "Elevation",
+              "condition": {
+                "functionBody": "return (model && model.homes && model.homes[arrayIndices] && model.homes[arrayIndices].weather === true);"
               }
-            ]
-          }
+            },
+            {
+              "key": "homes[].exclude",
+              "title": "Exclude All Devices from Home"
+            }
+          ]
+        }
       ]
     },
     {

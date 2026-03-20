@@ -17,7 +17,7 @@
 //   Returns: connection map keyed by UUID, each containing trimmed credentials, account metadata, retry state, and API host selection
 //   Prepares Nest and Google account sessions, including field-test endpoint selection when enabled
 //
-// Code version 2026.03.18
+// Code version 2026.03.21
 // Mark Hulskamp
 'use strict';
 
@@ -32,7 +32,7 @@ import chalk from 'chalk';
 import FFmpeg from './ffmpeg.js';
 
 // Define constants
-import { FFMPEG_VERSION, ACCOUNT_TYPE, MIN_ELEVATION, MAX_ELEVATION } from './consts.js';
+import { FFMPEG_VERSION, ACCOUNT_TYPE } from './consts.js';
 
 function processConfig(config, log, api) {
   let migratedAccounts = false;
@@ -83,16 +83,8 @@ function processConfig(config, log, api) {
   let options = (config.options = typeof config?.options === 'object' ? config.options : {});
 
   options.eveHistory = config.options?.eveHistory !== false; // Default to true if not explicitly set to false
-  options.weather = config.options?.weather === true; // Default to false if not explicitly set to true
   options.exclude = config.options?.exclude === true; // Default to false if not explicitly set to true
   options.logMotionEvents = config.options?.logMotionEvents !== false; // Default to true if not explicitly set to false
-
-  options.elevation =
-    isNaN(config.options?.elevation) === false &&
-    Number(config.options.elevation) >= MIN_ELEVATION &&
-    Number(config.options.elevation) <= MAX_ELEVATION
-      ? Number(config.options.elevation)
-      : MIN_ELEVATION;
 
   // Controls what APIs we use, default is to use both Nest and Google APIs
   options.useNestAPI = config.options?.useNestAPI === true || config.options?.useNestAPI === undefined;

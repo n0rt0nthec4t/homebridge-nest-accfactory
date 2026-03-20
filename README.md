@@ -110,9 +110,15 @@ Sample config.json entries below
     ],
     "options": {
         "eveHistory": true,
-        "weather": true,
-        "elevation": 600
+        "debug": false
     },
+    "homes": [
+        {
+            "name": "Main Home",
+            "elevation": 321,
+            "weather": true
+        }
+    ],
     "devices": [
         {
             "serialNumber": "XXXXXXXX",
@@ -144,7 +150,6 @@ The following options are available in the `config.json` `"options"` object. The
 | ffmpegPath         | Path to an ffmpeg binary (defaults to `ffmpeg` in system path)                               | /usr/local/bin |
 | logMotionEvents    | Enable logging of motion events for camera(s), doorbell(s) and Nest Protect device(s)        | true           |
 | supportDump        | Enable Support Dump logging of raw Nest and Google API data                                  | false          |
-| weather            | Create a virtual weather station for each Nest/Google home                                   | false          |
 
 #### devices
 
@@ -179,13 +184,11 @@ The `"name"` field is optional and is only used to help identify the entry in th
 
 #### homes
 
-Home settings can be configured globally via the GUI **Home Settings** section, or overridden per-home using the `"homes"` array in `config.json`.
+Home settings are configured using the `"homes"` array in `config.json` or via the GUI **Home Settings** section.
 
-The **Home Settings** section in the Homebridge GUI provides basic management of these entries. However, **not all home options are exposed in the GUI**, and some advanced options may need to be configured directly in `config.json`.
+Each entry in the `"homes"` array applies settings to a specific Nest or Google Home.
 
-Each entry in the `"homes"` array represents **per-home settings** that are applied to devices belonging to the specified Home. These settings override the global defaults defined in the `"options"` section.
-
-Homes are identified using the `"name"` field, which must match the Home name as shown in the Nest or Google Home app. This match is **case-sensitive**.
+Homes are identified using the `"name"` field, which must match the Home name shown in the Nest or Google Home app. This match is **case-sensitive**.
 
 | Name               | Description                                                                                  | Default        |
 |--------------------|----------------------------------------------------------------------------------------------|----------------|

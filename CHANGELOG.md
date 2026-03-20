@@ -29,6 +29,11 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
   - Running Homebridge with `-D` will no longer enable debug output for this plugin
   - Debug output is now controlled by the `debug` configuration option (Verbose Logging)
 
+- Weather station configuration is now **per-home**
+  - Global `weather` and `elevation` options have been removed
+  - Weather settings must now be configured using the `"homes"` array
+  - Existing configurations may need to be updated to re-enable weather stations
+
 ### ✨ New Features
 
 - Added support for a new `"accounts"` section in `config.json` to enable multiple Nest and Google accounts  
@@ -43,8 +48,7 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 - Updated Nest/Google account configuration in the GUI to a combined **Accounts** section  
 - Added **Home Settings** section to the GUI configuration  
-  - Configure global home-level options  
-  - Supports per-home overrides  
+  - Configure settings for individual Nest or Google homes  
 - Added **Device Settings** section to the GUI configuration  
   - Configure global device-level options  
   - Supports per-device overrides  
