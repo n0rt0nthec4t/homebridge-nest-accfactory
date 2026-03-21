@@ -27,7 +27,7 @@
 // Creates HomeKitDevice instances for each Nest/Google device
 // Manages connection objects for each account (credentials, API endpoints)
 //
-// Code version 2026.03.20
+// Code version 2026.03.21
 // Mark Hulskamp
 'use strict';
 
@@ -41,6 +41,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import process from 'node:process';
+import os from 'node:os';
 import { URL } from 'node:url';
 
 // Import our modules
@@ -90,7 +91,11 @@ export default class NestAccfactory {
       return;
     }
 
-    this.log.debug('Running with Node.js version %s', process.versions.node);
+    // Output some debug info about the system we're running on, which can be useful for troubleshooting
+    this?.log?.debug?.('System: %s %s (%s)', os.platform(), os.release(), os.arch());
+    this?.log?.debug?.('CPU: %s (%d cores)', os.cpus()?.[0]?.model, os.cpus()?.length);
+    this?.log?.debug?.('Memory: %d MB total', Math.round(os.totalmem() / 1024 / 1024));
+    this?.log?.debug?.('Node.js: %s', process.versions.node);
 
     // Perform validation on the configuration passed into us and set defaults if not present
     this.config = processConfig(config, this.log, this.api);
