@@ -58,6 +58,7 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 - Updated camera motion handling — only a single motion sensor is now exposed per camera  
 - Improved reliability of camera and doorbell snapshot images  
+- Improved camera streaming stability and performance 
 
 ### 🔁 Behaviour Changes / Improvements
 
