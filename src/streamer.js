@@ -23,7 +23,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2026.03.15
+// Code version 2026.03.21
 // Mark Hulskamp
 'use strict';
 
@@ -41,7 +41,10 @@ import HomeKitDevice from './HomeKitDevice.js';
 import { TIMERS, RESOURCE_FRAMES, RESOURCE_PATH, LOG_LEVELS, __dirname } from './consts.js';
 
 const MAX_BUFFER_AGE = 5000; // Keep last 5s of media in buffer
+const MAX_OUTPUT_BUFFER_SIZE = 200; // Max queued packets per output
+const MAX_PACKETS_PER_OUTPUT_PER_TICK = 20; // Prevent one output starving others
 const STREAM_FRAME_INTERVAL = 1000 / 30; // 30fps approx
+const OUTPUT_LOOP_INTERVAL = 10; // Shared output scheduler interval
 
 // Streamer object
 export default class Streamer {
@@ -98,20 +101,30 @@ export default class Streamer {
     STOP_BUFFER: 'stop-buffer',
   };
 
+  // Shared global scheduler for all active Streamer instances
+  // This avoids having one timer per camera and reduces event loop overhead
+  static #streamers = new Map(); // uuid => Streamer instance
+  static #timer = undefined; // Shared timer for all active streamers
+
   log = undefined; // Logging function object
+  uuid = undefined; // HomeKitDevice uuid for this streamer
   videoEnabled = undefined; // Video stream on camera enabled or not
   audioEnabled = undefined; // Audio from camera enabled or not
   online = undefined; // Camera online or not
+  migrating = undefined; // Device is transferring/migrating between APIs
   nest_google_device_uuid = undefined; // Nest/Google UUID of the device connecting
   connected = undefined; // Stream endpoint connection: undefined = not connected , false = connecting , true = connected and streaming
   blankAudio = undefined; // Blank audio 'frame'
 
   // Internal data only for this class
-  #outputTimer = undefined; // Timer for non-blocking loop to stream output data
-  #outputs = {}; // Output streams ie: buffer, live, record
+  #buffer = undefined; // Shared rolling buffer used as source for recording and live outputs
+  #record = undefined; // Single recording output for this camera instance
+  #live = new Map(); // Live outputs keyed by session id
   #cameraFrames = {}; // H264 resource frames for offline, video off, transferring
   #sequenceCounters = {}; // Sequence counters for packet types
   #h264Video = {}; // H264 video state for SPS/PPS and IDR frames
+  #lastFallbackFrameTime = 0; // Timer for pacing fallback frames
+  #outputErrors = 0; // Consecutive output loop failures for this instance
 
   // Codecs being used for video, audio and talking
   get codecs() {
@@ -137,6 +150,8 @@ export default class Streamer {
     if (Object.values(LOG_LEVELS).every((fn) => typeof options?.log?.[fn] === 'function')) {
       this.log = options.log;
     }
+
+    this.uuid = uuid;
 
     // Setup HomeKitDevice message type handler back to HomeKitDevice classes
     HomeKitDevice.message(uuid, Streamer.MESSAGE, this);
@@ -174,7 +189,7 @@ export default class Streamer {
       transfer: loadFrameResource(RESOURCE_FRAMES.CAMERA_TRANSFER, 'transferring'),
     };
 
-    this.#outputLoop(); // Start the output loop to process media packets
+    this.#lastFallbackFrameTime = Date.now();
   }
 
   // Class functions
@@ -191,7 +206,7 @@ export default class Streamer {
     if (deviceData?.nest_google_device_uuid !== undefined && this.nest_google_device_uuid !== deviceData?.nest_google_device_uuid) {
       this.nest_google_device_uuid = deviceData?.nest_google_device_uuid;
 
-      if (this.isStreaming() === true || this.isBuffering() === true) {
+      if (this.hasActiveOutputs() === true) {
         // Since the Nest/Google device uuid has changed if there any any active outputs, close and connect again
         // This may occur if a device has migrated between Nest and Google APIs
         this.#doClose();
@@ -217,7 +232,7 @@ export default class Streamer {
         this.audioEnabled = deviceData.audio_enabled === true;
       }
 
-      if (this.isStreaming() === true || this.isBuffering() === true) {
+      if (this.hasActiveOutputs() === true) {
         // Since online, video, audio enabled status has changed, if there any any active outputs, close and connect again
         if (this.online === false || this.videoEnabled === false || this.audioEnabled === false) {
           this.#doClose(); // as offline or streaming not enabled, close streamer
@@ -290,24 +305,32 @@ export default class Streamer {
   }
 
   onShutdown() {
-    clearInterval(this.#outputTimer);
+    Streamer.#removeStreamer(this);
     this.stopEverything();
   }
 
   stopEverything() {
-    if (this.isStreaming() === true || this.isBuffering() === true) {
+    if (this.hasActiveOutputs() === true) {
       this?.log?.debug?.('Stopped buffering, live and recording from device uuid "%s"', this.nest_google_device_uuid);
 
-      // Clear any pending talkback timeouts before clearing outputs
-      for (let output of Object.values(this.#outputs)) {
-        clearTimeout(output?.talkbackTimeout);
+      this.#cleanupOutput(this.#record);
+
+      for (let output of this.#live.values()) {
+        this.#cleanupOutput(output);
       }
 
-      this.#outputs = {}; // Remove all outputs (live, record, buffer)
+      this.#buffer = undefined;
+      this.#record = undefined;
+      this.#live.clear();
       this.#sequenceCounters = {}; // Reset sequence tracking
       this.#h264Video = {}; // Reset cached SPS/PPS and keyframe flag
+      this.#syncSchedulerState();
       this.#doClose(); // Trigger subclass-defined stream close logic
     }
+  }
+
+  hasActiveOutputs() {
+    return this.#buffer !== undefined || this.#record !== undefined || this.#live.size !== 0;
   }
 
   add(packetType, data, timestamp = Date.now(), sequence = undefined) {
@@ -357,9 +380,9 @@ export default class Streamer {
       buffer.splice(low, 0, packet);
     };
 
-    // Add new packet to the shared buffer first (__BUFFER)
-    if (Array.isArray(this.#outputs?.__BUFFER?.buffer) === true) {
-      insertSortedByTime(this.#outputs?.__BUFFER?.buffer, {
+    // Add new packet to the shared rolling buffer first
+    if (Array.isArray(this.#buffer?.buffer) === true) {
+      insertSortedByTime(this.#buffer.buffer, {
         type: packetType,
         data: data,
         time: timestamp,
@@ -367,51 +390,53 @@ export default class Streamer {
       });
     }
 
-    // Distribute packet to other outputs
-    for (const session of Object.values(this.#outputs)) {
-      if (session.type === Streamer.STREAM_TYPE.BUFFER) {
-        continue; // already handled __BUFFER above
-      }
+    // Lazily initialise RECORD stream buffer from shared rolling buffer
+    // Use a shallow copy to snapshot current buffer without mutating source
+    if (this.#record !== undefined && this.#record.buffer === undefined) {
+      this.#record.buffer = Array.isArray(this.#buffer?.buffer) === true ? this.#buffer.buffer.slice() : [];
+    }
 
-      // Lazily initialize RECORD stream buffer from shared __BUFFER
-      if (session.buffer === undefined && session.type === Streamer.STREAM_TYPE.RECORD) {
-        session.buffer = Array.isArray(this.#outputs?.__BUFFER?.buffer) === true ? structuredClone(this.#outputs.__BUFFER.buffer) : [];
-        continue; // buffer already includes current packet via clone
-      }
-
-      if (Array.isArray(session.buffer) === false) {
-        continue;
-      }
-
-      // Insert new packet maintaining order
-      insertSortedByTime(session.buffer, {
+    // Distribute packet to record output
+    if (Array.isArray(this.#record?.buffer) === true) {
+      insertSortedByTime(this.#record.buffer, {
         type: packetType,
         data: data,
         time: timestamp,
         sequence: seq,
       });
 
-      // Trim old packets based on age
-      let cutoff = Date.now() - MAX_BUFFER_AGE;
-      while (session.buffer.length > 0 && session.buffer[0].time < cutoff) {
-        session.buffer.shift();
+      while (this.#record.buffer.length > MAX_OUTPUT_BUFFER_SIZE) {
+        this.#record.buffer.shift();
+      }
+    }
+
+    // Distribute packet to live outputs
+    for (let output of this.#live.values()) {
+      if (Array.isArray(output?.buffer) === false) {
+        continue;
       }
 
-      // Cap total size
-      if (session.buffer.length > 200) {
-        session.buffer.splice(0, session.buffer.length - 200);
+      insertSortedByTime(output.buffer, {
+        type: packetType,
+        data: data,
+        time: timestamp,
+        sequence: seq,
+      });
+
+      while (output.buffer.length > MAX_OUTPUT_BUFFER_SIZE) {
+        output.buffer.shift();
       }
     }
   }
 
   #startBuffering() {
-    if (this.#outputs?.__BUFFER === undefined) {
-      this.#outputs.__BUFFER = {
-        type: Streamer.STREAM_TYPE.BUFFER,
+    if (this.#buffer === undefined) {
+      this.#buffer = {
         buffer: [],
       };
 
       this.log?.debug?.('Started buffering from device uuid "%s"', this.nest_google_device_uuid);
+      this.#syncSchedulerState();
 
       if (this.connected !== true) {
         this.#doConnect();
@@ -420,9 +445,10 @@ export default class Streamer {
   }
 
   #stopBuffering() {
-    if (this.#outputs?.__BUFFER !== undefined) {
-      delete this.#outputs.__BUFFER;
+    if (this.#buffer !== undefined) {
+      this.#buffer = undefined;
       this.log?.debug?.('Stopped buffering from device uuid "%s"', this.nest_google_device_uuid);
+      this.#syncSchedulerState();
 
       // If we have no more output streams active, we'll close the connection
       if (this.isStreaming() === false) {
@@ -436,12 +462,12 @@ export default class Streamer {
       return;
     }
 
-    if (this.#outputs?.[sessionID] !== undefined) {
+    if (this.#live.has(sessionID) === true) {
       this?.log?.warn?.('Live stream already exists for uuid "%s" and session id "%s"', this.nest_google_device_uuid, sessionID);
       return {
-        video: this.#outputs[sessionID].video,
-        audio: this.#outputs[sessionID].audio,
-        talkback: this.#outputs[sessionID].talkback,
+        video: this.#live.get(sessionID).video,
+        audio: this.#live.get(sessionID).audio,
+        talkback: this.#live.get(sessionID).talkback,
       };
     }
 
@@ -458,50 +484,51 @@ export default class Streamer {
 
     // Setup talkback handler
     talkbackIn?.on?.('data', (data) => {
+      let output = this.#live.get(sessionID);
+
       // Received audio data to send onto camera/doorbell for output
-      if (typeof this?.sendTalkback === 'function') {
+      if (typeof this?.sendTalkback === 'function' && output !== undefined) {
         this.sendTalkback(data);
 
-        clearTimeout(this.#outputs?.[sessionID]?.talkbackTimeout);
-        this.#outputs[sessionID].talkbackTimeout = setTimeout(() => {
+        clearTimeout(output.talkbackTimeout);
+        output.talkbackTimeout = setTimeout(() => {
           // no audio received in 1000ms, so mark end of stream
           this.sendTalkback(Buffer.alloc(0));
         }, TIMERS.TALKBACK_AUDIO.interval);
       }
     });
     talkbackIn?.on?.('close', () => {
-      clearTimeout(this.#outputs?.[sessionID]?.talkbackTimeout);
+      clearTimeout(this.#live.get(sessionID)?.talkbackTimeout);
     });
 
     // Ensure upstream connection is active
     this.#doConnect();
 
-    this.#outputs[sessionID] = {
-      type: Streamer.STREAM_TYPE.LIVE,
+    this.#live.set(sessionID, {
+      sessionID: sessionID,
       video: videoOut,
       audio: audioOut,
       talkback: talkbackIn,
       talkbackTimeout: undefined,
       buffer: [],
-    };
+    });
 
     this?.log?.debug?.('Started live stream from device uuid "%s" and session id "%s"', this.nest_google_device_uuid, sessionID);
+    this.#syncSchedulerState();
 
     return { video: videoOut, audio: audioOut, talkback: talkbackIn };
   }
 
   #stopLiveStream(sessionID) {
-    let output = this.#outputs?.[sessionID];
+    let output = this.#live.get(sessionID);
     if (output !== undefined) {
       this?.log?.debug?.('Stopped live stream from device uuid "%s" and session id "%s"', this.nest_google_device_uuid, sessionID);
 
-      // Gracefully end output streams
-      output.video?.end?.(); // Video output stream
-      output.audio?.end?.(); // Audio output stream
-      output.talkback?.end?.(); // Talkback input stream
-      clearTimeout(output?.talkbackTimeout);
-      delete this.#outputs[sessionID];
+      this.#cleanupOutput(output);
+      this.#live.delete(sessionID);
     }
+
+    this.#syncSchedulerState();
 
     // If no more active streams, close the upstream connection
     if (this.isStreaming() === false && this.isBuffering() === false) {
@@ -515,11 +542,15 @@ export default class Streamer {
     }
 
     // Prevent duplicate recording sessions
-    if (this.#outputs?.[sessionID] !== undefined) {
-      this?.log?.warn?.('Recording stream already exists for uuid "%s" and session id "%s"', this.nest_google_device_uuid, sessionID);
+    if (this.#record !== undefined) {
+      this?.log?.warn?.(
+        'Recording stream already exists for uuid "%s" and session id "%s"',
+        this.nest_google_device_uuid,
+        this.#record.sessionID,
+      );
       return {
-        video: this.#outputs[sessionID].video,
-        audio: this.#outputs[sessionID].audio,
+        video: this.#record.video,
+        audio: this.#record.audio,
       };
     }
 
@@ -536,29 +567,29 @@ export default class Streamer {
     this.#doConnect();
 
     // Register recording session
-    this.#outputs[sessionID] = {
-      type: Streamer.STREAM_TYPE.RECORD,
+    this.#record = {
+      sessionID: sessionID,
       video: videoOut,
       audio: audioOut,
       buffer: undefined,
     };
 
     this?.log?.debug?.('Started recording stream from device uuid "%s" with session id of "%s"', this.nest_google_device_uuid, sessionID);
+    this.#syncSchedulerState();
 
     // Return stream objects for ffmpeg to consume
     return { video: videoOut, audio: audioOut };
   }
 
   #stopRecording(sessionID) {
-    let output = this.#outputs?.[sessionID];
-    if (output !== undefined) {
+    if (this.#record !== undefined && (sessionID === undefined || this.#record.sessionID === sessionID)) {
       this?.log?.debug?.('Stopped recording stream from device uuid "%s"', this.nest_google_device_uuid);
 
-      // Gracefully end output streams
-      output.video?.end?.(); // Video output stream
-      output.audio?.end?.(); // Audio output stream
-      delete this.#outputs[sessionID];
+      this.#cleanupOutput(this.#record);
+      this.#record = undefined;
     }
+
+    this.#syncSchedulerState();
 
     // If we have no more output streams active, we'll close the connection
     if (this.isStreaming() === false && this.isBuffering() === false) {
@@ -567,19 +598,19 @@ export default class Streamer {
   }
 
   isBuffering() {
-    return this.#outputs?.__BUFFER !== undefined;
+    return this.#buffer !== undefined;
   }
 
   isStreaming() {
-    return Object.values(this.#outputs).some((x) => x?.type === Streamer.STREAM_TYPE.LIVE || x?.type === Streamer.STREAM_TYPE.RECORD);
+    return this.#record !== undefined || this.#live.size !== 0;
   }
 
   isRecording() {
-    return Object.values(this.#outputs).some((x) => x?.type === Streamer.STREAM_TYPE.RECORD);
+    return this.#record !== undefined;
   }
 
   isLiveStreaming() {
-    return Object.values(this.#outputs).some((x) => x?.type === Streamer.STREAM_TYPE.LIVE);
+    return this.#live.size !== 0;
   }
 
   async #doConnect() {
@@ -592,73 +623,209 @@ export default class Streamer {
     await this?.close?.();
   }
 
-  #outputLoop() {
-    // Start a non-blocking loop for output to the various streams which connect to our streamer object
-    // This process will also handle the rolling-buffer size we require
-    let lastFallbackFrameTime = Date.now();
-    this.#outputTimer = setInterval(() => {
+  #cleanupOutput(output) {
+    if (typeof output !== 'object' || output === null) {
+      return;
+    }
+
+    clearTimeout(output?.talkbackTimeout);
+
+    output?.video?.removeAllListeners?.();
+    output?.audio?.removeAllListeners?.();
+    output?.talkback?.removeAllListeners?.();
+
+    output?.video?.end?.();
+    output?.audio?.end?.();
+    output?.talkback?.end?.();
+  }
+
+  #getFallbackFrame() {
+    return this.online === false && this.#cameraFrames?.offline
+      ? this.#cameraFrames.offline
+      : this.online === true && this.videoEnabled === false && this.#cameraFrames?.off
+        ? this.#cameraFrames.off
+        : this.migrating === true && this.#cameraFrames?.transfer
+          ? this.#cameraFrames.transfer
+          : undefined;
+  }
+
+  #writeFallback(output, fallbackFrame) {
+    if (Buffer.isBuffer(fallbackFrame) !== true || typeof output !== 'object') {
+      return;
+    }
+
+    if (this.codecs?.video === Streamer.CODEC_TYPE.H264) {
+      output?.video?.write?.(Streamer.H264NALUS.START_CODE);
+    }
+    output?.video?.write?.(fallbackFrame);
+    output?.audio?.write?.(this.blankAudio);
+  }
+
+  #writeBufferedPackets(output, dateNow) {
+    let processed = 0;
+
+    while (
+      Array.isArray(output?.buffer) === true &&
+      output.buffer.length > 0 &&
+      output.buffer[0].time <= dateNow &&
+      processed < MAX_PACKETS_PER_OUTPUT_PER_TICK
+    ) {
+      let packet = output.buffer.shift();
+      processed++;
+
+      if (packet.type === Streamer.PACKET_TYPE.VIDEO) {
+        if (this.codecs?.video === Streamer.CODEC_TYPE.H264) {
+          output?.video?.write?.(Streamer.H264NALUS.START_CODE);
+        }
+        output?.video?.write?.(packet.data);
+        continue;
+      }
+
+      if (packet.type === Streamer.PACKET_TYPE.AUDIO) {
+        output?.audio?.write?.(packet.data);
+      }
+    }
+  }
+
+  #processOutput(dateNow) {
+    // Keep our main rolling buffer under a certain size
+    if (Array.isArray(this.#buffer?.buffer) === true) {
+      let cutoffTime = dateNow - MAX_BUFFER_AGE;
+      while (this.#buffer.buffer.length > 0 && this.#buffer.buffer[0].time < cutoffTime) {
+        this.#buffer.buffer.shift();
+      }
+    }
+
+    // Keep record buffer under a certain size
+    if (Array.isArray(this.#record?.buffer) === true) {
+      let cutoffTime = dateNow - MAX_BUFFER_AGE;
+      while (this.#record.buffer.length > 0 && this.#record.buffer[0].time < cutoffTime) {
+        this.#record.buffer.shift();
+      }
+    }
+
+    // Keep live buffers under a certain size
+    for (let output of this.#live.values()) {
+      if (Array.isArray(output?.buffer) === true) {
+        let cutoffTime = dateNow - MAX_BUFFER_AGE;
+        while (output.buffer.length > 0 && output.buffer[0].time < cutoffTime) {
+          output.buffer.shift();
+        }
+      }
+    }
+
+    // Output fallback frame directly for offline, video disabled, or migrating
+    // This is required as the streamer may be disconnected or has no incoming packets
+    // We will pace this at ~30fps (every STREAM_FRAME_INTERVAL)
+    if (dateNow - this.#lastFallbackFrameTime >= STREAM_FRAME_INTERVAL) {
+      let fallbackFrame = this.#getFallbackFrame();
+
+      if (Buffer.isBuffer(fallbackFrame) === true) {
+        if (this.#record !== undefined) {
+          this.#writeFallback(this.#record, fallbackFrame);
+        }
+
+        for (let output of this.#live.values()) {
+          this.#writeFallback(output, fallbackFrame);
+        }
+
+        this.#lastFallbackFrameTime = dateNow;
+        return;
+      }
+    }
+
+    // Normal buffered output using actual packet timestamps
+    if (this.connected === true) {
+      if (this.#record !== undefined) {
+        this.#writeBufferedPackets(this.#record, dateNow);
+      }
+
+      for (let output of this.#live.values()) {
+        this.#writeBufferedPackets(output, dateNow);
+      }
+    }
+  }
+
+  // Start the shared output processing loop
+  // Runs every OUTPUT_LOOP_INTERVAL ms and processes all active streamers
+  // Automatically stops when no streamers remain
+  static #start() {
+    if (this.#timer !== undefined) {
+      return;
+    }
+
+    this.#timer = setInterval(() => {
       let dateNow = Date.now();
 
-      for (const session of Object.values(this.#outputs)) {
-        // Keep our 'main' rolling buffer under a certain size
-        // Live/record buffers will always reduce in length in the next section
-        if (session.type === Streamer.STREAM_TYPE.BUFFER) {
-          let cutoffTime = dateNow - MAX_BUFFER_AGE;
-          while (session.buffer.length > 0 && session.buffer[0].time < cutoffTime) {
-            session.buffer.shift();
-          }
-          continue;
-        }
+      for (let streamer of this.#streamers.values()) {
+        try {
+          streamer.#processOutput(dateNow);
+          streamer.#outputErrors = 0;
+        } catch (error) {
+          streamer.#outputErrors++;
 
-        // Output fallback frame directly for offline, video disabled, or migrating
-        // This is required as the streamer may be disconnected or has no incoming packets
-        // We will pace this at ~30fps (every STREAM_FRAME_INTERVAL)
-        if (dateNow - lastFallbackFrameTime >= STREAM_FRAME_INTERVAL) {
-          let fallbackFrame =
-            this.online === false && this.#cameraFrames?.offline
-              ? this.#cameraFrames.offline
-              : this.online === true && this.videoEnabled === false && this.#cameraFrames?.off
-                ? this.#cameraFrames.off
-                : this.migrating === true && this.#cameraFrames?.transfer
-                  ? this.#cameraFrames.transfer
-                  : undefined;
+          streamer?.log?.error?.('Output processing error for device uuid "%s": %s', streamer?.nest_google_device_uuid, String(error));
 
-          if (Buffer.isBuffer(fallbackFrame) === true) {
-            if (this.codecs?.video === Streamer.CODEC_TYPE.H264) {
-              session?.video?.write?.(Streamer.H264NALUS.START_CODE);
-            }
-            session?.video?.write?.(fallbackFrame);
-            session?.audio?.write?.(this.blankAudio);
-            lastFallbackFrameTime = dateNow;
-            continue;
-          }
-        }
+          // If a streamer repeatedly fails, remove it from scheduler
+          // to prevent one bad instance impacting all others
+          if (streamer.#outputErrors >= 5) {
+            streamer?.log?.warn?.('Stopping output processing for unstable device uuid "%s"', streamer?.nest_google_device_uuid);
 
-        // Normal buffered video output using actual packet timestamps
-        if (this.connected === true && (session.type === Streamer.STREAM_TYPE.LIVE || session.type === Streamer.STREAM_TYPE.RECORD)) {
-          while (
-            session?.buffer?.length > 0 &&
-            session.buffer[0].type === Streamer.PACKET_TYPE.VIDEO &&
-            session.buffer[0].time <= dateNow
-          ) {
-            let packet = session.buffer.shift();
-            if (this.codecs?.video === Streamer.CODEC_TYPE.H264) {
-              session?.video?.write?.(Streamer.H264NALUS.START_CODE);
-            }
-            session?.video?.write?.(packet.data);
-          }
-
-          // Output any available audio packets immediately (based on timestamp)
-          while (
-            session?.buffer?.length > 0 &&
-            session.buffer[0].type === Streamer.PACKET_TYPE.AUDIO &&
-            session.buffer[0].time <= dateNow
-          ) {
-            let packet = session.buffer.shift();
-            session?.audio?.write?.(packet.data);
+            this.#streamers.delete(streamer.uuid);
+            streamer.stopEverything();
           }
         }
       }
-    }, 5); // Every 5ms
+
+      // Stop scheduler if no active streamers remain
+      if (this.#streamers.size === 0) {
+        clearInterval(this.#timer);
+        this.#timer = undefined;
+      }
+    }, OUTPUT_LOOP_INTERVAL);
+  }
+
+  // Register a streamer instance with the shared scheduler
+  // Called when the instance has active outputs (buffer/live/record)
+  static #addStreamer(streamer) {
+    if (streamer instanceof Streamer === false || typeof streamer?.uuid !== 'string' || streamer.uuid === '') {
+      return;
+    }
+
+    this.#streamers.set(streamer.uuid, streamer);
+    this.#start();
+  }
+
+  // Remove a streamer instance from the shared scheduler
+  // Called when the instance no longer has any active outputs
+  static #removeStreamer(streamer) {
+    if (streamer instanceof Streamer === false || typeof streamer?.uuid !== 'string' || streamer.uuid === '') {
+      return;
+    }
+
+    this.#streamers.delete(streamer.uuid);
+
+    // Stop scheduler if no streamers remain
+    if (this.#streamers.size === 0 && this.#timer !== undefined) {
+      clearInterval(this.#timer);
+      this.#timer = undefined;
+    }
+  }
+
+  // Check if this streamer has active outputs and add/remove from scheduler accordingly
+  // Called whenever outputs are started or stopped to ensure scheduler is always in sync with active streamers
+  #syncSchedulerState() {
+    if (this.hasActiveOutputs() === true) {
+      // Only add if not already registered
+      if (Streamer.#streamers.has(this.uuid) === false) {
+        Streamer.#addStreamer(this);
+      }
+      return;
+    }
+
+    // Only remove if currently registered
+    if (Streamer.#streamers.has(this.uuid) === true) {
+      Streamer.#removeStreamer(this);
+    }
   }
 }
