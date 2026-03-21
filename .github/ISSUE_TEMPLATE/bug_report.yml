@@ -95,8 +95,8 @@ body:
     attributes:
       label: Can you respond to follow-up questions or test fixes?
       options:
-        - Yes
-        - Limited availability
-        - No
+        - "Yes"
+        - "Limited availability"
+        - "No"
     validations:
       required: true
