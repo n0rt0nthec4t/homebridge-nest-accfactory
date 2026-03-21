@@ -2,7 +2,7 @@ name: Close stale issues
 
 on:
   schedule:
-    - cron: '0 0 * * *' # runs daily at midnight
+    - cron: '0 0 * * *' # runs daily
 
 jobs:
   stale:
@@ -10,8 +10,24 @@ jobs:
     steps:
       - uses: actions/stale@v9
         with:
-          days-before-stale: 30
+          days-before-stale: 14
           days-before-close: 7
-          stale-issue-message: 'This issue has been automatically marked as stale due to inactivity.'
-          close-issue-message: 'Closing this issue due to prolonged inactivity.'
-          exempt-issue-labels: 'keep-open'
+
+          stale-issue-label: stale
+          close-issue-label: closed-stale
+
+          stale-issue-message: >
+            This issue has not had any activity for 14 days.
+
+            Additional information was requested but not provided.
+            Without this, the issue cannot be investigated.
+
+            It will be closed if no further response is received.
+
+          close-issue-message: >
+            Closing this issue due to lack of response.
+
+            If you still experience this issue, feel free to reopen with the requested details.
+
+          exempt-issue-labels: 'keep-open,bug-confirmed,in-progress'
+          remove-stale-when-updated: true

@@ -1,0 +1,102 @@
+name: 🐛 Bug report
+description: Report a reproducible issue with the plugin
+title: "[Bug]: "
+labels: ["bug"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting an issue.
+
+        ⚠️ **Before submitting**
+        - Issues without enough detail cannot be investigated
+        - If follow-up information is requested and not provided, the issue may be closed
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight checklist
+      description: Please confirm the following
+      options:
+        - label: I am running the latest version of the plugin
+          required: true
+        - label: I have searched existing issues (open and closed)
+          required: true
+        - label: This is not a configuration or setup question
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What is happening?
+      description: Describe the issue clearly
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Provide clear steps so this can be reproduced
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Include relevant logs (please redact sensitive information)
+      render: shell
+
+  - type: input
+    id: plugin_version
+    attributes:
+      label: Plugin version
+      placeholder: e.g. v0.4.0
+    validations:
+      required: true
+
+  - type: input
+    id: node_version
+    attributes:
+      label: Node.js version
+      placeholder: e.g. 24.x
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: e.g. macOS, Docker, Proxmox LXC, Raspberry Pi
+    validations:
+      required: true
+
+  - type: input
+    id: homebridge_version
+    attributes:
+      label: Homebridge version (if applicable)
+      placeholder: e.g. 1.8.x
+
+  - type: dropdown
+    id: followup
+    attributes:
+      label: Can you respond to follow-up questions or test fixes?
+      options:
+        - Yes
+        - Limited availability
+        - No
+    validations:
+      required: true
