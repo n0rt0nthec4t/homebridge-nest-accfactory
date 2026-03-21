@@ -1,1 +1,10 @@
 blank_issues_enabled: false
+
+contact_links:
+  - name: 💬 Questions / Help
+    url: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/discussions
+    about: |
+      Questions, setup help, and general support belong in Discussions.
+
+      The issue tracker is for reproducible bugs only.
+      Support requests may be closed.
