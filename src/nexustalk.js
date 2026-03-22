@@ -17,7 +17,7 @@
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.03.18
+// Code version 2026.03.22
 // Mark Hulskamp
 'use strict';
 
@@ -218,7 +218,7 @@ export default class NexusTalk extends Streamer {
             this.#sessionId = undefined; // Not an active session anymore
             this.#host = undefined;
 
-            if ((this.isStreaming() === true || this.isBuffering() === true) && this.#reconnectPending === false) {
+            if (this.hasActiveOutputs() === true && this.#reconnectPending === false) {
               this.#requestReconnect(host, 'service-close');
             }
 
@@ -282,11 +282,15 @@ export default class NexusTalk extends Streamer {
     }
 
     if (deviceData?.apiAccess?.token !== undefined && deviceData.apiAccess.token !== this.token) {
-      // access token has changed so re-authorise
-      this?.log?.debug?.(
-        'Access token has changed for uuid "%s" while NexusTalk session is active. Updating stored token.',
-        this.nest_google_device_uuid,
-      );
+      // Aaccess token has changed, so update stored token and re-authenticate if we have an active connection
+      // Log this as a debug message only if we actually have active outputs
+      // otherwise it can be normal for tokens to update when not streaming and would just be noise in the logs
+      if (this.hasActiveOutputs() === true) {
+        this?.log?.debug?.(
+          'Access token has changed for uuid "%s" while NexusTalk session is active. Updating stored token.',
+          this.nest_google_device_uuid,
+        );
+      }
       this.token = deviceData.apiAccess.token;
 
       if (this.#socket !== undefined) {
@@ -297,7 +301,7 @@ export default class NexusTalk extends Streamer {
     if (deviceData?.nexustalk_host !== undefined && this.nexustalk_host !== deviceData.nexustalk_host) {
       this.nexustalk_host = deviceData.nexustalk_host;
 
-      if (this.isStreaming() === true || this.isBuffering() === true) {
+      if (this.hasActiveOutputs() === true) {
         this?.log?.debug?.('New host has been requested for connection. Host requested is "%s"', this.nexustalk_host);
 
         this.#requestReconnect(this.nexustalk_host, 'host-change');

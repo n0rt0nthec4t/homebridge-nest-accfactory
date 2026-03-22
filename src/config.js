@@ -96,8 +96,6 @@ function processConfig(config, log, api) {
     // Force chalk to output colours for debug messages even if Homebridge debug mode is not enabled.
     // This improves readability of verbose logs in some terminals.
     chalk.level = 1;
-
-    log?.warn?.('Verbose logging enabled via configuration');
   }
 
   // Override log.debug to output gray coloured messages when verbose logging is enabled.
@@ -165,15 +163,16 @@ function processConfig(config, log, api) {
     }
 
     if (options.ffmpeg.valid === true) {
-      log?.success?.('Valid ffmpeg found for camera/doorbell streaming support');
-      log?.debug?.('Binary "%s"', ffmpeg.binary);
-      log?.debug?.('Version "%s"', ffmpeg.version);
+      log?.debug?.(
+        'FFmpeg: v%s "%s" (hwaccel: %s)',
+        ffmpeg.version,
+        ffmpeg.binary,
+        ffmpeg.supportsHardwareH264 === true ? ffmpeg.hardwareH264Codec : 'none',
+      );
+
       options.ffmpeg.binary = ffmpeg.binary;
       options.ffmpeg.version = ffmpeg.version;
       options.ffmpeg.hwaccel = ffmpeg.supportsHardwareH264 === true;
-      if (ffmpeg.supportsHardwareH264 === true) {
-        log?.debug?.('Hardware H264 encoding available via "%s"', ffmpeg.hardwareH264Codec);
-      }
     }
   }
 

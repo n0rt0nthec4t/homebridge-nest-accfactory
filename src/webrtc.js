@@ -18,7 +18,7 @@
 //
 // Note: Currently a "work in progress" - feature set may expand
 //
-// Code version 2026.03.18
+// Code version 2026.03.22
 // Mark Hulskamp
 'use strict';
 
@@ -277,7 +277,7 @@ export default class WebRTC extends Streamer {
               if (state !== 'connected' && state !== 'connecting') {
                 this?.log?.debug?.('Connection closed to WebRTC for uuid "%s"', this.nest_google_device_uuid);
                 this.connected = undefined;
-                if (this.isStreaming() === true || this.isBuffering() === true) {
+                if (this.hasActiveOutputs() === true) {
                   this.connect();
                 }
               }
@@ -394,14 +394,18 @@ export default class WebRTC extends Streamer {
       deviceData.apiAccess.oauth2 !== '' &&
       deviceData.apiAccess.oauth2 !== this.token
     ) {
-      // Just update the token, don't reconnect
-      this?.log?.debug?.(
-        'OAuth2 access token has changed for uuid "%s" while webRTC session is active. Updating stored token.',
-        this.nest_google_device_uuid,
-      );
+      // oauth2 token has changed, so update stored token. If we have an active connection.
+      // This token will be used for the next API call that requires authentication and should succeed with the new token
+      // Log this as a debug message only if we actually have active outputs
+      // otherwise it can be normal for tokens to update when not streaming and would just be noise in the logs
+      if (this.hasActiveOutputs() === true) {
+        this?.log?.debug?.(
+          'OAuth2 token has changed for uuid "%s" while webRTC session is active. Updating stored token.',
+          this.nest_google_device_uuid,
+        );
+      }
+
       this.token = deviceData.apiAccess.oauth2;
-      // Let the extend timer handle re-auth with new token
-      // If extend fails, the error handling will close and reconnect
     }
   }
 

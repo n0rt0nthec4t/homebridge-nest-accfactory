@@ -91,11 +91,16 @@ export default class NestAccfactory {
       return;
     }
 
+    // Output some basic info about the plugin starting up, which can be useful for troubleshooting
+    if (config?.options?.debug === true) {
+      log?.warn?.('Verbose logging enabled via configuration');
+    }
+
     // Output some debug info about the system we're running on, which can be useful for troubleshooting
     this?.log?.debug?.('System: %s %s (%s)', os.platform(), os.release(), os.arch());
     this?.log?.debug?.('CPU: %s (%d cores)', os.cpus()?.[0]?.model, os.cpus()?.length);
     this?.log?.debug?.('Memory: %d MB total', Math.round(os.totalmem() / 1024 / 1024));
-    this?.log?.debug?.('Node.js: %s', process.versions.node);
+    this?.log?.debug?.('Node.js: v%s', process.versions.node);
 
     // Perform validation on the configuration passed into us and set defaults if not present
     this.config = processConfig(config, this.log, this.api);
@@ -2048,80 +2053,84 @@ export default class NestAccfactory {
       (nest_google_device_uuid?.trim?.() ?? '') === ''
     ) {
       // Not a valid connection object and/or we're not authorised
-      return;
+      return [];
     }
 
     if (this.config?.options?.useGoogleAPI === true && nest_google_device_uuid.startsWith('DEVICE_') === true) {
-      let commandResponse = await this.#protobufCommand(uuid, 'nestlabs.gateway.v1.ResourceApi', 'SendCommand', {
-        resourceRequest: {
-          resourceId: nest_google_device_uuid,
-          requestId: crypto.randomUUID(),
-        },
-        resourceCommands: [
-          {
-            traitLabel: 'camera_observation_history',
-            command: {
-              type_url: 'type.nestlabs.com/nest.trait.history.CameraObservationHistoryTrait.CameraObservationHistoryRequest',
-              value: {
-                // We want camera history from upto 15seconds ago until now
-                queryStartTime: {
-                  seconds: Math.floor((Date.now() - 15000) / 1000),
-                  nanos: ((Date.now() - 15000) % 1000) * 1e6,
-                },
-                queryEndTime: {
-                  seconds: Math.floor(Date.now() / 1000),
-                  nanos: (Date.now() % 1000) * 1e6,
+      try {
+        let commandResponse = await this.#protobufCommand(uuid, 'nestlabs.gateway.v1.ResourceApi', 'SendCommand', {
+          resourceRequest: {
+            resourceId: nest_google_device_uuid,
+            requestId: crypto.randomUUID(),
+          },
+          resourceCommands: [
+            {
+              traitLabel: 'camera_observation_history',
+              command: {
+                type_url: 'type.nestlabs.com/nest.trait.history.CameraObservationHistoryTrait.CameraObservationHistoryRequest',
+                value: {
+                  // We want camera history from upto 15seconds ago until now
+                  queryStartTime: {
+                    seconds: Math.floor((Date.now() - 15000) / 1000),
+                    nanos: ((Date.now() - 15000) % 1000) * 1e6,
+                  },
+                  queryEndTime: {
+                    seconds: Math.floor(Date.now() / 1000),
+                    nanos: (Date.now() % 1000) * 1e6,
+                  },
                 },
               },
             },
-          },
-        ],
-      });
+          ],
+        });
 
-      if (
-        typeof commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.event?.event === 'object' &&
-        commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.event?.event.constructor === Object
-      ) {
-        let events =
-          Array.isArray(commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.event?.event?.cameraEventWindow?.cameraEvent) ===
-          true
-            ? commandResponse.sendCommandResponse[0].traitOperations[0].event.event.cameraEventWindow.cameraEvent
-                .map((event) => ({
-                  playback_time: parseInt(event.startTime.seconds) * 1000 + parseInt(event.startTime.nanos) / 1000000,
-                  start_time: parseInt(event.startTime.seconds) * 1000 + parseInt(event.startTime.nanos) / 1000000,
-                  end_time: parseInt(event.endTime.seconds) * 1000 + parseInt(event.endTime.nanos) / 1000000,
-                  id: event.eventId,
-                  zone_ids:
-                    Array.isArray(event.activityZone) === true
-                      ? event.activityZone.map((zone) => (zone?.zoneIndex !== undefined ? zone.zoneIndex : zone.internalIndex))
-                      : [],
-                  types:
-                    Array.isArray(event.eventType) === true
-                      ? event.eventType
-                          .map((type) => {
-                            if (type === 'EVENT_UNFAMILIAR_FACE') {
-                              return 'unfamiliar-face';
-                            }
-                            if (type === 'EVENT_PERSON_TALKING') {
-                              return 'personHeard';
-                            }
-                            if (type === 'EVENT_DOG_BARKING') {
-                              return 'dogBarking';
-                            }
-                            return type.startsWith('EVENT_') === true ? type.slice(6).toLowerCase() : '';
-                          })
-                          .filter(Boolean)
-                      : [],
-                }))
-                .sort((a, b) => b.start_time - a.start_time)
-            : [];
+        let eventData = commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.event?.event;
+        if (typeof eventData === 'object' && eventData?.constructor === Object) {
+          let events =
+            Array.isArray(eventData?.cameraEventWindow?.cameraEvent) === true
+              ? eventData.cameraEventWindow.cameraEvent
+                  .map((event) => ({
+                    playback_time: parseInt(event.startTime.seconds) * 1000 + parseInt(event.startTime.nanos) / 1000000,
+                    start_time: parseInt(event.startTime.seconds) * 1000 + parseInt(event.startTime.nanos) / 1000000,
+                    end_time: parseInt(event.endTime.seconds) * 1000 + parseInt(event.endTime.nanos) / 1000000,
+                    id: event.eventId,
+                    zone_ids:
+                      Array.isArray(event.activityZone) === true
+                        ? event.activityZone.map((zone) => (zone?.zoneIndex !== undefined ? zone.zoneIndex : zone.internalIndex))
+                        : [],
+                    types:
+                      Array.isArray(event.eventType) === true
+                        ? event.eventType
+                            .map((type) => {
+                              if (type === 'EVENT_UNFAMILIAR_FACE') {
+                                return 'unfamiliar-face';
+                              }
+                              if (type === 'EVENT_PERSON_TALKING') {
+                                return 'personHeard';
+                              }
+                              if (type === 'EVENT_DOG_BARKING') {
+                                return 'dogBarking';
+                              }
+                              return type.startsWith('EVENT_') === true ? type.slice(6).toLowerCase() : '';
+                            })
+                            .filter(Boolean)
+                        : [],
+                  }))
+                  .sort((a, b) => b.start_time - a.start_time)
+              : [];
 
-        return events; // Return events from Google API
-      } else {
+          return events; // Return events from Google API
+        }
+
+        this?.log?.debug?.('Google API returned no camera/doorbell activity notifications for device "%s"', nest_google_device_uuid);
+        return [];
+      } catch (error) {
         this?.log?.debug?.(
-          'Google API had error retrieving camera/doorbell activity notifications for device "%s"',
+          'Google API had error retrieving camera/doorbell activity notifications for device "%s". Error was "%s"',
           nest_google_device_uuid,
+          typeof error?.message === 'string' ? error.message : String(error),
         );
+        return [];
       }
     }
 
@@ -2177,22 +2186,19 @@ export default class NestAccfactory {
                 })
                 .sort((a, b) => b.start_time - a.start_time)
             : [];
+
         return events; // Return events from Nest API
       } catch (error) {
-        // Log unexpected errors (excluding timeouts) for debugging
-        if (
-          error?.cause === undefined ||
-          (error.cause?.message?.toUpperCase?.()?.includes('TIMEOUT') === false &&
-            error.cause?.code?.toUpperCase?.()?.includes('TIMEOUT') === false)
-        ) {
-          this?.log?.debug?.(
-            'Nest API had error retrieving camera/doorbell activity notifications for device "%s". Error was "%s"',
-            nest_google_device_uuid,
-            typeof error?.message === 'string' ? error.message : String(error),
-          );
-        }
+        this?.log?.debug?.(
+          'Nest API had error retrieving camera/doorbell activity notifications for device "%s". Error was "%s"',
+          nest_google_device_uuid,
+          typeof error?.message === 'string' ? error.message : String(error),
+        );
+        return [];
       }
     }
+
+    return [];
   }
 
   async #protobufCommand(uuid, service, command, values, onMessage = undefined) {
@@ -2325,12 +2331,15 @@ export default class NestAccfactory {
               }
             }
           } catch (error) {
-            this?.log?.debug?.(
-              'Streaming protobuf read error for command "%s" in service "%s": %s',
-              command,
-              service,
-              typeof error?.message === 'string' ? error.message : String(error),
-            );
+            let message = typeof error?.message === 'string' ? error.message : String(error);
+            let lowerMessage = message.toLowerCase();
+
+            // Ignore expected stream termination noise
+            if (lowerMessage.includes('terminated') === true || lowerMessage.includes('aborted') === true) {
+              return;
+            }
+
+            this?.log?.debug?.('Streaming protobuf read error for command "%s" in service "%s": %s', command, service, message);
           } finally {
             try {
               await reader.cancel();

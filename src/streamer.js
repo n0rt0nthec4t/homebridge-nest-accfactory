@@ -329,10 +329,6 @@ export default class Streamer {
     }
   }
 
-  hasActiveOutputs() {
-    return this.#buffer !== undefined || this.#record !== undefined || this.#live.size !== 0;
-  }
-
   add(packetType, data, timestamp = Date.now(), sequence = undefined) {
     if (typeof packetType !== 'string' || packetType === '' || Buffer.isBuffer(data) !== true) {
       return;
@@ -611,6 +607,10 @@ export default class Streamer {
 
   isLiveStreaming() {
     return this.#live.size !== 0;
+  }
+
+  hasActiveOutputs() {
+    return this.#buffer !== undefined || this.#record !== undefined || this.#live.size !== 0;
   }
 
   async #doConnect() {
