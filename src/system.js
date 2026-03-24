@@ -2331,15 +2331,18 @@ export default class NestAccfactory {
               }
             }
           } catch (error) {
-            let message = typeof error?.message === 'string' ? error.message : String(error);
-            let lowerMessage = message.toLowerCase();
-
-            // Ignore expected stream termination noise
-            if (lowerMessage.includes('terminated') === true || lowerMessage.includes('aborted') === true) {
-              return;
+            // Log unexpected errors only. Stream termination/abort is expected and will reconnect.
+            if (
+              error?.message?.toUpperCase?.()?.includes('TERMINATED') === false &&
+              error?.message?.toUpperCase?.()?.includes('ABORTED') === false
+            ) {
+              this?.log?.debug?.(
+                'Streaming protobuf read error for command "%s" in service "%s": %s',
+                command,
+                service,
+                typeof error?.message === 'string' ? error.message : String(error),
+              );
             }
-
-            this?.log?.debug?.('Streaming protobuf read error for command "%s" in service "%s": %s', command, service, message);
           } finally {
             try {
               await reader.cancel();
