@@ -15,7 +15,7 @@
 // - FFMPEG_VERSION: Minimum FFmpeg version required for video streaming
 // - Temperature/elevation constraints for thermostats and sensors
 //
-// Code version 2026.03.18
+// Code version 2026.03.22
 // Mark Hulskamp
 'use strict';
 
@@ -36,7 +36,7 @@ export const TIMERS = {
   MOTION_COOLDOWN: { name: 'motion-cooldown', interval: 60000 }, // Cooldown timer for motion events (ms)
 };
 
-export const USER_AGENT = 'Nest/5.82.2 (iOScom.nestlabs.jasper.release) os=18.5'; // User Agent string
+export const USER_AGENT = 'Nest/5.86.3 (iOScom.nestlabs.jasper.release) os=26.4'; // User Agent string
 
 export const __dirname = path.dirname(url.fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 

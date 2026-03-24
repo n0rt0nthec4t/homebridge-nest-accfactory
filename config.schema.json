@@ -40,6 +40,10 @@
             "fieldTest": {
               "type": "boolean",
               "default": false
+            },
+            "exclude": {
+              "type": "boolean",
+              "default": false
             }
           },
           "required": ["name", "type"],
@@ -260,6 +264,10 @@
             { 
               "key": "accounts[].fieldTest",
               "title": "Use Field Test API"
+            },
+            { 
+              "key": "accounts[].exclude",
+              "title": "Exclude Account"
             }
           ]
         }

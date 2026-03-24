@@ -17,7 +17,7 @@
 //   Returns: connection map keyed by UUID, each containing trimmed credentials, account metadata, retry state, and API host selection
 //   Prepares Nest and Google account sessions, including field-test endpoint selection when enabled
 //
-// Code version 2026.03.21
+// Code version 2026.03.24
 // Mark Hulskamp
 'use strict';
 
@@ -232,12 +232,13 @@ function buildConnections(config) {
   let connections = {};
 
   (config.accounts || []).forEach((account) => {
-    let fieldTest = account?.fieldTest === true; // Default to false if not explicitly set to true
-    let accountName = typeof account?.name === 'string' ? account.name.trim() : '';
-
-    if (accountName === '') {
+    // Skip invalid or excluded accounts
+    if (typeof account?.name !== 'string' || account.name.trim() === '' || account?.exclude === true) {
       return;
     }
+
+    let accountName = account.name.trim();
+    let fieldTest = account?.fieldTest === true; // Default to false
 
     if (account?.type === 'nest' && typeof account?.access_token === 'string' && account.access_token.trim() !== '') {
       connections[crypto.randomUUID()] = {
