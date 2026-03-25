@@ -417,6 +417,7 @@ export default class NestCamera extends HomeKitDevice {
           log: this.log,
         });
       }
+
       if (
         this?.streamer?.isBuffering() === false &&
         this?.controller?.recordingManagement?.recordingManagementService !== undefined &&

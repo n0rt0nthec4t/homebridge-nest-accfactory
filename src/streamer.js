@@ -436,9 +436,9 @@ export default class Streamer {
   }
 
   #startBuffering() {
-    this.#ensureSharedBuffer(true);
+    this.#ensureSharedBuffer();
 
-    if (this.#buffer?.enabled === true) {
+    if (this.#buffer.enabled === true) {
       return;
     }
 
