@@ -29,19 +29,13 @@
 // - off() requires a previously known operating state and does nothing until one has been established
 // - Commands are sent independently; no state is read back from the Daikin system
 //
-// Code version 2026.03.15
+// Code version 2026.03.25
 // Mark Hulskamp
 'use strict';
 
 // Define nodejs module requirements
 import { URL } from 'node:url';
 import { setTimeout } from 'node:timers';
-
-// Define external library requirements
-import { Agent } from 'undici';
-
-// Define constants
-const defaultFetchAgent = new Agent(); // shared across all requests
 
 // Define constants
 const POWER = {
@@ -323,7 +317,7 @@ async function fetchWrapper(method, url, options, data) {
     // eslint-disable-next-line no-undef
     let response = await fetch(url, {
       ...options,
-      dispatcher: options?.dispatcher ?? defaultFetchAgent, // Always use a secure default agent unless explicitly overridden
+      ...(options?.dispatcher !== undefined ? { dispatcher: options.dispatcher } : {}),
     });
 
     if (response?.ok === false) {
@@ -365,7 +359,10 @@ async function fetchWrapper(method, url, options, data) {
     // Retry only on retry-eligible errors
     if (
       options.retry > 1 &&
-      (original?.code === 'UND_ERR_HEADERS_TIMEOUT' || original?.name === 'AbortError' || original?.name === 'TypeError')
+      (original?.code === 'UND_ERR_HEADERS_TIMEOUT' ||
+        original?.code === 'UND_ERR_CONNECT_TIMEOUT' ||
+        original?.name === 'AbortError' ||
+        original?.name === 'TypeError')
     ) {
       options.retry--;
       options._retryCount++;

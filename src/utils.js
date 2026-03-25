@@ -14,7 +14,7 @@
 // parseDurationToSeconds(duration, options) - parse duration strings (e.g. "1w3d2h15m30s") to seconds
 // processCommonData(deviceUUID, homeUUID, data, config) - normalize device data and apply config overrides
 //
-// Code version 2026.03.20
+// Code version 2026.03.25
 // Mark Hulskamp
 'use strict';
 
@@ -24,12 +24,6 @@ import { setTimeout } from 'node:timers';
 
 // Define our modules
 import HomeKitDevice from './HomeKitDevice.js';
-
-// Define external library requirements
-import { Agent } from 'undici';
-
-// Define constants
-const defaultFetchAgent = new Agent(); // shared across all requests
 
 function adjustTemperature(temperature, currentTemperatureUnit, targetTemperatureUnit, round) {
   currentTemperatureUnit = currentTemperatureUnit?.toUpperCase?.();
@@ -99,68 +93,75 @@ function scaleValue(value, sourceMin, sourceMax, targetMin, targetMax) {
   return ((value - sourceMin) * (targetMax - targetMin)) / (sourceMax - sourceMin) + targetMin;
 }
 
-async function fetchWrapper(method, url, options, data) {
+async function fetchWrapper(method, url, options = {}, data) {
   if ((method !== 'get' && method !== 'post') || typeof url !== 'string' || url === '' || typeof options !== 'object') {
     return;
   }
 
-  if (isNaN(options?.timeout) === false && Number(options.timeout) > 0) {
+  let retry = Number.isFinite(Number(options.retry)) && Number(options.retry) > 0 ? Number(options.retry) : 1;
+  let retryCount = Number.isFinite(Number(options._retryCount)) ? Number(options._retryCount) : 0;
+
+  let fetchOptions = {
+    ...options,
+    method,
+    _retryCount: retryCount,
+  };
+
+  delete fetchOptions.retry;
+  delete fetchOptions.timeout;
+  delete fetchOptions._retryCount;
+  delete fetchOptions.signal;
+
+  if (Number.isFinite(Number(options?.timeout)) && Number(options.timeout) > 0) {
     // eslint-disable-next-line no-undef
-    options.signal = AbortSignal.timeout(Number(options.timeout));
+    fetchOptions.signal = AbortSignal.timeout(Number(options.timeout));
   }
-
-  if (isNaN(options.retry) || options.retry < 1) {
-    options.retry = 1;
-  }
-
-  if (isNaN(options._retryCount)) {
-    options._retryCount = 0;
-  }
-
-  options.method = method;
 
   if (method === 'post' && data !== undefined) {
     if (typeof data === 'object' && data !== null && data.constructor === Object) {
-      options.body = JSON.stringify(data);
+      fetchOptions.body = JSON.stringify(data);
+      fetchOptions.headers = fetchOptions.headers || {};
 
-      // Set Content-Type header only if not already set
-      options.headers = options.headers || {};
-      if (options.headers['Content-Type'] === undefined) {
-        options.headers['Content-Type'] = 'application/json';
+      if (fetchOptions.headers['Content-Type'] === undefined) {
+        fetchOptions.headers['Content-Type'] = 'application/json';
       }
     } else {
-      options.body = data;
+      fetchOptions.body = data;
     }
   }
 
   try {
     // eslint-disable-next-line no-undef
     let response = await fetch(url, {
-      ...options,
-      dispatcher: options?.dispatcher ?? defaultFetchAgent, // Always use a secure default agent unless explicitly overridden
+      ...fetchOptions,
+      ...(options?.dispatcher !== undefined ? { dispatcher: options.dispatcher } : {}),
     });
 
     if (response?.ok === false) {
-      if (options.retry > 1) {
-        options.retry--;
-        options._retryCount++;
+      if (retry > 1) {
+        let delay = 500 * Math.pow(2, retryCount);
+        await new Promise((resolve) => setTimeout(resolve, delay));
 
-        let delay = 500 * Math.pow(2, options._retryCount - 1);
-        await new Promise((resolve) => {
-          setTimeout(resolve, delay);
-        });
-
-        return fetchWrapper(method, url, options, data);
+        return fetchWrapper(
+          method,
+          url,
+          {
+            ...options,
+            retry: retry - 1,
+            _retryCount: retryCount + 1,
+          },
+          data,
+        );
       }
 
-      // Optionally get response body
-      let body;
+      let body = '';
       try {
         body = await response.text();
         // eslint-disable-next-line no-unused-vars
       } catch (error) {
-        body = '';
+        // Empty
       }
+
       throw Object.assign(
         new Error('HTTP ' + response.status + ' on ' + method.toUpperCase() + ' ' + url + ': ' + (response.statusText || 'Unknown error')),
         { code: response.status, status: response.status, body },
@@ -170,39 +171,45 @@ async function fetchWrapper(method, url, options, data) {
     return response;
   } catch (error) {
     let original = error?.cause ?? error;
+    let retryable =
+      error?.name === 'AbortError' ||
+      error?.name === 'TimeoutError' ||
+      error?.name === 'TypeError' ||
+      original?.name === 'AbortError' ||
+      original?.name === 'TimeoutError' ||
+      original?.name === 'TypeError' ||
+      original?.code === 'UND_ERR_HEADERS_TIMEOUT' ||
+      original?.code === 'UND_ERR_CONNECT_TIMEOUT';
 
-    // Detect invalid URL and rethrow immediately
     if (original?.code === 'ERR_INVALID_URL') {
       throw Object.assign(new Error('Invalid URL: ' + url), { code: 'ERR_INVALID_URL', cause: original });
     }
 
-    // Retry only on retry-eligible errors
-    if (
-      options.retry > 1 &&
-      (original?.code === 'UND_ERR_HEADERS_TIMEOUT' ||
-        original?.code === 'UND_ERR_CONNECT_TIMEOUT' ||
-        original?.name === 'AbortError' ||
-        original?.name === 'TypeError')
-    ) {
-      options.retry--;
-      options._retryCount++;
-
-      let delay = 500 * Math.pow(2, options._retryCount - 1);
+    if (retry > 1 && retryable === true) {
+      let delay = 500 * Math.pow(2, retryCount);
       await new Promise((resolve) => setTimeout(resolve, delay));
 
-      return fetchWrapper(method, url, options, data);
+      return fetchWrapper(
+        method,
+        url,
+        {
+          ...options,
+          retry: retry - 1,
+          _retryCount: retryCount + 1,
+        },
+        data,
+      );
     }
 
-    // Final error wrap
     throw Object.assign(
       new Error(
         method.toUpperCase() +
           ' ' +
           url +
           ' failed after ' +
-          (options._retryCount + 1) +
+          (retryCount + 1) +
           ' attempt' +
-          (options._retryCount + 1 > 1 ? 's' : '') +
+          (retryCount + 1 > 1 ? 's' : '') +
           ': ' +
           (original?.message || String(original)),
       ),

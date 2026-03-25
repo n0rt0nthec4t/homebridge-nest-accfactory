@@ -105,6 +105,12 @@
             "type": "string",
             "default": "/usr/local/bin/ffmpeg"
           },
+          "maxStreams": {
+            "type": "integer",
+            "default": 2,
+            "minimum": 1,
+            "maximum": 4
+          },
           "supportDump": {
             "type": "boolean",
             "default": false
@@ -311,45 +317,45 @@
       ]
     },
     {
-    "type": "fieldset",
-    "title": "Device Settings",
-    "description": "Configure global device settings or override them for specific devices.",
-    "expandable": true,
-    "expanded": false,
-    "items": [
-      {
-        "key": "options.exclude",
-        "title": "Exclude All Devices"
-      },
-      {
-        "key": "options.eveHistory",
-        "title": "Enable Eve History for All Devices"
-      },
-      {
-        "type": "array",
-        "title": "Device Overrides",
-        "key": "devices",
-        "description": "Override settings for specific devices using their serial number. Additional advanced options are available via manual configuration.",
-        "items": [
-          {
-            "key": "devices[].serialNumber",
-            "title": "Serial Number"
-          },
-          {
-            "key": "devices[].name",
-            "title": "Name"
-          },
-          {
-            "key": "devices[].exclude",
-            "title": "Exclude Device"
-          },
-          {
-            "key": "devices[].eveHistory",
-            "title": "Enable Eve History"
-          }
-        ]
+      "type": "fieldset",
+      "title": "Device Settings",
+      "description": "Configure global device settings or override them for specific devices.",
+      "expandable": true,
+      "expanded": false,
+      "items": [
+        {
+          "key": "options.exclude",
+          "title": "Exclude All Devices"
+        },
+        {
+          "key": "options.eveHistory",
+          "title": "Enable Eve History for All Devices"
+        },
+        {
+          "type": "array",
+          "title": "Device Overrides",
+          "key": "devices",
+          "description": "Override settings for specific devices using their serial number. Additional advanced options are available via manual configuration.",
+          "items": [
+            {
+              "key": "devices[].serialNumber",
+              "title": "Serial Number"
+            },
+            {
+              "key": "devices[].name",
+              "title": "Name"
+            },
+            {
+              "key": "devices[].exclude",
+              "title": "Exclude Device"
+            },
+            {
+              "key": "devices[].eveHistory",
+              "title": "Enable Eve History"
+            }
+          ]
         }
-    ]
+      ]
     },
     {
       "type": "fieldset",
@@ -364,6 +370,11 @@
         {
           "key": "options.ffmpegHWAccel",
           "title": "Enable Hardware Acceleration for FFmpeg"
+        },
+        {
+          "key": "options.maxStreams",
+          "title": "Simultaneous Live Viewers per Camera",
+          "type": "number"  
         },
         {
           "key": "options.debug",

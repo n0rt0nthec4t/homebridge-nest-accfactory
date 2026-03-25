@@ -82,9 +82,14 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 - Updated `README.md` with documentation for:  
   - `"accounts"` configuration section (`./README.md#Account Configuration`)  
   - Updated `"devices"` configuration section (`./README.md#devices`)  
-  - Home and device settings, including override behaviour  
+  - Updated `"homes"` configuration section (`./README.md#homes`)  
   - Verbose logging and Support Dump options  
   - HKSV behaviour (recording is triggered by general motion events and does not support individual recording filters)   
+
+### 📦 Dependency Updates
+
+- Removed `undici` dependancy 
+- Updated `werift` from `0.22.8` to `0.22.9`
 
 ## v0.3.9 (2026/02/18)
 

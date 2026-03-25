@@ -87,7 +87,7 @@ const STREAMERS = {
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2026.03.18'; // Code version
+  static VERSION = '2026.03.25'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -518,7 +518,9 @@ export default class NestCamera extends HomeKitDevice {
     }
     if (this.controller?.speakerService !== undefined) {
       // Update speaker volume if specified
-      //this.controller.speakerService.updateCharacteristic(this.hap.Characteristic.Volume, deviceData.xxx);
+      if (deviceData.audio_enabled === true && isNaN(deviceData.speaker_volume) === false) {
+        this.controller.speakerService.updateCharacteristic(this.hap.Characteristic.Volume, deviceData.speaker_volume);
+      }
 
       // if audio is disabled, we'll mute speaker
       this.controller.setSpeakerMuted(deviceData.audio_enabled === false ? true : false);
@@ -692,25 +694,26 @@ export default class NestCamera extends HomeKitDevice {
       '0:v:0',
       '-codec:v',
       this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec !== undefined ? this.ffmpeg.hardwareH264Codec : 'libx264',
-      ...(this.deviceData?.ffmpeg?.hwaccel !== true || ['h264_nvenc', 'h264_qsv'].includes(this.ffmpeg?.hardwareH264Codec || '') === true
-        ? [
-            '-preset',
-            'veryfast',
-            '-profile:v',
-            this.#recordingConfig.videoCodec.parameters.profile === this.hap.H264Profile.HIGH
-              ? 'high'
-              : this.#recordingConfig.videoCodec.parameters.profile === this.hap.H264Profile.MAIN
-                ? 'main'
-                : 'baseline',
-            '-level:v',
-            this.#recordingConfig.videoCodec.parameters.level === this.hap.H264Level.LEVEL4_0
-              ? '4.0'
-              : this.#recordingConfig.videoCodec.parameters.level === this.hap.H264Level.LEVEL3_2
-                ? '3.2'
-                : '3.1',
-            '-bf',
-            '0',
-          ]
+
+      '-profile:v',
+      this.#recordingConfig.videoCodec.parameters.profile === this.hap.H264Profile.HIGH
+        ? 'high'
+        : this.#recordingConfig.videoCodec.parameters.profile === this.hap.H264Profile.MAIN
+          ? 'main'
+          : 'baseline',
+
+      '-level:v',
+      this.#recordingConfig.videoCodec.parameters.level === this.hap.H264Level.LEVEL4_0
+        ? '4.0'
+        : this.#recordingConfig.videoCodec.parameters.level === this.hap.H264Level.LEVEL3_2
+          ? '3.2'
+          : '3.1',
+
+      ...(this.ffmpeg?.hardwareH264Codec === 'h264_videotoolbox' ? ['-realtime', 'true'] : []),
+
+      ...(this.deviceData?.ffmpeg?.hwaccel !== true ||
+      ['libx264', 'h264_nvenc', 'h264_qsv'].includes(this.ffmpeg?.hardwareH264Codec || '') === true
+        ? ['-preset', 'veryfast', '-bf', '0']
         : []),
 
       '-filter:v',
@@ -1057,7 +1060,7 @@ export default class NestCamera extends HomeKitDevice {
         '-use_wallclock_as_timestamps',
         '1',
         '-fflags',
-        '+discardcorrupt',
+        '+discardcorrupt+genpts',
         '-max_delay',
         '500000',
         '-flags',
@@ -1072,9 +1075,22 @@ export default class NestCamera extends HomeKitDevice {
         // Audio input (if enabled)
         ...(includeAudio === true
           ? this.streamer.codecs.audio === Streamer.CODEC_TYPE.PCM
-            ? ['-thread_queue_size', '512', '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', 'pipe:3']
+            ? [
+                '-thread_queue_size',
+                '1024',
+                '-f',
+                's16le',
+                '-ar',
+                '48000',
+                '-ac',
+                '2',
+                '-i',
+                'pipe:3',
+                '-af',
+                'aresample=async=1:first_pts=0',
+              ]
             : this.streamer.codecs.audio === Streamer.CODEC_TYPE.AAC
-              ? ['-thread_queue_size', '512', '-f', 'aac', '-i', 'pipe:3']
+              ? ['-thread_queue_size', '1024', '-f', 'aac', '-i', 'pipe:3', '-af', 'aresample=async=1:first_pts=0']
               : []
           : []),
 
@@ -1089,8 +1105,6 @@ export default class NestCamera extends HomeKitDevice {
         //         : ['-codec:v', 'copy']),
         '-fps_mode',
         'passthrough',
-        '-reset_timestamps',
-        '1',
         '-video_track_timescale',
         '90000',
         '-payload_type',
@@ -1667,6 +1681,11 @@ const CAMERA_FIELD_MAP = {
     nest: ({ sourceValue }) => sourceValue?.value?.capabilities?.includes?.('detectors.on_camera') === true,
   },
 
+  speaker_volume: {
+    google: ({ sourceValue }) =>
+      isNaN(sourceValue?.value?.speaker_volume?.volume) === false ? Number(sourceValue.value.speaker_volume.volume) : undefined,
+  },
+
   motion_detection_enabled: {
     google: ({ sourceValue }) =>
       sourceValue?.value?.observation_trigger_capabilities?.videoEventTypes?.motion?.value === true &&
@@ -1893,11 +1912,11 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
           valid: config.options.ffmpeg.valid === true,
           debug: deviceOptions?.ffmpegDebug === true || config.options?.ffmpeg.debug === true,
           hwaccel:
-            (deviceOptions?.ffmpegHWaccel === true || config.options?.ffmpegHWaccel === true) &&
+            (deviceOptions?.ffmpegHWAccel === true || config.options?.ffmpegHWAccel === true) &&
             config.options.ffmpeg.valid === true &&
             config.options.ffmpeg.hwaccel === true,
         };
-        tempDevice.maxStreams = 1; // Always 1 stream since HKSV is mandatory
+        tempDevice.maxStreams = config.options.maxStreams;
         tempDevice.logMotionEvents =
           deviceOptions?.logMotionEvents !== undefined
             ? deviceOptions.logMotionEvents === true

@@ -27,7 +27,7 @@
 // Creates HomeKitDevice instances for each Nest/Google device
 // Manages connection objects for each account (credentials, API endpoints)
 //
-// Code version 2026.03.21
+// Code version 2026.03.25
 // Mark Hulskamp
 'use strict';
 
@@ -125,9 +125,10 @@ export default class NestAccfactory {
       // This also initiates both Nest API subscribes and Google API observes
       for (const uuid of Object.keys(this.#connections)) {
         let reconnectDelay = 15000;
+        let connection = this.#connections?.[uuid];
 
         const reconnectLoop = async () => {
-          if (this.#connections?.[uuid]?.authorised !== true && this.#connections?.[uuid]?.allowRetry !== false) {
+          if (connection?.authorised !== true && connection?.allowRetry !== false) {
             try {
               await this.#connect(uuid);
               this.#subscribeNestAPI(uuid);
@@ -137,7 +138,7 @@ export default class NestAccfactory {
               // Empty
             }
 
-            reconnectDelay = this.#connections?.[uuid]?.authorised === true ? 15000 : Math.min(reconnectDelay * 2, 60000);
+            reconnectDelay = connection?.authorised === true ? 15000 : Math.min(reconnectDelay * 2, 60000);
           } else {
             reconnectDelay = 15000;
           }
@@ -145,7 +146,11 @@ export default class NestAccfactory {
           setTimeout(reconnectLoop, reconnectDelay);
         };
 
-        reconnectLoop();
+        if (connection?.exclude !== true) {
+          reconnectLoop();
+        } else {
+          this?.log?.warn?.('Account "%s" is ignored due to it being marked as excluded', connection?.name);
+        }
       }
     });
 

@@ -149,6 +149,7 @@ The following options are available in the `config.json` `"options"` object. The
 | ffmpegHWaccel      | Enable video hardware acceleration for supported camera(s) and doorbell(s)                   | false          |
 | ffmpegPath         | Path to an ffmpeg binary (defaults to `ffmpeg` in system path)                               | /usr/local/bin |
 | logMotionEvents    | Enable logging of motion events for camera(s), doorbell(s) and Nest Protect device(s)        | true           |
+| maxStreams         | Maximum simultaneous live view streams per camera                                            | 2              |
 | supportDump        | Enable Support Dump logging of raw Nest and Google API data                                  | false          |
 
 #### devices

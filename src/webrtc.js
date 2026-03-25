@@ -18,7 +18,7 @@
 //
 // Note: Currently a "work in progress" - feature set may expand
 //
-// Code version 2026.03.22
+// Code version 2026.03.25
 // Mark Hulskamp
 'use strict';
 
@@ -76,6 +76,7 @@ export default class WebRTC extends Streamer {
   #extendTimer = undefined; // Stream extend timer
   #stalledTimer = undefined; // Timer object for no received data
   #pingTimer = undefined; // Google Home Foyer periodic ping
+  #rtcpPLITimer = undefined; // Timer for sending periodic RTCP PLIs
 
   // Codecs being used for video, audio and talking
   get codecs() {
@@ -251,7 +252,7 @@ export default class WebRTC extends Streamer {
                 this.#handlePlaybackPacket(rtp);
               });
               track.onReceiveRtcp.once(() => {
-                setInterval(() => {
+                this.#rtcpPLITimer = setInterval(() => {
                   this.#videoTransceiver?.receiver?.sendRtcpPLI?.(track.ssrc);
                 }, 2000);
               });
@@ -277,7 +278,7 @@ export default class WebRTC extends Streamer {
               if (state !== 'connected' && state !== 'connecting') {
                 this?.log?.debug?.('Connection closed to WebRTC for uuid "%s"', this.nest_google_device_uuid);
                 this.connected = undefined;
-                if (this.hasActiveOutputs() === true) {
+                if (this.hasActiveStreams() === true) {
                   this.connect();
                 }
               }
@@ -338,10 +339,14 @@ export default class WebRTC extends Streamer {
 
     await this.#peerConnection?.close?.();
 
+    // Clear any running timers and state related to the connection and streaming
+    clearInterval(this.#rtcpPLITimer);
     clearInterval(this.#extendTimer);
-    clearInterval(this.#stalledTimer);
+    clearTimeout(this.#stalledTimer);
     clearInterval(this.#pingTimer);
-    clearInterval(this.video?.h264?.spsPpsRefreshTimer);
+    clearInterval(this.video?.h264?.spsRefreshTimer);
+    clearTimeout(this.video?.h264?.fuTimer);
+    this.#rtcpPLITimer = undefined;
     this.#extendTimer = undefined;
     this.#stalledTimer = undefined;
     this.#pingTimer = undefined;
@@ -351,37 +356,8 @@ export default class WebRTC extends Streamer {
     this.#videoTransceiver = undefined;
     this.#audioTransceiver = undefined;
     this.connected = undefined;
-    this.video = {};
-    this.audio = {};
-  }
-
-  #startSpsRefreshTimer() {
-    // Start a timer that periodically re-emits cached SPS/PPS to keep them fresh in the buffer
-    // Prevents them from aging out (5s max) before ffmpeg connects to read the stream
-    if (this.video?.h264?.spsPpsRefreshTimer !== undefined) {
-      return; // Already running
-    }
-
-    this.video.h264.spsPpsRefreshTimer = setInterval(() => {
-      // Skip if video/h264 has been cleaned up (e.g., during shutdown)
-      if (typeof this.video?.h264 !== 'object') {
-        return;
-      }
-
-      // Re-emit cached SPS/PPS with current timestamp to keep them fresh in the buffer
-      let currentTimestamp = Date.now();
-
-      if (Buffer.isBuffer(this.video.h264.lastSPS) === true && this.video.h264.lastSPS.length > 0) {
-        this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastSPS, currentTimestamp);
-      }
-
-      if (Buffer.isBuffer(this.video.h264.lastPPS) === true && this.video.h264.lastPPS.length > 0) {
-        this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastPPS, currentTimestamp);
-      }
-
-      // Update timestamp to indicate we just emitted SPS/PPS
-      this.video.h264.lastSpsEmitTime = currentTimestamp;
-    }, 2000); // Re-emit every 2 seconds to stay within 5s buffer window
+    this.video = undefined;
+    this.audio = undefined;
   }
 
   async onUpdate(deviceData) {
@@ -398,7 +374,7 @@ export default class WebRTC extends Streamer {
       // This token will be used for the next API call that requires authentication and should succeed with the new token
       // Log this as a debug message only if we actually have active outputs
       // otherwise it can be normal for tokens to update when not streaming and would just be noise in the logs
-      if (this.hasActiveOutputs() === true) {
+      if (this.hasActiveStreams() === true) {
         this?.log?.debug?.(
           'OAuth2 token has changed for uuid "%s" while webRTC session is active. Updating stored token.',
           this.nest_google_device_uuid,
@@ -489,7 +465,7 @@ export default class WebRTC extends Streamer {
         baseTimestamp: undefined,
         baseTime: undefined,
         sampleRate: 48000,
-        opus: undefined,
+        lastSequence: undefined,
         talkSequenceNumber: weriftTrack?.sender?.sequenceNumber === undefined ? 0 : weriftTrack.sender.sequenceNumber,
         talking: undefined,
       };
@@ -501,6 +477,8 @@ export default class WebRTC extends Streamer {
         baseTimestamp: undefined,
         baseTime: undefined,
         sampleRate: 90000,
+        lastSequence: undefined,
+        rtpTimestamp: undefined,
         h264: {
           // FU-A reassembly state
           fuBuffer: undefined,
@@ -509,24 +487,18 @@ export default class WebRTC extends Streamer {
           fuType: undefined,
           fuTimestamp: undefined,
 
-          // SPS/PPS caching & emission tracking
+          // SPS/PPS/IDR caching & emission tracking
           lastSPS: undefined,
           lastPPS: undefined,
-          lastSpsEmitTime: undefined, // Timestamp of last SPS/PPS emit for periodic re-checking
-          spsPpsRefreshTimer: undefined, // Timer to periodically re-emit SPS/PPS to keep fresh in buffer
-
-          // basic seq tracking
-          lastSeq: undefined,
+          lastIDR: undefined,
+          lastSpsEmitTime: undefined,
+          spsRefreshTimer: undefined,
         },
       };
     }
   }
 
   #handlePlaybackPacket(rtpPacket) {
-    if (typeof rtpPacket !== 'object' || rtpPacket === undefined) {
-      return;
-    }
-
     const calculateTimestamp = (packet, stream) => {
       if (typeof packet?.header?.timestamp !== 'number' || typeof stream?.sampleRate !== 'number') {
         return Date.now();
@@ -541,251 +513,256 @@ export default class WebRTC extends Streamer {
       return stream.baseTime + deltaMs;
     };
 
-    // Create timer for stalled rtp output. Restart stream if so
+    const emitVideoPacket = (data, timestamp, nalType, keyFrame = false) => {
+      if (Buffer.isBuffer(data) !== true || data.length === 0) {
+        return;
+      }
+
+      this.addPacket({
+        type: Streamer.PACKET_TYPE.VIDEO,
+        codec: this.codecs.video,
+        timestamp: timestamp,
+        keyFrame: keyFrame === true,
+        data: data,
+      });
+    };
+
+    const ensureSpsRefreshTimer = () => {
+      clearInterval(this.video?.h264?.spsRefreshTimer);
+
+      this.video.h264.spsRefreshTimer = setInterval(() => {
+        let refreshTimestamp = Date.now();
+
+        if (Buffer.isBuffer(this.video.h264.lastSPS) === true && this.video.h264.lastSPS.length > 0) {
+          emitVideoPacket(this.video.h264.lastSPS, refreshTimestamp, Streamer.H264NALUS.TYPES.SPS, false);
+        }
+
+        if (Buffer.isBuffer(this.video.h264.lastPPS) === true && this.video.h264.lastPPS.length > 0) {
+          emitVideoPacket(this.video.h264.lastPPS, refreshTimestamp, Streamer.H264NALUS.TYPES.PPS, false);
+        }
+      }, 5000);
+    };
+
+    if (rtpPacket?.header === undefined || Buffer.isBuffer(rtpPacket.payload) !== true) {
+      return;
+    }
+
+    // If we dont receive a packet in 10s, force a reconnect
     clearTimeout(this.#stalledTimer);
-    this.#stalledTimer = setTimeout(async () => {
-      await this.#peerConnection?.close?.();
+    this.#stalledTimer = setTimeout(() => {
+      this?.log?.debug?.(
+        'No WebRTC playback packets received for uuid "%s" in the past 10 seconds. Closing connection',
+        this.nest_google_device_uuid,
+      );
+      this.close();
     }, 10000);
 
-    // Video packet processing
+    // Handle video playback packets
     if (rtpPacket.header.payloadType === this.video?.id) {
-      if (this.video?.h264 === undefined) {
-        return;
-      }
+      let now = Date.now();
+      let timestamp = calculateTimestamp(rtpPacket, this.video);
+      let payload = rtpPacket.payload;
+      let nalHeader = payload[0];
+      let type = nalHeader & 0x1f;
 
-      let seq = rtpPacket.header.sequenceNumber;
-
-      if (this.video.h264.lastSeq !== undefined) {
-        let gap = (seq - this.video.h264.lastSeq + 0x10000) % 0x10000;
-        if (gap !== 1) {
-          // sequence gap (ignored silently)
-          // If we were in the middle of FU-A reassembly, drop it
-          if (Array.isArray(this.video.h264.fuBuffer) === true) {
-            clearTimeout(this.video.h264.fuTimer);
-            this.video.h264.fuBuffer = undefined;
-            this.video.h264.fuTimer = undefined;
-            this.video.h264.fuSeqStart = undefined;
-            this.video.h264.fuType = undefined;
-            this.video.h264.fuTimestamp = undefined;
-          }
+      // Track RTP sequence numbers so we can log packet loss or reordering
+      if (typeof this.video.lastSequence === 'number') {
+        let expected = (this.video.lastSequence + 1) & 0xffff;
+        if (rtpPacket.header.sequenceNumber !== expected) {
+          this?.log?.debug?.(
+            'Video RTP sequence discontinuity for uuid "%s". Expected "%s" got "%s"',
+            this.nest_google_device_uuid,
+            expected,
+            rtpPacket.header.sequenceNumber,
+          );
         }
       }
+      this.video.lastSequence = rtpPacket.header.sequenceNumber;
 
-      this.video.h264.lastSeq = seq;
-
-      let payload = rtpPacket.payload;
-      if (Buffer.isBuffer(payload) === false || payload.length < 1) {
-        return;
-      }
-
-      let nalType = payload[0] & 0x1f;
-
-      // STAP-A (Single-Time Aggregation Packet)
-      if (nalType === Streamer.H264NALUS.TYPES.STAP_A) {
-        let timestamp = calculateTimestamp(rtpPacket, this.video);
+      // Single-Time Aggregation Packet (STAP-A)
+      if (type === Streamer.H264NALUS.TYPES.STAP_A) {
         let offset = 1;
         let foundSPS = false;
         let foundPPS = false;
 
         while (offset + 2 <= payload.length) {
-          let size = payload.readUInt16BE(offset);
+          let naluLength = payload.readUInt16BE(offset);
           offset += 2;
-          if (size < 1 || offset + size > payload.length) {
+
+          if (naluLength <= 0 || offset + naluLength > payload.length) {
             break;
           }
-          let nalu = payload.subarray(offset, offset + size);
-          let type = nalu[0] & 0x1f;
 
-          if (type === Streamer.H264NALUS.TYPES.SPS) {
-            this.video.h264.lastSPS = Buffer.from(nalu); // Clone to avoid sharing
-            this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastSPS, timestamp);
+          let nalu = payload.subarray(offset, offset + naluLength);
+          let naluType = nalu[0] & 0x1f;
+          offset += naluLength;
+
+          if (naluType === Streamer.H264NALUS.TYPES.SPS) {
+            this.video.h264.lastSPS = Buffer.from(nalu);
             foundSPS = true;
-          } else if (type === Streamer.H264NALUS.TYPES.PPS) {
-            this.video.h264.lastPPS = Buffer.from(nalu); // Clone to avoid sharing
-            this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastPPS, timestamp);
-            foundPPS = true;
-          } else {
-            // Output other NALs (slicing, etc) as-is from STAP-A
-            this.add(Streamer.PACKET_TYPE.VIDEO, Buffer.from(nalu), timestamp);
+            emitVideoPacket(this.video.h264.lastSPS, timestamp, naluType, false);
+            continue;
           }
 
-          offset += size;
+          if (naluType === Streamer.H264NALUS.TYPES.PPS) {
+            this.video.h264.lastPPS = Buffer.from(nalu);
+            foundPPS = true;
+            emitVideoPacket(this.video.h264.lastPPS, timestamp, naluType, false);
+            continue;
+          }
+
+          if (naluType === Streamer.H264NALUS.TYPES.IDR) {
+            this.video.h264.lastIDR = Buffer.from(nalu);
+          }
+
+          emitVideoPacket(Buffer.from(nalu), timestamp, naluType, naluType === Streamer.H264NALUS.TYPES.IDR);
         }
 
         if (foundSPS === true || foundPPS === true) {
-          this.video.h264.lastSpsEmitTime = timestamp;
-
-          // Start refresh timer to keep SPS/PPS fresh in buffer if not already running
-          if (this.video.h264.spsPpsRefreshTimer === undefined) {
-            this.#startSpsRefreshTimer();
-          }
+          ensureSpsRefreshTimer();
         }
+
         return;
       }
 
-      // FU-A
-      if (nalType === Streamer.H264NALUS.TYPES.FU_A) {
-        if (payload.length < 2) {
-          return;
-        }
-
-        let indicator = payload[0];
-        let header = payload[1];
-
-        let start = (header & 0x80) !== 0;
-        let end = (header & 0x40) !== 0;
-        let type = header & 0x1f;
-
-        let nalHeader = (indicator & 0xe0) | type;
+      // Fragmentation Unit A (FU-A)
+      if (type === Streamer.H264NALUS.TYPES.FU_A) {
+        let fuHeader = payload[1];
+        let start = (fuHeader & 0x80) !== 0;
+        let end = (fuHeader & 0x40) !== 0;
+        let fuType = fuHeader & 0x1f;
+        let reconstructedNal = Buffer.from([(nalHeader & 0xe0) | fuType]);
+        let fragmentPayload = payload.subarray(2);
 
         if (start === true) {
-          // Start a new FU-A reassembly
           clearTimeout(this.video.h264.fuTimer);
-
-          this.video.h264.fuBuffer = [Buffer.from([nalHeader]), payload.subarray(2)];
-          this.video.h264.fuSeqStart = rtpPacket.header.sequenceNumber;
-          this.video.h264.fuType = type;
+          this.video.h264.fuBuffer = [reconstructedNal, fragmentPayload];
+          this.video.h264.fuType = fuType;
           this.video.h264.fuTimestamp = rtpPacket.header.timestamp;
-
-          // Safety timer: if we don't see the end fragment, drop the partial frame
-          this.video.h264.fuTimer = setTimeout(() => {
-            if (typeof this.video?.h264 !== 'object') {
-              return;
-            }
-            this.video.h264.fuBuffer = undefined;
-            this.video.h264.fuTimer = undefined;
-            this.video.h264.fuSeqStart = undefined;
+          return (this.video.h264.fuTimer = setTimeout(() => {
+            this?.log?.debug?.('Discarding stale FU-A buffer for uuid "%s"', this.nest_google_device_uuid);
+            this.video.h264.fuBuffer = [];
             this.video.h264.fuType = undefined;
             this.video.h264.fuTimestamp = undefined;
-          }, 2000);
+          }, 2000));
+        }
 
+        if (Array.isArray(this.video.h264.fuBuffer) !== true || this.video.h264.fuBuffer.length === 0) {
           return;
         }
 
-        if (Array.isArray(this.video.h264.fuBuffer) === false) {
-          return;
-        }
-
-        // If timestamp changes mid-frame, drop the current FU-A (bad/mixed fragments)
-        if (this.video.h264.fuTimestamp !== undefined && this.video.h264.fuTimestamp !== rtpPacket.header.timestamp) {
-          clearTimeout(this.video.h264.fuTimer);
-          this.video.h264.fuBuffer = undefined;
-          this.video.h264.fuTimer = undefined;
-          this.video.h264.fuSeqStart = undefined;
-          this.video.h264.fuType = undefined;
-          this.video.h264.fuTimestamp = undefined;
-          return;
-        }
-
-        this.video.h264.fuBuffer.push(payload.subarray(2));
+        this.video.h264.fuBuffer.push(fragmentPayload);
 
         if (end === true) {
-          clearTimeout(this.video.h264.fuTimer);
-
           let buffer = Buffer.concat(this.video.h264.fuBuffer);
-          this.video.h264.fuBuffer = undefined;
-          this.video.h264.fuTimer = undefined;
-          this.video.h264.fuSeqStart = undefined;
 
-          let timestamp = calculateTimestamp(rtpPacket, this.video);
+          clearTimeout(this.video.h264.fuTimer);
+          this.video.h264.fuBuffer = [];
 
-          // Before outputting ANY FU-A frame, ensure SPS/PPS were emitted recently (within 1 second)
-          let now = Date.now();
-          let timeSinceSpsEmit = this.video.h264.lastSpsEmitTime ? now - this.video.h264.lastSpsEmitTime : Infinity;
-
-          if (timeSinceSpsEmit > 1000) {
-            // More than 1 second since last SPS/PPS emit, send them again to ensure new consumers get them
-            let hasSPS = Buffer.isBuffer(this.video.h264.lastSPS) === true && this.video.h264.lastSPS.length > 0;
-            let hasPPS = Buffer.isBuffer(this.video.h264.lastPPS) === true && this.video.h264.lastPPS.length > 0;
-
-            if (hasSPS === true) {
-              this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastSPS, timestamp);
+          if (this.video.h264.fuType === Streamer.H264NALUS.TYPES.IDR) {
+            if (Buffer.isBuffer(this.video.h264.lastSPS) === true && this.video.h264.lastSPS.length > 0) {
+              emitVideoPacket(this.video.h264.lastSPS, timestamp, Streamer.H264NALUS.TYPES.SPS, false);
               this.video.h264.lastSpsEmitTime = now;
             }
 
-            if (hasPPS === true) {
-              this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastPPS, timestamp);
+            if (Buffer.isBuffer(this.video.h264.lastPPS) === true && this.video.h264.lastPPS.length > 0) {
+              emitVideoPacket(this.video.h264.lastPPS, timestamp, Streamer.H264NALUS.TYPES.PPS, false);
             }
+
+            this.video.h264.lastIDR = Buffer.from(buffer);
           }
+
+          emitVideoPacket(buffer, timestamp, this.video.h264.fuType, this.video.h264.fuType === Streamer.H264NALUS.TYPES.IDR);
 
           this.video.h264.fuType = undefined;
           this.video.h264.fuTimestamp = undefined;
-
-          this.add(Streamer.PACKET_TYPE.VIDEO, buffer, timestamp);
         }
 
         return;
       }
 
-      // Raw NAL
-      let type = nalType;
-      if (type === 0) {
-        return;
-      }
-
-      let timestamp = calculateTimestamp(rtpPacket, this.video);
-
-      // Handle standalone NAL units (SPS/PPS)
+      // Raw NAL unit
       if (type === Streamer.H264NALUS.TYPES.SPS) {
-        this.video.h264.lastSPS = payload;
-        this.add(Streamer.PACKET_TYPE.VIDEO, payload, timestamp);
-        this.video.h264.lastSpsEmitTime = timestamp;
-
-        // Start refresh timer to keep SPS/PPS fresh in buffer if not already running
-        if (this.video.h264.spsPpsRefreshTimer === undefined) {
-          this.#startSpsRefreshTimer();
-        }
+        this.video.h264.lastSPS = Buffer.from(payload);
+        emitVideoPacket(this.video.h264.lastSPS, timestamp, type, false);
+        ensureSpsRefreshTimer();
         return;
       }
+
       if (type === Streamer.H264NALUS.TYPES.PPS) {
-        this.video.h264.lastPPS = payload;
-        this.add(Streamer.PACKET_TYPE.VIDEO, payload, timestamp);
-        this.video.h264.lastSpsEmitTime = timestamp;
-
-        // Start refresh timer to keep SPS/PPS fresh in buffer if not already running
-        if (this.video.h264.spsPpsRefreshTimer === undefined) {
-          this.#startSpsRefreshTimer();
-        }
+        this.video.h264.lastPPS = Buffer.from(payload);
+        emitVideoPacket(this.video.h264.lastPPS, timestamp, type, false);
+        ensureSpsRefreshTimer();
         return;
       }
 
-      // Before outputting ANY frame, ensure SPS/PPS were emitted recently (within 1 second)
-      let now = Date.now();
-      let timeSinceSpsEmit = this.video.h264.lastSpsEmitTime ? now - this.video.h264.lastSpsEmitTime : Infinity;
-
-      if (timeSinceSpsEmit > 1000) {
-        // More than 1 second since last SPS/PPS emit, send them again to ensure new consumers get them
-        let hasSPS = Buffer.isBuffer(this.video.h264.lastSPS) === true && this.video.h264.lastSPS.length > 0;
-        let hasPPS = Buffer.isBuffer(this.video.h264.lastPPS) === true && this.video.h264.lastPPS.length > 0;
-
-        if (hasSPS === true) {
-          this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastSPS, timestamp);
+      if (type === Streamer.H264NALUS.TYPES.IDR) {
+        if (Buffer.isBuffer(this.video.h264.lastSPS) === true && this.video.h264.lastSPS.length > 0) {
+          emitVideoPacket(this.video.h264.lastSPS, timestamp, Streamer.H264NALUS.TYPES.SPS, false);
           this.video.h264.lastSpsEmitTime = now;
         }
 
-        if (hasPPS === true) {
-          this.add(Streamer.PACKET_TYPE.VIDEO, this.video.h264.lastPPS, timestamp);
+        if (Buffer.isBuffer(this.video.h264.lastPPS) === true && this.video.h264.lastPPS.length > 0) {
+          emitVideoPacket(this.video.h264.lastPPS, timestamp, Streamer.H264NALUS.TYPES.PPS, false);
         }
+
+        this.video.h264.lastIDR = Buffer.from(payload);
       }
 
-      this.add(Streamer.PACKET_TYPE.VIDEO, payload, timestamp);
+      emitVideoPacket(payload, timestamp, type, type === Streamer.H264NALUS.TYPES.IDR);
       return;
     }
 
-    // Audio packet processing
+    // Handle audio playback packets
     if (rtpPacket.header.payloadType === this.audio?.id) {
-      let opus = werift.OpusRtpPayload.deSerialize(rtpPacket.payload);
-      if (opus?.payload?.[0] === 0xfc) {
+      let timestamp = calculateTimestamp(rtpPacket, this.audio);
+      let pcm = undefined;
+      let opus = undefined;
+
+      // Track RTP sequence numbers so we can log packet loss or reordering
+      if (typeof this.audio.lastSequence === 'number') {
+        let expected = (this.audio.lastSequence + 1) & 0xffff;
+        if (rtpPacket.header.sequenceNumber !== expected) {
+          this?.log?.debug?.(
+            'Audio RTP sequence discontinuity for uuid "%s". Expected "%s" got "%s"',
+            this.nest_google_device_uuid,
+            expected,
+            rtpPacket.header.sequenceNumber,
+          );
+        }
+      }
+      this.audio.lastSequence = rtpPacket.header.sequenceNumber;
+
+      try {
+        opus = werift.OpusRtpPayload.deSerialize(rtpPacket.payload);
+        if (opus?.payload?.[0] === 0xfc) {
+          // This is a PLC (Packet Loss Concealment) frame, so we generate blank audio instead of trying to decode it
+          return;
+        }
+        pcm = this.#opusDecoder.decode(opus.payload);
+      } catch (error) {
+        this?.log?.debug?.('Error decoding Opus audio for uuid "%s": %s', this.nest_google_device_uuid, String(error));
+      }
+
+      if (Buffer.isBuffer(pcm) === true && pcm.length > 0) {
+        this.addPacket({
+          type: Streamer.PACKET_TYPE.AUDIO,
+          codec: this.codecs.audio,
+          timestamp: timestamp,
+          keyFrame: false,
+          data: Buffer.from(pcm),
+        });
         return;
       }
 
-      let timestamp = calculateTimestamp(rtpPacket, this.audio);
-      try {
-        let pcm = this.#opusDecoder.decode(opus.payload);
-        this.add(Streamer.PACKET_TYPE.AUDIO, Buffer.from(pcm), timestamp);
-      } catch {
-        this.add(Streamer.PACKET_TYPE.AUDIO, PCM_S16LE_48000_STEREO_BLANK, timestamp);
-      }
+      // Failed to decode Opus audio, likely due to packet loss or it being a PLC frame. Emit blank audio to maintain stream continuity
+      this.addPacket({
+        type: Streamer.PACKET_TYPE.AUDIO,
+        codec: this.codecs.audio,
+        timestamp: timestamp,
+        keyFrame: false,
+        data: PCM_S16LE_48000_STEREO_BLANK,
+      });
     }
   }
 

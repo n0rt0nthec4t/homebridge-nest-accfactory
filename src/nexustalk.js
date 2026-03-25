@@ -17,7 +17,7 @@
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.03.22
+// Code version 2026.03.25
 // Mark Hulskamp
 'use strict';
 
@@ -218,7 +218,7 @@ export default class NexusTalk extends Streamer {
             this.#sessionId = undefined; // Not an active session anymore
             this.#host = undefined;
 
-            if (this.hasActiveOutputs() === true && this.#reconnectPending === false) {
+            if (this.hasActiveStreams() === true && this.#reconnectPending === false) {
               this.#requestReconnect(host, 'service-close');
             }
 
@@ -285,7 +285,7 @@ export default class NexusTalk extends Streamer {
       // Aaccess token has changed, so update stored token and re-authenticate if we have an active connection
       // Log this as a debug message only if we actually have active outputs
       // otherwise it can be normal for tokens to update when not streaming and would just be noise in the logs
-      if (this.hasActiveOutputs() === true) {
+      if (this.hasActiveStreams() === true) {
         this?.log?.debug?.(
           'Access token has changed for uuid "%s" while NexusTalk session is active. Updating stored token.',
           this.nest_google_device_uuid,
@@ -301,7 +301,7 @@ export default class NexusTalk extends Streamer {
     if (deviceData?.nexustalk_host !== undefined && this.nexustalk_host !== deviceData.nexustalk_host) {
       this.nexustalk_host = deviceData.nexustalk_host;
 
-      if (this.hasActiveOutputs() === true) {
+      if (this.hasActiveStreams() === true) {
         this?.log?.debug?.('New host has been requested for connection. Host requested is "%s"', this.nexustalk_host);
 
         this.#requestReconnect(this.nexustalk_host, 'host-change');
@@ -553,8 +553,8 @@ export default class NexusTalk extends Streamer {
         if (stream.codec === this.codecs.video.toUpperCase()) {
           this.video = {
             id: stream.channelId,
-            baseTimestamp: stream.startTimestamp,
-            baseTime: now,
+            baseTimestamp: stream.startTime,
+            baseTime: typeof stream.startTime === 'number' ? stream.startTime * 1000 : now,
             sampleRate: stream.sampleRate,
           };
         }
@@ -562,8 +562,8 @@ export default class NexusTalk extends Streamer {
         if (stream.codec === this.codecs.audio.toUpperCase()) {
           this.audio = {
             id: stream.channelId,
-            baseTimestamp: stream.startTimestamp,
-            baseTime: now,
+            baseTimestamp: stream.startTime,
+            baseTime: typeof stream.startTime === 'number' ? stream.startTime * 1000 : now,
             sampleRate: stream.sampleRate,
           };
         }
@@ -580,62 +580,120 @@ export default class NexusTalk extends Streamer {
   }
 
   #handlePlaybackPacket(payload) {
-    const calculateTimestamp = (delta, stream) => {
-      if (
-        typeof delta !== 'number' ||
-        typeof stream?.sampleRate !== 'number' ||
-        stream?.baseTime === undefined ||
-        stream?.baseTimestamp === undefined
-      ) {
+    // Function to check if a given H264 NAL unit type is present in the data buffer
+    let hasH264NAL = (data, nalType) => {
+      let offset = 0;
+      while (offset < data.length - 3) {
+        // 4-byte Annex B start code
+        if (data[offset] === 0x00 && data[offset + 1] === 0x00 && data[offset + 2] === 0x00 && data[offset + 3] === 0x01) {
+          offset += 4;
+          if (offset < data.length && (data[offset] & 0x1f) === nalType) {
+            return true;
+          }
+          continue;
+        }
+
+        // 3-byte Annex B start code
+        if (data[offset] === 0x00 && data[offset + 1] === 0x00 && data[offset + 2] === 0x01) {
+          offset += 3;
+          if (offset < data.length && (data[offset] & 0x1f) === nalType) {
+            return true;
+          }
+          continue;
+        }
+
+        offset++;
+      }
+      return false;
+    };
+
+    // Function to calculate packet timestamp based on delta and stream details
+    let calculateTimestamp = (delta, stream) => {
+      if (typeof delta !== 'number' || typeof stream?.sampleRate !== 'number') {
         return Date.now();
       }
 
-      let deltaTicks = stream.baseTimestamp + delta - stream.baseTimestamp;
-      let deltaMs = (deltaTicks / stream.sampleRate) * 1000;
-      return stream.baseTime + deltaMs;
+      if (typeof stream.mediaTime !== 'number') {
+        stream.mediaTime = typeof stream?.baseTime === 'number' ? stream.baseTime : Date.now();
+      }
+
+      if (delta > 0) {
+        stream.mediaTime += (delta / stream.sampleRate) * 1000;
+      }
+
+      return stream.mediaTime;
     };
 
+    if (Buffer.isBuffer(payload) !== true || this.#protobufNexusTalk === undefined || this.#protobufNexusTalk === null) {
+      return;
+    }
+
     // Decode playback packet
-    if (Buffer.isBuffer(payload) === true && this.#protobufNexusTalk !== undefined && this.#protobufNexusTalk !== null) {
-      let decodedMessage = undefined;
-      let Type = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.PlaybackPacket');
-      let reader = new protobuf.Reader(payload);
+    let decodedMessage = undefined;
+    let Type = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.PlaybackPacket');
+    let reader = new protobuf.Reader(payload);
 
-      try {
-        decodedMessage = Type.decode(reader).toJSON();
-      } catch (error) {
-        this?.log?.debug?.('Playback packet decode failed for uuid "%s": %s', this.nest_google_device_uuid, String(error));
-        return;
+    try {
+      decodedMessage = Type.decode(reader);
+    } catch (error) {
+      this?.log?.debug?.('Playback packet decode failed for uuid "%s": %s', this.nest_google_device_uuid, String(error));
+      return;
+    }
+
+    // Set up a timeout to monitor for no packets received in a certain period
+    // If it's triggered, we'll attempt to restart the stream and/or connection
+    // <-- testing to see how often this occurs first
+    clearTimeout(this.#stalledTimer);
+    this.#stalledTimer = setTimeout(() => {
+      this?.log?.debug?.(
+        'We have not received any data from nexus in the past "%s" seconds for uuid "%s". Attempting restart',
+        10,
+        this.nest_google_device_uuid,
+      );
+      this.#requestReconnect(this.#host, 'stalled');
+      this.close(false);
+    }, 10000);
+
+    if (decodedMessage?.channelId === undefined) {
+      return;
+    }
+
+    // timestampDelta is treated as an incremental media clock delta.
+    // A value of 0 means reuse the current stream timestamp, otherwise
+    // advance the running media time by delta/sampleRate.
+    // payload is base64-encoded bytes (protobufjs config), convert to Buffer
+
+    // Handle video packet
+    if (decodedMessage.channelId === this.video?.id) {
+      let timestamp = calculateTimestamp(decodedMessage.timestampDelta, this.video);
+      let data = Buffer.from(decodedMessage.payload, 'base64');
+      let keyFrame = false;
+
+      if (data.length > 0) {
+        keyFrame = hasH264NAL(data, Streamer.H264NALUS.TYPES.IDR);
       }
 
-      // Set up a timeout to monitor for no packets received in a certain period
-      // If it's triggered, we'll attempt to restart the stream and/or connection
-      // <-- testing to see how often this occurs first
-      clearTimeout(this.#stalledTimer);
-      this.#stalledTimer = setTimeout(() => {
-        this?.log?.debug?.(
-          'We have not received any data from nexus in the past "%s" seconds for uuid "%s". Attempting restart',
-          10,
-          this.nest_google_device_uuid,
-        );
+      this.addPacket({
+        type: Streamer.PACKET_TYPE.VIDEO,
+        codec: this.codecs.video,
+        timestamp: timestamp,
+        keyFrame: keyFrame,
+        data: data,
+      });
+    }
 
-        this.#requestReconnect(this.#host, 'stalled');
-        this.close(false); // Close existing socket and reconnect
-      }, 10000);
+    // Handle audio packet
+    if (decodedMessage.channelId === this.audio?.id) {
+      let timestamp = calculateTimestamp(decodedMessage.timestampDelta, this.audio);
+      let data = Buffer.from(decodedMessage.payload, 'base64');
 
-      // Timestamps are rolling — incremented from startTime using timestampDelta per packet
-
-      // Handle video packet
-      if (decodedMessage?.channelId !== undefined && decodedMessage.channelId === this.video?.id) {
-        let ts = calculateTimestamp(decodedMessage.timestampDelta, this.video);
-        this.add(Streamer.PACKET_TYPE.VIDEO, Buffer.from(decodedMessage.payload, 'base64'), ts);
-      }
-
-      // Handle audio packet
-      if (decodedMessage?.channelId !== undefined && decodedMessage.channelId === this.audio?.id) {
-        let ts = calculateTimestamp(decodedMessage.timestampDelta, this.audio);
-        this.add(Streamer.PACKET_TYPE.AUDIO, Buffer.from(decodedMessage.payload, 'base64'), ts);
-      }
+      this.addPacket({
+        type: Streamer.PACKET_TYPE.AUDIO,
+        codec: this.codecs.audio,
+        timestamp: timestamp,
+        keyFrame: false,
+        data: data,
+      });
     }
   }
 

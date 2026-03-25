@@ -17,7 +17,7 @@
 //   Returns: connection map keyed by UUID, each containing trimmed credentials, account metadata, retry state, and API host selection
 //   Prepares Nest and Google account sessions, including field-test endpoint selection when enabled
 //
-// Code version 2026.03.24
+// Code version 2026.03.25
 // Mark Hulskamp
 'use strict';
 
@@ -107,8 +107,11 @@ function processConfig(config, log, api) {
   // This may produce a large amount of log output and should normally only be enabled temporarily.
   options.supportDump = config?.options?.supportDump === true;
 
-  // Get configuration for max number of concurrent 'live view' streams. For HomeKit Secure Video, this will always be 1
-  options.maxStreams = isNaN(config.options?.maxStreams) === false ? Number(config.options.maxStreams) : 2;
+  // Get configuration for max number of concurrent 'live view' streams.
+  options.maxStreams =
+    isNaN(config.options?.maxStreams) === false && Number(config.options.maxStreams) > 1 && Number(config.options.maxStreams) <= 4
+      ? Number(config.options.maxStreams)
+      : 2;
 
   // Check if an ffmpeg binary exists via a specific path in configuration OR /usr/local/bin
   options.ffmpeg = {
@@ -232,13 +235,14 @@ function buildConnections(config) {
   let connections = {};
 
   (config.accounts || []).forEach((account) => {
-    // Skip invalid or excluded accounts
-    if (typeof account?.name !== 'string' || account.name.trim() === '' || account?.exclude === true) {
+    // Skip invalid accounts
+    if (typeof account?.name !== 'string' || account.name.trim() === '') {
       return;
     }
 
     let accountName = account.name.trim();
     let fieldTest = account?.fieldTest === true; // Default to false
+    let exclude = account?.exclude === true; // Default to false
 
     if (account?.type === 'nest' && typeof account?.access_token === 'string' && account.access_token.trim() !== '') {
       connections[crypto.randomUUID()] = {
@@ -252,6 +256,7 @@ function buildConnections(config) {
         restAPIHost: fieldTest ? 'home.ft.nest.com' : 'home.nest.com',
         cameraAPIHost: fieldTest ? 'camera.home.ft.nest.com' : 'camera.home.nest.com',
         protobufAPIHost: fieldTest ? 'grpc-web.ft.nest.com' : 'grpc-web.production.nest.com',
+        exclude: exclude,
       };
     }
 
@@ -274,6 +279,7 @@ function buildConnections(config) {
         restAPIHost: fieldTest ? 'home.ft.nest.com' : 'home.nest.com',
         cameraAPIHost: fieldTest ? 'camera.home.ft.nest.com' : 'camera.home.nest.com',
         protobufAPIHost: fieldTest ? 'grpc-web.ft.nest.com' : 'grpc-web.production.nest.com',
+        exclude: exclude,
       };
     }
   });
