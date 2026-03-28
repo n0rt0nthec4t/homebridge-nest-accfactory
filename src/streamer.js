@@ -23,7 +23,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2026.03.25
+// Code version 2026.03.27
 // Mark Hulskamp
 'use strict';
 
@@ -113,7 +113,13 @@ export default class Streamer {
   migrating = undefined; // Device is transferring/migrating between APIs
   nest_google_device_uuid = undefined; // Nest/Google UUID of the device connecting
   connected = undefined; // Stream endpoint connection: undefined = not connected , false = connecting , true = connected and streaming
-  blankAudio = undefined; // Blank audio 'frame'
+  blankAudio = undefined; // Blank audio 'frame' for the type of audio being used, to be defined in subclass if audio is supported
+  video = {
+    width: undefined,
+    height: undefined,
+    fps: undefined,
+    bitrate: undefined,
+  };
 
   // Internal data only for this class
   #buffer = undefined; // Shared rotating packet buffer used by buffering, live and recording outputs
@@ -333,11 +339,17 @@ export default class Streamer {
   }
 
   addPacket(packet) {
-    if (typeof packet !== 'object' || packet === null || Buffer.isBuffer(packet?.data) !== true) {
+    if (typeof packet !== 'object' || packet === null || Buffer.isBuffer(packet?.data) !== true || packet.data.length === 0) {
       return;
     }
 
     if (typeof packet?.type !== 'string' || packet.type.trim() === '') {
+      return;
+    }
+
+    // Ignore late packets once all outputs/buffering have stopped
+    // This prevents stale packets recreating the shared buffer after stop/close
+    if (this.hasActiveStreams() !== true) {
       return;
     }
 
@@ -361,18 +373,26 @@ export default class Streamer {
           ? this.codecs?.video
           : packet.type === Streamer.PACKET_TYPE.AUDIO
             ? this.codecs?.audio
-            : undefined;
+            : packet.type === Streamer.PACKET_TYPE.TALK
+              ? this.codecs?.talkback
+              : packet.type === Streamer.PACKET_TYPE.METADATA
+                ? Streamer.CODEC_TYPE.META
+                : undefined;
     let keyFrame = packet?.keyFrame === true;
-    let packetTime = typeof packet?.timestamp === 'number' && Number.isNaN(packet.timestamp) === false ? packet.timestamp : Date.now();
+    let packetTime =
+      typeof packet?.timestamp === 'number' && Number.isFinite(packet.timestamp) === true ? Math.round(packet.timestamp) : Date.now();
     let sequence = typeof packet?.sequence === 'number' ? packet.sequence : this.#sequenceCounters[packet.type]++;
     let nalUnits = undefined;
+    let rebuiltNalUnits = undefined;
     let data = packet.data;
+    let dimensions = undefined;
+    let containsFrame = false;
 
-    // Ensure buffer exists whenever we have buffering, live, or record active
-    if (this.#buffer === undefined) {
-      this.#ensureSharedBuffer(false);
+    if (typeof codec !== 'string' || codec.trim() === '') {
+      return;
     }
 
+    this.#ensureSharedBuffer();
     if (this.#buffer === undefined) {
       return;
     }
@@ -384,12 +404,21 @@ export default class Streamer {
         return;
       }
 
-      data =
-        nalUnits.length === 1
-          ? nalUnits[0].data
-          : data.indexOf(Streamer.H264NALUS.START_CODE) === 0
-            ? data
-            : Buffer.concat(nalUnits.flatMap((nalu) => [Streamer.H264NALUS.START_CODE, nalu.data]));
+      if (nalUnits.length === 1) {
+        data = nalUnits[0].data;
+      }
+
+      if (nalUnits.length > 1) {
+        if (data.indexOf(Streamer.H264NALUS.START_CODE) === 0) {
+          data = data;
+        } else {
+          rebuiltNalUnits = [];
+          nalUnits.forEach((nalu) => {
+            rebuiltNalUnits.push(Streamer.H264NALUS.START_CODE, nalu.data);
+          });
+          data = Buffer.concat(rebuiltNalUnits);
+        }
+      }
 
       if (keyFrame !== true) {
         keyFrame = nalUnits.some((nalu) => nalu.type === Streamer.H264NALUS.TYPES.IDR);
@@ -398,6 +427,15 @@ export default class Streamer {
       nalUnits.forEach((nalu) => {
         if (nalu.type === Streamer.H264NALUS.TYPES.SPS) {
           this.#h264Video.lastSPS = nalu.data;
+          dimensions = this.#decodeH264SPS(nalu.data);
+
+          if (typeof dimensions?.width === 'number' && dimensions.width > 0) {
+            this.video.width = dimensions.width;
+          }
+
+          if (typeof dimensions?.height === 'number' && dimensions.height > 0) {
+            this.video.height = dimensions.height;
+          }
         }
 
         if (nalu.type === Streamer.H264NALUS.TYPES.PPS) {
@@ -406,9 +444,65 @@ export default class Streamer {
 
         if (nalu.type === Streamer.H264NALUS.TYPES.IDR) {
           this.#h264Video.lastIDR = nalu.data;
+          containsFrame = true;
+        }
+
+        if (nalu.type === 1) {
+          containsFrame = true;
         }
       });
 
+      // Track FPS using actual video frame NAL units (IDR and non-IDR slices)
+      if (containsFrame === true) {
+        if (typeof this.#h264Video.lastFrameTime === 'number' && packetTime > this.#h264Video.lastFrameTime) {
+          let frameDelta = packetTime - this.#h264Video.lastFrameTime;
+          let fps = 1000 / frameDelta;
+          let previousFPS = this.video.fps;
+
+          // Smooth or assign FPS
+          if (typeof this.video.fps === 'number') {
+            this.video.fps = this.video.fps * 0.8 + fps * 0.2;
+          } else {
+            this.video.fps = fps;
+          }
+
+          // First-time announce (when fps becomes available AND we have dimensions)
+          if (
+            typeof previousFPS !== 'number' &&
+            typeof this.video.width === 'number' &&
+            typeof this.video.height === 'number' &&
+            typeof this.video.fps === 'number'
+          ) {
+            this?.log?.debug?.(
+              'Receiving incoming stream from device "%s": %sx%s @ %sfps',
+              this.nest_google_device_uuid,
+              this.video.width,
+              this.video.height,
+              Math.round(this.video.fps),
+            );
+          }
+
+          // FPS change detection (only if we already had a value)
+          if (typeof previousFPS === 'number' && typeof this.video.fps === 'number') {
+            let currentFPS = Math.round(this.video.fps);
+            let prevFPS = Math.round(previousFPS);
+            let delta = Math.abs(currentFPS - prevFPS);
+
+            // Only log if:
+            // - meaningful FPS shift (>= 2 fps)
+            // - AND at least 3 seconds since last log
+            if (delta >= 2 && Date.now() - this.#h264Video.lastFPSLogTime >= 3000) {
+              this.#h264Video.lastFPSLogTime = Date.now();
+
+              this?.log?.debug?.('FPS from device "%s" has changed to %sfps', this.nest_google_device_uuid, Math.round(this.video.fps));
+            }
+          }
+        }
+        this.#h264Video.lastFrameTime = packetTime;
+      }
+
+      // Store packets internally without the first Annex B start code
+      // Output code will prepend a start code again when writing video packets
       if (data.indexOf(Streamer.H264NALUS.START_CODE) === 0) {
         data = data.subarray(Streamer.H264NALUS.START_CODE.length);
       }
@@ -419,8 +513,8 @@ export default class Streamer {
     }
 
     // Keep timestamps monotonic per packet type inside the shared append-only buffer
-    if (packetTime < this.#lastPacketTime[packet.type]) {
-      packetTime = this.#lastPacketTime[packet.type];
+    if (packetTime <= this.#lastPacketTime[packet.type]) {
+      packetTime = this.#lastPacketTime[packet.type] + 1;
     }
     this.#lastPacketTime[packet.type] = packetTime;
 
@@ -499,7 +593,7 @@ export default class Streamer {
     // eslint-disable-next-line no-unused-vars
     talkbackIn?.on?.('error', (error) => {});
 
-    this.#ensureSharedBuffer(false);
+    this.#ensureSharedBuffer();
 
     // Get starting cursor for live stream
     // this will be the packet index in the shared buffer where the live stream should start from
@@ -545,8 +639,16 @@ export default class Streamer {
         }, TIMERS.TALKBACK_AUDIO.interval);
       }
     });
+
     talkbackIn?.on?.('close', () => {
-      clearTimeout(this.#live.get(sessionID)?.talkbackTimeout);
+      let output = this.#live.get(sessionID);
+
+      clearTimeout(output?.talkbackTimeout);
+
+      if (typeof this?.sendTalkback === 'function') {
+        // Signal end of talkback stream with empty buffer
+        this.sendTalkback(Buffer.alloc(0));
+      }
     });
 
     // Ensure upstream connection is active
@@ -562,6 +664,7 @@ export default class Streamer {
       cursor: startCursor,
       sentCodecConfig: false,
       seenKeyFrame: false,
+      lastVideoWriteTime: 0,
     });
 
     this?.log?.debug?.('Started live stream from device uuid "%s" and session id "%s"', this.nest_google_device_uuid, sessionID);
@@ -620,7 +723,7 @@ export default class Streamer {
     // eslint-disable-next-line no-unused-vars
     audioOut?.on?.('error', (error) => {});
 
-    this.#ensureSharedBuffer(false);
+    this.#ensureSharedBuffer();
 
     // Ensure upstream connection is active
     this.#doConnect();
@@ -634,6 +737,7 @@ export default class Streamer {
       cursor: this.#buffer?.startIndex ?? this.#packetIndex,
       sentCodecConfig: false,
       seenKeyFrame: false,
+      lastVideoWriteTime: 0,
     };
 
     this?.log?.debug?.('Started recording stream from device uuid "%s" with session id of "%s"', this.nest_google_device_uuid, sessionID);
@@ -693,6 +797,14 @@ export default class Streamer {
 
   async #doClose() {
     await this?.close?.();
+
+    // Reset video details on close/disconnect
+    this.video = {
+      width: undefined,
+      height: undefined,
+      fps: undefined,
+      bitrate: undefined,
+    };
   }
 
   #cleanupOutput(output) {
@@ -711,18 +823,13 @@ export default class Streamer {
     output?.talkback?.end?.();
   }
 
-  #ensureSharedBuffer(enabled = false) {
+  #ensureSharedBuffer() {
     if (this.#buffer === undefined) {
       this.#buffer = {
-        enabled: enabled === true,
+        enabled: false,
         packets: [],
         startIndex: this.#packetIndex,
       };
-      return;
-    }
-
-    if (enabled === true) {
-      this.#buffer.enabled = true;
     }
   }
 
@@ -769,6 +876,216 @@ export default class Streamer {
     return nalUnits;
   }
 
+  #decodeH264SPS(sps) {
+    let data = undefined;
+    let bitOffset = 0;
+    let profileIdc = 0;
+    let chromaFormatIdc = 1;
+    let picWidthInMbsMinus1 = 0;
+    let picHeightInMapUnitsMinus1 = 0;
+    let frameMbsOnlyFlag = 1;
+    let frameCropLeftOffset = 0;
+    let frameCropRightOffset = 0;
+    let frameCropTopOffset = 0;
+    let frameCropBottomOffset = 0;
+    let cropUnitX = 1;
+    let cropUnitY = 2;
+
+    if (Buffer.isBuffer(sps) !== true || sps.length < 4) {
+      return undefined;
+    }
+
+    // Ensure this is actually an SPS NAL unit
+    if ((sps[0] & 0x1f) !== Streamer.H264NALUS.TYPES.SPS) {
+      return undefined;
+    }
+
+    let readBit = () => {
+      let value = 0;
+
+      if (bitOffset >= data.length * 8) {
+        return 0;
+      }
+
+      value = (data[Math.floor(bitOffset / 8)] >> (7 - (bitOffset % 8))) & 0x01;
+      bitOffset++;
+      return value;
+    };
+
+    let readBits = (count) => {
+      let value = 0;
+      let index = 0;
+
+      while (index < count) {
+        value = (value << 1) | readBit();
+        index++;
+      }
+
+      return value >>> 0;
+    };
+
+    let readUE = () => {
+      let zeros = 0;
+      let value = 0;
+
+      while (bitOffset < data.length * 8 && readBit() === 0) {
+        zeros++;
+      }
+
+      value = (1 << zeros) - 1;
+      if (zeros > 0) {
+        value += readBits(zeros);
+      }
+
+      return value >>> 0;
+    };
+
+    let readSE = () => {
+      let value = readUE();
+      return (value & 0x01) === 0 ? -(value >>> 1) : (value + 1) >>> 1;
+    };
+
+    if (Buffer.isBuffer(sps) !== true || sps.length < 4) {
+      return undefined;
+    }
+
+    // Remove emulation prevention bytes (0x000003)
+    data = [];
+    let offset = 0;
+
+    while (offset < sps.length) {
+      if (offset + 2 < sps.length && sps[offset] === 0x00 && sps[offset + 1] === 0x00 && sps[offset + 2] === 0x03) {
+        data.push(0x00, 0x00);
+        offset += 3;
+        continue;
+      }
+
+      data.push(sps[offset]);
+      offset++;
+    }
+
+    data = Buffer.from(data);
+
+    // Skip NAL header
+    readBits(8);
+
+    profileIdc = readBits(8);
+
+    // constraint flags + reserved
+    readBits(8);
+
+    // level_idc
+    readBits(8);
+
+    // seq_parameter_set_id
+    readUE();
+
+    if ([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135].includes(profileIdc) === true) {
+      chromaFormatIdc = readUE();
+
+      if (chromaFormatIdc === 3) {
+        readBit();
+      }
+
+      readUE();
+      readUE();
+      readBit();
+
+      if (readBit() === 1) {
+        let scalingListCount = chromaFormatIdc !== 3 ? 8 : 12;
+        let index = 0;
+
+        while (index < scalingListCount) {
+          if (readBit() === 1) {
+            let size = index < 6 ? 16 : 64;
+            let lastScale = 8;
+            let nextScale = 8;
+            let scan = 0;
+
+            while (scan < size) {
+              if (nextScale !== 0) {
+                nextScale = (lastScale + readSE() + 256) % 256;
+              }
+
+              lastScale = nextScale === 0 ? lastScale : nextScale;
+              scan++;
+            }
+          }
+
+          index++;
+        }
+      }
+    }
+
+    readUE();
+
+    let picOrderCntType = readUE();
+
+    if (picOrderCntType === 0) {
+      readUE();
+    }
+
+    if (picOrderCntType === 1) {
+      let index = 0;
+      let count = 0;
+
+      readBit();
+      readSE();
+      readSE();
+      count = readUE();
+
+      while (index < count) {
+        readSE();
+        index++;
+      }
+    }
+
+    readUE();
+    readBit();
+
+    picWidthInMbsMinus1 = readUE();
+    picHeightInMapUnitsMinus1 = readUE();
+    frameMbsOnlyFlag = readBit();
+
+    if (frameMbsOnlyFlag === 0) {
+      readBit();
+    }
+
+    readBit();
+
+    if (readBit() === 1) {
+      frameCropLeftOffset = readUE();
+      frameCropRightOffset = readUE();
+      frameCropTopOffset = readUE();
+      frameCropBottomOffset = readUE();
+    }
+
+    if (chromaFormatIdc === 0) {
+      cropUnitX = 1;
+      cropUnitY = 2 - frameMbsOnlyFlag;
+    }
+
+    if (chromaFormatIdc === 1) {
+      cropUnitX = 2;
+      cropUnitY = 2 * (2 - frameMbsOnlyFlag);
+    }
+
+    if (chromaFormatIdc === 2) {
+      cropUnitX = 2;
+      cropUnitY = 1 * (2 - frameMbsOnlyFlag);
+    }
+
+    if (chromaFormatIdc === 3) {
+      cropUnitX = 1;
+      cropUnitY = 1 * (2 - frameMbsOnlyFlag);
+    }
+
+    return {
+      width: (picWidthInMbsMinus1 + 1) * 16 - (frameCropLeftOffset + frameCropRightOffset) * cropUnitX,
+      height: (2 - frameMbsOnlyFlag) * (picHeightInMapUnitsMinus1 + 1) * 16 - (frameCropTopOffset + frameCropBottomOffset) * cropUnitY,
+    };
+  }
+
   #getFallbackFrame() {
     return this.online === false && this.#cameraFrames?.offline
       ? this.#cameraFrames.offline
@@ -800,6 +1117,9 @@ export default class Streamer {
     let offset = 0;
     let packet = undefined;
     let wroteAudio = false;
+    let keyFrameOffset = -1;
+    let searchOffset = 0;
+    let searchPacket = undefined;
 
     if (typeof output !== 'object' || output === null || Array.isArray(packets) !== true) {
       return;
@@ -812,17 +1132,56 @@ export default class Streamer {
 
     offset = output.cursor - this.#buffer.startIndex;
 
+    // For H264 outputs, do not let leading audio/non-keyframe video block startup.
+    // Scan forward to the first due keyframe and start from there.
+    if (this.codecs?.video === Streamer.CODEC_TYPE.H264 && output.seenKeyFrame !== true) {
+      searchOffset = offset;
+
+      while (searchOffset < packets.length) {
+        searchPacket = packets[searchOffset];
+
+        if (typeof searchPacket?.time !== 'number' || searchPacket.time > dateNow) {
+          break;
+        }
+
+        if (
+          searchPacket.type === Streamer.PACKET_TYPE.VIDEO &&
+          searchPacket.codec === Streamer.CODEC_TYPE.H264 &&
+          searchPacket.keyFrame === true
+        ) {
+          keyFrameOffset = searchOffset;
+          break;
+        }
+
+        searchOffset++;
+      }
+
+      // We found a due keyframe ahead of the current cursor, so skip stale startup packets
+      if (keyFrameOffset !== -1 && keyFrameOffset > offset) {
+        output.cursor = packets[keyFrameOffset].index;
+        offset = keyFrameOffset;
+      }
+    }
+
     while (offset < packets.length && processed < MAX_PACKETS_PER_OUTPUT_PER_TICK) {
       packet = packets[offset];
 
       if (typeof packet?.time !== 'number' || packet.time > dateNow) {
-        offset++;
-        continue;
+        break;
       }
 
       if (packet.type === Streamer.PACKET_TYPE.VIDEO) {
+        if (typeof output.lastVideoWriteTime !== 'number') {
+          output.lastVideoWriteTime = 0;
+        }
+
+        // Pace video frames to avoid bursty delivery into ffmpeg/HomeKit live output
+        if (dateNow - output.lastVideoWriteTime < STREAM_FRAME_INTERVAL) {
+          break;
+        }
+
         if (packet.codec === Streamer.CODEC_TYPE.H264) {
-          // Do not send non-keyframe video until this output has seen its first keyframe
+          // Still waiting for first keyframe on this output
           if (output.seenKeyFrame !== true && packet.keyFrame !== true) {
             output.cursor = packet.index + 1;
             offset++;
@@ -854,7 +1213,9 @@ export default class Streamer {
         if (this.codecs?.video === Streamer.CODEC_TYPE.H264) {
           output?.video?.write?.(Streamer.H264NALUS.START_CODE);
         }
+
         output?.video?.write?.(packet.data);
+        output.lastVideoWriteTime = dateNow;
 
         output.cursor = packet.index + 1;
         offset++;

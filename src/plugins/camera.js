@@ -87,7 +87,7 @@ const STREAMERS = {
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2026.03.25'; // Code version
+  static VERSION = '2026.03.27'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -1054,6 +1054,12 @@ export default class NestCamera extends HomeKitDevice {
       let session = this.#liveSessions.get(request.sessionID);
       let includeAudio = this.deviceData.audio_enabled === true && this.streamer?.codecs?.audio !== undefined;
 
+      // Start the live streamer process
+      let { video, audio, talkback } = await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_LIVE, {
+        sessionID: request.sessionID,
+        includeAudio: includeAudio === true,
+      });
+
       // Build our ffmpeg command string for the liveview video/audio stream
       let commandLine = [
         '-hide_banner',
@@ -1214,140 +1220,142 @@ export default class NestCamera extends HomeKitDevice {
         }
       });
 
-      // Two-way audio support if enabled and codecs available
-      let ffmpegTalk = null;
-      if (
-        ((this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.SPEEX &&
-          this.ffmpeg?.features?.encoders?.includes('libspeex') === true) ||
-          (this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.OPUS &&
-            this.ffmpeg?.features?.encoders?.includes('libopus') === true)) &&
-        this.ffmpeg?.features?.encoders?.includes('libfdk_aac') === true &&
-        this.deviceData.audio_enabled === true &&
-        this.deviceData.has_speaker === true &&
-        this.deviceData.has_microphone === true
-      ) {
-        // Setup RTP splitter for two-way audio
-        session.rtpSplitter = dgram.createSocket('udp4');
-        session.rtpSplitter.bind(session.rtpSplitterPort);
-        session.rtpSplitter.on('error', () => session.rtpSplitter.close());
-        session.rtpSplitter.on('message', (message) => {
-          let pt = message.readUInt8(1) & 0x7f;
-          if (pt === request.audio.pt && message.length > 50) {
-            session.rtpSplitter.send(message, session.audioTalkbackPort);
-          } else {
-            session.rtpSplitter.send(message, session.localAudioPort);
-            session.rtpSplitter.send(message, session.audioTalkbackPort); // RTCP keepalive
-          }
-        });
-
-        let talkbackCommandLine = [
-          '-hide_banner',
-          '-nostats',
-          '-protocol_whitelist',
-          'pipe,udp,rtp',
-          '-f',
-          'sdp',
-          '-codec:a',
-          'libfdk_aac',
-          '-i',
-          'pipe:0',
-          '-map',
-          '0:a',
-          ...(this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.SPEEX
-            ? ['-codec:a', 'libspeex', '-frames_per_packet', '4', '-vad', '1', '-ac', '1', '-ar', '16k']
-            : []),
-          ...(this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.OPUS
-            ? ['-codec:a', 'libopus', '-application', 'lowdelay', '-ac', '2', '-ar', '48k']
-            : []),
-          '-f',
-          'data',
-          'pipe:1',
-        ];
-
-        this?.log?.debug?.(
-          'ffmpeg process for talkback on "%s" will be called using the following commandline: %s',
-          this.deviceData.description,
-          talkbackCommandLine.join(' '),
-        );
-
-        ffmpegTalk = this.ffmpeg.createSession(
-          this.uuid,
-          request.sessionID,
-          talkbackCommandLine,
-          'talk',
-          (data) => {
-            if (data.toString().includes('frame=') === false && this.deviceData.ffmpeg.debug === true) {
-              this?.log?.debug?.(data.toString());
+      let ffmpegTalk = null; // No ffmpeg session for talkback yet
+      if (typeof talkback?.write === 'function') {
+        // Two-way audio support if enabled and codecs available
+        if (
+          ((this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.SPEEX &&
+            this.ffmpeg?.features?.encoders?.includes('libspeex') === true) ||
+            (this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.OPUS &&
+              this.ffmpeg?.features?.encoders?.includes('libopus') === true)) &&
+          this.ffmpeg?.features?.encoders?.includes('libfdk_aac') === true &&
+          this.deviceData.audio_enabled === true &&
+          this.deviceData.has_speaker === true &&
+          this.deviceData.has_microphone === true
+        ) {
+          // Setup RTP splitter for two-way audio
+          session.rtpSplitter = dgram.createSocket('udp4');
+          session.rtpSplitter.bind(session.rtpSplitterPort);
+          session.rtpSplitter.on('error', () => session.rtpSplitter.close());
+          session.rtpSplitter.on('message', (message) => {
+            let pt = message.readUInt8(1) & 0x7f;
+            if (pt === request.audio.pt && message.length > 50) {
+              session.rtpSplitter.send(message, session.audioTalkbackPort);
+            } else {
+              session.rtpSplitter.send(message, session.localAudioPort);
+              session.rtpSplitter.send(message, session.audioTalkbackPort); // RTCP keepalive
             }
-          },
-          3, // 3 pipes required
-        );
+          });
 
-        ffmpegTalk?.on?.('exit', async (code, signal) => {
-          if (signal !== 'SIGKILL' && (signal !== null || code !== 0)) {
-            this?.log?.error?.(
-              'ffmpeg talkback process for "%s" stopped unexpectedly. Exit code was "%s"',
-              this.deviceData.description,
-              code,
+          let talkbackCommandLine = [
+            '-hide_banner',
+            '-nostats',
+            '-protocol_whitelist',
+            'pipe,udp,rtp',
+            '-f',
+            'sdp',
+            '-codec:a',
+            'libfdk_aac',
+            '-i',
+            'pipe:0',
+            '-map',
+            '0:a',
+            ...(this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.SPEEX
+              ? ['-codec:a', 'libspeex', '-frames_per_packet', '4', '-vad', '1', '-ac', '1', '-ar', '16k']
+              : []),
+            ...(this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.OPUS
+              ? ['-codec:a', 'libopus', '-application', 'lowdelay', '-ac', '2', '-ar', '48k']
+              : []),
+            '-f',
+            'data',
+            'pipe:1',
+          ];
+
+          this?.log?.debug?.(
+            'ffmpeg process for talkback on "%s" will be called using the following commandline: %s',
+            this.deviceData.description,
+            talkbackCommandLine.join(' '),
+          );
+
+          ffmpegTalk = this.ffmpeg.createSession(
+            this.uuid,
+            request.sessionID,
+            talkbackCommandLine,
+            'talk',
+            (data) => {
+              if (data.toString().includes('frame=') === false && this.deviceData.ffmpeg.debug === true) {
+                this?.log?.debug?.(data.toString());
+              }
+            },
+            3, // 3 pipes required
+          );
+
+          ffmpegTalk?.on?.('exit', async (code, signal) => {
+            if (signal !== 'SIGKILL' && (signal !== null || code !== 0)) {
+              this?.log?.error?.(
+                'ffmpeg talkback process for "%s" stopped unexpectedly. Exit code was "%s"',
+                this.deviceData.description,
+                code,
+              );
+
+              // Stop the streamer and notify HomeKit that the stream has failed
+              try {
+                await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_LIVE, {
+                  sessionID: request.sessionID,
+                });
+              } catch {
+                // Ignore errors if streamer already stopped
+              }
+              this.controller.forceStopStreamingSession(request.sessionID);
+              this.#liveSessions.get(request.sessionID)?.rtpSplitter?.close?.();
+              this.#liveSessions.delete(request.sessionID);
+            }
+          });
+
+          let sdp = [
+            'v=0',
+            'o=- 0 0 IN ' + (session.ipv6 ? 'IP6' : 'IP4') + ' ' + session.address,
+            's=HomeKit Audio Talkback',
+            'c=IN ' + (session.ipv6 ? 'IP6' : 'IP4') + ' ' + session.address,
+            't=0 0',
+            'm=audio ' + session.audioTalkbackPort + ' RTP/AVP ' + request.audio.pt,
+            'b=AS:' + request.audio.max_bit_rate,
+            'a=ptime:' + request.audio.packet_time,
+          ];
+
+          if (request.audio.codec === this.hap.AudioStreamingCodecType.AAC_ELD) {
+            sdp.push(
+              'a=rtpmap:' + request.audio.pt + ' MPEG4-GENERIC/' + request.audio.sample_rate * 1000 + '/' + request.audio.channel,
+              'a=fmtp:' +
+                request.audio.pt +
+                ' profile-level-id=1;mode=AAC-hbr;sizelength=13;indexlength=3;indexdeltalength=3;config=F8F0212C00BC00',
             );
-
-            // Stop the streamer and notify HomeKit that the stream has failed
-            try {
-              await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_LIVE, {
-                sessionID: request.sessionID,
-              });
-            } catch {
-              // Ignore errors if streamer already stopped
-            }
-            this.controller.forceStopStreamingSession(request.sessionID);
-            this.#liveSessions.get(request.sessionID)?.rtpSplitter?.close?.();
-            this.#liveSessions.delete(request.sessionID);
           }
-        });
 
-        let sdp = [
-          'v=0',
-          'o=- 0 0 IN ' + (session.ipv6 ? 'IP6' : 'IP4') + ' ' + session.address,
-          's=HomeKit Audio Talkback',
-          'c=IN ' + (session.ipv6 ? 'IP6' : 'IP4') + ' ' + session.address,
-          't=0 0',
-          'm=audio ' + session.audioTalkbackPort + ' RTP/AVP ' + request.audio.pt,
-          'b=AS:' + request.audio.max_bit_rate,
-          'a=ptime:' + request.audio.packet_time,
-        ];
+          if (request.audio.codec === this.hap.AudioStreamingCodecType.OPUS) {
+            sdp.push(
+              'a=rtpmap:' + request.audio.pt + ' opus/' + request.audio.sample_rate * 1000 + '/' + request.audio.channel,
+              'a=fmtp:' + request.audio.pt + ' minptime=10;useinbandfec=1',
+            );
+          }
 
-        if (request.audio.codec === this.hap.AudioStreamingCodecType.AAC_ELD) {
-          sdp.push(
-            'a=rtpmap:' + request.audio.pt + ' MPEG4-GENERIC/' + request.audio.sample_rate * 1000 + '/' + request.audio.channel,
-            'a=fmtp:' +
-              request.audio.pt +
-              ' profile-level-id=1;mode=AAC-hbr;sizelength=13;indexlength=3;indexdeltalength=3;config=F8F0212C00BC00',
-          );
+          sdp.push('a=crypto:1 ' + this.hap.SRTPCryptoSuites[session.audioCryptoSuite] + ' inline:' + session.audioSRTP.toString('base64'));
+          ffmpegTalk?.stdin?.write?.(sdp.join('\r\n'));
+          ffmpegTalk?.stdin?.end?.();
         }
-
-        if (request.audio.codec === this.hap.AudioStreamingCodecType.OPUS) {
-          sdp.push(
-            'a=rtpmap:' + request.audio.pt + ' opus/' + request.audio.sample_rate * 1000 + '/' + request.audio.channel,
-            'a=fmtp:' + request.audio.pt + ' minptime=10;useinbandfec=1',
-          );
-        }
-
-        sdp.push('a=crypto:1 ' + this.hap.SRTPCryptoSuites[session.audioCryptoSuite] + ' inline:' + session.audioSRTP.toString('base64'));
-        ffmpegTalk?.stdin?.write?.(sdp.join('\r\n'));
-        ffmpegTalk?.stdin?.end?.();
       }
-
-      // Start the actual streamer process
-      this?.log?.info?.('Live stream started on "%s"%s', this.deviceData.description, ffmpegTalk ? ' (two-way audio enabled)' : '');
-      let { video, audio, talkback } = await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_LIVE, {
-        sessionID: request.sessionID,
-        includeAudio: includeAudio === true,
-      });
 
       // Connect the ffmpeg process to the streamer input/output
       video?.pipe?.(ffmpegStream?.stdin); // Streamer video -> ffmpeg stdin (pipe:0)
       audio?.pipe?.(ffmpegStream?.stdio?.[3]); // Streamer audio (if present) -> ffmpeg pipe:3
       ffmpegTalk?.stdout?.pipe?.(talkback); // ffmpeg talkback stdout -> Streamer talkback pipe:1
+
+      // We've started the live streaming session with or without two-way audio depending on configuration
+      this?.log?.info?.(
+        'Starting live stream from "%s"%s',
+        this.deviceData.description,
+        ffmpegTalk !== null ? ' (two-way audio enabled)' : '',
+      );
     }
 
     if (request.type === this.hap.StreamRequestTypes.STOP && this.#liveSessions.has(request.sessionID)) {
@@ -1360,7 +1368,7 @@ export default class NestCamera extends HomeKitDevice {
       this.ffmpeg?.killSession?.(this.uuid, request.sessionID, 'live', 'SIGKILL');
       this.ffmpeg?.killSession?.(this.uuid, request.sessionID, 'talk', 'SIGKILL');
       this.#liveSessions.delete(request.sessionID);
-      this?.log?.info?.('Live stream stopped from "%s"', this.deviceData.description);
+      this?.log?.info?.('Live stream stopped on "%s"', this.deviceData.description);
     }
 
     if (request.type === this.hap.StreamRequestTypes.RECONFIGURE && this.#liveSessions.has(request.sessionID)) {

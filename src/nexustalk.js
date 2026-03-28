@@ -17,7 +17,7 @@
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.03.25
+// Code version 2026.03.27
 // Mark Hulskamp
 'use strict';
 
@@ -78,8 +78,6 @@ export default class NexusTalk extends Streamer {
   token = undefined;
   useGoogleAuth = false; // Nest vs google auth
   blankAudio = AAC_MONO_48000_BLANK;
-  video = {}; // Video stream details once connected
-  audio = {}; // Audio stream details once connected
 
   // Internal data only for this class
   #protobufNexusTalk = undefined; // Protobuf for NexusTalk
@@ -95,13 +93,41 @@ export default class NexusTalk extends Streamer {
   #reconnectPending = false; // Reconnect requested once socket closes
   #reconnectHost = undefined; // Host to reconnect to
   #reconnectReason = undefined; // Reason for reconnect
+  #channels = {
+    video: {
+      id: undefined,
+      codec: Streamer.CODEC_TYPE.H264,
+      profile: undefined,
+      baseTimestamp: undefined,
+      baseTime: undefined,
+      mediaTime: undefined,
+      sampleRate: undefined,
+    },
+    audio: {
+      id: undefined,
+      codec: Streamer.CODEC_TYPE.AAC,
+      profile: undefined,
+      baseTimestamp: undefined,
+      baseTime: undefined,
+      mediaTime: undefined,
+      sampleRate: undefined,
+    },
+  };
+
+  #talkback = {
+    active: false,
+    codec: Streamer.CODEC_TYPE.SPEEX,
+    sampleRate: 16000,
+    channels: 1,
+    lastPacketTime: undefined,
+  };
 
   // Codecs being used for video, audio and talking
   get codecs() {
     return {
-      video: Streamer.CODEC_TYPE.H264, // Video codec
-      audio: Streamer.CODEC_TYPE.AAC, // Audio codec
-      talkback: Streamer.CODEC_TYPE.SPEEX, // Talkback codec
+      video: this.#channels.video.codec,
+      audio: this.#channels.audio.codec,
+      talkback: this.#talkback.codec,
     };
   }
 
@@ -267,13 +293,14 @@ export default class NexusTalk extends Streamer {
       }
     }
 
+    // Reset current playback channel timing/stateon close since we'll need to renegotiate this on the next stream
+    this.#resetChannelDetails();
+
     this.connected = undefined;
     this.#sessionId = undefined; // Not an active session anymore
     this.#packetBuffer = undefined;
     this.#packetOffset = undefined;
     this.#messages = [];
-    this.video = {};
-    this.audio = {};
   }
 
   async onUpdate(deviceData) {
@@ -315,9 +342,11 @@ export default class NexusTalk extends Streamer {
   }
 
   sendTalkback(talkingBuffer) {
+    let AudioPayload = undefined;
+    let encodedData = undefined;
+
     if (
-      Buffer.isBuffer(talkingBuffer) === false ||
-      talkingBuffer.length === 0 ||
+      Buffer.isBuffer(talkingBuffer) !== true ||
       this.#protobufNexusTalk === undefined ||
       this.#protobufNexusTalk === null ||
       this.#sessionId === undefined
@@ -325,21 +354,18 @@ export default class NexusTalk extends Streamer {
       return;
     }
 
-    // Encode audio packet for sending to camera
-    let AudioPayload = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.AudioPayload');
+    AudioPayload = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.AudioPayload');
     if (AudioPayload === null) {
       return;
     }
-
-    let encodedData = null;
 
     try {
       encodedData = AudioPayload.encode(
         AudioPayload.fromObject({
           payload: talkingBuffer,
           sessionId: this.#sessionId,
-          codec: Streamer.CODEC_TYPE.SPEEX,
-          sampleRate: 16000,
+          codec: this.#talkback.codec,
+          sampleRate: this.#talkback.sampleRate,
         }),
       ).finish();
     } catch (error) {
@@ -347,6 +373,7 @@ export default class NexusTalk extends Streamer {
       return;
     }
 
+    this.#talkback.lastPacketTime = Date.now();
     this.#sendMessage(PACKET_TYPE.AUDIO_PAYLOAD, encodedData);
   }
 
@@ -536,6 +563,8 @@ export default class NexusTalk extends Streamer {
     }
 
     let decodedMessage = undefined;
+    let now = Date.now();
+
     try {
       decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.PlaybackBegin').decode(payload).toJSON();
     } catch (error) {
@@ -543,34 +572,33 @@ export default class NexusTalk extends Streamer {
       return;
     }
 
-    // Get the current time to use as a base for calculating packet timestamps as they come in
-    // since they are rolling timestamps based on when playback started
-    let now = Date.now();
+    // Reset current playback channel timing/state before applying new channel details
+    this.#resetChannelDetails();
 
     if (Array.isArray(decodedMessage?.channels) === true) {
       decodedMessage.channels.forEach((stream) => {
         // Find which channels match our video and audio streams
         if (stream.codec === this.codecs.video.toUpperCase()) {
-          this.video = {
-            id: stream.channelId,
-            baseTimestamp: stream.startTime,
-            baseTime: typeof stream.startTime === 'number' ? stream.startTime * 1000 : now,
-            sampleRate: stream.sampleRate,
-          };
+          this.#channels.video.id = stream.channelId;
+          this.#channels.video.profile = stream.profile;
+          this.#channels.video.sampleRate = stream.sampleRate;
+          this.#channels.video.baseTimestamp = stream.startTime;
+          this.#channels.video.baseTime = typeof stream.startTime === 'number' ? stream.startTime * 1000 : now;
+          this.#channels.video.mediaTime = this.#channels.video.baseTime;
         }
 
         if (stream.codec === this.codecs.audio.toUpperCase()) {
-          this.audio = {
-            id: stream.channelId,
-            baseTimestamp: stream.startTime,
-            baseTime: typeof stream.startTime === 'number' ? stream.startTime * 1000 : now,
-            sampleRate: stream.sampleRate,
-          };
+          this.#channels.audio.id = stream.channelId;
+          this.#channels.audio.profile = stream.profile;
+          this.#channels.audio.sampleRate = stream.sampleRate;
+          this.#channels.audio.baseTimestamp = stream.startTime;
+          this.#channels.audio.baseTime = typeof stream.startTime === 'number' ? stream.startTime * 1000 : now;
+          this.#channels.audio.mediaTime = this.#channels.audio.baseTime;
         }
       });
     }
 
-    // Since this is the beginning of playback, clear any active buffers contents
+    // Since this is the beginning of playback, clear any active buffer contents
     this.#sessionId = decodedMessage?.sessionId;
     this.#packetBuffer = undefined;
     this.#packetOffset = undefined;
@@ -609,7 +637,7 @@ export default class NexusTalk extends Streamer {
 
     // Function to calculate packet timestamp based on delta and stream details
     let calculateTimestamp = (delta, stream) => {
-      if (typeof delta !== 'number' || typeof stream?.sampleRate !== 'number') {
+      if (typeof delta !== 'number' || typeof stream?.sampleRate !== 'number' || stream.sampleRate <= 0) {
         return Date.now();
       }
 
@@ -664,8 +692,8 @@ export default class NexusTalk extends Streamer {
     // payload is base64-encoded bytes (protobufjs config), convert to Buffer
 
     // Handle video packet
-    if (decodedMessage.channelId === this.video?.id) {
-      let timestamp = calculateTimestamp(decodedMessage.timestampDelta, this.video);
+    if (decodedMessage.channelId === this.#channels.video?.id) {
+      let timestamp = calculateTimestamp(decodedMessage.timestampDelta, this.#channels.video);
       let data = Buffer.from(decodedMessage.payload, 'base64');
       let keyFrame = false;
 
@@ -683,8 +711,8 @@ export default class NexusTalk extends Streamer {
     }
 
     // Handle audio packet
-    if (decodedMessage.channelId === this.audio?.id) {
-      let timestamp = calculateTimestamp(decodedMessage.timestampDelta, this.audio);
+    if (decodedMessage.channelId === this.#channels.audio?.id) {
+      let timestamp = calculateTimestamp(decodedMessage.timestampDelta, this.#channels.audio);
       let data = Buffer.from(decodedMessage.payload, 'base64');
 
       this.addPacket({
@@ -748,7 +776,8 @@ export default class NexusTalk extends Streamer {
     // Decode talk begin packet
     if (Buffer.isBuffer(payload) === true && this.#protobufNexusTalk !== undefined && this.#protobufNexusTalk !== null) {
       //let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.TalkbackBegin').decode(payload).toJSON();
-      this.audio.talking = true;
+      this.#talkback.active = true;
+      this.#talkback.lastPacketTime = undefined; // reset timing for new session
       this?.log?.debug?.('Talking started on uuid "%s"', this.nest_google_device_uuid);
     }
   }
@@ -757,7 +786,8 @@ export default class NexusTalk extends Streamer {
     // Decode talk end packet
     if (Buffer.isBuffer(payload) === true && this.#protobufNexusTalk !== undefined && this.#protobufNexusTalk !== null) {
       //let decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.TalkbackEnd').decode(payload).toJSON();
-      this.audio.talking = false;
+      this.#talkback.active = false;
+      this.#talkback.lastPacketTime = undefined;
       this?.log?.debug?.('Talking ended on uuid "%s"', this.nest_google_device_uuid);
     }
   }
@@ -880,5 +910,27 @@ export default class NexusTalk extends Streamer {
 
     // Store reason for reconnect (debugging / logging purposes)
     this.#reconnectReason = reason;
+  }
+
+  #resetChannelDetails() {
+    // Reset video channel details
+    this.#channels.video.id = undefined;
+    this.#channels.video.profile = undefined;
+    this.#channels.video.baseTimestamp = undefined;
+    this.#channels.video.baseTime = undefined;
+    this.#channels.video.mediaTime = undefined;
+    this.#channels.video.sampleRate = undefined;
+
+    // Reset audio channel details
+    this.#channels.audio.id = undefined;
+    this.#channels.audio.profile = undefined;
+    this.#channels.audio.baseTimestamp = undefined;
+    this.#channels.audio.baseTime = undefined;
+    this.#channels.audio.mediaTime = undefined;
+    this.#channels.audio.sampleRate = undefined;
+
+    // Reset talkback state as well since this can also change on each stream
+    this.#talkback.active = false;
+    this.#talkback.lastPacketTime = undefined;
   }
 }
