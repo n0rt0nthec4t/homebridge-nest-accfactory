@@ -17,7 +17,7 @@
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.03.27
+// Code version 2026.03.30
 // Mark Hulskamp
 'use strict';
 
@@ -39,6 +39,7 @@ import Streamer from './streamer.js';
 import { USER_AGENT, __dirname } from './consts.js';
 
 const PING_INTERVAL = 15000; // Ping interval to nexus server while stream active
+const STALLED_TIMEOUT = 10000; // Time with no playback packets before we consider stream stalled and attempt restart
 
 const PACKET_TYPE = {
   PING: 1,
@@ -157,7 +158,7 @@ export default class NexusTalk extends Streamer {
   }
 
   // Class functions
-  async connect(host) {
+  async connect(options = {}) {
     if (this.online === true && this.videoEnabled === true) {
       if (this.#socket !== undefined && this.#socket.destroyed === false) {
         // Existing socket is still opening/open, avoid duplicate concurrent connects.
@@ -173,28 +174,28 @@ export default class NexusTalk extends Streamer {
       this.#reconnectHost = undefined;
       this.#reconnectReason = undefined;
 
-      if (typeof host === 'undefined' || host === null) {
+      if (typeof options?.host === 'undefined' || options?.host === null) {
         // No host parameter passed in, so we'll set this to our internally stored host
-        host = this.nexustalk_host;
+        options.host = this.nexustalk_host;
       }
 
-      this.connected = false; // Starting connection
-      this?.log?.debug?.('Connection started to "%s"', host);
-      this.#host = host; // Update internal host name since we’re about to connect
+      this?.log?.debug?.('Connection started to "%s"', options.host);
+      this.#host = options.host; // Update internal host name since we’re about to connect
+      this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CONNECTING);
 
       // Wrap tls.connect() in a Promise so we can await the TLS handshake
       try {
         await new Promise((resolve, reject) => {
-          let socket = tls.connect({ host: host, port: 1443 }, () => {
+          let socket = tls.connect({ host: options.host, port: 1443 }, () => {
             if (this.#socket !== socket) {
               resolve();
               return;
             }
             // Opened connection to Nexus server, so now need to authenticate ourselves
-            this?.log?.debug?.('Connection established to "%s"', host);
+            this?.log?.debug?.('Connection established to "%s"', options.host);
+            this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CONNECTED);
 
             socket.setKeepAlive(true); // Keep socket connection alive
-            this.connected = true;
             this.#reconnectPending = false;
             this.#reconnectHost = undefined;
             this.#reconnectReason = undefined;
@@ -209,9 +210,9 @@ export default class NexusTalk extends Streamer {
             }
 
             // TLS error (could be refused, timeout, etc.)
-            this?.log?.warn?.('TLS error on connect to "%s": %s', host, String(error));
-            this.connected = undefined;
+            this?.log?.warn?.('TLS error on connect to "%s": %s', options.host, String(error));
             this.#authorised = false; // Since we had an error, we can't be authorised
+            this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSED, 'tls-error');
             reject(error);
           });
 
@@ -232,7 +233,7 @@ export default class NexusTalk extends Streamer {
               return;
             }
 
-            this?.log?.debug?.('Connection closed to "%s"', host);
+            this?.log?.debug?.('Connection closed to "%s"', options.host);
 
             clearInterval(this.#pingTimer);
             clearTimeout(this.#stalledTimer);
@@ -240,18 +241,18 @@ export default class NexusTalk extends Streamer {
             this.#stalledTimer = undefined;
             this.#authorised = false; // Since connection closed, we can't be authorised anymore
             this.#socket = undefined; // Clear socket object
-            this.connected = undefined; // We're no longer connected
             this.#sessionId = undefined; // Not an active session anymore
             this.#host = undefined;
 
             if (this.hasActiveStreams() === true && this.#reconnectPending === false) {
-              this.#requestReconnect(host, 'service-close');
+              this.#requestReconnect(options.host, 'service-close');
             }
 
-            if (this.#reconnectPending === true && typeof this.#reconnectHost === 'string' && this.#reconnectHost !== '') {
-              let reconnectHost = this.#reconnectHost;
-              let reconnectReason = this.#reconnectReason;
+            let reconnecting = this.#reconnectPending === true;
+            let reconnectHost = this.#reconnectHost;
+            let reconnectReason = this.#reconnectReason;
 
+            if (reconnecting === true && typeof reconnectHost === 'string' && reconnectHost !== '') {
               this.#reconnectPending = false;
               this.#reconnectHost = undefined;
               this.#reconnectReason = undefined;
@@ -261,12 +262,16 @@ export default class NexusTalk extends Streamer {
                 reconnectReason === 'redirect' ? 'redirecting' : 'attempting reconnection',
                 reconnectHost,
               );
-              this.connect(reconnectHost);
+              this.connect({ host: reconnectHost }); // Attempt reconnect to new host
+              return;
             }
+
+            this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSED, 'socket-close');
           });
         });
       } catch (error) {
-        this?.log?.error?.('Failed to connect to "%s": %s', host, String(error));
+        this?.log?.error?.('Failed to connect to "%s": %s', options.host, String(error));
+        this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSED, 'connect-failed');
       }
     }
   }
@@ -296,7 +301,12 @@ export default class NexusTalk extends Streamer {
     // Reset current playback channel timing/stateon close since we'll need to renegotiate this on the next stream
     this.#resetChannelDetails();
 
-    this.connected = undefined;
+    // Only move to closed state if we are not already reconnecting.
+    // Reconnect state is set when reconnect is requested, not during close().
+    if (this.#reconnectPending !== true) {
+      this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSED);
+    }
+
     this.#sessionId = undefined; // Not an active session anymore
     this.#packetBuffer = undefined;
     this.#packetOffset = undefined;
@@ -610,10 +620,25 @@ export default class NexusTalk extends Streamer {
   #handlePlaybackPacket(payload) {
     // Function to check if a given H264 NAL unit type is present in the data buffer
     let hasH264NAL = (data, nalType) => {
+      if (Buffer.isBuffer(data) !== true || data.length === 0) {
+        return false;
+      }
+
+      // Raw NAL unit without Annex B start code
+      if ((data[0] & 0x1f) === nalType) {
+        return true;
+      }
+
       let offset = 0;
-      while (offset < data.length - 3) {
+      while (offset < data.length) {
         // 4-byte Annex B start code
-        if (data[offset] === 0x00 && data[offset + 1] === 0x00 && data[offset + 2] === 0x00 && data[offset + 3] === 0x01) {
+        if (
+          offset + 3 < data.length &&
+          data[offset] === 0x00 &&
+          data[offset + 1] === 0x00 &&
+          data[offset + 2] === 0x00 &&
+          data[offset + 3] === 0x01
+        ) {
           offset += 4;
           if (offset < data.length && (data[offset] & 0x1f) === nalType) {
             return true;
@@ -622,16 +647,16 @@ export default class NexusTalk extends Streamer {
         }
 
         // 3-byte Annex B start code
-        if (data[offset] === 0x00 && data[offset + 1] === 0x00 && data[offset + 2] === 0x01) {
+        if (offset + 2 < data.length && data[offset] === 0x00 && data[offset + 1] === 0x00 && data[offset + 2] === 0x01) {
           offset += 3;
           if (offset < data.length && (data[offset] & 0x1f) === nalType) {
             return true;
           }
           continue;
         }
-
         offset++;
       }
+
       return false;
     };
 
@@ -674,13 +699,13 @@ export default class NexusTalk extends Streamer {
     clearTimeout(this.#stalledTimer);
     this.#stalledTimer = setTimeout(() => {
       this?.log?.debug?.(
-        'We have not received any data from nexus in the past "%s" seconds for uuid "%s". Attempting restart',
-        10,
+        'No WebRTC playback packets received for uuid "%s" in the past %s seconds. Closing connection',
         this.nest_google_device_uuid,
+        Math.round(STALLED_TIMEOUT / 1000),
       );
       this.#requestReconnect(this.#host, 'stalled');
       this.close(false);
-    }, 10000);
+    }, STALLED_TIMEOUT);
 
     if (decodedMessage?.channelId === undefined) {
       return;
@@ -695,10 +720,10 @@ export default class NexusTalk extends Streamer {
     if (decodedMessage.channelId === this.#channels.video?.id) {
       let timestamp = calculateTimestamp(decodedMessage.timestampDelta, this.#channels.video);
       let data = Buffer.from(decodedMessage.payload, 'base64');
-      let keyFrame = false;
-
-      if (data.length > 0) {
-        keyFrame = hasH264NAL(data, Streamer.H264NALUS.TYPES.IDR);
+      let keyFrame = hasH264NAL(data, Streamer.H264NALUS.TYPES.IDR);
+      if (keyFrame === true && this.sourceState !== Streamer.MESSAGE_TYPE.SOURCE_READY) {
+        // Receievd an IDR frame and we're not ready yet. We can be fairly confident the stream is good and we can move to ready state now
+        this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_READY);
       }
 
       this.addPacket({
@@ -739,6 +764,7 @@ export default class NexusTalk extends Streamer {
       if (this.#sessionId !== undefined && decodedMessage.reason === 'USER_ENDED_SESSION') {
         // Normal playback ended ie: when we stopped playback
         this?.log?.debug?.('Playback ended on "%s"', this.#host);
+        this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSED, 'playback-ended');
       }
 
       if (decodedMessage.reason !== 'USER_ENDED_SESSION') {
@@ -895,21 +921,25 @@ export default class NexusTalk extends Streamer {
     // Request a reconnect once the current socket is closed.
     // This does NOT perform the reconnect immediately.
     // The actual reconnect is handled centrally in the socket 'close' handler.
+
+    // Always update reconnect target info
     if (typeof host === 'string' && host !== '') {
-      // Use provided host for reconnect (e.g. redirect, host change)
       this.#reconnectHost = host;
     }
 
     if ((this.#reconnectHost ?? '') === '') {
-      // No explicit host provided, fallback to current or configured host
       this.#reconnectHost = this.#host ?? this.nexustalk_host;
     }
 
-    // Mark reconnect as pending so the close handler can action it
-    this.#reconnectPending = true;
-
-    // Store reason for reconnect (debugging / logging purposes)
     this.#reconnectReason = reason;
+
+    // Only emit once
+    if (this.#reconnectPending === true) {
+      return;
+    }
+
+    this.#reconnectPending = true;
+    this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_RECONNECTING, reason);
   }
 
   #resetChannelDetails() {

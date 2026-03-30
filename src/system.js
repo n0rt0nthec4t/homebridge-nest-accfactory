@@ -27,7 +27,7 @@
 // Creates HomeKitDevice instances for each Nest/Google device
 // Manages connection objects for each account (credentials, API endpoints)
 //
-// Code version 2026.03.25
+// Code version 2026.03.30
 // Mark Hulskamp
 'use strict';
 
@@ -853,7 +853,7 @@ export default class NestAccfactory {
 
       this.#connections[uuid][doneFlag] = true;
 
-      this?.log?.warn?.('Support Dump for %s data will be logged below for troubleshooting purposes.', sourceName);
+      this?.log?.info?.('Support dump for %s data will be logged below for troubleshooting purposes.', sourceName);
 
       sourceData.forEach(([serial, data]) => {
         this?.log?.info?.('{');
@@ -874,7 +874,7 @@ export default class NestAccfactory {
         this?.log?.info?.('}');
       });
 
-      this?.log?.warn?.('End of Support Dump for %s data.', sourceName);
+      this?.log?.info?.('End of support dump for %s data.', sourceName);
     };
 
     // Run support dumps once per connection

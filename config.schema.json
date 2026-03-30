@@ -106,7 +106,7 @@
             "default": "/usr/local/bin/ffmpeg"
           },
           "maxStreams": {
-            "type": "integer",
+            "type": "number",
             "default": 2,
             "minimum": 1,
             "maximum": 4
@@ -200,7 +200,7 @@
               "required": true
             },
             "elevation": {
-              "type": "integer",
+              "type": "number",
               "minimum": 0,
               "maximum": 8848
             },
@@ -373,8 +373,7 @@
         },
         {
           "key": "options.maxStreams",
-          "title": "Simultaneous Live Viewers per Camera",
-          "type": "number"  
+          "title": "Simultaneous Live Viewers per Camera"
         },
         {
           "key": "options.debug",

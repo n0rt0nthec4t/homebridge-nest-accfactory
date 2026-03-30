@@ -87,7 +87,7 @@ const STREAMERS = {
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2026.03.27'; // Code version
+  static VERSION = '2026.03.30'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -405,6 +405,7 @@ export default class NestCamera extends HomeKitDevice {
 
         this.streamer = new WebRTC(this.uuid, deviceData, {
           log: this.log,
+          supportDump: this.deviceData.supportDump === true,
         });
       }
 
@@ -415,6 +416,7 @@ export default class NestCamera extends HomeKitDevice {
 
         this.streamer = new NexusTalk(this.uuid, deviceData, {
           log: this.log,
+          supportDump: this.deviceData.supportDump === true,
         });
       }
 
@@ -424,7 +426,9 @@ export default class NestCamera extends HomeKitDevice {
         this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.Active).value ===
           this.hap.Characteristic.Active.ACTIVE
       ) {
-        await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_BUFFER);
+        await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_BUFFER, {
+          options: { localAccess: this.deviceData.localAccess === true },
+        });
       }
     }
 
@@ -813,7 +817,11 @@ export default class NestCamera extends HomeKitDevice {
     // Start the appropriate streamer
     let { video, audio } = await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_RECORD, {
       sessionID: sessionID,
-      includeAudio: includeAudio === true,
+      options: {
+        includeAudio: includeAudio === true,
+        recordTime: Date.now() - 4000, // Start a few seconds in the past to try to capture pre-roll video before motion trigger
+        localAccess: this.deviceData.localAccess === true, // User local device access if configured otherswise fallback to cloud
+      },
     });
 
     // Connect the ffmpeg process to the streamer input/output
@@ -891,7 +899,9 @@ export default class NestCamera extends HomeKitDevice {
       // Required due to data delays by on prem Nest to cloud to HomeKit accessory to iCloud etc
       // Make sure have appropriate bandwidth!!!
       this?.log?.info?.('Recording was turned on for "%s"', this.deviceData.description);
-      await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_BUFFER);
+      await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_BUFFER, {
+        options: { localAccess: this.deviceData.localAccess === true },
+      });
     }
 
     if (enableRecording === false && this.streamer.isBuffering() === true) {
@@ -1057,7 +1067,10 @@ export default class NestCamera extends HomeKitDevice {
       // Start the live streamer process
       let { video, audio, talkback } = await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_LIVE, {
         sessionID: request.sessionID,
-        includeAudio: includeAudio === true,
+        options: {
+          includeAudio: includeAudio === true,
+          localAccess: this.deviceData.localAccess === true, // User local device access if configured otherswise fallback to cloud
+        },
       });
 
       // Build our ffmpeg command string for the liveview video/audio stream
@@ -1932,6 +1945,7 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
             : config.options?.logMotionEvents === false
               ? false
               : true;
+        tempDevice.supportDump = config.options.supportDump === true;
 
         devices[tempDevice.serialNumber] = tempDevice;
       }

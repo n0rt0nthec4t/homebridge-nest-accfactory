@@ -18,7 +18,7 @@
 //
 // Note: Currently a "work in progress" - feature set may expand
 //
-// Code version 2026.03.28
+// Code version 2026.03.29
 // Mark Hulskamp
 'use strict';
 
@@ -46,21 +46,21 @@ const EXTEND_INTERVAL = 30000; // Send extend command to Google Home Foyer every
 const GOOGLE_HOME_FOYER_REQUEST_TIMEOUT = 15000; // Client-side timeout for Google Home Foyer gRPC requests
 const GOOGLE_HOME_FOYER_BUFFER_INITIAL = 8 * 1024; // Initial 8KB buffer for gRPC responses
 const GOOGLE_HOME_FOYER_BUFFER_MAX = 10 * 1024 * 1024; // Maximum 10MB buffer limit
-const RTP_PACKET_HEADER_SIZE = 12;
-const RTP_H264_VIDEO_PAYLOAD_TYPE = 98;
-const RTP_H264_VIDEO_RTX_PAYLOAD_TYPE = 99; // RTX for H.264 video
-const RTP_OPUS_AUDIO_PAYLOAD_TYPE = 111;
+const RTP_PACKET_HEADER_SIZE = 12; // RTP packet header size in bytes
+const RTP_H264_VIDEO_PAYLOAD_TYPE = 98; // H.264 video payload type
+const RTP_H264_VIDEO_RTX_PAYLOAD_TYPE = 99; // H.264 RTX payload type for retransmissions
+const RTP_OPUS_AUDIO_PAYLOAD_TYPE = 111; // Opus audio payload type
 const GOOGLE_HOME_FOYER_PREFIX = 'google.internal.home.foyer.v1.';
-const FU_A_TIMEOUT = 1500;
-const IDR_TIMEOUT = 5000;
-
-// Default blank audio frame (20ms) in PCM S16LE, stereo @ 48kHz
-const PCM_S16LE_48000_STEREO_BLANK = Buffer.alloc(1920 * 2 * 2);
+const FU_A_TIMEOUT = 1500; // Time to wait for the completion of a fragmented FU-A NAL unit before discarding the incomplete data
+const IDR_TIMEOUT = 5000; // Time to wait for an IDR frame before considering the video stream stalled and attempting a reconnect
+const TIMESTAMP_MAX_VIDEO_DELTA = 80;
+const TIMESTAMP_MAX_AUDIO_DELTA = 120;
+const STALLED_TIMEOUT = 10000; // Time with no playback packets before we consider stream stalled and attempt restart
+const PCM_S16LE_48000_STEREO_BLANK = Buffer.alloc(1920 * 2 * 2); // Default blank audio frame (20ms) in PCM S16LE, stereo @ 48kHz
 
 // WebRTC object
 export default class WebRTC extends Streamer {
   token = undefined; // oauth2 token
-  localAccess = false; // Do we try direct local access to the camera or via Google Home first
   blankAudio = PCM_S16LE_48000_STEREO_BLANK;
 
   // Internal data only for this class
@@ -76,6 +76,8 @@ export default class WebRTC extends Streamer {
   #extendTimer = undefined; // Stream extend timer
   #stalledTimer = undefined; // Timer object for no received data
   #pingTimer = undefined; // Google Home Foyer periodic ping
+  #reconnectPending = false; // Reconnect requested once socket closes
+  #reconnectReason = undefined; // Reason for reconnect
   #tracks = { audio: {}, video: {}, talkback: {} }; // Track state for audio and video
 
   // Codecs being used for video, audio and talking
@@ -109,7 +111,6 @@ export default class WebRTC extends Streamer {
 
     // Store data we need from the device data passed it
     this.token = deviceData?.apiAccess?.oauth2;
-    this.localAccess = deviceData?.localAccess === true;
 
     // Update Google Home Foyer api host if using field test
     if (deviceData?.apiAccess?.fieldTest === true) {
@@ -118,12 +119,14 @@ export default class WebRTC extends Streamer {
   }
 
   // Class functions
-  async connect() {
+  async connect(options = {}) {
     clearInterval(this.#extendTimer);
     clearTimeout(this.#stalledTimer);
     this.#extendTimer = undefined;
     this.#stalledTimer = undefined;
     this.#streamId = undefined;
+    this.#reconnectPending = false;
+    this.#reconnectReason = undefined;
 
     if (this.online === true && this.videoEnabled === true) {
       if (this.#googleHomeDeviceUUID === undefined) {
@@ -153,7 +156,7 @@ export default class WebRTC extends Streamer {
 
       if (this.#googleHomeDeviceUUID !== undefined) {
         // Start setting up connection to camera stream
-        this.connected = false; // Starting connection
+        this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CONNECTING);
         let homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'SendCameraViewIntent', {
           request: {
             googleDeviceId: {
@@ -164,8 +167,8 @@ export default class WebRTC extends Streamer {
         });
 
         if (homeFoyerResponse.status !== 0) {
-          this.connected = undefined;
           this?.log?.debug?.('Request to start camera viewing was not accepted for uuid "%s"', this.nest_google_device_uuid);
+          this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSED, 'view-intent-failed');
           return;
         }
 
@@ -229,7 +232,7 @@ export default class WebRTC extends Streamer {
         homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'JoinStream', {
           command: 'offer',
           deviceId: this.nest_google_device_uuid,
-          local: this.localAccess === true,
+          local: options?.localAccess === true,
           streamContext: 'STREAM_CONTEXT_DEFAULT',
           requestedVideoResolution: 'VIDEO_RESOLUTION_FULL_HIGH',
           sdp: webRTCOffer.sdp,
@@ -244,8 +247,8 @@ export default class WebRTC extends Streamer {
           // Offer was not accepted or answer was malformed, so close the peer connection and clean up state
           this.#peerConnection?.close?.();
           this.#peerConnection = undefined;
-          this.connected = undefined;
           this?.log?.debug?.('WebRTC offer was not agreed with remote for uuid "%s"', this.nest_google_device_uuid);
+          this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSED, 'offer-rejected');
           return;
         }
 
@@ -446,19 +449,24 @@ export default class WebRTC extends Streamer {
         });
 
         this?.log?.debug?.('Playback started from WebRTC for uuid "%s" with stream ID "%s"', this.nest_google_device_uuid, this.#streamId);
-        this.connected = true;
+        this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CONNECTED);
 
         // Monitor connection status. If closed and there are still output streams, re-connect
         // Never seem to get a 'connected' status. Could use that for something?
-        this.#peerConnection?.iceConnectionStateChange?.subscribe?.((state) => {
-          if (state !== 'connected' && state !== 'connecting') {
-            this?.log?.debug?.('Connection closed to WebRTC for uuid "%s"', this.nest_google_device_uuid);
-            this.connected = undefined;
-            if (this.hasActiveStreams() === true) {
-              this.connect();
+        this.#peerConnection.oniceconnectionstatechange = () => {
+          let state = this.#peerConnection.iceConnectionState;
+          if (state === 'connected' || state === 'completed' || state === 'checking') {
+            return;
+          }
+
+          if (state === 'failed' || state === 'disconnected' || state === 'closed') {
+            this?.log?.debug?.('WebRTC ICE state "%s" for uuid "%s", requesting reconnect', state, this.nest_google_device_uuid);
+            this.#requestReconnect('ice-' + state);
+            if (this.hasActiveOutputs() === true) {
+              this.close();
             }
           }
-        });
+        };
 
         // Create a timer to extend the active stream every period as defined only if we don't have local access.
         // If we have local access, the stream should stay alive without needing to send extend commands
@@ -466,7 +474,7 @@ export default class WebRTC extends Streamer {
           this.#extendTimer = setInterval(async () => {
             if (
               this.#googleHomeFoyer !== undefined &&
-              this.connected === true &&
+              this.sourceState === Streamer.MESSAGE_TYPE.SOURCE_READY &&
               this.#streamId !== undefined &&
               this.#googleHomeDeviceUUID !== undefined
             ) {
@@ -479,7 +487,8 @@ export default class WebRTC extends Streamer {
               if (homeFoyerResponse?.data?.[0]?.streamExtensionStatus !== 'STATUS_STREAM_EXTENDED') {
                 this?.log?.debug?.('Error occurred while requesting stream extension for uuid "%s"', this.nest_google_device_uuid);
 
-                await this.#peerConnection?.close?.();
+                this.#requestReconnect('extend-failed');
+                this.close();
               }
             }
           }, EXTEND_INTERVAL);
@@ -490,7 +499,7 @@ export default class WebRTC extends Streamer {
 
   async close() {
     if (this.#streamId !== undefined) {
-      if (this.#tracks?.talkback?.active !== undefined) {
+      if (this.#tracks?.talkback?.active === true) {
         // If we're starting or started talk, stop it
         await this.#googleHomeFoyerCommand('CameraService', 'SendTalkback', {
           googleDeviceId: {
@@ -510,13 +519,6 @@ export default class WebRTC extends Streamer {
       });
     }
 
-    clearInterval(this.#pingTimer);
-    this.#pingTimer = undefined;
-    this.#googleHomeFoyer?.destroy?.();
-
-    await this.#peerConnection?.close?.();
-
-    // Clear any running timers and state related to the connection and streaming
     clearInterval(this.#extendTimer);
     clearTimeout(this.#stalledTimer);
     clearInterval(this.#pingTimer);
@@ -524,13 +526,48 @@ export default class WebRTC extends Streamer {
     this.#extendTimer = undefined;
     this.#stalledTimer = undefined;
     this.#pingTimer = undefined;
+
+    try {
+      await this.#peerConnection?.close?.();
+    } catch {
+      // Empty
+    }
+
+    try {
+      this.#googleHomeFoyer?.destroy?.();
+    } catch {
+      // Empty
+    }
+
     this.#streamId = undefined;
     this.#googleHomeFoyer = undefined;
     this.#peerConnection = undefined;
     this.#videoTransceiver = undefined;
     this.#audioTransceiver = undefined;
     this.#tracks = { audio: {}, video: {}, talkback: {} }; // Track state for audio and video
-    this.connected = undefined;
+
+    if (this.#reconnectPending === true) {
+      // We have a reconnect pending, so reset the flag and attempt to reconnect.
+      // We do this to avoid trying to reconnect while the socket is still closing which would cause errors.
+      // Instead we wait for the socket to fully close and then reconnect if we still have active outputs at that time (if the user stopped streaming while we were waiting for the socket to close, then we won't reconnect which is good).
+      let reconnectReason = this.#reconnectReason;
+
+      this.#reconnectPending = false;
+      this.#reconnectReason = undefined;
+
+      this?.log?.debug?.(
+        'Connection closed to WebRTC for uuid "%s", attempting reconnect%s',
+        this.nest_google_device_uuid,
+        typeof reconnectReason === 'string' && reconnectReason !== '' ? ' (' + reconnectReason + ')' : '',
+      );
+
+      if (this?.hasActiveOutputs?.() === true) {
+        this.connect();
+        return;
+      }
+    }
+
+    this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSED);
   }
 
   async onUpdate(deviceData) {
@@ -702,7 +739,7 @@ export default class WebRTC extends Streamer {
           sequenceNumber: 0,
           timestamp: undefined,
         },
-        active: false,
+        active: undefined,
       };
     }
 
@@ -850,6 +887,11 @@ export default class WebRTC extends Streamer {
       }
 
       if (naluType === Streamer.H264NALUS.TYPES.IDR) {
+        if (this.sourceState !== Streamer.MESSAGE_TYPE.SOURCE_READY) {
+          // Receievd an IDR frame and we're not ready yet. We can be fairly confident the stream is good and we can move to ready state now
+          this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_READY);
+        }
+
         this.#tracks.video.lastIDRTime = now;
 
         // For IDR frames, emit the cached SPS and PPS beforehand if we have them and haven't emitted them before with a recent IDR
@@ -877,11 +919,14 @@ export default class WebRTC extends Streamer {
     clearTimeout(this.#stalledTimer);
     this.#stalledTimer = setTimeout(() => {
       this?.log?.debug?.(
-        'No WebRTC playback packets received for uuid "%s" in the past 10 seconds. Closing connection',
+        'No WebRTC playback packets received for uuid "%s" in the past %s seconds. Closing connection',
         this.nest_google_device_uuid,
+        Math.round(STALLED_TIMEOUT / 1000),
       );
+
+      this.#requestReconnect('stall');
       this.close();
-    }, 10000);
+    }, STALLED_TIMEOUT);
 
     // Handle video playback packets
     if (rtpPacket.header.payloadType === this.#tracks.video?.id) {
@@ -933,7 +978,7 @@ export default class WebRTC extends Streamer {
       if (type === Streamer.H264NALUS.TYPES.STAP_A) {
         let offset = 1;
 
-        timestamp = calculateTimestamp(rtpPacket, video, 80);
+        timestamp = calculateTimestamp(rtpPacket, video, TIMESTAMP_MAX_VIDEO_DELTA);
         if (typeof timestamp !== 'number') {
           return;
         }
@@ -1006,7 +1051,7 @@ export default class WebRTC extends Streamer {
           video.h264.fuTimestamp = undefined;
 
           // Calculate timestamp based on the RTP timestamp of the first FU-A fragment and emit the complete NAL unit
-          timestamp = calculateTimestamp({ header: { timestamp: completedTimestamp } }, video, 80);
+          timestamp = calculateTimestamp({ header: { timestamp: completedTimestamp } }, video, TIMESTAMP_MAX_VIDEO_DELTA);
           if (typeof timestamp !== 'number') {
             return;
           }
@@ -1018,7 +1063,7 @@ export default class WebRTC extends Streamer {
       }
 
       // Raw NAL unit
-      timestamp = calculateTimestamp(rtpPacket, video, 80);
+      timestamp = calculateTimestamp(rtpPacket, video, TIMESTAMP_MAX_VIDEO_DELTA);
       if (typeof timestamp !== 'number') {
         return;
       }
@@ -1052,7 +1097,7 @@ export default class WebRTC extends Streamer {
       }
       audio.rtp.lastSequence = rtpPacket.header.sequenceNumber;
 
-      let timestamp = calculateTimestamp(rtpPacket, audio, 120);
+      let timestamp = calculateTimestamp(rtpPacket, audio, TIMESTAMP_MAX_AUDIO_DELTA);
       if (typeof timestamp !== 'number') {
         return;
       }
@@ -1133,6 +1178,17 @@ export default class WebRTC extends Streamer {
     this?.log?.debug?.('Sending RTCP PLI for uuid "%s"%s', this.nest_google_device_uuid, reason !== '' ? ' (' + reason + ')' : '');
 
     this.#videoTransceiver?.receiver?.sendRtcpPLI?.(video.ssrc);
+  }
+
+  #requestReconnect(reason) {
+    if (this.#reconnectPending === true) {
+      return;
+    }
+
+    this.#reconnectPending = true;
+    this.#reconnectReason = reason;
+
+    this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_RECONNECTING, reason);
   }
 
   // Need more work in here*
