@@ -1080,7 +1080,7 @@ export default class NestCamera extends HomeKitDevice {
         '-use_wallclock_as_timestamps',
         '1',
         '-fflags',
-        '+discardcorrupt+genpts',
+        '+discardcorrupt',
         '-max_delay',
         '500000',
         '-flags',

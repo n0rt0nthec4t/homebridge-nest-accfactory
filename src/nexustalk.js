@@ -17,7 +17,7 @@
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.03.30
+// Code version 2026.03.31
 // Mark Hulskamp
 'use strict';
 
@@ -103,6 +103,9 @@ export default class NexusTalk extends Streamer {
       baseTime: undefined,
       mediaTime: undefined,
       sampleRate: undefined,
+      pendingTimestamp: undefined,
+      pendingKeyFrame: false,
+      pendingParts: [],
     },
     audio: {
       id: undefined,
@@ -298,7 +301,7 @@ export default class NexusTalk extends Streamer {
       }
     }
 
-    // Reset current playback channel timing/stateon close since we'll need to renegotiate this on the next stream
+    // Reset current playback channel timing/state on close since we'll need to renegotiate this on the next stream
     this.#resetChannelDetails();
 
     // Only move to closed state if we are not already reconnecting.
@@ -677,6 +680,32 @@ export default class NexusTalk extends Streamer {
       return stream.mediaTime;
     };
 
+    // Function to flush any pending NexusTalk video frame
+    let flushPendingVideo = () => {
+      let pendingParts = this.#channels.video?.pendingParts;
+      let pendingTimestamp = this.#channels.video?.pendingTimestamp;
+      let pendingKeyFrame = this.#channels.video?.pendingKeyFrame;
+
+      if (Array.isArray(pendingParts) !== true || pendingParts.length === 0 || typeof pendingTimestamp !== 'number') {
+        this.#channels.video.pendingTimestamp = undefined;
+        this.#channels.video.pendingKeyFrame = false;
+        this.#channels.video.pendingParts = [];
+        return;
+      }
+
+      this.addPacket({
+        type: Streamer.PACKET_TYPE.VIDEO,
+        codec: this.codecs.video,
+        timestamp: pendingTimestamp,
+        keyFrame: pendingKeyFrame,
+        data: Buffer.concat(pendingParts),
+      });
+
+      this.#channels.video.pendingTimestamp = undefined;
+      this.#channels.video.pendingKeyFrame = false;
+      this.#channels.video.pendingParts = [];
+    };
+
     if (Buffer.isBuffer(payload) !== true || this.#protobufNexusTalk === undefined || this.#protobufNexusTalk === null) {
       return;
     }
@@ -695,11 +724,10 @@ export default class NexusTalk extends Streamer {
 
     // Set up a timeout to monitor for no packets received in a certain period
     // If it's triggered, we'll attempt to restart the stream and/or connection
-    // <-- testing to see how often this occurs first
     clearTimeout(this.#stalledTimer);
     this.#stalledTimer = setTimeout(() => {
       this?.log?.debug?.(
-        'No WebRTC playback packets received for uuid "%s" in the past %s seconds. Closing connection',
+        'No NexusTalk playback packets received for uuid "%s" in the past %s seconds. Closing connection',
         this.nest_google_device_uuid,
         Math.round(STALLED_TIMEOUT / 1000),
       );
@@ -711,28 +739,43 @@ export default class NexusTalk extends Streamer {
       return;
     }
 
-    // timestampDelta is treated as an incremental media clock delta.
-    // A value of 0 means reuse the current stream timestamp, otherwise
-    // advance the running media time by delta/sampleRate.
-    // payload is base64-encoded bytes (protobufjs config), convert to Buffer
-
     // Handle video packet
     if (decodedMessage.channelId === this.#channels.video?.id) {
       let timestamp = calculateTimestamp(decodedMessage.timestampDelta, this.#channels.video);
       let data = Buffer.from(decodedMessage.payload, 'base64');
       let keyFrame = hasH264NAL(data, Streamer.H264NALUS.TYPES.IDR);
-      if (keyFrame === true && this.sourceState !== Streamer.MESSAGE_TYPE.SOURCE_READY) {
-        // Receievd an IDR frame and we're not ready yet. We can be fairly confident the stream is good and we can move to ready state now
+
+      if (typeof timestamp !== 'number' || Buffer.isBuffer(data) !== true || data.length === 0) {
+        // We dont have valid timestamps or data
+        return;
+      }
+
+      if (this.sourceState === Streamer.MESSAGE_TYPE.SOURCE_CONNECTED) {
+        // Transition to READY now that we have real video packets
         this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_READY);
       }
 
-      this.addPacket({
-        type: Streamer.PACKET_TYPE.VIDEO,
-        codec: this.codecs.video,
-        timestamp: timestamp,
-        keyFrame: keyFrame,
-        data: data,
-      });
+      if (typeof this.#channels.video.pendingTimestamp === 'number' && timestamp !== this.#channels.video.pendingTimestamp) {
+        flushPendingVideo();
+      }
+
+      if (typeof this.#channels.video.pendingTimestamp !== 'number') {
+        this.#channels.video.pendingTimestamp = timestamp;
+        this.#channels.video.pendingKeyFrame = false;
+        this.#channels.video.pendingParts = [];
+      }
+
+      if (data.indexOf(Streamer.H264NALUS.START_CODE) !== 0) {
+        data = Buffer.concat([Streamer.H264NALUS.START_CODE, data]);
+      }
+
+      this.#channels.video.pendingParts.push(data);
+
+      if (keyFrame === true) {
+        this.#channels.video.pendingKeyFrame = true;
+      }
+
+      return;
     }
 
     // Handle audio packet
@@ -950,6 +993,9 @@ export default class NexusTalk extends Streamer {
     this.#channels.video.baseTime = undefined;
     this.#channels.video.mediaTime = undefined;
     this.#channels.video.sampleRate = undefined;
+    this.#channels.video.pendingTimestamp = undefined;
+    this.#channels.video.pendingKeyFrame = false;
+    this.#channels.video.pendingParts = [];
 
     // Reset audio channel details
     this.#channels.audio.id = undefined;
