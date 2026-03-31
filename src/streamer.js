@@ -1883,7 +1883,7 @@ export default class Streamer {
       }
 
       for (let streamer of removals) {
-        streamers.delete(streamer.uuid);
+        streamers.delete(streamer.#HomeKitDeviceUUID);
         streamer.stopEverything();
       }
 
@@ -1898,22 +1898,30 @@ export default class Streamer {
   // Register a streamer instance with the shared scheduler
   // Called when the instance has active streams (buffer/live/record)
   static #addStreamer(streamer) {
-    if (streamer instanceof Streamer === false || typeof streamer?.uuid !== 'string' || streamer.uuid === '') {
+    if (streamer instanceof Streamer === false) {
       return;
     }
 
-    this.#streamers.set(streamer.uuid, streamer);
+    if (typeof streamer.#HomeKitDeviceUUID !== 'string' || streamer.#HomeKitDeviceUUID === '') {
+      return;
+    }
+
+    this.#streamers.set(streamer.#HomeKitDeviceUUID, streamer);
     this.#start();
   }
 
   // Remove a streamer instance from the shared scheduler
   // Called when the instance no longer has any active streams
   static #removeStreamer(streamer) {
-    if (streamer instanceof Streamer === false || typeof streamer?.uuid !== 'string' || streamer.uuid === '') {
+    if (streamer instanceof Streamer === false) {
       return;
     }
 
-    this.#streamers.delete(streamer.uuid);
+    if (typeof streamer.#HomeKitDeviceUUID !== 'string' || streamer.#HomeKitDeviceUUID === '') {
+      return;
+    }
+
+    this.#streamers.delete(streamer.#HomeKitDeviceUUID);
 
     // Stop scheduler if no streamers remain
     if (this.#streamers.size === 0 && this.#timer !== undefined) {
