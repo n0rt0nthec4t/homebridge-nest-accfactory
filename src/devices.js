@@ -1,21 +1,30 @@
-// Device support loader
+// Device Module Loader
 // Part of homebridge-nest-accfactory
 //
-// Dynamically discovers and loads device plugin modules from the plugins directory
-// Each plugin module exports a device class extending HomeKitDevice
-// Manages device instantiation, initialization, and lifecycle across Nest and Google APIs
+// Loads and registers device support modules used by the platform.
+// Discovers HomeKitDevice-based device classes, collects any additional
+// exported helpers (such as processRawData), and builds a device registry
+// for use by the main system module.
 //
-// Device plugins supported:
-// - Camera, Doorbell: WebRTC and legacy Nest streaming
-// - Thermostat: HVAC control with humidity management
-// - Lock: Door unlock control
-// - Floodlight: Camera with lighting control
-// - Protect: Security/smoke detection
-// - TempSensor, Weather: Environmental sensors
-// - Others: Platform-specific devices (Heatlink, etc.)
+// Responsibilities:
+// - Discover device support modules from the device directory
+// - Load HomeKitDevice subclasses dynamically
+// - Validate required module metadata (TYPE and VERSION)
+// - Register optional helper exports alongside each device class
+// - Provide HomeKit accessory category mapping for supported device types
 //
-// Module exports:
-// - loadDeviceModules(log, pluginDir) - asynchronously load all device plugin classes
+// Features:
+// - Dynamic module loading from the plugin devices directory
+// - Automatic registration of HomeKitDevice subclasses
+// - Support for additional exported helpers such as processRawData()
+// - Version logging for loaded device modules
+// - HomeKit category resolution via getDeviceHKCategory()
+//
+// Notes:
+// - Device modules must export a class extending HomeKitDevice
+// - Device classes must provide static TYPE and VERSION properties
+// - Additional named exports are attached to the module entry when present
+// - Used by the main system module to create and manage device instances
 //
 // Code version 2026.03.15
 // Mark Hulskamp

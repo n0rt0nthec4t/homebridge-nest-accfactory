@@ -1,33 +1,35 @@
-// Daikin system external control module for homebridge-nest-accfactory
+// External Module: Daikin HVAC Controller
 // Part of homebridge-nest-accfactory
 //
-// External thermostat automation module that controls a Daikin WiFi-connected air conditioning system
-// through the Daikin `/aircon/set_control_info` HTTP API. Intended for use with the thermostat
-// plugin external module hook, allowing HomeKit thermostat mode changes to drive an independent HVAC system.
+// Provides external thermostat control for a Daikin WiFi-connected air
+// conditioning system via the Daikin HTTP API (/aircon/set_control_info).
+// Designed to integrate with the thermostat external module hook so that
+// HomeKit mode changes control an independent HVAC system.
 //
-// Exported control functions:
-// - cool(targetTemperature): Power on and switch to cooling mode
-// - heat(targetTemperature): Power on and switch to heating mode
-// - dehumidifier(targetHumidity): Power on and switch to dehumidifier mode
-// - fan(speed): Power on and switch to fan mode with HomeKit percentage mapped to Daikin fan rates
-// - off(): Power off using the last known operating mode and settings required by the Daikin API
+// Responsibilities:
+// - Translate HomeKit thermostat actions into Daikin API commands
+// - Manage HVAC modes (cool, heat, dehumidifier, fan, off)
+// - Track last known state for safe and valid control requests
+// - Provide optional filtering of supported control modes
 //
 // Features:
-// - Validates HTTP/HTTPS Daikin system URL before enabling control
-// - Maps HomeKit fan percentages to Daikin discrete fan levels
-// - Tracks last mode, temperature, humidity, fan rate, and fan direction for safe power-off requests
-// - Supports optional export filtering with `modes=` argument so only selected functions are exposed
-// - Includes retry-aware HTTP helper with timeout support and exponential backoff for transient failures
+// - Supports cooling, heating, dehumidifier, fan, and power-off control
+// - Maps HomeKit fan percentage to Daikin discrete fan levels
+// - Maintains last mode, temperature, humidity, and fan settings
+// - Validates and normalises system URL before enabling control
+// - Retry-aware HTTP helper with timeout and exponential backoff
+// - Optional "modes=" filter to expose only selected functions
+//
+// Notes:
+// - Stateless integration with no read-back from the Daikin system
+// - off() requires a previously established operating state
+// - Intended for use via thermostat external module configuration
+// - Returns a set of control functions dynamically based on configuration
 //
 // Usage:
 // - default(logger, [url])
 // - default(logger, [url, deviceDescription])
 // - default(logger, [url, deviceDescription, 'modes=cool,fan,off'])
-//
-// Limitations:
-// - No humidifier function is exported; only dehumidifier mode is supported
-// - off() requires a previously known operating state and does nothing until one has been established
-// - Commands are sent independently; no state is read back from the Daikin system
 //
 // Code version 2026.03.25
 // Mark Hulskamp

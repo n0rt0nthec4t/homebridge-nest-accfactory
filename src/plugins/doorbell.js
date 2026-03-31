@@ -1,37 +1,39 @@
 // Nest Doorbell - HomeKit integration
 // Part of homebridge-nest-accfactory
 //
-// HomeKit accessory for Nest wired doorbell - extends NestCamera with doorbell-specific features.
-// Provides video streaming, motion detection, doorbell event handling, and indoor chime control.
+// HomeKit accessory implementation for Nest Doorbells.
+// Extends NestCamera to add doorbell-specific behaviour including
+// doorbell press handling and optional indoor chime control.
+//
+// Responsibilities:
+// - Extend camera functionality with doorbell event handling
+// - Process doorbell press events and trigger HomeKit doorbell service
+// - Manage indoor chime enable/disable via optional switch service
+// - Apply cooldown logic to prevent repeated doorbell triggers
+// - Synchronise chime state with HomeKit and upstream API
 //
 // Inherits from NestCamera:
-// - Video streaming (WebRTC/NexusTalk with HKSV support)
+// - Video streaming (WebRTC / NexusTalk with HKSV support)
 // - Motion detection and smart alerts
-// - Snapshot and continuous recording (via HKSV)
-// - Audio streaming (two-way talk)
-// - Event handling and recording integration
+// - Snapshot handling and recording (HKSV)
+// - Two-way audio (talkback)
+// - Event processing and history integration
 //
-// Additional Services (Doorbell):
-// - Switch (optional, for indoor chime control when enabled)
-//
-// Switch Characteristics (Chime):
-// - On: Toggle indoor chime on/off
+// Services:
+// - DoorbellController (via NestCamera)
+// - Switch (optional, for indoor chime control)
 //
 // Features:
-// - Wired power source (no battery)
-// - Indoor chime notification control (requires explicit configuration)
-// - Two-way audio communication
-// - Motion and doorbell event detection
+// - Doorbell press detection with cooldown protection
+// - Indoor chime control with HomeKit switch (optional)
+// - Two-way audio support
 // - Full HomeKit Secure Video support
-// - Activity history integration
-// - Dynamic switch service creation based on device capabilities and configuration
+// - Eve Home activity history integration
 //
-// Data processing:
-// - Extends camera field mapping with chime control fields
-// - Synchronises chime state with HomeKit (on/off)
-// - Supports chime updates from remote API
-// - Maintains camera streaming independently of chime state
-// - Cooldown logic for doorbell press events (prevents rapid re-triggers)
+// Notes:
+// - Streaming and recording are handled entirely by NestCamera
+// - This module only adds doorbell-specific behaviour and services
+// - Doorbell press events may be suppressed if chime is disabled or quiet time is active
 //
 // Mark Hulskamp
 'use strict';
@@ -45,7 +47,7 @@ import { TIMERS } from '../consts.js';
 
 export default class NestDoorbell extends NestCamera {
   static TYPE = 'Doorbell';
-  static VERSION = '2026.03.15'; // Code version
+  static VERSION = '2026.04.01'; // Code version
 
   switchService = undefined; // HomeKit switch for enabling/disabling chime
 

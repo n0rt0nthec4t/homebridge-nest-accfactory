@@ -1,46 +1,38 @@
 // Nest Protect - HomeKit integration
 // Part of homebridge-nest-accfactory
 //
-// HomeKit accessory for Nest Protect smoke and carbon monoxide detector.
-// Supports 1st and 2nd generation units with battery status, self-test, and motion detection (wired models).
+// HomeKit accessory implementation for Nest Protect devices.
+// Provides smoke and carbon monoxide detection, battery monitoring,
+// alarm state handling, and activity tracking using Nest and Google APIs.
+//
+// Responsibilities:
+// - Expose smoke and carbon monoxide detection via HomeKit services
+// - Synchronise alarm states with HomeKit (smoke, CO, test events)
+// - Monitor battery status and low battery conditions
+// - Report device status (online/offline, fault conditions)
+// - Record event history for Eve Home integration
 //
 // Services:
-// - SmokeSensor (primary service with Eve custom characteristics)
-// - CarbonMonoxideSensor (CO detection status)
-// - Battery (hidden, battery level and low battery alerts)
-// - MotionSensor (optional, wired models only)
-//
-// Characteristics:
-// - SmokeDetected: Smoke alarm status (detected/not detected)
-// - CarbonMonoxideDetected: CO alarm status (detected/not detected)
-// - StatusActive: Online status and replacement-date validity
-// - StatusFault: General fault detection (offline or replacement date past)
-// - BatteryLevel and StatusLowBattery: Battery status (not rechargeable)
-// - MotionDetected: Motion sensor (wired models only, cleared on shutdown)
-//
-// Eve Custom Characteristics:
-// - LastAlarmTest: Timestamp of last self-test
-// - AlarmTest: Self-test in progress indicator
-// - HeatStatus: Heat detection status
-// - HushedState: Alarm hushed indicator
-// - StatusLED: Green LED enable state
-// - SmokeTestPassed: Smoke sensor test result
-// - HeatTestPassed: Heat sensor test result
+// - SmokeSensor
+// - CarbonMonoxideSensor
+// - Battery (hidden, for battery level and low battery alerts)
 //
 // Features:
-// - Dual smoke and CO detection with separate alarms
-// - Battery status tracking (wired and battery models)
-// - Automatic detector replacement date monitoring
-// - Self-test information and heat status
-// - Motion detection on wired units
-// - Online/offline status with fault reporting
-// - Motion sensor reset on plugin shutdown (prevents stale state)
+// - Real-time smoke and CO alarm state synchronisation
+// - Support for alarm test events
+// - Battery monitoring with low battery alerts
+// - Device online/offline state tracking
+// - Eve Home history integration
 //
-// Data processing:
-// - Translates raw Nest Protobuf detector data to HomeKit format
-// - Field mapping decouples API changes from HomeKit presentation
-// - Supports both 1st gen (battery) and 2nd gen (wired/battery) models
-// - Timestamp-based replacement date validation
+// Notes:
+// - Supports both Nest and Google APIs depending on device/account type
+// - Alarm states are normalised before presentation to HomeKit
+// - HomeKit does not differentiate alarm sources beyond service type
+//
+// Data Translation:
+// - Raw API data is mapped using PROTECT_FIELD_MAP
+// - processRawData() builds device objects and applies configuration overrides
+// - Field mapping isolates upstream API differences from HomeKit representation
 //
 // Mark Hulskamp
 'use strict';
@@ -55,7 +47,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = 'Protect';
-  static VERSION = '2026.03.20'; // Code version
+  static VERSION = '2026.04.01'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;

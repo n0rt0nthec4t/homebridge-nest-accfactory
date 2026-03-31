@@ -1,18 +1,33 @@
-// General helper functions
+// Utility Helpers - shared functions and data processing
 // Part of homebridge-nest-accfactory
 //
-// Utility functions for common operations across the plugin
-// Temperature conversion, CRC hashing, HTTP request handling with retries
-// Duration parsing, value scaling, and device data processing
+// Provides shared helper functions used across the plugin for data normalisation,
+// transformation, HTTP handling, and general utility operations.
 //
-// Exported functions:
+// Responsibilities:
+// - Perform temperature conversion and normalisation
+// - Provide hashing utilities for device identity (CRC24)
+// - Scale and transform numeric values between ranges
+// - Handle HTTP requests with retry, timeout, and error handling
+// - Parse duration strings into normalised seconds
+// - Apply common device data processing and configuration overrides
 //
-// adjustTemperature(temp, currentUnit, targetUnit, round) - convert between Celsius and Fahrenheit
-// crc24(valueToHash) - compute CRC24 hash for value validation (6-digit hex string)
-// scaleValue(value, srcMin, srcMax, tgtMin, tgtMax) - scale value from source range to target range
-// fetchWrapper(method, url, options, data) - fetch with automatic retry, timeout, and error handling
-// parseDurationToSeconds(duration, options) - parse duration strings (e.g. "1w3d2h15m30s") to seconds
-// processCommonData(deviceUUID, homeUUID, data, config) - normalize device data and apply config overrides
+// Features:
+// - Temperature conversion with optional rounding (Celsius / Fahrenheit)
+// - CRC24 hashing for stable device identifiers
+// - Value scaling with bounds checking
+// - Robust fetch wrapper with:
+//   - retry logic (exponential backoff)
+//   - timeout handling
+//   - structured error reporting
+// - Flexible duration parsing (e.g. "1w3d2h15m30s")
+// - Common device data normalisation and config merging
+//
+// Notes:
+// - Used by all device and system modules
+// - processCommonData() standardises device metadata before HomeKit exposure
+// - fetchWrapper() is the primary HTTP client abstraction for the plugin
+// - Functions are designed to fail safely and return undefined where appropriate
 //
 // Code version 2026.03.25
 // Mark Hulskamp

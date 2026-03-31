@@ -1,43 +1,40 @@
 // Nest Cameras and Doorbells - HomeKit integration
 // Part of homebridge-nest-accfactory
 //
-// HomeKit accessory for Nest Cameras (Indoor, Outdoor, IQ, etc.).
-// Provides robust video streaming, HomeKit Secure Video (HKSV),
-// motion detection with configurable cooldown handling, night vision, and statusLED control.
+// HomeKit accessory implementation for Nest Cameras, Doorbells, and Floodlight Cameras.
+// Integrates camera streaming, HomeKit Secure Video (HKSV), motion events, snapshots,
+// and optional battery services into HomeKit using HAP-NodeJS controllers.
+//
+// Responsibilities:
+// - Configure HomeKit CameraController or DoorbellController services
+// - Manage live stream and recording session lifecycle for HomeKit
+// - Select and initialise the appropriate streaming backend (WebRTC or NexusTalk)
+// - Orchestrate ffmpeg for HomeKit live streaming, talkback, and HKSV recording
+// - Handle motion event processing, cooldown timing, and Eve history integration
+// - Provide snapshot handling with cached and fallback images
+// - Translate raw Nest / Google camera data into HomeKit-facing state
 //
 // Services:
 // - CameraController or DoorbellController (primary streaming service)
 // - MotionSensor (motion detection with eventSnapshot support)
-// - RecordingManagement (HomeKit Secure Video configuration and history)
+// - RecordingManagement (HomeKit Secure Video configuration and recording state)
 // - Battery (optional, for battery-powered camera models)
 //
-// Camera Characteristics (via RecordingManagement):
-// - HomeKitCameraActive: Enable/disable streaming (on/off)
-// - NightVision: Control IR LED night vision mode (requires has_irled)
-// - CameraOperatingModeIndicator: Control recording status LED (requires has_statusled)
-// - ImageRotation: Flip video 180° (requires has_video_flip)
-//
 // Features:
-// - Dual streaming protocols: WebRTC and NexusTalk
-// - HomeKit Secure Video with recorded to HomeKit feature
-// - Live stream sessions with crypto, RTP, and multiplexing
-// - Motion detection with cooldown and smart alerts
-// - Advanced night mode and IR LED control
-// - Recording status LED indicator
-// - Video flip/rotation support
-// - Snapshot caching with automatic refresh (30-second retention)
-// - FFmpeg integration for video codec verification and hardware acceleration
-// - Activity recording for Eve Home history when configured
-// - Offline video fallback images
-// - Battery level monitoring (for battery-powered models)
+// - Dual streaming protocol support via WebRTC and NexusTalk
+// - HomeKit Secure Video live streaming and recording support
+// - Motion-triggered recording with prebuffer support
+// - Two-way audio support when available and supported by ffmpeg
+// - Snapshot caching with automatic refresh and fallback images
+// - Night vision, status LED, microphone, speaker, and image rotation controls
+// - Battery level monitoring for supported battery-powered models
+// - Eve Home activity history integration when configured
 //
-// Data processing:
-// - Field mapping translates raw Nest Protobuf camera data to HomeKit format
-// - Lazy-loads snapshot images from resources directory (offline, off, transfer states)
-// - Validates FFmpeg binary at init or on config change
-// - Manages streaming sessions with lifecycle cleanup
-// - Supports both wired and battery-powered camera variants
-//
+// Notes:
+// - Streaming transport is handled by protocol-specific streamer modules
+// - ffmpeg is used for HomeKit-compatible live streaming, talkback, and HKSV recording
+// - Motion events are used to trigger HKSV recording and HomeKit automations
+// - Snapshot fallback images are used for offline, disabled, or migration states
 //
 // Mark Hulskamp
 'use strict';
@@ -85,9 +82,11 @@ const STREAMERS = {
   [STREAMING_PROTOCOL.NEXUSTALK]: { module: NexusTalk, label: 'NexusTalk streamer' },
 };
 
+const PREBUFFER_LENGTH = 4000;
+
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2026.03.30'; // Code version
+  static VERSION = '2026.04.01'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -819,7 +818,7 @@ export default class NestCamera extends HomeKitDevice {
       sessionID: sessionID,
       options: {
         includeAudio: includeAudio === true,
-        recordTime: Date.now() - 4000, // Start a few seconds in the past to try to capture pre-roll video before motion trigger
+        recordTime: Date.now() - PREBUFFER_LENGTH, // Start a few seconds in the past to try to capture pre-roll video before motion trigger
         localAccess: this.deviceData.localAccess === true, // User local device access if configured otherswise fallback to cloud
       },
     });
@@ -1480,7 +1479,7 @@ export default class NestCamera extends HomeKitDevice {
                     type: this.hap.MediaContainerType.FRAGMENTED_MP4,
                   },
                 ],
-                prebufferLength: 4000, // Seems to always be 4000???
+                prebufferLength: PREBUFFER_LENGTH, // Seems to always be 4000???
                 video: {
                   resolutions,
                   parameters: {

@@ -1,37 +1,40 @@
 // Nest HeatLink - HomeKit integration
 // Part of homebridge-nest-accfactory
 //
-// HomeKit accessory for Nest HeatLink hot water heating control system.
-// Provides temperature control and heating boost management with real-time status monitoring.
+// HomeKit accessory implementation for Nest Heat Link devices.
+// Provides hot water temperature control and/or boost heating control
+// depending on device capabilities and configuration.
+//
+// Responsibilities:
+// - Expose hot water temperature control via Thermostat service (when supported)
+// - Expose hot water boost control via Switch service (when supported)
+// - Synchronise temperature, heating state, and boost state with HomeKit
+// - Route control changes to the associated Nest thermostat device
+// - Record heating activity and temperature history for Eve Home integration
 //
 // Services:
-// - Thermostat (optional, if hot water temperature control enabled)
-// - Switch (optional, for hot water heating boost control)
-//
-// Thermostat Characteristics (when enabled):
-// - CurrentTemperature: Real-time water temperature monitoring
-// - TargetTemperature: Set desired water temperature (min-max range configurable)
-// - CurrentHeatingCoolingState: Reports if heating is active (HEAT/OFF)
-// - TargetHeatingCoolingState: Heat mode only (no cooling support)
-// - TemperatureDisplayUnits: Celsius or Fahrenheit display
-// - StatusActive: Reports online/offline status
-//
-// Switch Characteristics (boost control):
-// - On: Controls hot water heating boost (on/off)
+// - Thermostat (optional, for hot water temperature control)
+// - Switch (optional, for hot water boost control)
 //
 // Features:
-// - Temperature range: Configurable per device (hotwaterMinTemp - hotwaterMaxTemp)
-// - Thermal history recording for Eve Home (temperature, target, heating status)
-// - Hot water heating boost with configurable duration
-// - Real-time water temperature display and control
-// - Online/offline status monitoring
-// - Dynamic service creation based on device capabilities
+// - Configurable temperature range (min/max per device)
+// - Hot water boost with configurable duration (mapped to Nest presets)
+// - Real-time water temperature monitoring
+// - Heating active state reporting (HEAT / OFF)
+// - Temperature unit synchronisation (Celsius / Fahrenheit)
+// - Online/offline status reporting
+// - Eve Home history integration (temperature, target, heating state)
 //
-// Data processing:
-// - Translates raw Nest Protobuf hot water data to HomeKit format
-// - Supports both temperature control and boost-only configurations
-// - Celsius/Fahrenheit temperature unit conversion
-// - History recording at 5-minute intervals (Eve Home integration)
+// Notes:
+// - Heat Link devices are controlled via their associated thermostat
+// - Not all devices support both temperature control and boost control
+// - Services are created or removed dynamically based on device capabilities
+// - Temperature values are normalised via shared utility helpers
+//
+// Data Translation:
+// - Raw Nest and Google data is mapped using HEATLINK_FIELD_MAP
+// - Google API data is preferred, with Nest as fallback
+// - processRawData() builds device objects and applies configuration overrides
 //
 // Mark Hulskamp
 'use strict';
@@ -53,7 +56,7 @@ import {
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = 'Heatlink';
-  static VERSION = '2026.03.20'; // Code version
+  static VERSION = '2026.04.01'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control

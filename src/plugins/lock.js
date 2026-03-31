@@ -1,36 +1,39 @@
 // Nest × Yale Lock - HomeKit integration
 // Part of homebridge-nest-accfactory
 //
-// HomeKit accessory for Nest × Yale smart lock (protobuf API support only, REST API not supported).
-// Provides secure lock control with battery monitoring, auto-relock, and activity tracking.
+// HomeKit accessory implementation for Nest × Yale Lock devices.
+// Provides secure lock control, battery monitoring, auto-relock configuration,
+// tamper reporting, and activity tracking using Google protobuf API data.
+//
+// Responsibilities:
+// - Expose lock state and control via HomeKit LockMechanism service
+// - Synchronise current and target lock state with HomeKit
+// - Support auto-relock timeout control
+// - Report tamper, fault, and battery status
+// - Record lock activity history for Eve Home integration
 //
 // Services:
-// - LockMechanism (primary service with target and current state)
+// - LockMechanism (primary service)
 // - Battery (hidden, for battery level and low battery alerts)
-//
-// Characteristics:
-// - LockCurrentState: Reports actual lock position (locked/unlocked/jammed/locking/unlocking)
-// - LockTargetState: Control lock (locked/unlocked via HomeKit)
-// - LockLastKnownAction: Track action source (physical, remote, keypad, voice, implicit)
-// - LockManagementAutoSecurityTimeout: Configure auto-relock duration (0 to max_auto_relock_duration seconds)
-// - StatusTampered: Reports if lock has been physically tampered
-// - StatusFault: Reports online/offline status
-// - BatteryLevel and StatusLowBattery: Battery status (not rechargeable)
 //
 // Features:
 // - Real-time lock state synchronisation with HomeKit
-// - Configurable auto-relock with timeout control
-// - Action history tracking (who/what locked or unlocked)
+// - Remote lock and unlock control
+// - Configurable auto-relock timeout
+// - Lock action source tracking (physical, keypad, remote, voice, implicit)
 // - Tamper detection support
 // - Battery monitoring with low battery alerts
+// - Eve Home history integration
 //
-// Data processing:
-// - Translates raw Protobuf lock data to HomeKit lock states
-// - Field mapping decouples API changes from HomeKit presentation
-// - Supports local and remote lock control
+// Notes:
+// - Google protobuf API support only
+// - Nest REST API is not used for lock devices
+// - Lock state and actor details are normalised before presentation to HomeKit
 //
-// Limitations:
-// - Protobuf API only (no REST API support)
+// Data Translation:
+// - Raw Google lock data is mapped using LOCK_FIELD_MAP
+// - processRawData() builds device objects and applies configuration overrides
+// - Field mapping keeps upstream API changes separate from HomeKit presentation
 //
 // Mark Hulskamp
 'use strict';
@@ -45,7 +48,7 @@ import { DATA_SOURCE, DEVICE_TYPE, PROTOBUF_RESOURCES, LOW_BATTERY_LEVEL } from 
 
 export default class NestLock extends HomeKitDevice {
   static TYPE = 'Lock';
-  static VERSION = '2026.03.20'; // Code version
+  static VERSION = '2026.04.01'; // Code version
 
   // Define lock bolt states
   static STATE = {

@@ -1,26 +1,39 @@
-// Nest temperature sensor - HomeKit integration
+// Nest Temperature Sensor - HomeKit integration
 // Part of homebridge-nest-accfactory
 //
-// HomeKit accessory for Nest Temperature Sensor (standalone unit, typically paired with thermostat).
-// Reports current temperature with battery status and online/offline state.
+// HomeKit accessory implementation for Nest Temperature Sensor devices.
+// Provides temperature monitoring, battery status, online/offline detection,
+// and integration with thermostat remote sensing.
+//
+// Responsibilities:
+// - Expose current temperature via HomeKit TemperatureSensor service
+// - Synchronise sensor availability and active status with HomeKit
+// - Monitor battery level and low battery conditions
+// - Determine online/offline state based on last update timestamps
+// - Record temperature history for Eve Home integration
 //
 // Services:
-// - TemperatureSensor (primary service with status fault and active monitoring)
+// - TemperatureSensor (primary service)
 // - Battery (hidden, linked to temperature service)
 //
 // Features:
-// - Real-time temperature monitoring with HomeKit status updates
-// - Battery level tracking with low battery alerts
-// - Online/offline status based on last update timestamp (4-hour grace period)
-// - Active sensor indicator when paired with thermostat
-// - History recording for temperature trends (5-minute intervals)
-// - Support for Eve Home history if configured
+// - Real-time temperature updates with HomeKit synchronisation
+// - Active sensor indication when paired with thermostat (RCS support)
+// - Battery monitoring with low battery alerts
+// - Online/offline detection using timestamp-based validation (4-hour threshold)
+// - Eve Home history integration (5-minute interval recording)
 //
-// Data processing:
-// - Translates raw Nest and Google API sensor data to HomeKit format
-// - Field mapping decouples API changes from HomeKit presentation
-// - Validates online status and battery level before characteristic updates
-// - Supports association with thermostats via associated_thermostat UUID
+// Notes:
+// - Supports both Nest and Google APIs
+// - Sensors may exist in one or both APIs; data is merged and deduplicated
+// - Serial number is used as the unique key across APIs
+// - Temperature values are normalised before HomeKit presentation
+//
+// Data Translation:
+// - Raw data is mapped using TEMPSENSOR_FIELD_MAP
+// - processRawData() builds device objects from thermostat-linked sensors
+// - Google and Nest sources are merged and deduplicated by serialNumber
+// - Field mapping isolates upstream API differences from HomeKit representation
 //
 // Mark Hulskamp
 'use strict';
@@ -35,7 +48,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestTemperatureSensor extends HomeKitDevice {
   static TYPE = 'TemperatureSensor';
-  static VERSION = '2026.03.20'; // Code version
+  static VERSION = '2026.04.01'; // Code version
 
   batteryService = undefined;
   temperatureService = undefined;

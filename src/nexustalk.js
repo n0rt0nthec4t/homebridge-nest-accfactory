@@ -1,23 +1,36 @@
 // NexusTalk
 // Part of homebridge-nest-accfactory
 //
-// Handles streaming connections with Nest legacy 'Nexus' systems
+// Handles streaming connections with Nest legacy 'Nexus' systems.
 // Manages bidirectional media streams (audio/video) over secure TLS connections
-// Implements Nest proprietary protocol using protobuf message serialisation
+// using Nest's proprietary protobuf-based protocol.
 //
-// Extends Streamer base class to provide Nest API-specific streaming capabilities
-// Supports live streaming and talkback audio over Nest legacy infrastructure
+// Extends Streamer base class to provide Nest API-specific streaming capabilities,
+// feeding H264 video and AAC audio directly into the Streamer pipeline.
 //
-// Key features:
+// Responsibilities:
+// - Establish and manage TLS connection to Nest backend
+// - Exchange protobuf messages for session control and media transport
+// - Receive and forward H264 video NAL units and AAC audio frames
+// - Inject media into Streamer for live streaming and recording
+// - Handle talkback audio using Speex encoding
+//
+// Features:
 // - TLS-encrypted connection management with Nest backend
 // - Protobuf message serialization for Nest protocol communication
-// - Stream multiplexing over single connection
-// - Audio/video packet handling and synchronization
-// - Talkback (two-way audio) support
+// - Multiplexed media and control messages over a single connection
+// - Low-overhead packet handling (no RTP/jitter buffering required)
+// - Two-way audio (talkback) support via Speex
+//
+// Notes:
+// - Video is delivered as discrete H264 NAL units (no reassembly required)
+// - Audio is delivered as AAC frames
+// - Media is passed directly into Streamer without jitter buffering or reordering
+// - Simpler pipeline compared to WebRTC (no RTP, no ICE, no DTLS)
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.03.31
+// Code version 2026.04.01
 // Mark Hulskamp
 'use strict';
 
@@ -73,6 +86,9 @@ const AAC_MONO_48000_BLANK = Buffer.from([
   0x00, 0x02, 0x30, 0x40, 0x0e,
 ]);
 
+const MAX_PENDING_VIDEO_PARTS = 200;
+const MAX_PENDING_VIDEO_BYTES = 4 * 1024 * 1024;
+
 // nexusTalk object
 export default class NexusTalk extends Streamer {
   nexustalk_host = undefined; // Main nexustalk streaming host
@@ -106,6 +122,7 @@ export default class NexusTalk extends Streamer {
       pendingTimestamp: undefined,
       pendingKeyFrame: false,
       pendingParts: [],
+      pendingBytes: 0,
     },
     audio: {
       id: undefined,
@@ -690,6 +707,7 @@ export default class NexusTalk extends Streamer {
         this.#channels.video.pendingTimestamp = undefined;
         this.#channels.video.pendingKeyFrame = false;
         this.#channels.video.pendingParts = [];
+        this.#channels.video.pendingBytes = 0;
         return;
       }
 
@@ -704,6 +722,7 @@ export default class NexusTalk extends Streamer {
       this.#channels.video.pendingTimestamp = undefined;
       this.#channels.video.pendingKeyFrame = false;
       this.#channels.video.pendingParts = [];
+      this.#channels.video.pendingBytes = 0;
     };
 
     if (Buffer.isBuffer(payload) !== true || this.#protobufNexusTalk === undefined || this.#protobufNexusTalk === null) {
@@ -763,16 +782,41 @@ export default class NexusTalk extends Streamer {
         this.#channels.video.pendingTimestamp = timestamp;
         this.#channels.video.pendingKeyFrame = false;
         this.#channels.video.pendingParts = [];
+        this.#channels.video.pendingBytes = 0;
       }
 
       if (data.indexOf(Streamer.H264NALUS.START_CODE) !== 0) {
         data = Buffer.concat([Streamer.H264NALUS.START_CODE, data]);
       }
 
+      if (typeof this.#channels.video.pendingBytes !== 'number') {
+        this.#channels.video.pendingBytes = 0;
+      }
+
       this.#channels.video.pendingParts.push(data);
+      this.#channels.video.pendingBytes += data.length;
 
       if (keyFrame === true) {
         this.#channels.video.pendingKeyFrame = true;
+      }
+
+      // Guard against pathological growth if a frame never flushes cleanly
+      if (
+        this.#channels.video.pendingParts.length > MAX_PENDING_VIDEO_PARTS ||
+        this.#channels.video.pendingBytes > MAX_PENDING_VIDEO_BYTES
+      ) {
+        this?.log?.warn?.(
+          'Resetting oversized pending NexusTalk video frame for uuid "%s" (%s parts, %s bytes)',
+          this.nest_google_device_uuid,
+          this.#channels.video.pendingParts.length,
+          this.#channels.video.pendingBytes,
+        );
+
+        this.#channels.video.pendingTimestamp = undefined;
+        this.#channels.video.pendingKeyFrame = false;
+        this.#channels.video.pendingParts = [];
+        this.#channels.video.pendingBytes = 0;
+        return;
       }
 
       return;
@@ -996,6 +1040,7 @@ export default class NexusTalk extends Streamer {
     this.#channels.video.pendingTimestamp = undefined;
     this.#channels.video.pendingKeyFrame = false;
     this.#channels.video.pendingParts = [];
+    this.#channels.video.pendingBytes = 0;
 
     // Reset audio channel details
     this.#channels.audio.id = undefined;

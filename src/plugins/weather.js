@@ -1,23 +1,41 @@
-// Nest weather station - virtual accessory for HomeKit
+// Nest Weather Station - HomeKit integration
 // Part of homebridge-nest-accfactory
 //
-// Creates a virtual weather station accessory from Nest/Google location and weather data.
-// Exposes temperature, humidity, and optional air pressure/elevation via HomeKit services.
+// Virtual HomeKit accessory representing weather data for a Nest/Google structure.
+// Provides temperature, humidity, and optional environmental data using
+// location-based weather information from upstream APIs.
+//
+// Responsibilities:
+// - Create a virtual weather accessory per structure with available weather data
+// - Expose temperature and humidity via HomeKit services
+// - Optionally expose air pressure and elevation (Eve Home support)
+// - Poll and refresh weather data at regular intervals
+// - Record environmental history for Eve Home integration
 //
 // Services:
-// - TemperatureSensor (primary service with custom Eve characteristics)
+// - TemperatureSensor (primary service with Eve characteristics)
 // - HumiditySensor
 // - Battery (hidden, required for Eve Home support)
-// - EveAirPressureSensor (optional, if available in HAP)
+// - EveAirPressureSensor (optional, when supported by HAP)
 //
-// Custom Eve characteristics: ForecastDay, ObservationStation, Condition, WindDirection,
-// WindSpeed, SunriseTime, SunsetTime
+// Features:
+// - Periodic polling of upstream weather data (Nest / Google APIs)
+// - Real-time HomeKit characteristic updates
+// - Eve Home custom characteristics (forecast, condition, wind, sunrise/sunset)
+// - Temperature normalisation and unit handling
+// - History recording for temperature and humidity trends
 //
-// Data processing:
-// - Translates raw Nest and Google API structures into unified HomeKit format
-// - Field mapping decouples API changes from HomeKit presentation
-// - Polling timer fetches fresh weather data from remote API
-// - History recording enabled for temperature and humidity trends
+// Notes:
+// - This is a virtual device (not a physical Nest device)
+// - One weather accessory is created per structure/home
+// - Requires both location and weather data to be available
+// - Google and Nest API data are both supported and normalised
+//
+// Data Translation:
+// - Raw data is mapped using WEATHER_FIELD_MAP
+// - processRawData() builds virtual devices from structure-level data
+// - Nest and Google sources are normalised into a unified HomeKit model
+// - Serial number is derived from structure ID for consistent deduplication
 //
 // Mark Hulskamp
 'use strict';
@@ -32,7 +50,7 @@ import { DATA_SOURCE, DEVICE_TYPE, MAX_ELEVATION, MIN_ELEVATION, NESTLABS_MAC_PR
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = 'Weather';
-  static VERSION = '2026.03.21'; // Code version
+  static VERSION = '2026.04.01'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;

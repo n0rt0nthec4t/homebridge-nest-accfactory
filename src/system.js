@@ -1,33 +1,39 @@
 // Overall system communications and device management
 // Part of homebridge-nest-accfactory
 //
-// Core system manager for bi-directional communication with Nest and Google APIs
-// Handles device discovery, synchronisation, and data updates
-// Instantiates and manages individual device objects for HomeKit integration
+// Core platform manager for communication with Nest and Google APIs.
+// Handles account authorisation, connection lifecycle, device discovery,
+// raw data aggregation, and routing of updates and commands between
+// cloud APIs and HomeKit device modules.
 //
-// Primary responsibilities:
-// - Manage connections to Nest REST API and Google Protobuf API
-// - Discover and enumerate all devices (thermostats, cameras, doorbells, locks, etc.)
-// - Maintain synchronised device state between Nest/Google APIs
-// - Process device trait updates from cloud APIs in real-time
-// - Handle user commands from HomeKit plugins and send to appropriate API
-// - Manage device add/remove/update lifecycle
-// - Instantiate HomeKitDevice objects that plugins extend for HomeKit integration
+// Responsibilities:
+// - Authorise and maintain connections to Nest and Google accounts
+// - Manage Nest REST API and Google protobuf API communication
+// - Observe and subscribe to cloud updates in near real-time
+// - Aggregate and maintain raw device data from multiple API sources
+// - Discover, create, update, and remove supported device instances
+// - Route HomeKit get/set requests to the correct upstream API
+// - Load and coordinate device support modules
 //
-// Key features:
+// Features:
 // - Multi-account support (multiple Google and/or Nest accounts simultaneously)
-// - Real-time event handling and state synchronisation
-// - Device trait validation
+// - Automatic reconnect and token/session refresh handling
+// - Nest REST API subscribe loop and Google protobuf observe loop
+// - Raw data merging across Nest and Google sources
+// - Support dump generation for troubleshooting when enabled
+// - Dynamic device module loading and HomeKit category selection
 //
-// Note: HomeKit characteristic management and service creation is handled by
-// individual device plugins (thermostat.js, camera.js, etc.) not by this module
+// Notes:
+// - HomeKit characteristic and service management is handled by individual device modules
+// - This module is responsible for platform orchestration, API communication, and device lifecycle
+// - Camera, thermostat, sensor, and lock behaviour is implemented in device-specific modules
 //
 // Architecture:
-// Exports NestAccfactory main class - instantiated once per platform
-// Creates HomeKitDevice instances for each Nest/Google device
-// Manages connection objects for each account (credentials, API endpoints)
+// - Exports the main NestAccfactory platform class
+// - Maintains connection state, protobuf definitions, raw data cache, and tracked devices
+// - Creates and updates HomeKitDevice-based instances for supported device types
 //
-// Code version 2026.03.30
+// Code version 2026.04.01
 // Mark Hulskamp
 'use strict';
 

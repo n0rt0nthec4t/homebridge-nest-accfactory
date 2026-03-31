@@ -1,37 +1,36 @@
-// Helper functions for translating raw Nest and Google API data into a common internal format.
+// Translation Engine - Nest / Google data normalisation
+// Part of homebridge-nest-accfactory
 //
-// This module provides a small translation engine that allows each device module
-// to define a field map for canonical/internal device properties, while keeping
-// source-specific extraction logic local to the device module.
+// Provides a lightweight translation layer for converting raw Nest and Google API data
+// into a unified internal device model.
 //
-// Supported field map entry formats:
-// {
-//   fieldName: {
-//     nest: 'value.some.path',
-//     google: 'value.some.other.path',
-//     prefer: DATA_SOURCE.GOOGLE,
-//     defaultValue: '',
-//     merge: ({ nestValue, googleValue, context, fieldMap, fieldName }) => ...
-//   }
-// }
+// Responsibilities:
+// - Map source-specific data (Nest / Google) to canonical device fields
+// - Resolve values using configurable field maps (string paths or functions)
+// - Support source preference and fallback handling
+// - Allow custom merge logic for complex field resolution
+// - Provide reusable helpers for mapping, merging, and context construction
 //
-// or
-//
-// {
-//   fieldName: {
-//     nest: ({ rawData, objectKey, sourceValue, source, nestValue, googleValue }) => ...,
-//     google: ({ rawData, objectKey, sourceValue, source, nestValue, googleValue }) => ...,
-//   }
-// }
+// Features:
+// - Field map definitions supporting:
+//   - String-based path extraction
+//   - Function-based value resolution
+// - Source preference handling (Nest vs Google)
+// - Automatic fallback and default value support
+// - Custom merge functions per field
+// - Safe value resolution with error handling
 //
 // Notes:
-// - String mappings are resolved as dot-separated paths against the supplied source object.
-// - Function mappings receive a context object for maximum flexibility.
-// - If no custom merge function is supplied, the preferred source is used first,
-//   then the other source, then the optional defaultValue.
+// - Designed to isolate API differences from device implementations
+// - Each device module defines its own FIELD_MAP using this engine
+// - Google API data is typically preferred when available
+// - Missing or invalid values resolve to undefined (not placeholder defaults)
 //
-//
-// Part of homebridge-nest-accfactory
+// Data Flow:
+// - createMappingContext() builds a source-aware context object
+// - buildMappedObject() resolves all fields using the field map
+// - resolveMappedField() applies preference, merge logic, and fallbacks
+// - mergeMappedObjects() combines mapped results when required
 //
 // Code version 2026.03.12
 // Mark Hulskamp

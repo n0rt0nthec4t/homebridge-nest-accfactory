@@ -1,19 +1,31 @@
-// Common defines
+// Shared Constants and Definitions
 // Part of homebridge-nest-accfactory
 //
-// Global constants used throughout the plugin
-// Includes timer intervals, device types, API buckets, protobuf resources, temperature limits
-// Logging levels, resource paths, and configuration defaults
+// Defines shared constants used across the plugin, including device types,
+// API mappings, timing values, resource paths, and configuration limits.
 //
-// Key exports:
-// - TIMERS: Polling and timeout intervals for various operations
-// - DEVICE_TYPE: Supported device classes (Thermostat, Camera, Doorbell, etc.)
-// - PROTOBUF_RESOURCES: Device-to-protobuf resource mappings for Nest and Google APIs
-// - NEST_API_BUCKETS: Data buckets available from Nest REST API
-// - ACCOUNT_TYPE: Authentication types (Nest legacy, Google)
-// - RESOURCE_FRAMES: Fallback H264 video frames for offline/disabled states
-// - FFMPEG_VERSION: Minimum FFmpeg version required for video streaming
-// - Temperature/elevation constraints for thermostats and sensors
+// Responsibilities:
+// - Provide centralised constant definitions for all modules
+// - Define supported device types and account types
+// - Expose API resource mappings (Nest REST and Google protobuf)
+// - Define timing intervals and operational limits
+// - Provide fallback media resources for camera streaming
+// - Specify minimum runtime and FFmpeg requirements
+//
+// Features:
+// - Device type definitions used for module loading and HomeKit mapping
+// - Protobuf resource mappings for device identification
+// - Nest API bucket definitions for REST polling/subscription
+// - Timer intervals for polling, cooldowns, and timeouts
+// - FFmpeg minimum version requirement for streaming support
+// - Resource paths and fallback H264 frames for offline states
+// - Temperature, elevation, and duration constraints
+// - Logging level definitions
+//
+// Notes:
+// - This module contains no runtime logic — constants only
+// - Imported throughout the codebase for consistency and reuse
+// - Changes here may affect multiple subsystems (devices, streaming, APIs)
 //
 // Code version 2026.03.22
 // Mark Hulskamp

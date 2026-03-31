@@ -1,21 +1,33 @@
-// Configuration validation and processing
+// Configuration Processor
 // Part of homebridge-nest-accfactory
 //
-// Validates, normalises, and migrates the platform configuration loaded from Homebridge
-// Handles multiple Nest and Google account definitions, per-device settings, and per-home settings
-// Migrates legacy nest/google account objects and legacy keyed device objects to current array-based formats
-// Processes runtime options such as logging, elevation, API selection, weather/history support, and FFmpeg capability checks
+// Validates, normalises, and prepares the platform configuration used by the plugin.
+// Handles migration of legacy configuration formats, runtime option processing,
+// and initialisation of shared capabilities such as FFmpeg support.
 //
-// Exported functions:
+// Responsibilities:
+// - Validate and normalise Homebridge configuration structure
+// - Migrate legacy account and device formats to current schema
+// - Process global and per-device runtime options
+// - Configure logging behaviour (including debug mode)
+// - Probe and validate FFmpeg binary and feature support
+// - Build connection objects for Nest and Google accounts
 //
-// processConfig(config, log, api) - validates and normalises the platform config in place
-//   Returns: normalised config with accounts/devices/homes arrays and processed options
-//   Migrates legacy account/device formats, configures debug logging, and probes FFmpeg support
-//   May persist migrated config.json changes when Homebridge storage access is available
+// Features:
+// - Automatic migration of legacy Nest/Google account configuration
+// - Legacy device object-to-array transformation
+// - Runtime option defaults and bounds validation
+// - FFmpeg capability detection (version, encoders, decoders, hwaccel)
+// - Debug logging override with coloured output
+// - Optional automatic persistence of migrated config.json
+// - Connection builder for multi-account support with retry metadata
 //
-// buildConnections(config) - creates connection objects from accounts array
-//   Returns: connection map keyed by UUID, each containing trimmed credentials, account metadata, retry state, and API host selection
-//   Prepares Nest and Google account sessions, including field-test endpoint selection when enabled
+// Notes:
+// - processConfig() mutates the provided config object in place
+// - buildConnections() creates runtime connection definitions keyed by UUID
+// - persistMigratedConfig() safely updates config.json when migration occurs
+// - FFmpeg validation determines availability of camera streaming and HKSV recording
+// - Used during plugin startup before any device initialisation
 //
 // Code version 2026.03.25
 // Mark Hulskamp

@@ -1,8 +1,20 @@
-// Homebridge platform plugin entry point: NestAccfactory
+// Plugin Entry Point
 // Part of homebridge-nest-accfactory
 //
-// Exports default function that validates Homebridge API and registers the NestAccfactory platform.
-// Delegates all platform logic to system manager (system.js) and device wrapper (HomeKitDevice.js).
+// Entry point for the Homebridge NestAccfactory platform plugin.
+// Registers the platform with Homebridge and initialises shared plugin
+// metadata used by HomeKitDevice and Eve Home integration.
+//
+// Responsibilities:
+// - Validate the Homebridge API object
+// - Register the NestAccfactory platform with Homebridge
+// - Initialise shared plugin and platform names
+// - Attach Eve Home support helpers to HomeKitDevice
+//
+// Notes:
+// - All platform logic is delegated to system.js
+// - Device lifecycle and shared HomeKit helpers are provided by HomeKitDevice.js
+// - Eve Home integration is provided via HomeKitHistory.js
 //
 // Code version 2026.03.15
 // Mark Hulskamp

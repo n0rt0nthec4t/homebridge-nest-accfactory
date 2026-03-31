@@ -1,39 +1,32 @@
-// FFmpeg manager for binary probing and session tracking
+// FFmpeg Session Manager
 // Part of homebridge-nest-accfactory
 //
-// Utility class that locates and probes FFmpeg binary for version, features, and codec capabilities.
-// Validates minimum version and required codecs for camera streaming support. Detects and selects
-// platform-specific hardware H264 encoders. Manages FFmpeg child process sessions with configurable
-// stdio piping for encoding/transcoding.
+// Provides a lightweight wrapper around the FFmpeg binary for managing
+// streaming and recording sessions used by camera and doorbell devices.
 //
-// Constructor accepts optional binaryPath (expanded if starts with ~) and log callback function.
-// If no path provided, searches system PATH. Private #probeBinary() method validates binary on init
-// and populates features object; if binary not found or probe fails, class degrades gracefully
-// (features empty, hasMinimumSupport() returns false).
+// Responsibilities:
+// - Validate FFmpeg binary and feature support
+// - Spawn and manage FFmpeg processes
+// - Track active FFmpeg sessions per device
+// - Provide controlled lifecycle management (create / stop sessions)
+// - Ensure stderr is safely drained to prevent process blocking
 //
-// Hardware H264 codec selection priority:
-// - macOS: videotoolbox
-// - Linux: nvenc > qsv > vaapi > v4l2m2m (only if required /dev/* exists)
-// - Windows: qsv
+// Features:
+// - One-time binary probing (version + codec capability detection)
+// - Session-based process management via createSession() / killSession()
+// - Externalised error handling via callback hooks
+// - Support for multiple concurrent session types (e.g. live, record, talkback)
+// - Safe process cleanup and resource handling
 //
-// Session key format: "uuid:sessionID:sessionType" (used internally for tracking spawned processes)
+// Notes:
+// - Used primarily by camera and doorbell modules for:
+//   - Live streaming to HomeKit
+//   - HomeKit Secure Video (HKSV) recording
+//   - Two-way audio (talkback)
+// - Does NOT perform any media processing itself — only manages FFmpeg execution
+// - Logging and debugging are handled by the calling module
 //
-// Exported properties:
-// - binary: Path to FFmpeg executable (string)
-// - version: Detected version string (e.g., "6.1.1")
-// - features: Object with encoders[], decoders[], muxers[], demuxers[], enabled[], h264_* flags
-// - supportsHardwareH264: Boolean indicating if any hardware encoder is available
-// - hardwareH264Codec: Selected hardware codec name or undefined
-//
-// Public methods:
-// - hasMinimumSupport(minReqs): Validate version and required codecs
-// - createSession(uuid, sessionID, args, sessionType, errorCallback, pipeCount): Spawn FFmpeg
-// - killSession(uuid, sessionID, sessionType, signal): Terminate FFmpeg process
-// - hasSession(uuid, sessionID, sessionType): Check if session exists
-// - listSessions(): Get all active session keys
-// - killAllSessions(uuid, signal): Terminate all sessions for UUID
-//
-// Code version 2026.03.15
+// Code version 2026.03.25
 // Mark Hulskamp
 'use strict';
 
