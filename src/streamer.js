@@ -204,11 +204,6 @@ export default class Streamer {
       latePacketsIgnored: 0,
       bufferTrimmed: 0,
     },
-    outputs: {
-      liveWrites: 0,
-      recordWrites: 0,
-      fallbackWrites: 0,
-    },
   };
 
   // Codecs being used for video, audio and talking
@@ -868,6 +863,17 @@ export default class Streamer {
       lastVideoWriteTime: 0,
       sourceBaseTime: undefined,
       wallclockBaseTime: undefined,
+      stats: {
+        startedAt: Date.now(),
+        firstWriteAt: undefined,
+        firstVideoWriteAt: undefined,
+        firstAudioWriteAt: undefined,
+        writes: {
+          total: 0,
+          video: 0,
+          audio: 0,
+        },
+      },
     });
 
     this?.log?.debug?.('Started live stream from device uuid "%s" and session id "%s"', this.nest_google_device_uuid, sessionID);
@@ -882,7 +888,7 @@ export default class Streamer {
     if (output !== undefined) {
       if (this.supportDump === true && output !== undefined && this.#live.size === 1) {
         // Output stats on demand when the final live stream stops for support diagnostics
-        this.#outputStats(Date.now());
+        this.#outputStats(output, Date.now());
       }
 
       this?.log?.debug?.('Stopped live stream from device uuid "%s" and session id "%s"', this.nest_google_device_uuid, sessionID);
@@ -1023,6 +1029,17 @@ export default class Streamer {
       lastVideoWriteTime: 0,
       sourceBaseTime: undefined,
       wallclockBaseTime: undefined,
+      stats: {
+        startedAt: Date.now(),
+        firstWriteAt: undefined,
+        firstVideoWriteAt: undefined,
+        firstAudioWriteAt: undefined,
+        writes: {
+          total: 0,
+          video: 0,
+          audio: 0,
+        },
+      },
     };
 
     this?.log?.debug?.(
@@ -1420,16 +1437,54 @@ export default class Streamer {
       return;
     }
 
-    // Track fallback writes in stats for monitoring purposes, but only if we have a valid fallback frame to write
-    if (typeof this.#stats?.outputs === 'object' && this.#stats.outputs !== null) {
-      this.#stats.outputs.fallbackWrites++;
+    let outputStats = output?.stats;
+    let outputWrites = outputStats?.writes;
+    let outputs = this.#stats?.outputs;
+    let dateNow = Date.now();
+
+    if (typeof outputStats !== 'object' || outputStats === null) {
+      outputStats = undefined;
+      outputWrites = undefined;
+    }
+
+    if (typeof outputWrites !== 'object' || outputWrites === null) {
+      outputWrites = undefined;
+    }
+
+    // Track fallback writes in shared streamer stats
+    if (typeof outputs === 'object' && outputs !== null) {
+      outputs.fallbackWrites++;
 
       if (streamType === Streamer.STREAM_TYPE.LIVE) {
-        this.#stats.outputs.liveWrites++;
+        outputs.liveWrites++;
       }
 
       if (streamType === Streamer.STREAM_TYPE.RECORD) {
-        this.#stats.outputs.recordWrites++;
+        outputs.recordWrites++;
+      }
+    }
+
+    // Track per-output/session video write stats
+    if (outputStats !== undefined) {
+      if (typeof outputStats.firstWriteAt !== 'number') {
+        outputStats.firstWriteAt = dateNow;
+      }
+
+      if (typeof outputStats.firstVideoWriteAt !== 'number') {
+        outputStats.firstVideoWriteAt = dateNow;
+      }
+
+      if (outputWrites !== undefined) {
+        if (typeof outputWrites.total !== 'number') {
+          outputWrites.total = 0;
+        }
+
+        if (typeof outputWrites.video !== 'number') {
+          outputWrites.video = 0;
+        }
+
+        outputWrites.total++;
+        outputWrites.video++;
       }
     }
 
@@ -1437,9 +1492,29 @@ export default class Streamer {
       // H264 video streams require each frame to be prefixed with an Annex B start code (0x00000001)
       output?.video?.write?.(Streamer.H264NALUS.START_CODE);
     }
+
     output?.video?.write?.(fallbackFrame);
 
     if (output?.includeAudio === true && Buffer.isBuffer(this.blankAudio) === true) {
+      if (outputStats !== undefined) {
+        if (typeof outputStats.firstAudioWriteAt !== 'number') {
+          outputStats.firstAudioWriteAt = dateNow;
+        }
+
+        if (outputWrites !== undefined) {
+          if (typeof outputWrites.total !== 'number') {
+            outputWrites.total = 0;
+          }
+
+          if (typeof outputWrites.audio !== 'number') {
+            outputWrites.audio = 0;
+          }
+
+          outputWrites.total++;
+          outputWrites.audio++;
+        }
+      }
+
       output?.audio?.write?.(this.blankAudio);
     }
   }
@@ -1465,6 +1540,8 @@ export default class Streamer {
 
     let outputVideo = output?.video;
     let outputAudio = output?.audio;
+    let outputStats = output?.stats;
+    let outputWrites = outputStats?.writes;
     let isH264Output = this.codecs?.video === Streamer.CODEC_TYPE.H264;
     let isLive = streamType === Streamer.STREAM_TYPE.LIVE;
     let isRecord = streamType === Streamer.STREAM_TYPE.RECORD;
@@ -1478,6 +1555,15 @@ export default class Streamer {
     // Give it a slightly wider tolerance, but still keep writes paced to a single video frame per tick.
     if (isLive === true && isH264Output === true) {
       dueTolerance = 10;
+    }
+
+    if (typeof outputStats !== 'object' || outputStats === null) {
+      outputStats = undefined;
+      outputWrites = undefined;
+    }
+
+    if (typeof outputWrites !== 'object' || outputWrites === null) {
+      outputWrites = undefined;
     }
 
     // Cursor has fallen behind our rotating window, so catch up
@@ -1601,6 +1687,29 @@ export default class Streamer {
         outputVideo?.write?.(packet.data);
         wroteVideo = true;
 
+        if (outputStats !== undefined) {
+          if (typeof outputStats.firstWriteAt !== 'number') {
+            outputStats.firstWriteAt = dateNow;
+          }
+
+          if (typeof outputStats.firstVideoWriteAt !== 'number') {
+            outputStats.firstVideoWriteAt = dateNow;
+          }
+
+          if (outputWrites !== undefined) {
+            if (typeof outputWrites.total !== 'number') {
+              outputWrites.total = 0;
+            }
+
+            if (typeof outputWrites.video !== 'number') {
+              outputWrites.video = 0;
+            }
+
+            outputWrites.total++;
+            outputWrites.video++;
+          }
+        }
+
         if (outputs !== null && typeof outputs === 'object') {
           if (isLive === true) {
             outputs.liveWrites++;
@@ -1638,6 +1747,28 @@ export default class Streamer {
 
         outputAudio?.write?.(packet.data);
         wroteAudio = true;
+
+        if (outputStats !== undefined) {
+          if (typeof outputStats.firstWriteAt !== 'number') {
+            outputStats.firstWriteAt = dateNow;
+          }
+
+          if (typeof outputStats.firstAudioWriteAt !== 'number') {
+            outputStats.firstAudioWriteAt = dateNow;
+          }
+          if (outputWrites !== undefined) {
+            if (typeof outputWrites.total !== 'number') {
+              outputWrites.total = 0;
+            }
+
+            if (typeof outputWrites.video !== 'number') {
+              outputWrites.audio = 0;
+            }
+
+            outputWrites.total++;
+            outputWrites.audio++;
+          }
+        }
 
         output.cursor = nextCursor;
         offset++;
@@ -1723,7 +1854,19 @@ export default class Streamer {
     }
   }
 
-  #outputStats(dateNow) {
+  #outputStats(output, dateNow) {
+    let outputStats = output?.stats;
+    let outputWrites = outputStats?.writes;
+
+    if (typeof outputStats !== 'object' || outputStats === null) {
+      outputStats = undefined;
+      outputWrites = undefined;
+    }
+
+    if (typeof outputWrites !== 'object' || outputWrites === null) {
+      outputWrites = undefined;
+    }
+
     let connectTime =
       typeof this.#stats?.source?.connectingAt === 'number' && typeof this.#stats?.source?.connectedAt === 'number'
         ? this.#stats.source.connectedAt - this.#stats.source.connectingAt + 'ms'
@@ -1749,8 +1892,10 @@ export default class Streamer {
         ? this.#stats.source.readyAt - this.#stats.source.connectingAt + 'ms'
         : '-';
 
-    let duration =
+    let sourceDuration =
       typeof this.#stats?.source?.connectedAt === 'number' ? Math.round((dateNow - this.#stats.source.connectedAt) / 1000) + 's' : '-';
+
+    let outputDuration = typeof output?.stats?.startedAt === 'number' ? Math.round((dateNow - output.stats.startedAt) / 1000) + 's' : '-';
 
     let resolution =
       typeof this.video?.width === 'number' && typeof this.video?.height === 'number'
@@ -1787,6 +1932,21 @@ export default class Streamer {
           : Math.floor((dateNow - this.#stats.source.lastKeyframeAt) / 1000) + 's'
         : '-';
 
+    let firstOutputWriteTime =
+      typeof output?.stats?.startedAt === 'number' && typeof output?.stats?.firstWriteAt === 'number'
+        ? output.stats.firstWriteAt - output.stats.startedAt + 'ms'
+        : '-';
+
+    let firstOutputVideoWriteTime =
+      typeof output?.stats?.startedAt === 'number' && typeof output?.stats?.firstVideoWriteAt === 'number'
+        ? output.stats.firstVideoWriteAt - output.stats.startedAt + 'ms'
+        : '-';
+
+    let firstOutputAudioWriteTime =
+      typeof output?.stats?.startedAt === 'number' && typeof output?.stats?.firstAudioWriteAt === 'number'
+        ? output.stats.firstAudioWriteAt - output.stats.startedAt + 'ms'
+        : '-';
+
     this?.log?.info?.(
       'Support dump for device uuid "%s" data will be logged below for troubleshooting purposes.',
       this.nest_google_device_uuid,
@@ -1799,7 +1959,10 @@ export default class Streamer {
     this?.log?.info?.('      "ready": "%s"', readyTime);
     this?.log?.info?.('      "keyframe": "%s"', firstKeyframeTime);
     this?.log?.info?.('    },');
-    this?.log?.info?.('    "duration": "%s",', duration);
+    this?.log?.info?.('    "duration": {');
+    this?.log?.info?.('      "source": "%s"', sourceDuration);
+    this?.log?.info?.('      "output": "%s"', outputDuration);
+    this?.log?.info?.('    },');
     this?.log?.info?.('    "video": {');
     this?.log?.info?.('      "resolution": "%s"', resolution);
     this?.log?.info?.('      "fps": %s', typeof fps === 'number' ? fps : 'null');
@@ -1815,9 +1978,16 @@ export default class Streamer {
     this?.log?.info?.('      "latePacketsIgnored": %s', this.#stats?.drops?.latePacketsIgnored ?? 0);
     this?.log?.info?.('    },');
     this?.log?.info?.('    "output": {');
-    this?.log?.info?.('      "live": %s', this.#stats?.outputs?.liveWrites ?? 0);
-    this?.log?.info?.('      "record": %s', this.#stats?.outputs?.recordWrites ?? 0);
-    this?.log?.info?.('      "fallback": %s', this.#stats?.outputs?.fallbackWrites ?? 0);
+    this?.log?.info?.('      "startup": {');
+    this?.log?.info?.('        "firstWrite": "%s"', firstOutputWriteTime);
+    this?.log?.info?.('        "firstVideoWrite": "%s"', firstOutputVideoWriteTime);
+    this?.log?.info?.('        "firstAudioWrite": "%s"', firstOutputAudioWriteTime);
+    this?.log?.info?.('      },');
+    this?.log?.info?.('      "writes": {');
+    this?.log?.info?.('        "total": %s', outputWrites?.total ?? 0);
+    this?.log?.info?.('        "video": %s', outputWrites?.video ?? 0);
+    this?.log?.info?.('        "audio": %s', outputWrites?.audio ?? 0);
+    this?.log?.info?.('      },');
     this?.log?.info?.('    },');
     this?.log?.info?.('    "last": {');
     this?.log?.info?.('      "packet": "%s"', lastPacketAgo);
