@@ -58,7 +58,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2026.04.02
+// Code version 2026.04.03
 // Mark Hulskamp
 'use strict';
 
@@ -926,10 +926,12 @@ export default class Streamer {
     let includeAudio = options?.includeAudio === true;
     let isH264 = this.codecs?.video === Streamer.CODEC_TYPE.H264;
     let recordTime = options?.recordTime;
-    let bestOffset = -1;
-    let bestDelta = Number.POSITIVE_INFINITY;
+    let bestBeforeOffset = -1;
+    let bestAfterOffset = -1;
+    let bestBeforeTime = Number.NEGATIVE_INFINITY;
+    let bestAfterTime = Number.POSITIVE_INFINITY;
     let index = 0;
-    let delta = 0;
+    let itemTime = 0;
 
     if (typeof sessionID !== 'string' || sessionID === '') {
       return;
@@ -973,8 +975,9 @@ export default class Streamer {
     }
 
     // If recordTime is supplied, try to start as close as possible to that time.
-    // For H264, choose the nearest buffered keyframe so recording starts on a decodable frame,
-    // even if that keyframe is slightly before the requested time.
+    // For H264, prefer the latest buffered keyframe at or before the requested time
+    // so recording starts on a decodable frame without skipping past the requested prebuffer point.
+    // If no earlier keyframe exists, fall forward to the earliest buffered keyframe after recordTime.
     if (itemsLength !== 0 && typeof recordTime === 'number' && Number.isFinite(recordTime) === true) {
       if (isH264 === true) {
         while (index < itemsLength) {
@@ -984,23 +987,33 @@ export default class Streamer {
             items[index]?.keyFrame === true &&
             typeof items[index]?.time === 'number'
           ) {
-            delta = Math.abs(items[index].time - recordTime);
+            itemTime = items[index].time;
 
-            if (delta < bestDelta || (delta === bestDelta && items[index].time <= recordTime)) {
-              bestDelta = delta;
-              bestOffset = index;
+            if (itemTime <= recordTime && itemTime >= bestBeforeTime) {
+              bestBeforeTime = itemTime;
+              bestBeforeOffset = index;
+            }
+
+            if (itemTime > recordTime && itemTime < bestAfterTime) {
+              bestAfterTime = itemTime;
+              bestAfterOffset = index;
             }
           }
 
           index++;
         }
 
-        if (bestOffset !== -1) {
-          startCursor = items[bestOffset].index;
+        if (bestBeforeOffset !== -1) {
+          startCursor = items[bestBeforeOffset].index;
+        }
+
+        if (bestBeforeOffset === -1 && bestAfterOffset !== -1) {
+          startCursor = items[bestAfterOffset].index;
         }
 
         if (
-          bestOffset === -1 &&
+          bestBeforeOffset === -1 &&
+          bestAfterOffset === -1 &&
           typeof this.#h264Video?.lastIDRIndex === 'number' &&
           typeof bufferStart === 'number' &&
           this.#h264Video.lastIDRIndex >= bufferStart
@@ -1030,6 +1043,7 @@ export default class Streamer {
       cursor: startCursor,
       sentCodecConfig: false,
       seenKeyFrame: false,
+      catchingUp: true,
       lastVideoWriteTime: 0,
       sourceBaseTime: undefined,
       wallclockBaseTime: undefined,
@@ -1535,6 +1549,10 @@ export default class Streamer {
     let isH264Output = this.codecs?.video === Streamer.CODEC_TYPE.H264;
     let isLive = streamType === Streamer.STREAM_TYPE.LIVE;
     let includeAudio = output?.includeAudio === true;
+    let isRecord = streamType === Streamer.STREAM_TYPE.RECORD;
+    let latestItemTime = itemsLength !== 0 && typeof items[itemsLength - 1]?.time === 'number' ? items[itemsLength - 1].time : undefined;
+    let catchupThresholdMs = 500;
+    let isCatchingUp = false;
     let drops = this.#stats?.drops;
     let lastSPS = this.#h264Video.lastSPS;
     let lastPPS = this.#h264Video.lastPPS;
@@ -1594,6 +1612,80 @@ export default class Streamer {
       output.cursor = startIndex + offset;
     }
 
+    let advanceOutputCursor = () => {
+      output.cursor = nextCursor;
+      offset++;
+      processed++;
+    };
+
+    let finishCatchupIfNeeded = () => {
+      if (
+        isRecord === true &&
+        output?.catchingUp === true &&
+        typeof latestItemTime === 'number' &&
+        typeof item?.time === 'number' &&
+        latestItemTime - item.time <= catchupThresholdMs
+      ) {
+        output.catchingUp = false;
+        output.sourceBaseTime = undefined;
+        output.wallclockBaseTime = undefined;
+      }
+    };
+
+    let noteWrite = (mediaType) => {
+      if (outputStats !== undefined) {
+        if (typeof outputStats.firstWriteAt !== 'number') {
+          outputStats.firstWriteAt = dateNow;
+        }
+
+        if (mediaType === Streamer.MEDIA_TYPE.VIDEO && typeof outputStats.firstVideoWriteAt !== 'number') {
+          outputStats.firstVideoWriteAt = dateNow;
+        }
+
+        if (mediaType === Streamer.MEDIA_TYPE.AUDIO && typeof outputStats.firstAudioWriteAt !== 'number') {
+          outputStats.firstAudioWriteAt = dateNow;
+        }
+
+        if (outputWrites !== undefined) {
+          if (typeof outputWrites.total !== 'number') {
+            outputWrites.total = 0;
+          }
+
+          if (mediaType === Streamer.MEDIA_TYPE.VIDEO && typeof outputWrites.video !== 'number') {
+            outputWrites.video = 0;
+          }
+
+          if (mediaType === Streamer.MEDIA_TYPE.AUDIO && typeof outputWrites.audio !== 'number') {
+            outputWrites.audio = 0;
+          }
+
+          outputWrites.total++;
+
+          if (mediaType === Streamer.MEDIA_TYPE.VIDEO) {
+            outputWrites.video++;
+          }
+
+          if (mediaType === Streamer.MEDIA_TYPE.AUDIO) {
+            outputWrites.audio++;
+          }
+        }
+      }
+    };
+
+    let dropBeforeKeyframe = (mediaType) => {
+      if (drops !== null && typeof drops === 'object') {
+        if (mediaType === Streamer.MEDIA_TYPE.VIDEO) {
+          drops.videoBeforeKeyframe++;
+        }
+
+        if (mediaType === Streamer.MEDIA_TYPE.AUDIO) {
+          drops.audioBeforeKeyframe++;
+        }
+      }
+
+      advanceOutputCursor();
+    };
+
     // Write due items for this output, but cap work done per scheduler tick
     while (offset < itemsLength && processed < MAX_BUFFERED_ITEMS_PER_OUTPUT_PER_TICK) {
       if (typeof budgetMs === 'number' && budgetMs > 0 && Date.now() - startedAt >= budgetMs) {
@@ -1607,19 +1699,27 @@ export default class Streamer {
         break;
       }
 
-      // Establish the output timing base from the first item processed for this output.
-      // Item time is on the source timeline, so we rebase it to local wallclock here.
-      if (typeof output.sourceBaseTime !== 'number' || typeof output.wallclockBaseTime !== 'number') {
-        output.sourceBaseTime = item.time;
-        output.wallclockBaseTime = dateNow;
+      if (isRecord === true && output?.catchingUp === true) {
+        isCatchingUp = typeof latestItemTime === 'number' && latestItemTime - item.time > catchupThresholdMs;
+      } else {
+        isCatchingUp = false;
       }
 
-      dueTime = output.wallclockBaseTime + (item.time - output.sourceBaseTime);
+      if (isCatchingUp !== true) {
+        // Establish the output timing base from the first item processed for this output.
+        // Item time is on the source timeline, so we rebase it to local wallclock here.
+        if (typeof output.sourceBaseTime !== 'number' || typeof output.wallclockBaseTime !== 'number') {
+          output.sourceBaseTime = item.time;
+          output.wallclockBaseTime = dateNow;
+        }
 
-      // Small tolerance for scheduler jitter so items that are only just ahead
-      // do not unnecessarily stall output.
-      if (dueTime > dateNow + dueTolerance) {
-        break;
+        dueTime = output.wallclockBaseTime + (item.time - output.sourceBaseTime);
+
+        // Small tolerance for scheduler jitter so items that are only just ahead
+        // do not unnecessarily stall output.
+        if (dueTime > dateNow + dueTolerance) {
+          break;
+        }
       }
 
       // Cache item characteristics used repeatedly below
@@ -1639,13 +1739,7 @@ export default class Streamer {
           // Still waiting for first keyframe on this output, so discard delta frames
           // until we reach a clean decoder start point.
           if (output.seenKeyFrame !== true && item.keyFrame !== true) {
-            if (drops !== null && typeof drops === 'object') {
-              drops.videoBeforeKeyframe++;
-            }
-
-            output.cursor = nextCursor;
-            offset++;
-            processed++;
+            dropBeforeKeyframe(Streamer.MEDIA_TYPE.VIDEO);
             continue;
           }
 
@@ -1678,33 +1772,9 @@ export default class Streamer {
 
         outputVideo?.write?.(item.data);
         wroteVideo = true;
-
-        if (outputStats !== undefined) {
-          if (typeof outputStats.firstWriteAt !== 'number') {
-            outputStats.firstWriteAt = dateNow;
-          }
-
-          if (typeof outputStats.firstVideoWriteAt !== 'number') {
-            outputStats.firstVideoWriteAt = dateNow;
-          }
-
-          if (outputWrites !== undefined) {
-            if (typeof outputWrites.total !== 'number') {
-              outputWrites.total = 0;
-            }
-
-            if (typeof outputWrites.video !== 'number') {
-              outputWrites.video = 0;
-            }
-
-            outputWrites.total++;
-            outputWrites.video++;
-          }
-        }
-
-        output.cursor = nextCursor;
-        offset++;
-        processed++;
+        noteWrite(Streamer.MEDIA_TYPE.VIDEO);
+        finishCatchupIfNeeded();
+        advanceOutputCursor();
         continue;
       }
 
@@ -1712,50 +1782,19 @@ export default class Streamer {
         // Delay audio until first video keyframe for H264 outputs.
         // This avoids audio leading video during decoder startup.
         if (isH264Output === true && output.seenKeyFrame !== true) {
-          if (drops !== null && typeof drops === 'object') {
-            drops.audioBeforeKeyframe++;
-          }
-
-          output.cursor = nextCursor;
-          offset++;
-          processed++;
+          dropBeforeKeyframe(Streamer.MEDIA_TYPE.AUDIO);
           continue;
         }
 
         outputAudio?.write?.(item.data);
-
-        if (outputStats !== undefined) {
-          if (typeof outputStats.firstWriteAt !== 'number') {
-            outputStats.firstWriteAt = dateNow;
-          }
-
-          if (typeof outputStats.firstAudioWriteAt !== 'number') {
-            outputStats.firstAudioWriteAt = dateNow;
-          }
-          if (outputWrites !== undefined) {
-            if (typeof outputWrites.total !== 'number') {
-              outputWrites.total = 0;
-            }
-
-            if (typeof outputWrites.audio !== 'number') {
-              outputWrites.audio = 0;
-            }
-
-            outputWrites.total++;
-            outputWrites.audio++;
-          }
-        }
-
-        output.cursor = nextCursor;
-        offset++;
-        processed++;
+        noteWrite(Streamer.MEDIA_TYPE.AUDIO);
+        finishCatchupIfNeeded();
+        advanceOutputCursor();
         continue;
       }
 
       // Skip unsupported media types or items not relevant to this output
-      output.cursor = nextCursor;
-      offset++;
-      processed++;
+      advanceOutputCursor();
     }
   }
 
@@ -1769,11 +1808,33 @@ export default class Streamer {
     let cutoffTime = 0;
     let trimCount = 0;
 
-    // Keep our main rotating buffer under a certain size
+    // Keep our main rotating buffer under a certain size, but never trim
+    // past the oldest active consumer cursor (live or record).
     if (itemsLength !== 0) {
+      let protectedCursor = this.#itemIndex;
+      let protectedIndex = -1;
+
       cutoffTime = dateNow - MAX_BUFFER_AGE;
 
+      if (record !== undefined && typeof record?.cursor === 'number' && record.cursor < protectedCursor) {
+        protectedCursor = record.cursor;
+      }
+
+      for (let output of live.values()) {
+        if (typeof output?.cursor === 'number' && output.cursor < protectedCursor) {
+          protectedCursor = output.cursor;
+        }
+      }
+
+      if (typeof buffer?.startIndex === 'number' && protectedCursor > buffer.startIndex) {
+        protectedIndex = protectedCursor - buffer.startIndex;
+      }
+
       while (trimCount < itemsLength && items[trimCount].time < cutoffTime) {
+        if (protectedIndex !== -1 && trimCount >= protectedIndex) {
+          break;
+        }
+
         trimCount++;
       }
 
