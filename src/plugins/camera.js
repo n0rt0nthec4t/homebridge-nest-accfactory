@@ -86,7 +86,7 @@ const PREBUFFER_LENGTH = 4000;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2026.04.01'; // Code version
+  static VERSION = '2026.04.02'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -231,26 +231,17 @@ export default class NestCamera extends HomeKitDevice {
 
     this.addHKCharacteristic(this.controller.recordingManagement.operatingModeService, this.hap.Characteristic.HomeKitCameraActive, {
       onSet: (value) => {
-        if (
-          value !==
-          this.controller.recordingManagement.operatingModeService.getCharacteristic(this.hap.Characteristic.HomeKitCameraActive).value
-        ) {
-          // Make sure only updating status if HomeKit value *actually changes*
-          if (
-            (this.deviceData.streaming_enabled === false && value === this.hap.Characteristic.HomeKitCameraActive.ON) ||
-            (this.deviceData.streaming_enabled === true && value === this.hap.Characteristic.HomeKitCameraActive.OFF)
-          ) {
-            // Camera state does not reflect requested state, so fix
-            this.set({
-              uuid: this.deviceData.nest_google_device_uuid,
-              streaming_enabled: value === this.hap.Characteristic.HomeKitCameraActive.ON ? true : false,
-            });
-            this?.log?.info?.(
-              'Camera on "%s" was turned %s',
-              this.deviceData.description,
-              value === this.hap.Characteristic.HomeKitCameraActive.ON ? 'on' : 'off',
-            );
-          }
+        if (this.deviceData.streaming_enabled !== (value === this.hap.Characteristic.HomeKitCameraActive.ON)) {
+          // Camera state does not reflect requested state, so fix
+          this.set({
+            uuid: this.deviceData.nest_google_device_uuid,
+            streaming_enabled: value === this.hap.Characteristic.HomeKitCameraActive.ON ? true : false,
+          });
+          this?.log?.info?.(
+            'Camera on "%s" was turned %s',
+            this.deviceData.description,
+            value === this.hap.Characteristic.HomeKitCameraActive.ON ? 'on' : 'off',
+          );
         }
       },
     });
@@ -1006,10 +997,9 @@ export default class NestCamera extends HomeKitDevice {
       localAudioPort: await getPort(),
       audioTalkbackPort: await getPort(),
       rtpSplitterPort: await getPort(),
-      audioCryptoSuite: request.video.srtpCryptoSuite,
+      audioCryptoSuite: request.audio.srtpCryptoSuite,
       audioSRTP: Buffer.concat([request.audio.srtp_key, request.audio.srtp_salt]),
       audioSSRC: this.hap.CameraController.generateSynchronisationSource(),
-
       rtpSplitter: null, // setup later during stream start
     };
 
@@ -1068,7 +1058,7 @@ export default class NestCamera extends HomeKitDevice {
         sessionID: request.sessionID,
         options: {
           includeAudio: includeAudio === true,
-          localAccess: this.deviceData.localAccess === true, // User local device access if configured otherswise fallback to cloud
+          localAccess: this.deviceData.localAccess === true, // User local device access if configured otherwise fallback to cloud
         },
       });
 
@@ -1248,15 +1238,70 @@ export default class NestCamera extends HomeKitDevice {
           // Setup RTP splitter for two-way audio
           session.rtpSplitter = dgram.createSocket('udp4');
           session.rtpSplitter.bind(session.rtpSplitterPort);
-          session.rtpSplitter.on('error', () => session.rtpSplitter.close());
+          session.rtpSplitter.on('error', (error) => {
+            this?.log?.debug?.(
+              'Talkback RTP splitter on "%s" had an error. Error was "%s"',
+              this.deviceData.description,
+              typeof error?.message === 'string' ? error.message : String(error),
+            );
+            session.rtpSplitter.close();
+          });
           session.rtpSplitter.on('message', (message) => {
-            let pt = message.readUInt8(1) & 0x7f;
-            if (pt === request.audio.pt && message.length > 50) {
-              session.rtpSplitter.send(message, session.audioTalkbackPort);
-            } else {
-              session.rtpSplitter.send(message, session.localAudioPort);
-              session.rtpSplitter.send(message, session.audioTalkbackPort); // RTCP keepalive
+            let version = 0;
+            let packetType = 0;
+            let rtpPayloadType = 0;
+            let isRTCP = false;
+            let isTalkbackRTP = false;
+
+            if (Buffer.isBuffer(message) !== true || message.length < 2) {
+              return;
             }
+
+            // RTP/RTCP version is stored in the top two bits of the first byte.
+            // We only expect version 2 packets here.
+            version = message.readUInt8(0) >> 6;
+            if (version !== 2) {
+              this?.log?.debug?.(
+                'Ignoring invalid talkback packet on "%s": unsupported RTP/RTCP version "%s"',
+                this.deviceData.description,
+                version,
+              );
+              return;
+            }
+
+            packetType = message.readUInt8(1);
+            rtpPayloadType = packetType & 0x7f;
+
+            // RTCP packet types for Sender Report and Receiver Report.
+            // These often appear as 72 / 73 if incorrectly masked as RTP payload types.
+            isRTCP = packetType === 200 || packetType === 201;
+
+            // Actual HomeKit talkback RTP audio packet
+            isTalkbackRTP = isRTCP !== true && rtpPayloadType === request.audio.pt;
+
+            if (isTalkbackRTP === true) {
+              session.rtpSplitter.send(message, session.audioTalkbackPort);
+              return;
+            }
+
+            if (isRTCP === true) {
+              // Feed RTCP back to the local/HomeKit side and also to the talkback port as keepalive/control traffic.
+              session.rtpSplitter.send(message, session.localAudioPort);
+              session.rtpSplitter.send(message, session.audioTalkbackPort);
+              return;
+            }
+
+            // Anything else is unexpected but still route conservatively as control traffic.
+            this?.log?.debug?.(
+              'Talkback unknown RTP/RTCP packet on "%s": type="%s" payloadType="%s" length="%s"',
+              this.deviceData.description,
+              packetType,
+              rtpPayloadType,
+              message.length,
+            );
+
+            session.rtpSplitter.send(message, session.localAudioPort);
+            session.rtpSplitter.send(message, session.audioTalkbackPort);
           });
 
           let talkbackCommandLine = [

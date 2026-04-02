@@ -54,7 +54,7 @@ import { USER_AGENT, __dirname } from './consts.js';
 const PING_INTERVAL = 15000; // Ping interval to nexus server while stream active
 const STALLED_TIMEOUT = 10000; // Time with no playback packets before we consider stream stalled and attempt restart
 
-const PACKET_TYPE = {
+const MEDIA_TYPE = {
   PING: 1,
   HELLO: 100,
   PING_CAMERA: 101,
@@ -119,6 +119,7 @@ export default class NexusTalk extends Streamer {
       baseTime: undefined,
       mediaTime: undefined,
       sampleRate: undefined,
+      lastEmittedTimestamp: undefined,
       pendingTimestamp: undefined,
       pendingKeyFrame: false,
       pendingParts: [],
@@ -318,6 +319,11 @@ export default class NexusTalk extends Streamer {
       }
     }
 
+    // Flush any final pending NexusTalk video frame before resetting channel state.
+    // This prevents the last access unit from being lost when the stream closes
+    // without another video timestamp arriving to trigger a normal flush.
+    this.#flushPendingVideo(this.#channels.video);
+
     // Reset current playback channel timing/state on close since we'll need to renegotiate this on the next stream
     this.#resetChannelDetails();
 
@@ -404,7 +410,7 @@ export default class NexusTalk extends Streamer {
     }
 
     this.#talkback.lastPacketTime = Date.now();
-    this.#sendMessage(PACKET_TYPE.AUDIO_PAYLOAD, encodedData);
+    this.#sendMessage(MEDIA_TYPE.AUDIO_PAYLOAD, encodedData);
   }
 
   #startNexusData() {
@@ -442,7 +448,7 @@ export default class NexusTalk extends Streamer {
       return;
     }
 
-    this.#sendMessage(PACKET_TYPE.START_PLAYBACK, encodedData);
+    this.#sendMessage(MEDIA_TYPE.START_PLAYBACK, encodedData);
   }
 
   #stopNexusData() {
@@ -467,7 +473,7 @@ export default class NexusTalk extends Streamer {
       return;
     }
 
-    this.#sendMessage(PACKET_TYPE.STOP_PLAYBACK, encodedData);
+    this.#sendMessage(MEDIA_TYPE.STOP_PLAYBACK, encodedData);
   }
 
   #sendMessage(type, data) {
@@ -475,7 +481,7 @@ export default class NexusTalk extends Streamer {
       return;
     }
 
-    if (this.#socket?.readyState !== 'open' || (type !== PACKET_TYPE.HELLO && this.#authorised === false)) {
+    if (this.#socket?.readyState !== 'open' || (type !== MEDIA_TYPE.HELLO && this.#authorised === false)) {
       // We're not connected and/or authorised yet, so 'cache' message for processing once this occurs
       this.#messages.push({ type: type, data: data });
       return;
@@ -483,7 +489,7 @@ export default class NexusTalk extends Streamer {
 
     let header = undefined;
 
-    if (type === PACKET_TYPE.LONG_PLAYBACK_PACKET) {
+    if (type === MEDIA_TYPE.LONG_PLAYBACK_PACKET) {
       header = Buffer.alloc(5);
       header.writeUInt8(type, 0);
       header.writeUInt32BE(data.length, 1);
@@ -527,7 +533,7 @@ export default class NexusTalk extends Streamer {
     if (reauthorise === true) {
       // Request to re-authorise only
       this?.log?.debug?.('Re-authentication requested to "%s"', this.#host);
-      this.#sendMessage(PACKET_TYPE.AUTHORIZE_REQUEST, authoriseRequest);
+      this.#sendMessage(MEDIA_TYPE.AUTHORIZE_REQUEST, authoriseRequest);
       return;
     }
 
@@ -556,7 +562,7 @@ export default class NexusTalk extends Streamer {
     }
 
     this?.log?.debug?.('Performing authentication to "%s"', this.#host);
-    this.#sendMessage(PACKET_TYPE.HELLO, encodedData);
+    this.#sendMessage(MEDIA_TYPE.HELLO, encodedData);
   }
 
   #handleRedirect(payload) {
@@ -681,54 +687,30 @@ export default class NexusTalk extends Streamer {
     };
 
     // Function to calculate packet timestamp based on delta and stream details
-    let calculateTimestamp = (delta, stream) => {
-      if (typeof delta !== 'number' || typeof stream?.sampleRate !== 'number' || stream.sampleRate <= 0) {
-        return Date.now();
-      }
+    let calculateTimestamp = (delta, stream, maxStepMs = undefined) => {
+      let deltaMs = 0;
 
-      if (typeof stream.mediaTime !== 'number') {
+      if (typeof stream?.mediaTime !== 'number') {
         stream.mediaTime = typeof stream?.baseTime === 'number' ? stream.baseTime : Date.now();
       }
 
-      if (delta > 0) {
-        stream.mediaTime += (delta / stream.sampleRate) * 1000;
+      if (typeof delta === 'number' && typeof stream?.sampleRate === 'number' && stream.sampleRate > 0) {
+        deltaMs = (delta / stream.sampleRate) * 1000;
+
+        if (Number.isFinite(deltaMs) !== true || deltaMs < 0) {
+          deltaMs = 0;
+        }
+
+        if (typeof maxStepMs === 'number' && maxStepMs > 0 && deltaMs > maxStepMs) {
+          deltaMs = maxStepMs;
+        }
+      }
+
+      if (deltaMs > 0) {
+        stream.mediaTime += deltaMs;
       }
 
       return stream.mediaTime;
-    };
-
-    // Function to reset any pending NexusTalk video frame
-    let resetPendingVideo = (video) => {
-      if (typeof video !== 'object' || video === null) {
-        return;
-      }
-
-      video.pendingTimestamp = undefined;
-      video.pendingKeyFrame = false;
-      video.pendingParts = [];
-      video.pendingBytes = 0;
-    };
-
-    // Function to flush any pending NexusTalk video frame
-    let flushPendingVideo = (video) => {
-      if (typeof video !== 'object' || video === null) {
-        return;
-      }
-
-      if (Array.isArray(video.pendingParts) !== true || video.pendingParts.length === 0 || typeof video.pendingTimestamp !== 'number') {
-        resetPendingVideo(video);
-        return;
-      }
-
-      this.addPacket({
-        type: Streamer.PACKET_TYPE.VIDEO,
-        codec: this.codecs.video,
-        timestamp: video.pendingTimestamp,
-        keyFrame: video.pendingKeyFrame,
-        data: Buffer.concat(video.pendingParts),
-      });
-
-      resetPendingVideo(video);
     };
 
     if (Buffer.isBuffer(payload) !== true || this.#protobufNexusTalk === undefined || this.#protobufNexusTalk === null) {
@@ -767,14 +749,15 @@ export default class NexusTalk extends Streamer {
     // Handle video packet
     if (decodedMessage.channelId === this.#channels.video?.id) {
       let video = this.#channels.video;
-      let timestamp = calculateTimestamp(decodedMessage.timestampDelta, video);
+      let timestamp = calculateTimestamp(decodedMessage.timestampDelta, video, 80);
       let data = Buffer.from(decodedMessage.payload, 'base64');
+      let keyFrame = false;
 
       if (typeof timestamp !== 'number' || Buffer.isBuffer(data) !== true || data.length === 0) {
         return;
       }
 
-      let keyFrame = hasH264NAL(data, Streamer.H264NALUS.TYPES.IDR);
+      keyFrame = hasH264NAL(data, Streamer.H264NALUS.TYPES.IDR);
 
       if (this.sourceState === Streamer.MESSAGE_TYPE.SOURCE_CONNECTED) {
         // Transition to READY now that we have real video packets
@@ -783,7 +766,7 @@ export default class NexusTalk extends Streamer {
 
       // New timestamp means the previous buffered NALs belong to the prior frame/access unit
       if (typeof video.pendingTimestamp === 'number' && timestamp !== video.pendingTimestamp) {
-        flushPendingVideo(video);
+        this.#flushPendingVideo(video);
       }
 
       // Initialise pending frame state for this timestamp
@@ -823,7 +806,7 @@ export default class NexusTalk extends Streamer {
           video.pendingBytes,
         );
 
-        resetPendingVideo(video);
+        this.#resetPendingVideo(video);
         return;
       }
 
@@ -833,15 +816,15 @@ export default class NexusTalk extends Streamer {
     // Handle audio packet
     if (decodedMessage.channelId === this.#channels.audio?.id) {
       let audio = this.#channels.audio;
-      let timestamp = calculateTimestamp(decodedMessage.timestampDelta, audio);
+      let timestamp = calculateTimestamp(decodedMessage.timestampDelta, audio, 120);
       let data = Buffer.from(decodedMessage.payload, 'base64');
 
       if (typeof timestamp !== 'number' || Buffer.isBuffer(data) !== true || data.length === 0) {
         return;
       }
 
-      this.addPacket({
-        type: Streamer.PACKET_TYPE.AUDIO,
+      this.addMedia({
+        type: Streamer.MEDIA_TYPE.AUDIO,
         codec: this.codecs.audio,
         timestamp: timestamp,
         keyFrame: false,
@@ -860,6 +843,11 @@ export default class NexusTalk extends Streamer {
         this?.log?.debug?.('PlaybackEnd decode failed for uuid "%s": %s', this.nest_google_device_uuid, String(error));
         return;
       }
+
+      // Flush any final buffered NexusTalk video frame before ending playback.
+      // NexusTalk frames are emitted when the timestamp changes, so the final frame
+      // would otherwise be lost if the stream ends without a newer timestamp arriving.
+      this.#flushPendingVideo(this.#channels.video);
 
       if (this.#sessionId !== undefined && decodedMessage.reason === 'USER_ENDED_SESSION') {
         // Normal playback ended ie: when we stopped playback
@@ -942,7 +930,7 @@ export default class NexusTalk extends Streamer {
       let packetType = this.#packetBuffer.readUInt8(0);
       let packetSize = this.#packetBuffer.readUInt16BE(1);
 
-      if (packetType === PACKET_TYPE.LONG_PLAYBACK_PACKET) {
+      if (packetType === MEDIA_TYPE.LONG_PLAYBACK_PACKET) {
         headerSize = 5;
         packetSize = this.#packetBuffer.readUInt32BE(1);
       }
@@ -956,11 +944,11 @@ export default class NexusTalk extends Streamer {
       this.#packetOffset -= headerSize + packetSize;
 
       switch (packetType) {
-        case PACKET_TYPE.PING: {
+        case MEDIA_TYPE.PING: {
           break;
         }
 
-        case PACKET_TYPE.OK: {
+        case MEDIA_TYPE.OK: {
           // process any pending messages we have stored
           this.#authorised = true; // OK message, means we're connected and authorised to Nexus
           for (let message = this.#messages.shift(); message; message = this.#messages.shift()) {
@@ -970,7 +958,7 @@ export default class NexusTalk extends Streamer {
           // Periodically send PING message to keep stream alive
           clearInterval(this.#pingTimer);
           this.#pingTimer = setInterval(() => {
-            this.#sendMessage(PACKET_TYPE.PING, Buffer.alloc(0));
+            this.#sendMessage(MEDIA_TYPE.PING, Buffer.alloc(0));
           }, PING_INTERVAL);
 
           // Start processing data
@@ -978,38 +966,38 @@ export default class NexusTalk extends Streamer {
           break;
         }
 
-        case PACKET_TYPE.ERROR: {
+        case MEDIA_TYPE.ERROR: {
           this.#handleNexusError(protoBufPayload);
           break;
         }
 
-        case PACKET_TYPE.PLAYBACK_BEGIN: {
+        case MEDIA_TYPE.PLAYBACK_BEGIN: {
           this.#handlePlaybackBegin(protoBufPayload);
           break;
         }
 
-        case PACKET_TYPE.PLAYBACK_END: {
+        case MEDIA_TYPE.PLAYBACK_END: {
           this.#handlePlaybackEnd(protoBufPayload);
           break;
         }
 
-        case PACKET_TYPE.PLAYBACK_PACKET:
-        case PACKET_TYPE.LONG_PLAYBACK_PACKET: {
+        case MEDIA_TYPE.PLAYBACK_PACKET:
+        case MEDIA_TYPE.LONG_PLAYBACK_PACKET: {
           this.#handlePlaybackPacket(protoBufPayload);
           break;
         }
 
-        case PACKET_TYPE.REDIRECT: {
+        case MEDIA_TYPE.REDIRECT: {
           this.#handleRedirect(protoBufPayload);
           break;
         }
 
-        case PACKET_TYPE.TALKBACK_BEGIN: {
+        case MEDIA_TYPE.TALKBACK_BEGIN: {
           this.#handleTalkbackBegin(protoBufPayload);
           break;
         }
 
-        case PACKET_TYPE.TALKBACK_END: {
+        case MEDIA_TYPE.TALKBACK_END: {
           this.#handleTalkbackEnd(protoBufPayload);
           break;
         }
@@ -1042,6 +1030,58 @@ export default class NexusTalk extends Streamer {
     this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_RECONNECTING, reason);
   }
 
+  #resetPendingVideo(video) {
+    if (typeof video !== 'object' || video === null) {
+      return;
+    }
+
+    video.pendingTimestamp = undefined;
+    video.pendingKeyFrame = false;
+    video.pendingParts = [];
+    video.pendingBytes = 0;
+  }
+
+  #flushPendingVideo(video) {
+    let pendingTimestamp = undefined;
+    let minimumStep = 1;
+    let pendingData = undefined;
+
+    if (typeof video !== 'object' || video === null) {
+      return;
+    }
+
+    // Nothing buffered, so just clear any stale pending state
+    if (Array.isArray(video.pendingParts) !== true || video.pendingParts.length === 0 || typeof video.pendingTimestamp !== 'number') {
+      this.#resetPendingVideo(video);
+      return;
+    }
+
+    pendingTimestamp = video.pendingTimestamp;
+
+    // If we know FPS, use it to keep flushed frame timestamps moving forward
+    // by at least one frame interval when duplicate/regressing timestamps occur
+    if (typeof this.video?.fps === 'number' && Number.isFinite(this.video.fps) === true && this.video.fps > 0) {
+      minimumStep = Math.max(1, Math.round(1000 / this.video.fps));
+    }
+
+    if (typeof video.lastEmittedTimestamp === 'number' && pendingTimestamp <= video.lastEmittedTimestamp) {
+      pendingTimestamp = video.lastEmittedTimestamp + minimumStep;
+    }
+
+    video.lastEmittedTimestamp = pendingTimestamp;
+    pendingData = Buffer.concat(video.pendingParts);
+
+    this.addMedia({
+      type: Streamer.MEDIA_TYPE.VIDEO,
+      codec: this.codecs.video,
+      timestamp: pendingTimestamp,
+      keyFrame: video.pendingKeyFrame,
+      data: pendingData,
+    });
+
+    this.#resetPendingVideo(video);
+  }
+
   #resetChannelDetails() {
     // Reset video channel details
     this.#channels.video.id = undefined;
@@ -1050,6 +1090,7 @@ export default class NexusTalk extends Streamer {
     this.#channels.video.baseTime = undefined;
     this.#channels.video.mediaTime = undefined;
     this.#channels.video.sampleRate = undefined;
+    this.#channels.video.lastEmittedTimestamp = undefined;
     this.#channels.video.pendingTimestamp = undefined;
     this.#channels.video.pendingKeyFrame = false;
     this.#channels.video.pendingParts = [];

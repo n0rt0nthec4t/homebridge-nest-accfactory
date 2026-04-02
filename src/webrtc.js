@@ -28,7 +28,7 @@
 // - ICE "connected" indicates transport readiness, not media availability
 // - Startup delays may occur due to upstream (Google) keyframe delivery behaviour
 //
-// Code version 2026.04.01
+// Code version 2026.04.02
 // Mark Hulskamp
 'use strict';
 
@@ -63,7 +63,7 @@ const RTP_OPUS_AUDIO_PAYLOAD_TYPE = 111; // Opus audio payload type
 const GOOGLE_HOME_FOYER_PREFIX = 'google.internal.home.foyer.v1.';
 const FU_A_TIMEOUT = 1500; // Time to wait for the completion of a fragmented FU-A NAL unit before discarding the incomplete data
 const IDR_TIMEOUT = 5000; // Time to wait for an IDR frame before considering the video stream stalled and attempting a reconnect
-const TIMESTAMP_MAX_VIDEO_DELTA = 80;
+const TIMESTAMP_MAX_VIDEO_DELTA = 250;
 const TIMESTAMP_MAX_AUDIO_DELTA = 120;
 const STALLED_TIMEOUT = 10000; // Time with no playback packets before we consider stream stalled and attempt restart
 const PCM_S16LE_48000_STEREO_BLANK = Buffer.alloc(1920 * 2 * 2); // Default blank audio frame (20ms) in PCM S16LE, stereo @ 48kHz
@@ -296,9 +296,6 @@ export default class WebRTC extends Streamer {
           // Video track has been established, so setup our interal data for video tracking/handling
           this.#setupTracks(track);
 
-          // Request a keyframe immediately to speed up startup
-          this.#sendVideoPLI('startup');
-
           track.onReceiveRtp.subscribe((rtpPacket) => {
             this.#processJitterPacket(
               this.#tracks.video,
@@ -390,6 +387,11 @@ export default class WebRTC extends Streamer {
     this.#extendTimer = undefined;
     this.#stalledTimer = undefined;
     this.#pingTimer = undefined;
+
+    // Flush any final pending WebRTC video frame before tearing down track state.
+    // WebRTC assembles complete access units in memory, so the last frame would
+    // otherwise be lost if close happens before another marker/timestamp change flushes it.
+    this.#flushPendingVideoFrame();
 
     // Immediately tear down local track state so any in-flight WebRTC packet handlers
     // naturally no-op while we are still shutting down the remote connection.
@@ -505,16 +507,33 @@ export default class WebRTC extends Streamer {
 
     const talk = this.#tracks.talkback;
 
-    // Setup state for talkback if not already done.
-    // We need this to manage talkback sessions and RTP state for outgoing talkback audio packets
+    // Ensure talkback state container exists
+    if (typeof talk !== 'object' || talk === null) {
+      return;
+    }
+
+    // Start or send talkback audio
     if (talkingBuffer.length > 0) {
-      // First time → request talkback start from device
-      if (talk.active === undefined) {
+      // First packet for a new talkback session:
+      // ask the remote device to enable talkback audio path.
+      //
+      // Important:
+      // sendTalkback() may be called repeatedly while the async start request is still in-flight.
+      // Use a separate "starting" flag so we only issue one COMMAND_START request.
+      if (talk.active !== true) {
+        if (talk.started === true) {
+          return;
+        }
+
+        talk.started = true;
+
         let homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'SendTalkback', {
           googleDeviceId: { value: this.#googleHomeDeviceUUID },
           streamId: this.#streamId,
           command: 'COMMAND_START',
         });
+
+        talk.started = false;
 
         if (homeFoyerResponse?.status !== 0) {
           this?.log?.debug?.('Error starting talkback for uuid "%s"', this.nest_google_device_uuid);
@@ -530,13 +549,16 @@ export default class WebRTC extends Streamer {
         return;
       }
 
-      // Initalise RTP state if not already done. We need this to build correct RTP headers for the talkback audio packets we send
-      if (typeof talk.rtp !== 'object') {
+      // Initialise RTP state if not already done.
+      // We need this to build correct RTP headers for the talkback audio packets we send.
+      if (typeof talk.rtp !== 'object' || talk.rtp === null) {
         talk.rtp = {};
       }
+
       if (typeof talk.rtp.sequenceNumber !== 'number') {
         talk.rtp.sequenceNumber = 0;
       }
+
       if (typeof talk.rtp.timestamp !== 'number') {
         // RTP timestamps are sample-based, not wallclock
         talk.rtp.timestamp = Math.floor(Math.random() * 0xffffffff);
@@ -551,7 +573,6 @@ export default class WebRTC extends Streamer {
       header.marker = true;
       header.payloadOffset = RTP_PACKET_HEADER_SIZE;
 
-      // Send the RTP packet using the audio transceiver's sender
       let packet = new werift.RtpPacket(header, talkingBuffer);
       this.#audioTransceiver.sender.sendRtp(packet.serialize());
 
@@ -561,9 +582,17 @@ export default class WebRTC extends Streamer {
       return;
     }
 
-    // Since we only send talkback audio when we have an active stream
-    // if we get an empty buffer this means the talkback session has ended (e.g. user stopped talking or released button)
-    if (talkingBuffer.length === 0 && talk.active === true) {
+    // Empty buffer means talkback session has ended
+    if (talkingBuffer.length === 0 && (talk.active === true || talk.started === true)) {
+      // If a start request is still in-flight, do not issue stop yet.
+      // We'll just reset local state and let the next session start cleanly.
+      if (talk.started === true) {
+        talk.started = false;
+        talk.active = undefined;
+        talk.rtp = undefined;
+        return;
+      }
+
       let homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'SendTalkback', {
         googleDeviceId: { value: this.#googleHomeDeviceUUID },
         streamId: this.#streamId,
@@ -578,7 +607,8 @@ export default class WebRTC extends Streamer {
 
       // Reset state ready for next session
       talk.active = undefined;
-      talk.rtp.timestamp = undefined;
+      talk.started = false;
+      talk.rtp = undefined;
     }
   }
 
@@ -616,14 +646,15 @@ export default class WebRTC extends Streamer {
           expectedSequence: undefined,
           lastReleasedSequence: undefined,
           waitStart: undefined,
-          maxWait: 25,
-          maxSize: 32,
+          maxWait: 80,
+          maxSize: 192,
         },
       };
 
       // Audio track is bidirectional (sendrecv), so we initialise talkback format from it,
       // but maintain separate RTP state for outbound talkback
       this.#tracks.talkback = {
+        id: weriftTrack?.codec?.payloadType, // Talkback RTP payload type is the same as in the incoming audio track
         codec: Streamer.CODEC_TYPE.OPUS, // Talkback uses Opus
         sampleRate: sampleRate, // Sample rate for talkback matches incoming audio track
         channels: channels, // Same for channels
@@ -633,7 +664,10 @@ export default class WebRTC extends Streamer {
           timestamp: undefined,
         },
         active: undefined,
+        started: undefined,
       };
+
+      return;
     }
 
     if (weriftTrack?.kind === 'video' && weriftTrack?.codec?.payloadType === RTP_H264_VIDEO_PAYLOAD_TYPE) {
@@ -645,6 +679,7 @@ export default class WebRTC extends Streamer {
         ssrc: typeof weriftTrack?.ssrc === 'number' ? weriftTrack.ssrc : undefined,
         lastPLITime: undefined,
         lastIDRTime: undefined,
+        startupPLIStartedAt: undefined,
         rtp: {
           // RTP state for timestamp calculation
           lastSequence: undefined,
@@ -667,7 +702,6 @@ export default class WebRTC extends Streamer {
 
           // Frame assembly state
           pendingParts: [],
-          pendingTimestamp: undefined,
           pendingRtpTimestamp: undefined,
           pendingKeyFrame: false,
         },
@@ -677,11 +711,37 @@ export default class WebRTC extends Streamer {
           expectedSequence: undefined,
           lastReleasedSequence: undefined,
           waitStart: undefined,
-          maxWait: 50,
-          maxSize: 128,
+          maxWait: 100,
+          maxSize: 256,
         },
         startupPLITimer: undefined,
       };
+
+      // Setup a short startup PLI retry loop for this video track.
+      // This helps request a fresh keyframe during initial stream startup.
+      clearInterval(this.#tracks.video.startupPLITimer);
+      this.#tracks.video.startupPLITimer = undefined;
+      this.#tracks.video.startupPLIStartedAt = Date.now();
+
+      this.#sendVideoPLI('startup');
+
+      this.#tracks.video.startupPLITimer = setInterval(() => {
+        if (typeof this.#tracks?.video?.lastIDRTime === 'number') {
+          clearInterval(this.#tracks.video.startupPLITimer);
+          this.#tracks.video.startupPLITimer = undefined;
+          this.#tracks.video.startupPLIStartedAt = undefined;
+          return;
+        }
+
+        if (typeof this.#tracks?.video?.startupPLIStartedAt === 'number' && Date.now() - this.#tracks.video.startupPLIStartedAt >= 3000) {
+          clearInterval(this.#tracks.video.startupPLITimer);
+          this.#tracks.video.startupPLITimer = undefined;
+          this.#tracks.video.startupPLIStartedAt = undefined;
+          return;
+        }
+
+        this.#sendVideoPLI('startup keyframe retry');
+      }, 1000);
     }
   }
 
@@ -735,143 +795,7 @@ export default class WebRTC extends Streamer {
       return timestamp;
     };
 
-    let resetPendingVideo = () => {
-      const video = this.#tracks?.video;
-      const h264 = video?.h264;
-
-      if (typeof h264 !== 'object' || h264 === null) {
-        return;
-      }
-
-      h264.pendingParts = [];
-      h264.pendingTimestamp = undefined;
-      h264.pendingRtpTimestamp = undefined;
-      h264.pendingKeyFrame = false;
-    };
-
-    let flushPendingVideo = () => {
-      const video = this.#tracks?.video;
-      const h264 = video?.h264;
-      const videoRtp = video?.rtp;
-      let pendingParts = h264?.pendingParts;
-      let pendingRtpTimestamp = h264?.pendingRtpTimestamp;
-      let pendingKeyFrame = h264?.pendingKeyFrame;
-      let pendingTimestamp = undefined;
-      let minimumStep = 1;
-      let buffers = undefined;
-      let index = 0;
-      let part = undefined;
-      let data = undefined;
-
-      // Nothing buffered for the current access unit, so just clear state and return
-      if (Array.isArray(pendingParts) !== true || pendingParts.length === 0 || typeof pendingRtpTimestamp !== 'number') {
-        resetPendingVideo();
-        return;
-      }
-
-      if (typeof videoRtp !== 'object' || videoRtp === null) {
-        resetPendingVideo();
-        return;
-      }
-
-      // Build one Annex-B frame from the collected raw NAL units.
-      buffers = [];
-      index = 0;
-      while (index < pendingParts.length) {
-        part = pendingParts[index];
-
-        if (Buffer.isBuffer(part) === true && part.length > 0) {
-          if (part.indexOf(Streamer.H264NALUS.START_CODE) === 0) {
-            buffers.push(part);
-          } else {
-            buffers.push(Streamer.H264NALUS.START_CODE, part);
-          }
-        }
-
-        index++;
-      }
-
-      data = Buffer.concat(buffers);
-
-      // Safety guard: if concatenation produced nothing useful, discard the pending frame
-      if (Buffer.isBuffer(data) !== true || data.length === 0) {
-        resetPendingVideo();
-        return;
-      }
-
-      // First emitted frame for this track:
-      // initialise our RTP timing baseline directly from the completed frame RTP timestamp
-      if (typeof videoRtp.lastTimestamp !== 'number' || typeof videoRtp.lastCalculatedTimestamp !== 'number') {
-        videoRtp.lastTimestamp = pendingRtpTimestamp;
-        videoRtp.lastCalculatedTimestamp = Date.now();
-        pendingTimestamp = videoRtp.lastCalculatedTimestamp;
-      }
-
-      // For subsequent frames, calculate one timestamp per completed access unit
-      // from the difference between this frame RTP timestamp and the previous frame RTP timestamp
-      if (typeof pendingTimestamp !== 'number') {
-        let deltaTicks = (pendingRtpTimestamp - videoRtp.lastTimestamp + 0x100000000) % 0x100000000;
-
-        // If this looks like an older/reordered frame timestamp, drop it rather than emit backwards time
-        if (deltaTicks > 0x7fffffff) {
-          resetPendingVideo();
-          return;
-        }
-
-        let deltaMs = (deltaTicks / video.sampleRate) * 1000;
-
-        // Clamp invalid values back to zero rather than poisoning output timing
-        if (Number.isFinite(deltaMs) !== true || deltaMs < 0) {
-          deltaMs = 0;
-        }
-
-        // Guard against very large RTP jumps causing huge frame time jumps downstream
-        if (deltaMs > TIMESTAMP_MAX_VIDEO_DELTA) {
-          deltaMs = TIMESTAMP_MAX_VIDEO_DELTA;
-        }
-
-        pendingTimestamp = videoRtp.lastCalculatedTimestamp + deltaMs;
-      }
-
-      let previousTimestamp = videoRtp.lastEmittedTimestamp;
-
-      // Use the detected stream fps, when available, as the minimum forward step for emitted frame times.
-      // This helps avoid multiple completed frames collapsing onto the same millisecond and causing DTS wobble.
-      if (typeof this.video?.fps === 'number' && Number.isFinite(this.video.fps) === true && this.video.fps > 0) {
-        minimumStep = Math.max(1, Math.round(1000 / this.video.fps));
-      }
-
-      // Final monotonicity guard:
-      // if the newly calculated frame timestamp does not move forward, force it forward by at least one frame step
-      if (typeof previousTimestamp === 'number' && pendingTimestamp <= previousTimestamp) {
-        pendingTimestamp = previousTimestamp + minimumStep;
-      }
-
-      // Update RTP/frame timing state only once per fully assembled frame
-      videoRtp.lastTimestamp = pendingRtpTimestamp;
-      videoRtp.lastCalculatedTimestamp = pendingTimestamp;
-      videoRtp.lastEmittedTimestamp = pendingTimestamp;
-
-      // Track most recent IDR arrival and move source state to ready once we have a usable keyframe
-      if (pendingKeyFrame === true) {
-        video.lastIDRTime = Date.now();
-        clearTimeout(video?.startupPLITimer);
-        video.startupPLITimer = undefined;
-      }
-
-      // Emit exactly one packet per completed video frame/access unit
-      this.addPacket({
-        type: Streamer.PACKET_TYPE.VIDEO,
-        codec: this.codecs.video,
-        timestamp: pendingTimestamp,
-        keyFrame: pendingKeyFrame,
-        data: data,
-      });
-
-      resetPendingVideo();
-    };
-
-    let startPendingVideoFrame = (timestamp, rtpTimestamp) => {
+    let startPendingVideoFrame = (rtpTimestamp) => {
       const video = this.#tracks?.video;
       const h264 = video?.h264;
 
@@ -880,7 +804,6 @@ export default class WebRTC extends Streamer {
       }
 
       h264.pendingRtpTimestamp = rtpTimestamp;
-      h264.pendingTimestamp = timestamp;
       h264.pendingKeyFrame = false;
       h264.pendingParts = [];
     };
@@ -902,11 +825,10 @@ export default class WebRTC extends Streamer {
       h264.pendingParts.push(data);
     };
 
-    let appendVideoNalu = (nalu, timestamp, rtpTimestamp, naluType, now) => {
+    let appendVideoNalu = (nalu, rtpTimestamp, naluType, now) => {
       if (
         Buffer.isBuffer(nalu) !== true ||
         nalu.length === 0 ||
-        typeof timestamp !== 'number' ||
         typeof rtpTimestamp !== 'number' ||
         typeof this.#tracks?.video?.h264 !== 'object' ||
         this.#tracks.video.h264 === null
@@ -915,11 +837,11 @@ export default class WebRTC extends Streamer {
       }
 
       if (typeof this.#tracks.video.h264.pendingRtpTimestamp === 'number' && this.#tracks.video.h264.pendingRtpTimestamp !== rtpTimestamp) {
-        flushPendingVideo();
+        this.#flushPendingVideoFrame();
       }
 
       if (typeof this.#tracks.video.h264.pendingRtpTimestamp !== 'number') {
-        startPendingVideoFrame(timestamp, rtpTimestamp);
+        startPendingVideoFrame(rtpTimestamp);
       }
 
       if (naluType === Streamer.H264NALUS.TYPES.SPS) {
@@ -988,7 +910,6 @@ export default class WebRTC extends Streamer {
       let payload = rtpPacket.payload;
       let nalHeader = payload[0];
       let type = nalHeader & 0x1f;
-      let timestamp = undefined;
       let rtpTimestamp = rtpPacket.header.timestamp >>> 0;
 
       if (typeof video?.h264 !== 'object' || video.h264 === null) {
@@ -1012,17 +933,18 @@ export default class WebRTC extends Streamer {
             rtpPacket.header.sequenceNumber,
           );
 
-          // Drop any incomplete in-progress frame on packet loss rather than emitting a partial frame
-          resetPendingVideo();
+          // Any forward video loss can invalidate the current in-progress frame assembly.
+          // Clear both FU-A state and any pending assembled access unit so we do not emit
+          // partial / stale video after packet loss.
+          clearTimeout(video.h264?.fuTimer);
+          video.h264.fuBuffer = undefined;
+          video.h264.fuType = undefined;
+          video.h264.fuTimestamp = undefined;
 
-          if (video.h264?.fuBuffer !== undefined) {
-            clearTimeout(video.h264?.fuTimer);
-            video.h264.fuBuffer = undefined;
-            video.h264.fuType = undefined;
-            video.h264.fuTimestamp = undefined;
+          this.#resetPendingVideoFrame();
 
-            this.#sendVideoPLI('fu-a packet loss');
-          }
+          // Always request a fresh keyframe after forward video packet loss.
+          this.#sendVideoPLI('video packet loss');
         }
 
         // Older/reordered packet
@@ -1031,14 +953,6 @@ export default class WebRTC extends Streamer {
         }
       }
       video.rtp.lastSequence = rtpPacket.header.sequenceNumber;
-
-      if (
-        typeof video?.startupPLIStartedAt === 'number' &&
-        typeof video?.lastIDRTime !== 'number' &&
-        now - video.startupPLIStartedAt <= 5000
-      ) {
-        this.#sendVideoPLI('waiting for first keyframe');
-      }
 
       // If we haven't received an IDR frame in a while, request a new one with a PLI to help recovery
       if (typeof video.lastIDRTime === 'number' && now - video.lastIDRTime > IDR_TIMEOUT) {
@@ -1052,11 +966,6 @@ export default class WebRTC extends Streamer {
         let nalu = undefined;
         let naluType = 0;
 
-        timestamp = calculateTimestamp(rtpPacket, video, TIMESTAMP_MAX_VIDEO_DELTA, { allowEqual: true });
-        if (typeof timestamp !== 'number') {
-          return;
-        }
-
         while (offset + 2 <= payload.length) {
           naluLength = payload.readUInt16BE(offset);
           offset += 2;
@@ -1069,11 +978,11 @@ export default class WebRTC extends Streamer {
           naluType = nalu[0] & 0x1f;
           offset += naluLength;
 
-          appendVideoNalu(Buffer.from(nalu), timestamp, rtpTimestamp, naluType, now);
+          appendVideoNalu(Buffer.from(nalu), rtpTimestamp, naluType, now);
         }
 
         if (rtpPacket.header.marker === true) {
-          flushPendingVideo();
+          this.#flushPendingVideoFrame();
         }
         return;
       }
@@ -1086,7 +995,6 @@ export default class WebRTC extends Streamer {
         let fragmentPayload = payload.subarray(2);
         let completedBuffer = undefined;
         let completedType = undefined;
-        let completedTimestamp = undefined;
         let completedRtpTimestamp = undefined;
 
         if (payload.length < 3 || fragmentPayload.length === 0) {
@@ -1121,23 +1029,16 @@ export default class WebRTC extends Streamer {
           completedBuffer = Buffer.concat(video.h264.fuBuffer);
           completedType = video.h264.fuType;
           completedRtpTimestamp = video.h264.fuTimestamp;
-          completedTimestamp = calculateTimestamp({ header: { timestamp: completedRtpTimestamp } }, video, TIMESTAMP_MAX_VIDEO_DELTA, {
-            allowEqual: true,
-          });
 
           clearTimeout(video.h264.fuTimer);
           video.h264.fuBuffer = [];
           video.h264.fuType = undefined;
           video.h264.fuTimestamp = undefined;
 
-          if (typeof completedTimestamp !== 'number') {
-            return;
-          }
-
-          appendVideoNalu(completedBuffer, completedTimestamp, completedRtpTimestamp, completedType, now);
+          appendVideoNalu(completedBuffer, completedRtpTimestamp, completedType, now);
 
           if (rtpPacket.header.marker === true) {
-            flushPendingVideo();
+            this.#flushPendingVideoFrame();
           }
         }
 
@@ -1145,15 +1046,10 @@ export default class WebRTC extends Streamer {
       }
 
       // Raw NAL unit
-      timestamp = calculateTimestamp(rtpPacket, video, TIMESTAMP_MAX_VIDEO_DELTA, { allowEqual: true });
-      if (typeof timestamp !== 'number') {
-        return;
-      }
-
-      appendVideoNalu(payload, timestamp, rtpTimestamp, type, now);
+      appendVideoNalu(payload, rtpTimestamp, type, now);
 
       if (rtpPacket.header.marker === true) {
-        flushPendingVideo();
+        this.#flushPendingVideoFrame();
       }
       return;
     }
@@ -1211,8 +1107,8 @@ export default class WebRTC extends Streamer {
       }
 
       if (Buffer.isBuffer(pcm) === true && pcm.length > 0) {
-        this.addPacket({
-          type: Streamer.PACKET_TYPE.AUDIO,
+        this.addMedia({
+          type: Streamer.MEDIA_TYPE.AUDIO,
           codec: this.codecs.audio,
           timestamp: timestamp,
           keyFrame: false,
@@ -1221,8 +1117,8 @@ export default class WebRTC extends Streamer {
         return;
       }
 
-      this.addPacket({
-        type: Streamer.PACKET_TYPE.AUDIO,
+      this.addMedia({
+        type: Streamer.MEDIA_TYPE.AUDIO,
         codec: this.codecs.audio,
         timestamp: timestamp,
         keyFrame: false,
@@ -1359,6 +1255,135 @@ export default class WebRTC extends Streamer {
       trackState.jitter.lastReleasedSequence = undefined;
       trackState.jitter.waitStart = undefined;
     }
+  }
+
+  #resetPendingVideoFrame() {
+    if (typeof this.#tracks?.video?.h264 !== 'object' || this.#tracks.video.h264 === null) {
+      return;
+    }
+
+    this.#tracks.video.h264.pendingParts = [];
+    this.#tracks.video.h264.pendingRtpTimestamp = undefined;
+    this.#tracks.video.h264.pendingKeyFrame = false;
+  }
+
+  #flushPendingVideoFrame() {
+    let video = this.#tracks?.video;
+    let h264 = video?.h264;
+    let videoRtp = video?.rtp;
+    let pendingParts = h264?.pendingParts;
+    let pendingRtpTimestamp = h264?.pendingRtpTimestamp;
+    let pendingKeyFrame = h264?.pendingKeyFrame;
+    let pendingTimestamp = undefined;
+    let minimumStep = 1;
+    let buffers = undefined;
+    let index = 0;
+    let part = undefined;
+    let data = undefined;
+
+    // Nothing buffered for the current access unit, so just clear state and return
+    if (Array.isArray(pendingParts) !== true || pendingParts.length === 0 || typeof pendingRtpTimestamp !== 'number') {
+      this.#resetPendingVideoFrame();
+      return;
+    }
+
+    if (typeof videoRtp !== 'object' || videoRtp === null) {
+      this.#resetPendingVideoFrame();
+      return;
+    }
+
+    // Build one Annex-B frame from the collected raw NAL units.
+    buffers = [];
+    while (index < pendingParts.length) {
+      part = pendingParts[index];
+
+      if (Buffer.isBuffer(part) === true && part.length > 0) {
+        if (part.indexOf(Streamer.H264NALUS.START_CODE) === 0) {
+          buffers.push(part);
+        } else {
+          buffers.push(Streamer.H264NALUS.START_CODE, part);
+        }
+      }
+
+      index++;
+    }
+
+    data = Buffer.concat(buffers);
+
+    // Safety guard: if concatenation produced nothing useful, discard the pending frame
+    if (Buffer.isBuffer(data) !== true || data.length === 0) {
+      this.#resetPendingVideoFrame();
+      return;
+    }
+
+    // First emitted frame for this track:
+    // initialise our RTP timing baseline directly from the completed frame RTP timestamp
+    if (typeof videoRtp.lastTimestamp !== 'number' || typeof videoRtp.lastCalculatedTimestamp !== 'number') {
+      videoRtp.lastTimestamp = pendingRtpTimestamp;
+      videoRtp.lastCalculatedTimestamp = Date.now();
+      pendingTimestamp = videoRtp.lastCalculatedTimestamp;
+    }
+
+    // For subsequent frames, calculate one timestamp per completed access unit
+    // from the difference between this frame RTP timestamp and the previous frame RTP timestamp
+    if (typeof pendingTimestamp !== 'number') {
+      let deltaTicks = (pendingRtpTimestamp - videoRtp.lastTimestamp + 0x100000000) % 0x100000000;
+      let deltaMs = 0;
+
+      // If this looks like an older/reordered frame timestamp, drop it rather than emit backwards time
+      if (deltaTicks > 0x7fffffff) {
+        this.#resetPendingVideoFrame();
+        return;
+      }
+
+      deltaMs = (deltaTicks / video.sampleRate) * 1000;
+
+      // Clamp invalid values back to zero rather than poisoning output timing
+      if (Number.isFinite(deltaMs) !== true || deltaMs < 0) {
+        deltaMs = 0;
+      }
+
+      // Guard against very large RTP jumps causing huge frame time jumps downstream
+      if (deltaMs > TIMESTAMP_MAX_VIDEO_DELTA) {
+        deltaMs = TIMESTAMP_MAX_VIDEO_DELTA;
+      }
+
+      pendingTimestamp = videoRtp.lastCalculatedTimestamp + deltaMs;
+    }
+
+    // Use the detected stream fps, when available, as the minimum forward step for emitted frame times.
+    // This helps avoid multiple completed frames collapsing onto the same millisecond and causing DTS wobble.
+    if (typeof this.video?.fps === 'number' && Number.isFinite(this.video.fps) === true && this.video.fps > 0) {
+      minimumStep = Math.max(1, Math.round(1000 / this.video.fps));
+    }
+
+    // Final monotonicity guard:
+    // if the newly calculated frame timestamp does not move forward, force it forward by at least one frame step
+    if (typeof videoRtp.lastEmittedTimestamp === 'number' && pendingTimestamp <= videoRtp.lastEmittedTimestamp) {
+      pendingTimestamp = videoRtp.lastEmittedTimestamp + minimumStep;
+    }
+
+    // Update RTP/frame timing state only once per fully assembled frame
+    videoRtp.lastTimestamp = pendingRtpTimestamp;
+    videoRtp.lastCalculatedTimestamp = pendingTimestamp;
+    videoRtp.lastEmittedTimestamp = pendingTimestamp;
+
+    if (pendingKeyFrame === true) {
+      video.lastIDRTime = Date.now();
+      clearInterval(video?.startupPLITimer);
+      video.startupPLITimer = undefined;
+    }
+
+    // Emit exactly one packet per completed video frame/access unit
+    this.addMedia({
+      type: Streamer.MEDIA_TYPE.VIDEO,
+      codec: this.codecs.video,
+      timestamp: pendingTimestamp,
+      keyFrame: pendingKeyFrame,
+      data: data,
+    });
+
+    this.#resetPendingVideoFrame();
   }
 
   // Need more work in here*

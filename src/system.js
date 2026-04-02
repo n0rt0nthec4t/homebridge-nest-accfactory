@@ -1846,7 +1846,30 @@ export default class NestAccfactory {
         PROTOBUF_RESOURCES.DOORBELL.includes(this.#rawData?.[nest_google_device_uuid]?.value?.device_info?.typeName) === true ||
         PROTOBUF_RESOURCES.FLOODLIGHT.includes(this.#rawData?.[nest_google_device_uuid]?.value?.device_info?.typeName) === true)
     ) {
-      // First, request to get the snapshot url image updated
+      // Helper to normalise protobuf timestamp into epoch milliseconds
+      let getSnapshotTime = (uploadLiveImage) => {
+        if (isNaN(uploadLiveImage?.timestamp?.seconds) === false && isNaN(uploadLiveImage?.timestamp?.nanos) === false) {
+          return Number(uploadLiveImage.timestamp.seconds) * 1000 + Math.floor(Number(uploadLiveImage.timestamp.nanos) / 1000000);
+        }
+
+        if (isNaN(uploadLiveImage?.timestamp?.seconds) === false) {
+          return Number(uploadLiveImage.timestamp.seconds) * 1000;
+        }
+
+        return 0;
+      };
+
+      // Capture the current known snapshot state BEFORE issuing the protobuf command
+      // This is critical to avoid race conditions where the update arrives before we start polling
+      let previousUploadLiveImage = structuredClone(this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image ?? {});
+      let previousUrl = previousUploadLiveImage?.liveImageUrl ?? '';
+      let previousTime = getSnapshotTime(previousUploadLiveImage);
+
+      let latestUploadLiveImage = previousUploadLiveImage;
+      let latestUrl = previousUrl;
+      let latestTime = previousTime;
+
+      // Send protobuf command to request a new snapshot from device
       let commandResponse = await this.#protobufCommand(uuid, 'nestlabs.gateway.v1.ResourceApi', 'SendCommand', {
         resourceRequest: {
           resourceId: nest_google_device_uuid,
@@ -1863,59 +1886,80 @@ export default class NestAccfactory {
         ],
       });
 
+      // Only continue if protobuf reports the command completed successfully
       if (
         commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.progress === 'COMPLETE' &&
-        commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.event?.event?.status === 'STATUS_SUCCESSFUL' &&
-        (this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image?.liveImageUrl ?? '') !== ''
+        commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.event?.event?.status === 'STATUS_SUCCESSFUL'
       ) {
-        // Wait briefly for the snapshot image URL or timestamp to update before retrieving the image.
-        // The backend may reuse the same URL but update the content, so we also check for a newer timestamp.
-        let previousUploadLiveImage = structuredClone(this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image ?? {});
+        // Poll for updated snapshot metadata
+        // We are specifically waiting for:
+        //   - a newer timestamp (preferred signal), OR
+        //   - a changed URL (fallback if timestamp missing)
         for (let attempt = 0; attempt < 4; attempt++) {
-          if (
-            (this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image?.liveImageUrl ?? '') !== '' &&
-            (this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image?.liveImageUrl !== previousUploadLiveImage?.liveImageUrl ||
-              JSON.stringify(this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image?.timestamp) !==
-                JSON.stringify(previousUploadLiveImage?.timestamp))
-          ) {
+          latestUploadLiveImage = this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image ?? {};
+          latestUrl = latestUploadLiveImage?.liveImageUrl ?? '';
+          latestTime = getSnapshotTime(latestUploadLiveImage);
+
+          // Accept snapshot only if it is newer than what we had before
+          if (latestUrl !== '' && latestTime > previousTime) {
             break;
           }
+
+          // Small delay to allow observe pipeline to deliver updated trait
           await new Promise((resolve) => setTimeout(resolve, 500));
         }
 
-        // After allowing time for the snapshot URL or timestamp to update
-        // Retrieve the snapshot image from the Google API using the URL provided in the upload_live_image trait value
-        try {
-          let response = await fetchWrapper('get', this.#rawData[nest_google_device_uuid].value.upload_live_image.liveImageUrl, {
-            headers: {
-              Referer: 'https://' + this.#connections[uuid].referer,
-              Origin: 'https://' + this.#connections[uuid].referer,
-              Authorization: 'Basic ' + this.#connections[uuid].token,
-              'User-Agent': USER_AGENT,
-              'Sec-Fetch-Mode': 'cors',
-              'Sec-Fetch-Site': 'same-origin',
-            },
-            retry: 2,
-            timeout: 4000,
-          });
-          snapshot = Buffer.from(await response.arrayBuffer());
-          if (snapshot?.length === 0) {
-            snapshot = undefined;
-            this?.log?.debug?.('Google API returned empty snapshot for device uuid "%s"', nest_google_device_uuid);
+        // Re-read final state after polling loop
+        latestUploadLiveImage = this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image ?? {};
+        latestUrl = latestUploadLiveImage?.liveImageUrl ?? '';
+        latestTime = getSnapshotTime(latestUploadLiveImage);
+
+        // Only fetch image if we actually received a newer snapshot
+        if (latestUrl !== '' && latestTime > previousTime) {
+          try {
+            let response = await fetchWrapper('get', latestUrl, {
+              headers: {
+                Referer: 'https://' + this.#connections[uuid].referer,
+                Origin: 'https://' + this.#connections[uuid].referer,
+                Authorization: 'Basic ' + this.#connections[uuid].token,
+                'User-Agent': USER_AGENT,
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin',
+              },
+              retry: 2,
+              timeout: 4000,
+            });
+
+            snapshot = Buffer.from(await response.arrayBuffer());
+
+            // Validate non-empty buffer
+            if (snapshot?.length === 0) {
+              snapshot = undefined;
+              this?.log?.debug?.('Google API returned empty snapshot for device uuid "%s"', nest_google_device_uuid);
+            }
+          } catch (error) {
+            // Only log non-timeout errors to avoid noise
+            if (
+              error?.cause === undefined ||
+              (error.cause?.message?.toUpperCase?.()?.includes('TIMEOUT') === false &&
+                error.cause?.code?.toUpperCase?.()?.includes('TIMEOUT') === false)
+            ) {
+              this?.log?.debug?.(
+                'Google API camera snapshot failed with error for device uuid "%s". Error was "%s"',
+                nest_google_device_uuid,
+                typeof error?.message === 'string' ? error.message : String(error),
+              );
+            }
           }
-        } catch (error) {
-          // Log unexpected errors (excluding timeouts) for debugging
-          if (
-            error?.cause === undefined ||
-            (error.cause?.message?.toUpperCase?.()?.includes('TIMEOUT') === false &&
-              error.cause?.code?.toUpperCase?.()?.includes('TIMEOUT') === false)
-          ) {
-            this?.log?.debug?.(
-              'Google API camera snapshot failed with error for device uuid "%s". Error was "%s"',
-              nest_google_device_uuid,
-              typeof error?.message === 'string' ? error.message : String(error),
-            );
-          }
+        } else {
+          // No new snapshot was produced by device within polling window
+          // This prevents re-downloading stale images and helps diagnose slow devices
+          this?.log?.debug?.(
+            'Google API snapshot did not update for device uuid "%s". Previous time="%s", latest time="%s"',
+            nest_google_device_uuid,
+            previousTime,
+            latestTime,
+          );
         }
       }
     }
