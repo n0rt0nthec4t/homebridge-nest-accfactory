@@ -665,22 +665,9 @@ export default class NestCamera extends HomeKitDevice {
       // Audio input (optional)
       ...(includeAudio === true
         ? this.streamer.codecs.audio === Streamer.CODEC_TYPE.PCM
-          ? [
-              '-thread_queue_size',
-              '1024',
-              '-f',
-              's16le',
-              '-ar',
-              '48000',
-              '-ac',
-              '2',
-              '-i',
-              'pipe:3',
-              '-af',
-              'aresample=async=1:first_pts=0',
-            ]
+          ? ['-thread_queue_size', '1024', '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', 'pipe:3']
           : this.streamer.codecs.audio === Streamer.CODEC_TYPE.AAC
-            ? ['-thread_queue_size', '1024', '-f', 'aac', '-i', 'pipe:3', '-af', 'aresample=async=1:first_pts=0']
+            ? ['-thread_queue_size', '1024', '-f', 'aac', '-i', 'pipe:3']
             : []
         : []),
 
@@ -730,7 +717,22 @@ export default class NestCamera extends HomeKitDevice {
 
       // Audio output
       ...(includeAudio === true
-        ? ['-map', '1:a:0', '-codec:a', 'libfdk_aac', '-profile:a', 'aac_low', '-ar', '16000', '-b:a', '16k', '-ac', '1']
+        ? [
+            '-map',
+            '1:a:0',
+            '-codec:a',
+            'libfdk_aac',
+            '-profile:a',
+            'aac_low',
+            '-ar',
+            '16000',
+            '-b:a',
+            '16k',
+            '-ac',
+            '1',
+            '-filter:a',
+            'aresample=async=1:first_pts=0',
+          ]
         : []),
 
       '-f',
@@ -1069,7 +1071,9 @@ export default class NestCamera extends HomeKitDevice {
         '-use_wallclock_as_timestamps',
         '1',
         '-fflags',
-        '+discardcorrupt',
+        '+discardcorrupt+genpts',
+        '-avoid_negative_ts',
+        'make_zero',
         '-max_delay',
         '500000',
         '-flags',
@@ -1084,22 +1088,9 @@ export default class NestCamera extends HomeKitDevice {
         // Audio input (if enabled)
         ...(includeAudio === true
           ? this.streamer.codecs.audio === Streamer.CODEC_TYPE.PCM
-            ? [
-                '-thread_queue_size',
-                '1024',
-                '-f',
-                's16le',
-                '-ar',
-                '48000',
-                '-ac',
-                '2',
-                '-i',
-                'pipe:3',
-                '-af',
-                'aresample=async=1:first_pts=0',
-              ]
+            ? ['-thread_queue_size', '1024', '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', 'pipe:3']
             : this.streamer.codecs.audio === Streamer.CODEC_TYPE.AAC
-              ? ['-thread_queue_size', '1024', '-f', 'aac', '-i', 'pipe:3', '-af', 'aresample=async=1:first_pts=0']
+              ? ['-thread_queue_size', '1024', '-f', 'aac', '-i', 'pipe:3']
               : []
           : []),
 
@@ -1131,7 +1122,7 @@ export default class NestCamera extends HomeKitDevice {
         // Audio output (if enabled)
         ...(includeAudio === true
           ? request.audio.codec === this.hap.AudioStreamingCodecType.AAC_ELD
-            ? ['-map', '1:a:0', '-codec:a', 'libfdk_aac', '-profile:a', 'aac_eld']
+            ? ['-map', '1:a:0', '-codec:a', 'libfdk_aac', '-profile:a', 'aac_eld', '-filter:a', 'aresample=async=1:first_pts=0']
             : request.audio.codec === this.hap.AudioStreamingCodecType.OPUS
               ? [
                   '-map',
@@ -1142,6 +1133,8 @@ export default class NestCamera extends HomeKitDevice {
                   'lowdelay',
                   '-frame_duration',
                   request.audio.packet_time.toString(),
+                  '-filter:a',
+                  'aresample=async=1:first_pts=0',
                 ]
               : []
           : []),

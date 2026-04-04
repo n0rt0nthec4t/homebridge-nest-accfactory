@@ -30,7 +30,7 @@
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.04.01
+// Code version 2026.04.05
 // Mark Hulskamp
 'use strict';
 
@@ -52,7 +52,7 @@ import Streamer from './streamer.js';
 import { USER_AGENT, __dirname } from './consts.js';
 
 const PING_INTERVAL = 15000; // Ping interval to nexus server while stream active
-const STALLED_TIMEOUT = 10000; // Time with no playback packets before we consider stream stalled and attempt restart
+const STALLED_TIMEOUT = 10000; // Time with no playback packets received before we consider stream stalled and attempt restart
 
 const MEDIA_TYPE = {
   PING: 1,
@@ -110,13 +110,13 @@ export default class NexusTalk extends Streamer {
   #reconnectPending = false; // Reconnect requested once socket closes
   #reconnectHost = undefined; // Host to reconnect to
   #reconnectReason = undefined; // Reason for reconnect
+  #sessionStartTime = undefined; // Shared session time anchor in ms for all playback channels
   #channels = {
     video: {
       id: undefined,
       codec: Streamer.CODEC_TYPE.H264,
       profile: undefined,
-      baseTimestamp: undefined,
-      baseTime: undefined,
+      startOffset: 0,
       mediaTime: undefined,
       sampleRate: undefined,
       lastEmittedTimestamp: undefined,
@@ -129,8 +129,7 @@ export default class NexusTalk extends Streamer {
       id: undefined,
       codec: Streamer.CODEC_TYPE.AAC,
       profile: undefined,
-      baseTimestamp: undefined,
-      baseTime: undefined,
+      startOffset: 0,
       mediaTime: undefined,
       sampleRate: undefined,
     },
@@ -600,6 +599,10 @@ export default class NexusTalk extends Streamer {
 
     let decodedMessage = undefined;
     let now = Date.now();
+    let videoStream = undefined;
+    let audioStream = undefined;
+    let sessionStart = undefined;
+    let startDelta = 0;
 
     try {
       decodedMessage = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.PlaybackBegin').decode(payload).toJSON();
@@ -612,26 +615,47 @@ export default class NexusTalk extends Streamer {
     this.#resetChannelDetails();
 
     if (Array.isArray(decodedMessage?.channels) === true) {
-      decodedMessage.channels.forEach((stream) => {
-        // Find which channels match our video and audio streams
-        if (stream.codec === this.codecs.video.toUpperCase()) {
-          this.#channels.video.id = stream.channelId;
-          this.#channels.video.profile = stream.profile;
-          this.#channels.video.sampleRate = stream.sampleRate;
-          this.#channels.video.baseTimestamp = stream.startTime;
-          this.#channels.video.baseTime = typeof stream.startTime === 'number' ? stream.startTime * 1000 : now;
-          this.#channels.video.mediaTime = this.#channels.video.baseTime;
-        }
+      videoStream = decodedMessage.channels.find((stream) => stream?.codec === this.codecs.video.toUpperCase());
+      audioStream = decodedMessage.channels.find((stream) => stream?.codec === this.codecs.audio.toUpperCase());
+    }
 
-        if (stream.codec === this.codecs.audio.toUpperCase()) {
-          this.#channels.audio.id = stream.channelId;
-          this.#channels.audio.profile = stream.profile;
-          this.#channels.audio.sampleRate = stream.sampleRate;
-          this.#channels.audio.baseTimestamp = stream.startTime;
-          this.#channels.audio.baseTime = typeof stream.startTime === 'number' ? stream.startTime * 1000 : now;
-          this.#channels.audio.mediaTime = this.#channels.audio.baseTime;
-        }
-      });
+    // Use the earliest available stream start time as the shared session anchor
+    if (typeof videoStream?.startTime === 'number' && typeof audioStream?.startTime === 'number') {
+      sessionStart = Math.min(videoStream.startTime, audioStream.startTime) * 1000;
+    }
+
+    if (typeof sessionStart !== 'number' && typeof videoStream?.startTime === 'number') {
+      sessionStart = videoStream.startTime * 1000;
+    }
+
+    if (typeof sessionStart !== 'number' && typeof audioStream?.startTime === 'number') {
+      sessionStart = audioStream.startTime * 1000;
+    }
+
+    if (typeof sessionStart !== 'number') {
+      sessionStart = now;
+    }
+
+    this.#sessionStartTime = sessionStart;
+
+    if (typeof videoStream === 'object' && videoStream !== null) {
+      this.#channels.video.id = videoStream.channelId;
+      this.#channels.video.profile = videoStream.profile;
+      this.#channels.video.sampleRate = videoStream.sampleRate;
+
+      startDelta = typeof videoStream.startTime === 'number' ? videoStream.startTime * 1000 - sessionStart : 0;
+      this.#channels.video.startOffset = Math.max(-250, Math.min(250, Math.round(startDelta)));
+      this.#channels.video.mediaTime = sessionStart + this.#channels.video.startOffset;
+    }
+
+    if (typeof audioStream === 'object' && audioStream !== null) {
+      this.#channels.audio.id = audioStream.channelId;
+      this.#channels.audio.profile = audioStream.profile;
+      this.#channels.audio.sampleRate = audioStream.sampleRate;
+
+      startDelta = typeof audioStream.startTime === 'number' ? audioStream.startTime * 1000 - sessionStart : 0;
+      this.#channels.audio.startOffset = Math.max(-250, Math.min(250, Math.round(startDelta)));
+      this.#channels.audio.mediaTime = sessionStart + this.#channels.audio.startOffset;
     }
 
     // Since this is the beginning of playback, clear any active buffer contents
@@ -691,10 +715,14 @@ export default class NexusTalk extends Streamer {
       let deltaMs = 0;
 
       if (typeof stream?.mediaTime !== 'number') {
-        stream.mediaTime = typeof stream?.baseTime === 'number' ? stream.baseTime : Date.now();
+        stream.mediaTime = typeof this.#sessionStartTime === 'number' ? this.#sessionStartTime + (stream?.startOffset ?? 0) : Date.now();
       }
 
-      if (typeof delta === 'number' && typeof stream?.sampleRate === 'number' && stream.sampleRate > 0) {
+      if (typeof stream?.sampleRate !== 'number' || Number.isFinite(stream.sampleRate) !== true || stream.sampleRate <= 0) {
+        return stream.mediaTime;
+      }
+
+      if (typeof delta === 'number') {
         deltaMs = (delta / stream.sampleRate) * 1000;
 
         if (Number.isFinite(deltaMs) !== true || deltaMs < 0) {
@@ -1083,11 +1111,12 @@ export default class NexusTalk extends Streamer {
   }
 
   #resetChannelDetails() {
+    this.#sessionStartTime = undefined;
+
     // Reset video channel details
     this.#channels.video.id = undefined;
     this.#channels.video.profile = undefined;
-    this.#channels.video.baseTimestamp = undefined;
-    this.#channels.video.baseTime = undefined;
+    this.#channels.video.startOffset = 0;
     this.#channels.video.mediaTime = undefined;
     this.#channels.video.sampleRate = undefined;
     this.#channels.video.lastEmittedTimestamp = undefined;
@@ -1099,8 +1128,7 @@ export default class NexusTalk extends Streamer {
     // Reset audio channel details
     this.#channels.audio.id = undefined;
     this.#channels.audio.profile = undefined;
-    this.#channels.audio.baseTimestamp = undefined;
-    this.#channels.audio.baseTime = undefined;
+    this.#channels.audio.startOffset = 0;
     this.#channels.audio.mediaTime = undefined;
     this.#channels.audio.sampleRate = undefined;
 
