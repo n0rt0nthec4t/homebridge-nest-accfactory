@@ -30,7 +30,7 @@
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.04.05
+// Code version 2026.04.06
 // Mark Hulskamp
 'use strict';
 
@@ -854,6 +854,10 @@ export default class NexusTalk extends Streamer {
       this.addMedia({
         type: Streamer.MEDIA_TYPE.AUDIO,
         codec: this.codecs.audio,
+        profile: typeof audio?.profile === 'string' ? audio.profile : undefined,
+        sampleRate: Number.isFinite(audio?.sampleRate) === true && audio.sampleRate > 0 ? audio.sampleRate : undefined,
+        channels: Number.isFinite(audio?.channels) === true && audio.channels > 0 ? audio.channels : 1, // NexusTalk is typically mono
+        bitrate: Number.isFinite(audio?.bitrate) === true && audio.bitrate > 0 ? audio.bitrate : undefined,
         timestamp: timestamp,
         keyFrame: false,
         data: data,
@@ -945,7 +949,14 @@ export default class NexusTalk extends Streamer {
     }
 
     if (this.#packetOffset + data.length > this.#packetBuffer.length) {
-      let newBuffer = Buffer.allocUnsafe(this.#packetBuffer.length * 2);
+      if (this.#packetBuffer.length >= 10 * 1024 * 1024) {
+        // 10MB max buffer
+        this?.log?.warn?.('Packet buffer exceeded maximum size, resetting for uuid "%s"', this.nest_google_device_uuid);
+        this.#packetOffset = 0;
+        return;
+      }
+      let newSize = Math.min(this.#packetBuffer.length * 2, 10 * 1024 * 1024);
+      let newBuffer = Buffer.allocUnsafe(newSize);
       this.#packetBuffer.copy(newBuffer, 0, 0, this.#packetOffset);
       this.#packetBuffer = newBuffer;
     }
@@ -954,13 +965,25 @@ export default class NexusTalk extends Streamer {
     this.#packetOffset += data.length;
 
     while (this.#packetOffset >= 3) {
-      let headerSize = 3;
       let packetType = this.#packetBuffer.readUInt8(0);
-      let packetSize = this.#packetBuffer.readUInt16BE(1);
+      let headerSize = 3;
+      let packetSize;
 
       if (packetType === MEDIA_TYPE.LONG_PLAYBACK_PACKET) {
+        if (this.#packetOffset < 5) {
+          break;
+        }
         headerSize = 5;
         packetSize = this.#packetBuffer.readUInt32BE(1);
+      } else {
+        packetSize = this.#packetBuffer.readUInt16BE(1);
+      }
+
+      if (packetSize < 0 || packetSize > 5 * 1024 * 1024) {
+        // invalid size
+        this?.log?.warn?.('Invalid packet size %d, resetting buffer for uuid "%s"', packetSize, this.nest_google_device_uuid);
+        this.#packetOffset = 0;
+        break;
       }
 
       if (this.#packetOffset < headerSize + packetSize) {
@@ -1027,6 +1050,11 @@ export default class NexusTalk extends Streamer {
 
         case MEDIA_TYPE.TALKBACK_END: {
           this.#handleTalkbackEnd(protoBufPayload);
+          break;
+        }
+
+        default: {
+          this?.log?.debug?.('Unknown packet type "%d" received from "%s"', packetType, this.#host);
           break;
         }
       }
@@ -1102,6 +1130,15 @@ export default class NexusTalk extends Streamer {
     this.addMedia({
       type: Streamer.MEDIA_TYPE.VIDEO,
       codec: this.codecs.video,
+      profile: typeof video?.profile === 'string' ? video.profile : undefined,
+      bitrate:
+        video?.profile?.includes?.('2MBIT') === true
+          ? 2000000
+          : video?.profile?.includes?.('530KBIT') === true
+            ? 530000
+            : video?.profile?.includes?.('100KBIT') === true
+              ? 100000
+              : undefined,
       timestamp: pendingTimestamp,
       keyFrame: video.pendingKeyFrame,
       data: pendingData,
