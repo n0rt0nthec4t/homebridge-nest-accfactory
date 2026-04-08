@@ -13,7 +13,7 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 - Added `ffmpegTranscode` option (global and per-device, disabled by default) to enable optional video/audio transcoding for live streams
 - Refactored snapshot handling to centralise caching and protobuf freshness logic in `system.js`
 - Removed per-camera snapshot caching from `camera.js` to simplify the pipeline and avoid duplicate logic
-- Improved snapshot responsiveness by prioritising recent cached images over immediate protobuf refresh
+- Improved snapshot responsiveness by prioritising recent cached images over immediate protobuf refreshing
 
 ## v0.4.0-beta.11 (2026/04/02)
 
