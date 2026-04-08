@@ -33,7 +33,7 @@
 // - Maintains connection state, protobuf definitions, raw data cache, and tracked devices
 // - Creates and updates HomeKitDevice-based instances for supported device types
 //
-// Code version 2026.04.01
+// Code version 2026.04.08
 // Mark Hulskamp
 'use strict';
 
@@ -1716,11 +1716,13 @@ export default class NestAccfactory {
       values[key] = undefined;
 
       if (key === 'camera_snapshot') {
-        // Camera snapshot requested with 10 second timeout to prevent Homebridge complaints
+        // Camera snapshot requested.
+        // Keep this timeout shorter than HomeKit's patience so we either return a snapshot
+        // quickly or fall back cleanly without prolonged blocking.
         try {
           values[key] = await Promise.race([
             this.#getCameraSnapshot(uuid, nest_google_device_uuid),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Snapshot request timeout')), 10000)),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Snapshot request timeout')), 4000)),
           ]);
         } catch (error) {
           this?.log?.debug?.(
@@ -1779,13 +1781,49 @@ export default class NestAccfactory {
     if (
       this.#connections?.[uuid]?.authorised !== true ||
       (this.#connections?.[uuid]?.referer ?? '') === '' ||
-      (nest_google_device_uuid?.trim?.() ?? '') === ''
+      (nest_google_device_uuid?.trim?.() ?? '') === '' ||
+      typeof this.#rawData?.[nest_google_device_uuid]?.value !== 'object'
     ) {
       // Not a valid connection object and/or we're not authorised
       return;
     }
 
+    // Normalised snapshot state for this device regardless of API source.
+    // image      = last successfully downloaded snapshot buffer
+    // fetched_at = local time we downloaded the image
+    // timestamp  = upstream freshness timestamp (protobuf) or synthetic Date.now() for Nest
+    // url        = upstream image URL if provided (protobuf only)
+    this.#rawData[nest_google_device_uuid].value.snapshot = {
+      image:
+        Buffer.isBuffer(this.#rawData[nest_google_device_uuid].value?.snapshot?.image) === true
+          ? this.#rawData[nest_google_device_uuid].value.snapshot.image
+          : undefined,
+      fetched_at:
+        isNaN(this.#rawData[nest_google_device_uuid].value?.snapshot?.fetched_at) === false
+          ? Number(this.#rawData[nest_google_device_uuid].value.snapshot.fetched_at)
+          : 0,
+      timestamp:
+        isNaN(this.#rawData[nest_google_device_uuid].value?.snapshot?.timestamp) === false
+          ? Number(this.#rawData[nest_google_device_uuid].value.snapshot.timestamp)
+          : 0,
+      url:
+        typeof this.#rawData[nest_google_device_uuid].value?.snapshot?.url === 'string'
+          ? this.#rawData[nest_google_device_uuid].value.snapshot.url
+          : '',
+    };
+
+    // Fast cache window keeps HomeKit snapshot handling responsive.
+    // Fallback cache window allows us to return the last good image if upstream refresh is slow or fails.
+    let fastCacheAge = 3000;
+    let fallbackCacheAge = 30000;
     let snapshot = undefined;
+    let now = Date.now();
+    let snapshotState = this.#rawData[nest_google_device_uuid].value.snapshot;
+
+    // If we already have a very recent snapshot, return it immediately
+    if (Buffer.isBuffer(snapshotState.image) === true && snapshotState.image.length > 0 && now - snapshotState.fetched_at <= fastCacheAge) {
+      return snapshotState.image;
+    }
 
     if (
       this.config?.options?.useNestAPI === true &&
@@ -1796,7 +1834,9 @@ export default class NestAccfactory {
       (this.#connections?.[uuid]?.cameraAPI?.value ?? '') !== '' &&
       (this.#connections?.[uuid]?.cameraAPI?.token ?? '') !== ''
     ) {
-      // Attempt to retrieve snapshot from camera via Nest API
+      // Attempt to retrieve snapshot from camera via Nest API.
+      // Nest does not provide the same freshness metadata as protobuf,
+      // so a successful image fetch is treated as the newest available snapshot.
       try {
         let response = await fetchWrapper(
           'get',
@@ -1817,10 +1857,21 @@ export default class NestAccfactory {
             timeout: 4000,
           },
         );
+
         snapshot = Buffer.from(await response.arrayBuffer());
+
         if (snapshot?.length === 0) {
           snapshot = undefined;
           this?.log?.debug?.('Nest API returned empty snapshot for device uuid "%s"', nest_google_device_uuid);
+        }
+
+        if (Buffer.isBuffer(snapshot) === true && snapshot.length > 0) {
+          snapshotState.image = snapshot;
+          snapshotState.fetched_at = Date.now();
+          snapshotState.timestamp = snapshotState.fetched_at;
+          snapshotState.url = '';
+
+          return snapshot;
         }
       } catch (error) {
         // Log unexpected errors (excluding timeouts) for debugging
@@ -1859,17 +1910,15 @@ export default class NestAccfactory {
         return 0;
       };
 
-      // Capture the current known snapshot state BEFORE issuing the protobuf command
-      // This is critical to avoid race conditions where the update arrives before we start polling
-      let previousUploadLiveImage = structuredClone(this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image ?? {});
-      let previousUrl = previousUploadLiveImage?.liveImageUrl ?? '';
-      let previousTime = getSnapshotTime(previousUploadLiveImage);
+      // Compare against the last successfully accepted snapshot for this device,
+      // not just the currently observed raw protobuf trait value.
+      let previousTime = snapshotState.timestamp;
+      let previousUrl = snapshotState.url;
+      let latestUploadLiveImage = structuredClone(this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image ?? {});
+      let latestUrl = latestUploadLiveImage?.liveImageUrl ?? '';
+      let latestTime = getSnapshotTime(latestUploadLiveImage);
 
-      let latestUploadLiveImage = previousUploadLiveImage;
-      let latestUrl = previousUrl;
-      let latestTime = previousTime;
-
-      // Send protobuf command to request a new snapshot from device
+      // Send protobuf command to request a fresh image from device/cloud path
       let commandResponse = await this.#protobufCommand(uuid, 'nestlabs.gateway.v1.ResourceApi', 'SendCommand', {
         resourceRequest: {
           resourceId: nest_google_device_uuid,
@@ -1886,36 +1935,35 @@ export default class NestAccfactory {
         ],
       });
 
-      // Only continue if protobuf reports the command completed successfully
+      // Only continue if protobuf reports the snapshot request completed successfully
       if (
         commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.progress === 'COMPLETE' &&
         commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.event?.event?.status === 'STATUS_SUCCESSFUL'
       ) {
-        // Poll for updated snapshot metadata
-        // We are specifically waiting for:
-        //   - a newer timestamp (preferred signal), OR
-        //   - a changed URL (fallback if timestamp missing)
-        for (let attempt = 0; attempt < 4; attempt++) {
-          latestUploadLiveImage = this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image ?? {};
+        // Poll briefly for updated upload_live_image trait state to arrive through observe.
+        // We prefer a strictly newer timestamp. URL change is only used as a fallback
+        // if the upstream timestamp is missing.
+        for (let attempt = 0; attempt < 2; attempt++) {
+          latestUploadLiveImage = structuredClone(this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image ?? {});
           latestUrl = latestUploadLiveImage?.liveImageUrl ?? '';
           latestTime = getSnapshotTime(latestUploadLiveImage);
 
-          // Accept snapshot only if it is newer than what we had before
-          if (latestUrl !== '' && latestTime > previousTime) {
+          if (latestUrl !== '' && (latestTime > previousTime || (latestTime === 0 && latestUrl !== previousUrl))) {
             break;
           }
 
-          // Small delay to allow observe pipeline to deliver updated trait
-          await new Promise((resolve) => setTimeout(resolve, 500));
+          await new Promise((resolve) => setTimeout(resolve, 250));
         }
 
-        // Re-read final state after polling loop
-        latestUploadLiveImage = this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image ?? {};
+        // Re-read the latest protobuf snapshot metadata after polling
+        latestUploadLiveImage = structuredClone(this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image ?? {});
         latestUrl = latestUploadLiveImage?.liveImageUrl ?? '';
         latestTime = getSnapshotTime(latestUploadLiveImage);
 
-        // Only fetch image if we actually received a newer snapshot
-        if (latestUrl !== '' && latestTime > previousTime) {
+        // Only download the image if protobuf metadata indicates it is newer than
+        // the last successfully accepted snapshot, or if timestamp is unavailable
+        // but the image URL changed.
+        if (latestUrl !== '' && (latestTime > previousTime || (latestTime === 0 && latestUrl !== previousUrl))) {
           try {
             let response = await fetchWrapper('get', latestUrl, {
               headers: {
@@ -1932,10 +1980,18 @@ export default class NestAccfactory {
 
             snapshot = Buffer.from(await response.arrayBuffer());
 
-            // Validate non-empty buffer
             if (snapshot?.length === 0) {
               snapshot = undefined;
               this?.log?.debug?.('Google API returned empty snapshot for device uuid "%s"', nest_google_device_uuid);
+            }
+
+            if (Buffer.isBuffer(snapshot) === true && snapshot.length > 0) {
+              snapshotState.image = snapshot;
+              snapshotState.fetched_at = Date.now();
+              snapshotState.timestamp = latestTime !== 0 ? latestTime : snapshotState.fetched_at;
+              snapshotState.url = latestUrl;
+
+              return snapshot;
             }
           } catch (error) {
             // Only log non-timeout errors to avoid noise
@@ -1952,8 +2008,8 @@ export default class NestAccfactory {
             }
           }
         } else {
-          // No new snapshot was produced by device within polling window
-          // This prevents re-downloading stale images and helps diagnose slow devices
+          // Snapshot metadata did not advance quickly enough to prove freshness.
+          // We will fall back to any still-valid cached snapshot below.
           this?.log?.debug?.(
             'Google API snapshot did not update for device uuid "%s". Previous time="%s", latest time="%s"',
             nest_google_device_uuid,
@@ -1964,7 +2020,17 @@ export default class NestAccfactory {
       }
     }
 
-    return snapshot;
+    // If we could not obtain a fresh snapshot, return the last successful snapshot
+    // as a fallback if it is still within our fallback cache window.
+    if (
+      Buffer.isBuffer(snapshotState.image) === true &&
+      snapshotState.image.length > 0 &&
+      Date.now() - snapshotState.fetched_at <= fallbackCacheAge
+    ) {
+      return snapshotState.image;
+    }
+
+    return;
   }
 
   async #getLocationWeather(uuid, nest_google_device_uuid, postal_code, country_code) {

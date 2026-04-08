@@ -1,13 +1,14 @@
 name: Publish homebridge-nest-accfactory
 
 on:
-  # Trigger prerelease publish when package.json or changelog changes on main
+  # Trigger prerelease publish when package.json or release notes change on main
   push:
     branches:
       - main
     paths:
       - package.json
       - CHANGELOG.md
+      - PRERELEASE_NOTES.md
 
   # Trigger stable publish when a GitHub Release is published
   release:
@@ -151,52 +152,59 @@ jobs:
           fi
 
       # --------------------------------------------------------
-      # Extract release notes from CHANGELOG.md
+      # Extract release notes
       #
-      # Expected changelog headings:
-      #   ## v<version>
-      #   ## v<version>-<channel>
+      # Prerelease publishes:
+      #   - Read exact version section from PRERELEASE_NOTES.md
       #
-      # Examples:
+      # Stable publishes:
+      #   - Read exact version section from CHANGELOG.md
+      #   - Append global "Known Issues" section from CHANGELOG.md
+      #
+      # Expected headings:
+      #   ## v0.4.0-alpha.18
+      #   ## v0.4.0-beta.1
       #   ## v0.4.0
-      #   ## v0.4.0-beta
-      #   ## v0.4.0-beta (2026/03/20)
-      #
-      # Notes:
-      # - Any additional text after the version (e.g. dates or labels)
-      #   is preserved in the release notes
-      #
-      # Release notes are built as:
-      #   1. matching version section
-      #   2. global "Known Issues" section appended at the end
       # --------------------------------------------------------
-      - name: Extract release notes from CHANGELOG.md
+      - name: Extract release notes
         shell: bash
         run: |
           node <<'EOF'
           const fs = require('fs');
 
-          const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
-          const baseVersion = process.env.BASE_VERSION;
-          const channel = process.env.CHANNEL;
+          const version = process.env.VERSION;
           const isPrerelease = process.env.IS_PRERELEASE === 'true';
+          const sourceFile = isPrerelease === true ? 'PRERELEASE_NOTES.md' : 'CHANGELOG.md';
 
-          const lines = changelog.split(/\r?\n/);
-          let output = [];
-
-          // -----------------------------------------
-          // 1. Extract version section FIRST
-          // -----------------------------------------
-          let headingRegex;
-
-          if (isPrerelease === true) {
-            headingRegex = new RegExp(`^## v${baseVersion}-${channel}\\b`);
-          } else {
-            headingRegex = new RegExp(`^## v${baseVersion}\\b`);
+          if (fs.existsSync(sourceFile) !== true) {
+            console.warn(`Required release notes file "${sourceFile}" was not found, using fallback text`);
+            fs.writeFileSync(
+              'RELEASE_NOTES.md',
+              [
+                `## v${version}`,
+                '',
+                isPrerelease === true
+                  ? 'No published release notes for this pre-release.'
+                  : 'No published release notes for this release.',
+                '',
+                isPrerelease === true
+                  ? 'This is a development build and may contain incremental changes.'
+                  : 'Please refer to CHANGELOG.md for details of recent changes.',
+              ].join('\n').trim() + '\n',
+            );
+            process.exit(0);
           }
 
+          const content = fs.readFileSync(sourceFile, 'utf8');
+          const lines = content.split(/\r?\n/);
+          const headingRegex = new RegExp(`^## v${version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+
+          let output = [];
           let start = -1;
 
+          // -----------------------------------------
+          // 1. Extract exact version section
+          // -----------------------------------------
           for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
 
@@ -216,46 +224,53 @@ jobs:
           }
 
           // -----------------------------------------
-          // 2. Extract global Known Issues
-          // -----------------------------------------
-          let knownIssues = [];
-          let inKnownIssues = false;
-
-          for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-
-            if (line.trim() === '### Known Issues') {
-              inKnownIssues = true;
-              knownIssues.push(line);
-              continue;
-            }
-
-            if (inKnownIssues === true) {
-              if (line.trimStart().startsWith('## ') === true) {
-                break;
-              }
-
-              knownIssues.push(line);
-            }
-          }
-
-          // -----------------------------------------
-          // 3. Fallback if version section not found
+          // 2. Fallback if version section not found
           // -----------------------------------------
           if (start === -1) {
+            console.warn(`No release notes found for v${version} in ${sourceFile}, using fallback text`);
             output = [
-              `## v${baseVersion}${isPrerelease === true ? '-' + channel : ''}`,
+              `## v${version}`,
               '',
-              'Release notes unavailable. See CHANGELOG.md'
+              isPrerelease === true
+                ? 'No published release notes for this pre-release.'
+                : 'No published release notes for this release.',
+              '',
+              isPrerelease === true
+                ? 'This is a development build and may contain incremental changes.'
+                : 'Please refer to CHANGELOG.md for details of recent changes.',
             ];
           }
 
           // -----------------------------------------
-          // 4. Append Known Issues at END
+          // 3. Append global Known Issues for stable only
           // -----------------------------------------
-          if (knownIssues.length > 0) {
-            output.push('');
-            output.push(...knownIssues);
+          if (isPrerelease === false) {
+            const changelogLines = fs.readFileSync('CHANGELOG.md', 'utf8').split(/\r?\n/);
+            let knownIssues = [];
+            let inKnownIssues = false;
+
+            for (let i = 0; i < changelogLines.length; i++) {
+              const line = changelogLines[i];
+
+              if (line.trim() === '### Known Issues') {
+                inKnownIssues = true;
+                knownIssues.push(line);
+                continue;
+              }
+
+              if (inKnownIssues === true) {
+                if (line.trimStart().startsWith('## ') === true) {
+                  break;
+                }
+
+                knownIssues.push(line);
+              }
+            }
+
+            if (knownIssues.length > 0) {
+              output.push('');
+              output.push(...knownIssues);
+            }
           }
 
           fs.writeFileSync('RELEASE_NOTES.md', output.join('\n').trim() + '\n');

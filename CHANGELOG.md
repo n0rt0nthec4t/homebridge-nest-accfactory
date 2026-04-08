@@ -1,6 +1,8 @@
 # Change Log
 
-All notable changes to `homebridge-nest-accfactory` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
+All notable changes to `homebridge-nest-accfactory` are documented in this file.  
+Pre-release notes for alpha and beta versions are maintained separately in `PRERELEASE_NOTES.md`.  
+This project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Known Issues
 
@@ -9,7 +11,7 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 - HomeKit Secure Video (HKSV) can be enabled on battery powered cameras, which will significantly reduce battery life
 - Motion sensing on wired Nest Protect devices may report incorrect states due to recent firmware changes
 
-## v0.4.0-beta (xxxx/xx/xx)
+## v0.4.0 (xxxx/xx/xx)
 
 > ⚠️ This is a beta pre-release. While considered stable, it may still contain bugs. Feedback is welcome before final release.
 
@@ -90,6 +92,7 @@ All notable changes to `homebridge-nest-accfactory` will be documented in this f
 
 - Removed `undici` dependancy 
 - Updated `werift` from `0.22.8` to `0.22.9`
+- Updated `protobufjs` from `8.0.0` to `8.0.1`
 
 ## v0.3.9 (2026/02/18)
 

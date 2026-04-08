@@ -146,8 +146,9 @@ The following options are available in the `config.json` `"options"` object. The
 | eveHistory         | Provide history in EveHome application where applicable                                      | true           |
 | exclude            | Exclude all device(s)                                                                        | false          |
 | ffmpegDebug        | Enable additional debugging output when ffmpeg is invoked                                    | false          |
-| ffmpegHWaccel      | Enable video hardware acceleration for supported camera(s) and doorbell(s)                   | false          |
+| ffmpegHWaccel      | Enable video hardware acceleration for camera(s) and doorbell(s) where supported             | false          |
 | ffmpegPath         | Path to an ffmpeg binary (defaults to `ffmpeg` in system path)                               | /usr/local/bin |
+| ffmpegTranscode    | Enable video and audio transcoding for camera(s) and doorbell(s) (higher CPU usage)          | false          |
 | logMotionEvents    | Enable logging of motion events for camera(s), doorbell(s) and Nest Protect device(s)        | true           |
 | maxStreams         | Maximum simultaneous live view streams per camera                                            | 2              |
 | supportDump        | Enable Support Dump logging of raw Nest and Google API data                                  | false          |
@@ -164,24 +165,25 @@ Devices are identified using their **serial number**, which must match the value
 
 The `"name"` field is optional and is only used to help identify the entry in the configuration. It does **not** rename the device in HomeKit.
 
-| Name               | Description                                                                                  | Default        |
-|--------------------|----------------------------------------------------------------------------------------------|----------------|
-| chimeSwitch        | Enable a switch to control the indoor doorbell chime                                         | false          |
-| doorbellCooldown   | Time between doorbell press events                                                           | 60s            |
-| eveHistory         | Provide history in EveHome application where applicable for this device                      | true           |
-| exclude            | Exclude this device                                                                          | false          |
-| fanDuration        | Fan runtime duration                                                                         |                |
-| ffmpegDebug        | Enable additional debugging output when ffmpeg is invoked                                    | false          |
-| ffmpegHWaccel      | Enable video hardware acceleration for supported camera(s) and doorbell(s)                   | false          |
-| hotwaterBoostTime  | Duration for hot water boost heating (30, 60, 120 mins)                                      | 30mins         |
-| hotwaterMaxTemp    | Maximum supported temperature for hot water heating                                          | 70c            |
-| hotwaterMinTemp    | Minimum supported temperature for hot water heating                                          | 30c            |
-| humiditySensor     | Enable a separate humidity sensor for supported thermostat(s)                                | false          |
-| localAccess        | Enable direct access for supported camera(s) and doorbell(s) streaming and recording         | false          |
-| logMotionEvents    | Enable logging of motion events for camera(s), doorbell(s) and Nest Protect device(s)        | true           |
-| motionCooldown     | Time between detected motion events                                                          | 60s            |
-| name               | Optional label to help identify this device entry                                            |                |
-| serialNumber       | Device serial number this configuration applies to                                           |                |
+| Name               | Description                                                                                  | Default |
+|--------------------|----------------------------------------------------------------------------------------------|---------|
+| chimeSwitch        | Enable a switch to control the indoor doorbell chime                                         | false   |
+| doorbellCooldown   | Time between doorbell press events                                                           | 60s     |
+| eveHistory         | Provide history in the EveHome application where applicable for this device                  | true    |
+| exclude            | Exclude this device                                                                          | false   |
+| fanDuration        | Fan runtime duration                                                                         |         |
+| ffmpegDebug        | Enable additional debugging output when ffmpeg is invoked                                    | false   |
+| ffmpegHWaccel      | Enable video hardware acceleration for camera(s) and doorbell(s) where supported             | false   |
+| ffmpegTranscode    | Enable video and audio transcoding for camera(s) and doorbell(s) (higher CPU usage)          | false   |
+| hotwaterBoostTime  | Duration for hot water boost heating (30, 60, 120 mins)                                      | 30mins  |
+| hotwaterMaxTemp    | Maximum supported temperature for hot water heating                                          | 70c     |
+| hotwaterMinTemp    | Minimum supported temperature for hot water heating                                          | 30c     |
+| humiditySensor     | Enable a separate humidity sensor for thermostat(s) where supported                          | false   |
+| localAccess        | Enable direct local streaming access for Google Home camera(s) and doorbell(s)               | false   |
+| logMotionEvents    | Enable logging of motion events for camera(s), doorbell(s) and Nest Protect device(s)        | true    |
+| motionCooldown     | Time between detected motion events                                                          | 60s     |
+| name               | Optional label to help identify this device entry                                            |         |
+| serialNumber       | Device serial number this configuration applies to                                           |         |
 
 #### homes
 

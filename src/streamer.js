@@ -58,7 +58,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2026.04.06
+// Code version 2026.04.09
 // Mark Hulskamp
 'use strict';
 
@@ -491,6 +491,11 @@ export default class Streamer {
     let prevFPS = 0;
     let delta = 0;
     let audioFrameDuration = 0;
+    let sequence = 0;
+    let sourceTimestamp = 0;
+    let mediaTime = 0;
+    let resolution = undefined;
+    let isAnnexB = false;
 
     if (
       typeof media !== 'object' ||
@@ -524,7 +529,7 @@ export default class Streamer {
           ? this.codecs?.video
           : media.type === Streamer.MEDIA_TYPE.AUDIO
             ? this.codecs?.audio
-            : media.type === Streamer.MEDIA_TYPE.TALKBACK
+            : media.type === Streamer.MEDIA_TYPE.TALK
               ? this.codecs?.talkback
               : undefined;
 
@@ -570,14 +575,13 @@ export default class Streamer {
       this.#sequenceCounters[media.type] = 0;
     }
 
-    let sequence = typeof media?.sequence === 'number' ? media.sequence : this.#sequenceCounters[media.type]++;
+    sequence = typeof media?.sequence === 'number' ? media.sequence : this.#sequenceCounters[media.type]++;
 
     // Preserve original source timestamp exactly as supplied by upstream module
-    let sourceTimestamp =
-      typeof media?.timestamp === 'number' && Number.isFinite(media.timestamp) === true ? Math.round(media.timestamp) : now;
+    sourceTimestamp = typeof media?.timestamp === 'number' && Number.isFinite(media.timestamp) === true ? Math.round(media.timestamp) : now;
 
     // Start buffered media time from source timestamp
-    let mediaTime = sourceTimestamp;
+    mediaTime = sourceTimestamp;
 
     if (typeof this.#lastMediaTime?.[media.type] !== 'number') {
       this.#lastMediaTime[media.type] = 0;
@@ -599,7 +603,9 @@ export default class Streamer {
 
     // H264-specific NALU validation and metadata tracking
     if (media.type === Streamer.MEDIA_TYPE.VIDEO && codec === Streamer.CODEC_TYPE.H264) {
+      isAnnexB = data.indexOf(Streamer.H264NALUS.START_CODE) === 0;
       nalUnits = this.#getH264NALUnits(data);
+
       if (Array.isArray(nalUnits) !== true || nalUnits.length === 0) {
         return;
       }
@@ -609,7 +615,7 @@ export default class Streamer {
         if (nalu.type === Streamer.H264NALUS.TYPES.SPS) {
           this.#videoState.lastSPS = Buffer.from(nalu.data);
 
-          let resolution = this.#decodeH264SPS(nalu.data);
+          resolution = this.#decodeH264SPS(nalu.data);
           if (typeof resolution === 'object' && resolution !== null) {
             if (Number.isInteger(resolution.width) === true && resolution.width > 0) {
               this.video.width = resolution.width;
@@ -640,20 +646,15 @@ export default class Streamer {
         media.keyFrame = nalUnits.some((nalu) => nalu.type === Streamer.H264NALUS.TYPES.IDR);
       }
 
-      // Store H264 media in Annex-B form for downstream ffmpeg consumers
-      // Single NAL items are stored as raw payload only, since Streamer writes start codes on output
-      if (nalUnits.length === 1) {
-        data = Buffer.from(nalUnits[0].data);
-      }
+      // Normalise H264 only if upstream supplied a raw single NAL unit.
+      // If upstream already supplied Annex-B data (single or multi-NAL access unit),
+      // preserve it exactly as-is to avoid unnecessary Buffer.concat() churn.
+      if (isAnnexB !== true) {
+        if (nalUnits.length !== 1) {
+          return;
+        }
 
-      // Multi-NAL items are reassembled with explicit start codes between each NAL
-      // This preserves whole access-unit structure coming from WebRTC/NexusTalk
-      if (nalUnits.length > 1) {
-        data = Buffer.concat(
-          nalUnits.flatMap((nalu) => {
-            return [Streamer.H264NALUS.START_CODE, nalu.data];
-          }),
-        );
+        data = Buffer.concat([Streamer.H264NALUS.START_CODE, nalUnits[0].data]);
       }
 
       // Track FPS using actual video frame NAL units (IDR and non-IDR slices)
@@ -787,7 +788,7 @@ export default class Streamer {
         this.#stats.items.audio++;
       }
 
-      if (media.type === Streamer.MEDIA_TYPE.TALKBACK) {
+      if (media.type === Streamer.MEDIA_TYPE.TALK) {
         this.#stats.items.talk++;
       }
 
@@ -849,7 +850,7 @@ export default class Streamer {
     this.#syncSchedulerState();
   }
 
-  #startLiveStream(sessionID, options = {}) {
+  async #startLiveStream(sessionID, options = {}) {
     let existing = undefined;
     let includeAudio = options?.includeAudio === true;
     let videoOut = undefined;
@@ -941,7 +942,7 @@ export default class Streamer {
     });
 
     // Ensure upstream connection is active
-    this.#doConnect(options);
+    await this.#doConnect(options);
 
     this.#live.set(sessionID, {
       sessionID: sessionID,
@@ -974,9 +975,27 @@ export default class Streamer {
       },
     });
 
-    this?.log?.debug?.('Started live stream from device uuid "%s" and session id "%s"', this.nest_google_device_uuid, sessionID);
     this.#syncSchedulerState();
 
+    // Optional short wait for upstream source to reach a usable state before returning.
+    // This helps avoid ffmpeg starting while the source is still connecting/redirecting.
+    if (Number.isInteger(options?.waitForReady) === true && options?.waitForReady > 0) {
+      let started = Date.now();
+
+      while (Date.now() - started < options?.waitForReady) {
+        if (
+          this.#sourceState === Streamer.MESSAGE_TYPE.SOURCE_READY ||
+          this.#sourceState === Streamer.MESSAGE_TYPE.SOURCE_CLOSED ||
+          this.#sourceState === Streamer.MESSAGE_TYPE.SOURCE_RECONNECTING
+        ) {
+          break;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
+
+    this?.log?.debug?.('Started live stream from device uuid "%s" and session id "%s"', this.nest_google_device_uuid, sessionID);
     return { video: videoOut, audio: audioOut, talkback: talkbackIn };
   }
 
@@ -1231,6 +1250,11 @@ export default class Streamer {
   hasActiveStreams() {
     // Do we have any active streams or buffering?
     return this.#buffer?.enabled === true || this.#record !== undefined || this.#live.size !== 0;
+  }
+
+  isSourceReady() {
+    // Is the stream source ready and presumably delivering data?
+    return this.#sourceState === Streamer.MESSAGE_TYPE.SOURCE_READY;
   }
 
   setSourceState(type, reason) {
@@ -1667,7 +1691,6 @@ export default class Streamer {
   }
 
   #processBufferedOutput(output, dateNow, streamType, budgetMs) {
-    // Validate function parameters and required buffer state first
     if (
       typeof output !== 'object' ||
       output === null ||
@@ -1709,6 +1732,33 @@ export default class Streamer {
     let isAudio = false;
     let isH264Media = false;
     let shouldCatchUp = false;
+    let startupPending = false;
+    let bootstrapOffset = 0;
+    let bootstrapItem = undefined;
+    let bootstrapFound = false;
+
+    let advanceOutputCursor = () => {
+      output.cursor = nextCursor;
+      offset = output.cursor - startIndex;
+      processed++;
+    };
+
+    let finishCatchupIfNeeded = () => {
+      if (shouldCatchUp !== true) {
+        return;
+      }
+
+      if (typeof latestItemTime !== 'number' || typeof item?.time !== 'number') {
+        return;
+      }
+
+      if (latestItemTime - item.time <= catchupExitThresholdMs) {
+        output.catchingUp = false;
+        output.sourceBaseTime = item.time;
+        output.wallclockBaseTime = dateNow;
+        catchupExitedThisTick = true;
+      }
+    };
 
     if (isLive === true && isH264Output === true) {
       // Live H264 output is a little more sensitive to scheduler jitter and uneven upstream cadence.
@@ -1722,57 +1772,39 @@ export default class Streamer {
 
     offset = output.cursor - startIndex;
 
-    // Advance output cursor after processing or skipping the current item
-    let advanceOutputCursor = () => {
-      output.cursor = nextCursor;
-      offset++;
-      processed++;
-    };
+    // Live H264 startup bootstrap:
+    // Before normal mixed audio/video scheduling begins, scan forward for the first
+    // buffered video keyframe and start from there. This prevents startup being held
+    // behind earlier audio items or normal due-time pacing before the first decodable
+    // video frame has actually been emitted.
+    if (isLive === true && isH264Output === true && output.seenKeyFrame !== true && output.catchingUp !== true) {
+      bootstrapOffset = offset;
+      bootstrapFound = false;
 
-    // Exit recording catch-up mode once the output has nearly reached live edge
-    let finishCatchupIfNeeded = () => {
-      let liveEdgeDistance = 0;
+      while (bootstrapOffset < itemsLength) {
+        bootstrapItem = items[bootstrapOffset];
 
-      if (isRecord !== true || output?.catchingUp !== true || catchupExitedThisTick === true) {
-        return;
-      }
-
-      if (typeof latestItemTime !== 'number' || typeof item?.time !== 'number') {
-        return;
-      }
-
-      // Exit catch-up only when we are BOTH close to buffered live edge
-      // and close to current scheduler time. This is more stable than
-      // using buffered time delta alone.
-      liveEdgeDistance = this.#itemIndex - nextCursor;
-
-      if (liveEdgeDistance <= 5 && item.time >= dateNow - 50 && latestItemTime - item.time <= catchupExitThresholdMs) {
-        output.catchingUp = false;
-        output.sourceBaseTime = undefined;
-        output.wallclockBaseTime = undefined;
-        catchupExitedThisTick = true;
-      }
-    };
-
-    // For H264 outputs, do not let leading audio or non-keyframe video block startup.
-    // Skip forward to the first buffered keyframe before normal processing begins.
-    if (isH264Output === true && output.seenKeyFrame !== true) {
-      while (offset < itemsLength && processed < MAX_BUFFERED_ITEMS_PER_OUTPUT_PER_TICK) {
-        item = items[offset];
-
-        if (typeof item?.time !== 'number') {
+        if (
+          typeof bootstrapItem === 'object' &&
+          bootstrapItem !== null &&
+          bootstrapItem.type === Streamer.MEDIA_TYPE.VIDEO &&
+          bootstrapItem.codec === Streamer.CODEC_TYPE.H264 &&
+          bootstrapItem.keyFrame === true &&
+          typeof bootstrapItem.time === 'number'
+        ) {
+          bootstrapFound = true;
           break;
         }
 
-        if (item.type === Streamer.MEDIA_TYPE.VIDEO && item.codec === Streamer.CODEC_TYPE.H264 && item.keyFrame === true) {
-          break;
-        }
-
-        offset++;
-        processed++;
+        bootstrapOffset++;
       }
 
-      output.cursor = startIndex + offset;
+      if (bootstrapFound === true) {
+        output.cursor = bootstrapItem.index;
+        output.sourceBaseTime = bootstrapItem.time;
+        output.wallclockBaseTime = dateNow;
+        offset = output.cursor - startIndex;
+      }
     }
 
     while (offset < itemsLength && processed < MAX_BUFFERED_ITEMS_PER_OUTPUT_PER_TICK) {
@@ -1791,10 +1823,12 @@ export default class Streamer {
       isH264Media = item.codec === Streamer.CODEC_TYPE.H264;
       nextCursor = item.index + 1;
       shouldCatchUp = isRecord === true && output?.catchingUp === true && catchupExitedThisTick !== true;
+      startupPending =
+        shouldCatchUp !== true && (typeof output.sourceBaseTime !== 'number' || typeof output.wallclockBaseTime !== 'number');
 
       if (shouldCatchUp !== true) {
         // Establish output timing only once we are no longer catching up
-        if (typeof output.sourceBaseTime !== 'number' || typeof output.wallclockBaseTime !== 'number') {
+        if (startupPending === true) {
           output.sourceBaseTime = item.time;
           output.wallclockBaseTime = dateNow;
         }
@@ -1810,16 +1844,12 @@ export default class Streamer {
 
       if (isVideo === true) {
         if (isH264Media === true) {
-          // Still waiting for first keyframe on this output, so discard delta frames
-          // until we reach a clean decoder start point.
           if (output.seenKeyFrame !== true && item.keyFrame !== true) {
             this.#statsDrop(output, Streamer.MEDIA_TYPE.VIDEO);
             advanceOutputCursor();
             continue;
           }
 
-          // Ensure new outputs receive codec configuration immediately before their first keyframe.
-          // This gives ffmpeg/HomeKit SPS/PPS context before the first IDR frame.
           if (item.keyFrame === true && output.sentCodecConfig !== true) {
             if (Buffer.isBuffer(lastSPS) === true && lastSPS.length > 0) {
               outputVideo?.write?.(Streamer.H264NALUS.START_CODE);
@@ -1839,12 +1869,12 @@ export default class Streamer {
           }
         }
 
-        // Reapply Annex-B start code when writing H264 media items downstream.
         if (isH264Output === true) {
           outputVideo?.write?.(Streamer.H264NALUS.START_CODE);
         }
 
         outputVideo?.write?.(item.data);
+        output.lastVideoWriteTime = dateNow;
         this.#statsWrite(output, Streamer.MEDIA_TYPE.VIDEO, dateNow);
         finishCatchupIfNeeded();
         advanceOutputCursor();
@@ -1857,17 +1887,13 @@ export default class Streamer {
           continue;
         }
 
-        // Delay audio until first video keyframe for H264 outputs.
-        // This avoids audio leading video during decoder startup.
-        if (isH264Output === true && output.seenKeyFrame !== true) {
+        if (isRecord === true && isH264Output === true && output.seenKeyFrame !== true) {
           this.#statsDrop(output, Streamer.MEDIA_TYPE.AUDIO);
           advanceOutputCursor();
           continue;
         }
 
-        // During catch-up, do not dump excessive audio into downstream consumers.
-        // This is intentionally conservative because some environments/ffmpeg builds
-        // appear less tolerant of bursty audio writes than bursty video writes.
+        // Recording catch-up can burst a little, but keep it bounded.
         if (shouldCatchUp === true && catchupAudioWrites >= catchupAudioBurstLimit) {
           break;
         }
@@ -1880,7 +1906,6 @@ export default class Streamer {
         continue;
       }
 
-      // Skip unsupported media types or items not relevant to this output
       advanceOutputCursor();
     }
   }

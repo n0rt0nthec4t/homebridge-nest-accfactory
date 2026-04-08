@@ -97,13 +97,17 @@
             "type": "boolean",
             "default": false
           },
-          "logMotionEvents": {
-            "type": "boolean",
-            "default": true
-          },
           "ffmpegPath": {
             "type": "string",
             "default": "/usr/local/bin/ffmpeg"
+          },
+          "ffmpegTranscode": {
+            "type": "boolean",
+            "default": false
+          },
+          "logMotionEvents": {
+            "type": "boolean",
+            "default": true
           },
           "maxStreams": {
             "type": "number",
@@ -163,6 +167,9 @@
             "ffmpegHWAccel": {
               "type": "boolean"
             },
+          "ffmpegTranscode": {
+            "type": "boolean"
+          },
             "hotwaterBoostTime": {
               "type": "number"
             },
@@ -369,7 +376,11 @@
         },
         {
           "key": "options.ffmpegHWAccel",
-          "title": "Enable Hardware Acceleration for FFmpeg"
+          "title": "Enable Video Hardware Acceleration"
+        },
+        {
+          "key": "options.ffmpegTranscode",
+          "title": "Enable Video and Audio Transcoding"
         },
         {
           "key": "options.maxStreams",

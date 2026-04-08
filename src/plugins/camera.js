@@ -2,38 +2,39 @@
 // Part of homebridge-nest-accfactory
 //
 // HomeKit accessory implementation for Nest Cameras, Doorbells, and Floodlight Cameras.
-// Integrates camera streaming, HomeKit Secure Video (HKSV), motion events, snapshots,
-// and optional battery services into HomeKit using HAP-NodeJS controllers.
+// Integrates camera streaming, HomeKit Secure Video (HKSV), motion events, and snapshots
+// into HomeKit using HAP-NodeJS controllers.
 //
 // Responsibilities:
 // - Configure HomeKit CameraController or DoorbellController services
-// - Manage live stream and recording session lifecycle for HomeKit
+// - Manage live streaming and recording session lifecycle for HomeKit
 // - Select and initialise the appropriate streaming backend (WebRTC or NexusTalk)
-// - Orchestrate ffmpeg for HomeKit live streaming, talkback, and HKSV recording
-// - Handle motion event processing, cooldown timing, and Eve history integration
-// - Provide snapshot handling with cached and fallback images
-// - Translate raw Nest / Google camera data into HomeKit-facing state
+// - Coordinate ffmpeg for HomeKit live streaming, talkback, and HKSV recording
+// - Handle motion events, cooldown timing, and Eve history integration
+// - Provide snapshot handling with fallback images
+// - Translate Nest / Google camera data into HomeKit-facing state
 //
 // Services:
 // - CameraController or DoorbellController (primary streaming service)
 // - MotionSensor (motion detection with eventSnapshot support)
 // - RecordingManagement (HomeKit Secure Video configuration and recording state)
-// - Battery (optional, for battery-powered camera models)
+// - Battery (optional, for battery-powered models)
 //
 // Features:
-// - Dual streaming protocol support via WebRTC and NexusTalk
+// - Streaming via WebRTC and NexusTalk protocols
 // - HomeKit Secure Video live streaming and recording support
+// - Stream copy or transcoding via ffmpeg (configurable per device)
 // - Motion-triggered recording with prebuffer support
-// - Two-way audio support when available and supported by ffmpeg
-// - Snapshot caching with automatic refresh and fallback images
+// - Two-way audio support where available and supported by ffmpeg
+// - Snapshot handling with fallback support for offline or unavailable states
 // - Night vision, status LED, microphone, speaker, and image rotation controls
-// - Battery level monitoring for supported battery-powered models
-// - Eve Home activity history integration when configured
+// - Battery level monitoring for supported models
+// - Eve Home activity history integration when enabled
 //
 // Notes:
 // - Streaming transport is handled by protocol-specific streamer modules
 // - ffmpeg is used for HomeKit-compatible live streaming, talkback, and HKSV recording
-// - Motion events are used to trigger HKSV recording and HomeKit automations
+// - Motion events trigger HKSV recording and HomeKit automations
 // - Snapshot fallback images are used for offline, disabled, or migration states
 //
 // Mark Hulskamp
@@ -42,7 +43,6 @@
 // Define nodejs module requirements
 import EventEmitter from 'node:events';
 import { Buffer } from 'node:buffer';
-import { setTimeout, clearTimeout } from 'node:timers';
 import dgram from 'node:dgram';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -86,7 +86,7 @@ const PREBUFFER_LENGTH = 4000;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2026.04.02'; // Code version
+  static VERSION = '2026.04.09'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -99,8 +99,6 @@ export default class NestCamera extends HomeKitDevice {
   #liveSessions = new Map(); // Track active HomeKit live stream sessions (port, crypto, rtpSplitter)
   #recordingConfig = {}; // HomeKit Secure Video recording configuration
   #cameraImages = {}; // Snapshot resource images
-  #snapshotTimer = undefined; // Timer for cached snapshot images
-  #lastSnapshotImage = undefined; // JPG image buffer for last camera snapshot
   #motionCooldownActive = false; // Flag to track if motion cooldown is active
 
   constructor(accessory, api, log, deviceData) {
@@ -184,7 +182,7 @@ export default class NestCamera extends HomeKitDevice {
     }
 
     // Setup set characteristics
-    if (this.deviceData?.has_statusled === true) {
+    if (this.controller?.recordingManagement?.operatingModeService !== undefined && this.deviceData?.has_statusled === true) {
       this.addHKCharacteristic(
         this.controller.recordingManagement.operatingModeService,
         this.hap.Characteristic.CameraOperatingModeIndicator,
@@ -210,7 +208,7 @@ export default class NestCamera extends HomeKitDevice {
       );
     }
 
-    if (this.deviceData?.has_irled === true) {
+    if (this.controller?.recordingManagement?.operatingModeService !== undefined && this.deviceData?.has_irled === true) {
       this.addHKCharacteristic(this.controller.recordingManagement.operatingModeService, this.hap.Characteristic.NightVision, {
         onSet: (value) => {
           // only change IRLed status value if different than on-device
@@ -229,24 +227,29 @@ export default class NestCamera extends HomeKitDevice {
       });
     }
 
-    this.addHKCharacteristic(this.controller.recordingManagement.operatingModeService, this.hap.Characteristic.HomeKitCameraActive, {
-      onSet: (value) => {
-        if (this.deviceData.streaming_enabled !== (value === this.hap.Characteristic.HomeKitCameraActive.ON)) {
-          // Camera state does not reflect requested state, so fix
-          this.set({
-            uuid: this.deviceData.nest_google_device_uuid,
-            streaming_enabled: value === this.hap.Characteristic.HomeKitCameraActive.ON ? true : false,
-          });
-          this?.log?.info?.(
-            'Camera on "%s" was turned %s',
-            this.deviceData.description,
-            value === this.hap.Characteristic.HomeKitCameraActive.ON ? 'on' : 'off',
-          );
-        }
-      },
-    });
+    if (this.controller?.recordingManagement?.operatingModeService !== undefined) {
+      this.addHKCharacteristic(this.controller.recordingManagement.operatingModeService, this.hap.Characteristic.HomeKitCameraActive, {
+        onSet: (value) => {
+          if (
+            (this.deviceData.streaming_enabled === false && value === this.hap.Characteristic.HomeKitCameraActive.ON) ||
+            (this.deviceData.streaming_enabled === true && value === this.hap.Characteristic.HomeKitCameraActive.OFF)
+          ) {
+            // Camera state does not reflect requested state, so fix
+            this.set({
+              uuid: this.deviceData.nest_google_device_uuid,
+              streaming_enabled: value === this.hap.Characteristic.HomeKitCameraActive.ON ? true : false,
+            });
+            this?.log?.info?.(
+              'Camera on "%s" was turned %s',
+              this.deviceData.description,
+              value === this.hap.Characteristic.HomeKitCameraActive.ON ? 'on' : 'off',
+            );
+          }
+        },
+      });
+    }
 
-    if (this.deviceData?.has_video_flip === true) {
+    if (this.controller?.recordingManagement?.operatingModeService !== undefined && this.deviceData?.has_video_flip === true) {
       this.addHKCharacteristic(this.controller.recordingManagement.operatingModeService, this.hap.Characteristic.ImageRotation, {
         onGet: () => {
           return this.deviceData.video_flipped === true ? 180 : 0;
@@ -316,9 +319,6 @@ export default class NestCamera extends HomeKitDevice {
 
   onRemove() {
     // Clean up our camera object since this device is being removed
-    clearTimeout(this.#snapshotTimer);
-    this.#snapshotTimer = undefined;
-
     // Stop all streamer logic (buffering, output, etc)
     this.streamer?.stopEverything?.();
 
@@ -709,7 +709,7 @@ export default class NestCamera extends HomeKitDevice {
       '-b:v',
       this.#recordingConfig.videoCodec.parameters.bitRate + 'k',
       '-bufsize',
-      2 * this.#recordingConfig.videoCodec.parameters.bitRate + 'k',
+      this.#recordingConfig.videoCodec.parameters.bitRate * 2 + 'k',
       '-video_track_timescale',
       '90000',
       '-movflags',
@@ -921,22 +921,16 @@ export default class NestCamera extends HomeKitDevice {
     let imageBuffer = undefined;
 
     if (this.deviceData.migrating === false && this.deviceData.streaming_enabled === true && this.deviceData.online === true) {
-      // Call the camera/doorbell to get a snapshot image.
-      // Prefer onGet() result if implemented; fallback to static handler
+      // Request a snapshot image from upstream.
+      // Snapshot freshness, caching, and fallback handling are managed centrally in system.js
       let response = await this.get({ uuid: this.deviceData.nest_google_device_uuid, camera_snapshot: Buffer.alloc(0) });
+
       if (
         Buffer.isBuffer(response?.camera_snapshot) === true &&
         response.camera_snapshot.length > 0 &&
         isLikelyBlackImage(response.camera_snapshot) === false
       ) {
         imageBuffer = response.camera_snapshot;
-        this.#lastSnapshotImage = response.camera_snapshot;
-
-        // Keep this snapshot image cached for a certain period
-        clearTimeout(this.#snapshotTimer);
-        this.#snapshotTimer = setTimeout(() => {
-          this.#lastSnapshotImage = undefined;
-        }, TIMERS.SNAPSHOT.interval);
       }
     }
 
@@ -958,12 +952,6 @@ export default class NestCamera extends HomeKitDevice {
     if (this.deviceData.migrating === true && this.#cameraImages?.transfer !== undefined) {
       // Return 'camera transferring' jpg to image buffer
       imageBuffer = this.#cameraImages.transfer;
-    }
-
-    if (imageBuffer === undefined) {
-      // If we get here, we have no snapshot image
-      // We'll use the last successful snapshot as long as its within a certain time period
-      imageBuffer = this.#lastSnapshotImage;
     }
 
     callback(
@@ -1061,6 +1049,7 @@ export default class NestCamera extends HomeKitDevice {
         options: {
           includeAudio: includeAudio === true,
           localAccess: this.deviceData.localAccess === true, // User local device access if configured otherwise fallback to cloud
+          waitForReady: 2000, // Timeout to wait for source_ready before starting ffmpeg process
         },
       });
 
@@ -1068,8 +1057,10 @@ export default class NestCamera extends HomeKitDevice {
       let commandLine = [
         '-hide_banner',
         '-nostats',
-        '-use_wallclock_as_timestamps',
-        '1',
+
+        // Raw stream copy mode benefits from wallclock timestamps for stable live audio pacing
+        ...(this.deviceData?.ffmpeg?.transcode === true ? [] : ['-use_wallclock_as_timestamps', '1']),
+
         '-fflags',
         '+discardcorrupt+genpts',
         '-avoid_negative_ts',
@@ -1097,14 +1088,48 @@ export default class NestCamera extends HomeKitDevice {
         // Video output
         '-map',
         '0:v:0',
-        '-codec:v',
-        'copy',
-        // Below is commented out as we don't use hardware acceleration for live streaming
-        //       ...(this.deviceData.ffmpeg.hwaccel === true && this.ffmpeg.hardwareH264Codec !== undefined
-        //         ? ['-codec:v', this.ffmpeg.hardwareH264Codec]
-        //         : ['-codec:v', 'copy']),
-        '-fps_mode',
-        'passthrough',
+
+        ...(this.deviceData?.ffmpeg?.transcode === true
+          ? [
+              '-codec:v',
+              this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec !== undefined
+                ? this.ffmpeg.hardwareH264Codec
+                : 'libx264',
+
+              '-profile:v',
+              request.video.profile === this.hap.H264Profile.HIGH
+                ? 'high'
+                : request.video.profile === this.hap.H264Profile.MAIN
+                  ? 'main'
+                  : 'baseline',
+
+              '-level:v',
+              request.video.level === this.hap.H264Level.LEVEL4_0
+                ? '4.0'
+                : request.video.level === this.hap.H264Level.LEVEL3_2
+                  ? '3.2'
+                  : '3.1',
+
+              ...(this.ffmpeg?.hardwareH264Codec === 'h264_videotoolbox' ? ['-realtime', 'true'] : []),
+
+              ...(this.deviceData?.ffmpeg?.hwaccel !== true ||
+              ['libx264', 'h264_nvenc', 'h264_qsv'].includes(this.ffmpeg?.hardwareH264Codec || '') === true
+                ? ['-preset', 'veryfast', '-bf', '0']
+                : []),
+
+              '-filter:v',
+              'fps=fps=' + request.video.fps + ',format=yuv420p',
+              '-fps_mode',
+              'cfr',
+              '-g:v',
+              Math.max(15, Math.round(request.video.fps)).toString(),
+              '-b:v',
+              request.video.max_bit_rate * 2 + 'k',
+              '-bufsize',
+              request.video.max_bit_rate * 4 + 'k',
+            ]
+          : ['-codec:v', 'copy', '-fps_mode', 'passthrough']),
+
         '-video_track_timescale',
         '90000',
         '-payload_type',
@@ -1974,6 +1999,8 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
             (deviceOptions?.ffmpegHWAccel === true || config.options?.ffmpegHWAccel === true) &&
             config.options.ffmpeg.valid === true &&
             config.options.ffmpeg.hwaccel === true,
+          transcode:
+            (deviceOptions?.ffmpegTranscode === true || config.options?.ffmpegTranscode === true) && config.options.ffmpeg.valid === true,
         };
         tempDevice.maxStreams = config.options.maxStreams;
         tempDevice.logMotionEvents =

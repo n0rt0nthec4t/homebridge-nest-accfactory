@@ -28,7 +28,7 @@
 // - ICE "connected" indicates transport readiness, not media availability
 // - Startup delays may occur due to upstream (Google) keyframe delivery behaviour
 //
-// Code version 2026.04.06
+// Code version 2026.04.08
 // Mark Hulskamp
 'use strict';
 
@@ -723,6 +723,7 @@ export default class WebRTC extends Streamer {
           fuTimer: undefined,
           fuType: undefined,
           fuTimestamp: undefined,
+          fuLength: 0,
 
           // SPS/PPS/IDR caching & emission tracking
           lastSPS: undefined,
@@ -734,6 +735,7 @@ export default class WebRTC extends Streamer {
           pendingParts: [],
           pendingRtpTimestamp: undefined,
           pendingKeyFrame: false,
+          pendingBytes: 0,
         },
         receive: {
           // Buffered receive / playout state for video RTP packets
@@ -1421,10 +1423,13 @@ export default class WebRTC extends Streamer {
     let completedBuffer = undefined;
     let completedType = undefined;
     let completedRtpTimestamp = undefined;
+    let completedLength = 0;
+    let writeOffset = 0;
     let offset = 0;
     let naluLength = 0;
     let nalu = undefined;
     let naluType = 0;
+    let fragment = undefined;
 
     if (
       typeof video !== 'object' ||
@@ -1443,7 +1448,6 @@ export default class WebRTC extends Streamer {
       let sequenceDelta = this.#sequenceDelta(rtpPacket.header.sequenceNumber, video.rtp.lastSequence);
 
       if (sequenceDelta > 1 && sequenceDelta < RTP_SEQUENCE_WRAP / 2) {
-        // Removed noisy sequence gap log
         this.#resetVideoAssemblyAfterLoss();
 
         if (sequenceDelta > 2) {
@@ -1475,6 +1479,14 @@ export default class WebRTC extends Streamer {
 
     if (Array.isArray(video.h264.pendingParts) !== true) {
       video.h264.pendingParts = [];
+    }
+
+    if (typeof video.h264.pendingBytes !== 'number') {
+      video.h264.pendingBytes = 0;
+    }
+
+    if (typeof video.h264.fuLength !== 'number') {
+      video.h264.fuLength = 0;
     }
 
     // Single-Time Aggregation Packet (STAP-A)
@@ -1523,12 +1535,13 @@ export default class WebRTC extends Streamer {
         video.h264.fuBuffer = [reconstructedNal, fragmentPayload];
         video.h264.fuType = fuType;
         video.h264.fuTimestamp = rtpTimestamp;
+        video.h264.fuLength = reconstructedNal.length + fragmentPayload.length;
 
         video.h264.fuTimer = setTimeout(() => {
-          // Removed noisy FU-A discard log
-          video.h264.fuBuffer = [];
+          video.h264.fuBuffer = undefined;
           video.h264.fuType = undefined;
           video.h264.fuTimestamp = undefined;
+          video.h264.fuLength = 0;
         }, FU_A_TIMEOUT);
 
         return;
@@ -1540,18 +1553,24 @@ export default class WebRTC extends Streamer {
 
       // Middle or end fragment, add to buffer
       video.h264.fuBuffer.push(fragmentPayload);
+      video.h264.fuLength += fragmentPayload.length;
 
       if (((fuHeader & 0x40) !== 0) === true) {
-        let completedLength = 0;
-        for (let fragment of video.h264.fuBuffer) {
-          if (Buffer.isBuffer(fragment) === true && fragment.length > 0) {
-            completedLength += fragment.length;
-          }
+        completedLength = video.h264.fuLength;
+
+        if (completedLength <= 0) {
+          clearTimeout(video.h264.fuTimer);
+          video.h264.fuBuffer = undefined;
+          video.h264.fuType = undefined;
+          video.h264.fuTimestamp = undefined;
+          video.h264.fuLength = 0;
+          return;
         }
 
         completedBuffer = Buffer.allocUnsafe(completedLength);
-        let writeOffset = 0;
-        for (let fragment of video.h264.fuBuffer) {
+        writeOffset = 0;
+
+        for (fragment of video.h264.fuBuffer) {
           if (Buffer.isBuffer(fragment) === true && fragment.length > 0) {
             fragment.copy(completedBuffer, writeOffset);
             writeOffset += fragment.length;
@@ -1562,9 +1581,10 @@ export default class WebRTC extends Streamer {
         completedRtpTimestamp = video.h264.fuTimestamp;
 
         clearTimeout(video.h264.fuTimer);
-        video.h264.fuBuffer = [];
+        video.h264.fuBuffer = undefined;
         video.h264.fuType = undefined;
         video.h264.fuTimestamp = undefined;
+        video.h264.fuLength = 0;
 
         this.#appendVideoNalu(completedBuffer, completedRtpTimestamp, completedType, now);
 
@@ -1587,6 +1607,7 @@ export default class WebRTC extends Streamer {
   #appendVideoNalu(nalu, rtpTimestamp, naluType, now) {
     let video = this.#tracks?.video;
     let h264 = video?.h264;
+    let storedNalu = undefined;
 
     if (
       Buffer.isBuffer(nalu) !== true ||
@@ -1602,7 +1623,6 @@ export default class WebRTC extends Streamer {
     // for a previous frame, drop the incomplete frame completely so the
     // next access unit starts from a clean timestamp boundary.
     if (typeof h264.pendingRtpTimestamp === 'number' && h264.pendingRtpTimestamp !== rtpTimestamp && h264.pendingParts.length > 0) {
-      // Removed noisy incomplete frame drop log
       this.#resetPendingVideoFrame();
     }
 
@@ -1611,7 +1631,15 @@ export default class WebRTC extends Streamer {
       h264.pendingRtpTimestamp = rtpTimestamp;
     }
 
-    // Cache SPS / PPS / IDR safely (copy buffers!)
+    if (Array.isArray(h264.pendingParts) !== true) {
+      h264.pendingParts = [];
+    }
+
+    if (typeof h264.pendingBytes !== 'number') {
+      h264.pendingBytes = 0;
+    }
+
+    // Cache SPS / PPS / IDR safely (copy raw NAL only, no Annex-B prefix)
     if (naluType === Streamer.H264NALUS.TYPES.SPS) {
       h264.lastSPS = Buffer.from(nalu);
     }
@@ -1626,8 +1654,19 @@ export default class WebRTC extends Streamer {
       h264.pendingKeyFrame = true;
     }
 
-    // Store NAL (copy to avoid shared memory issues)
-    h264.pendingParts.push(Buffer.from(nalu));
+    // Normalise each pending NAL to Annex-B once, here.
+    // This means the flush path can emit the completed frame/access unit directly
+    // without re-prepending start codes for every part.
+    if (nalu.indexOf(Streamer.H264NALUS.START_CODE) === 0) {
+      storedNalu = Buffer.from(nalu);
+    }
+
+    if (storedNalu === undefined) {
+      storedNalu = Buffer.concat([Streamer.H264NALUS.START_CODE, nalu]);
+    }
+
+    h264.pendingParts.push(storedNalu);
+    h264.pendingBytes += storedNalu.length;
   }
 
   #buildAudioSilenceFrame() {
@@ -1704,6 +1743,7 @@ export default class WebRTC extends Streamer {
     video.h264.fuBuffer = undefined;
     video.h264.fuType = undefined;
     video.h264.fuTimestamp = undefined;
+    video.h264.fuLength = 0;
 
     this.#resetPendingVideoFrame();
 
@@ -1842,6 +1882,7 @@ export default class WebRTC extends Streamer {
     this.#tracks.video.h264.pendingParts = [];
     this.#tracks.video.h264.pendingRtpTimestamp = undefined;
     this.#tracks.video.h264.pendingKeyFrame = false;
+    this.#tracks.video.h264.pendingBytes = 0;
   }
 
   #flushPendingVideoFrame() {
@@ -1860,9 +1901,13 @@ export default class WebRTC extends Streamer {
     let totalLength = 0;
     let writeOffset = 0;
     let emitParts = [];
+    let emitBytes = 0;
     let hasSPS = false;
     let hasPPS = false;
+    let partOffset = 0;
     let partType = 0;
+    let spsPart = undefined;
+    let ppsPart = undefined;
 
     // Nothing buffered for the current access unit, so just clear state and return
     if (Array.isArray(pendingParts) !== true || pendingParts.length === 0 || typeof pendingRtpTimestamp !== 'number') {
@@ -1875,6 +1920,10 @@ export default class WebRTC extends Streamer {
       return;
     }
 
+    if (typeof h264.pendingBytes !== 'number') {
+      h264.pendingBytes = 0;
+    }
+
     // Ensure keyframes can recover decoders by prepending cached SPS/PPS when
     // they are not already part of the assembled access unit.
     if (pendingKeyFrame === true) {
@@ -1884,14 +1933,22 @@ export default class WebRTC extends Streamer {
         part = pendingParts[index];
 
         if (Buffer.isBuffer(part) === true && part.length > 0) {
-          partType = part[0] & 0x1f;
+          partOffset = 0;
 
-          if (partType === Streamer.H264NALUS.TYPES.SPS) {
-            hasSPS = true;
+          if (part.indexOf(Streamer.H264NALUS.START_CODE) === 0) {
+            partOffset = Streamer.H264NALUS.START_CODE.length;
           }
 
-          if (partType === Streamer.H264NALUS.TYPES.PPS) {
-            hasPPS = true;
+          if (part.length > partOffset) {
+            partType = part[partOffset] & 0x1f;
+
+            if (partType === Streamer.H264NALUS.TYPES.SPS) {
+              hasSPS = true;
+            }
+
+            if (partType === Streamer.H264NALUS.TYPES.PPS) {
+              hasPPS = true;
+            }
           }
         }
 
@@ -1899,56 +1956,48 @@ export default class WebRTC extends Streamer {
       }
 
       if (hasSPS !== true && Buffer.isBuffer(h264?.lastSPS) === true && h264.lastSPS.length > 0) {
-        emitParts.push(Buffer.from(h264.lastSPS));
+        spsPart = Buffer.concat([Streamer.H264NALUS.START_CODE, h264.lastSPS]);
+        emitParts.push(spsPart);
+        emitBytes += spsPart.length;
       }
 
       if (hasPPS !== true && Buffer.isBuffer(h264?.lastPPS) === true && h264.lastPPS.length > 0) {
-        emitParts.push(Buffer.from(h264.lastPPS));
+        ppsPart = Buffer.concat([Streamer.H264NALUS.START_CODE, h264.lastPPS]);
+        emitParts.push(ppsPart);
+        emitBytes += ppsPart.length;
       }
     }
 
     emitParts = emitParts.concat(pendingParts);
+    emitBytes += h264.pendingBytes;
 
-    // Build one Annex-B frame from the collected raw NAL units.
-    index = 0;
-    while (index < emitParts.length) {
-      part = emitParts[index];
+    // If we only have one final part, avoid Buffer.concat() entirely.
+    if (emitParts.length === 1 && Buffer.isBuffer(emitParts[0]) === true && emitParts[0].length > 0) {
+      data = emitParts[0];
+    }
 
-      if (Buffer.isBuffer(part) === true && part.length > 0) {
-        if (part.indexOf(Streamer.H264NALUS.START_CODE) === 0) {
-          totalLength += part.length;
-        } else {
-          totalLength += Streamer.H264NALUS.START_CODE.length + part.length;
-        }
+    // Otherwise build one final Annex-B access unit.
+    if (data === undefined) {
+      totalLength = emitBytes;
+
+      if (totalLength <= 0) {
+        this.#resetPendingVideoFrame();
+        return;
       }
 
-      index++;
-    }
+      data = Buffer.allocUnsafe(totalLength);
+      index = 0;
 
-    if (totalLength === 0) {
-      this.#resetPendingVideoFrame();
-      return;
-    }
+      while (index < emitParts.length) {
+        part = emitParts[index];
 
-    data = Buffer.allocUnsafe(totalLength);
-    index = 0;
-
-    while (index < emitParts.length) {
-      part = emitParts[index];
-
-      if (Buffer.isBuffer(part) === true && part.length > 0) {
-        if (part.indexOf(Streamer.H264NALUS.START_CODE) === 0) {
-          part.copy(data, writeOffset);
-          writeOffset += part.length;
-        } else {
-          Streamer.H264NALUS.START_CODE.copy(data, writeOffset);
-          writeOffset += Streamer.H264NALUS.START_CODE.length;
+        if (Buffer.isBuffer(part) === true && part.length > 0) {
           part.copy(data, writeOffset);
           writeOffset += part.length;
         }
-      }
 
-      index++;
+        index++;
+      }
     }
 
     // Safety guard: if concatenation produced nothing useful, discard the pending frame

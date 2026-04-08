@@ -30,7 +30,7 @@
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.04.06
+// Code version 2026.04.08
 // Mark Hulskamp
 'use strict';
 
@@ -671,6 +671,7 @@ export default class NexusTalk extends Streamer {
     // Function to check if a given H264 NAL unit type is present in the data buffer
     let hasH264NAL = (data, nalType) => {
       let offset = 0;
+
       if (Buffer.isBuffer(data) !== true || data.length === 0) {
         return false;
       }
@@ -749,6 +750,11 @@ export default class NexusTalk extends Streamer {
     let decodedMessage = undefined;
     let Type = this.#protobufNexusTalk.lookup('nest.nexustalk.v1.PlaybackPacket');
     let reader = new protobuf.Reader(payload);
+    let video = undefined;
+    let audio = undefined;
+    let timestamp = 0;
+    let data = undefined;
+    let keyFrame = false;
 
     try {
       decodedMessage = Type.decode(reader);
@@ -776,10 +782,9 @@ export default class NexusTalk extends Streamer {
 
     // Handle video packet
     if (decodedMessage.channelId === this.#channels.video?.id) {
-      let video = this.#channels.video;
-      let timestamp = calculateTimestamp(decodedMessage.timestampDelta, video, 80);
-      let data = Buffer.from(decodedMessage.payload, 'base64');
-      let keyFrame = false;
+      video = this.#channels.video;
+      timestamp = calculateTimestamp(decodedMessage.timestampDelta, video, 80);
+      data = Buffer.from(decodedMessage.payload, 'base64');
 
       if (typeof timestamp !== 'number' || Buffer.isBuffer(data) !== true || data.length === 0) {
         return;
@@ -805,17 +810,19 @@ export default class NexusTalk extends Streamer {
         video.pendingBytes = 0;
       }
 
-      // Normalise to Annex-B for downstream Streamer/ffmpeg handling
-      if (data.indexOf(Streamer.H264NALUS.START_CODE) !== 0) {
-        data = Buffer.concat([Streamer.H264NALUS.START_CODE, data]);
-      }
-
       if (Array.isArray(video.pendingParts) !== true) {
         video.pendingParts = [];
       }
 
       if (typeof video.pendingBytes !== 'number') {
         video.pendingBytes = 0;
+      }
+
+      // Normalise incoming NexusTalk video payloads to Annex-B once, here.
+      // This gives Streamer a stable "complete access unit in Annex-B format" contract
+      // and avoids it having to rebuild multi-NAL video again later.
+      if (data.indexOf(Streamer.H264NALUS.START_CODE) !== 0) {
+        data = Buffer.concat([Streamer.H264NALUS.START_CODE, data]);
       }
 
       video.pendingParts.push(data);
@@ -843,9 +850,9 @@ export default class NexusTalk extends Streamer {
 
     // Handle audio packet
     if (decodedMessage.channelId === this.#channels.audio?.id) {
-      let audio = this.#channels.audio;
-      let timestamp = calculateTimestamp(decodedMessage.timestampDelta, audio, 120);
-      let data = Buffer.from(decodedMessage.payload, 'base64');
+      audio = this.#channels.audio;
+      timestamp = calculateTimestamp(decodedMessage.timestampDelta, audio, 120);
+      data = Buffer.from(decodedMessage.payload, 'base64');
 
       if (typeof timestamp !== 'number' || Buffer.isBuffer(data) !== true || data.length === 0) {
         return;
@@ -1125,7 +1132,21 @@ export default class NexusTalk extends Streamer {
     }
 
     video.lastEmittedTimestamp = pendingTimestamp;
-    pendingData = Buffer.concat(video.pendingParts);
+
+    // Avoid Buffer.concat() for the common/small case where a NexusTalk frame
+    // only has a single pending Annex-B NAL/access unit part.
+    if (video.pendingParts.length === 1) {
+      pendingData = video.pendingParts[0];
+    }
+
+    if (video.pendingParts.length > 1) {
+      pendingData = Buffer.concat(video.pendingParts, video.pendingBytes);
+    }
+
+    if (Buffer.isBuffer(pendingData) !== true || pendingData.length === 0) {
+      this.#resetPendingVideo(video);
+      return;
+    }
 
     this.addMedia({
       type: Streamer.MEDIA_TYPE.VIDEO,

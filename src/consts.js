@@ -27,7 +27,7 @@
 // - Imported throughout the codebase for consistency and reuse
 // - Changes here may affect multiple subsystems (devices, streaming, APIs)
 //
-// Code version 2026.03.22
+// Code version 2026.04.07
 // Mark Hulskamp
 'use strict';
 
@@ -43,7 +43,6 @@ export const TIMERS = {
   WEATHER: { name: 'weather', interval: 300000 }, // Weather location data refresh interval (ms)
   NEST_API: { name: 'nest-api', interval: 10000 }, // Nest API request timeout (ms)
   TALKBACK_AUDIO: { name: 'talkback-audio', interval: 1000 }, // Audio talkback timeout (ms)
-  SNAPSHOT: { name: 'snapshot', interval: 30000 }, // Timeout for retaining snapshot image timeout (ms)
   DOORBELL_COOLDOWN: { name: 'doorbell-cooldown', interval: 60000 }, // Cooldown timer for doorbell events (ms)
   MOTION_COOLDOWN: { name: 'motion-cooldown', interval: 60000 }, // Cooldown timer for motion events (ms)
 };
