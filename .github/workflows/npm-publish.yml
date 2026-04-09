@@ -1,12 +1,13 @@
 name: Publish homebridge-nest-accfactory
 
 on:
-  # Trigger prerelease publish when package.json or release notes change on main
+  # Trigger prerelease publish when package.json, package-lock, or release notes change on main
   push:
     branches:
       - main
     paths:
       - package.json
+      - package-lock.json
       - CHANGELOG.md
       - PRERELEASE_NOTES.md
 
@@ -163,8 +164,13 @@ jobs:
       #
       # Expected headings:
       #   ## v0.4.0-alpha.18
-      #   ## v0.4.0-beta.1
+      #   ## v0.4.0-beta.12
       #   ## v0.4.0
+      #
+      # Note:
+      # - The matched heading line is used for parsing only and is NOT
+      #   included in RELEASE_NOTES.md, so the GitHub release page does
+      #   not repeat the version heading already shown in the release title.
       # --------------------------------------------------------
       - name: Extract release notes
         shell: bash
@@ -176,22 +182,19 @@ jobs:
           const isPrerelease = process.env.IS_PRERELEASE === 'true';
           const sourceFile = isPrerelease === true ? 'PRERELEASE_NOTES.md' : 'CHANGELOG.md';
 
+          const fallbackOutput = [
+            isPrerelease === true
+              ? 'No published release notes for this pre-release.'
+              : 'No published release notes for this release.',
+            '',
+            isPrerelease === true
+              ? 'This is a development build and may contain incremental changes.'
+              : 'Please refer to CHANGELOG.md for details of recent changes.',
+          ];
+
           if (fs.existsSync(sourceFile) !== true) {
             console.warn(`Required release notes file "${sourceFile}" was not found, using fallback text`);
-            fs.writeFileSync(
-              'RELEASE_NOTES.md',
-              [
-                `## v${version}`,
-                '',
-                isPrerelease === true
-                  ? 'No published release notes for this pre-release.'
-                  : 'No published release notes for this release.',
-                '',
-                isPrerelease === true
-                  ? 'This is a development build and may contain incremental changes.'
-                  : 'Please refer to CHANGELOG.md for details of recent changes.',
-              ].join('\n').trim() + '\n',
-            );
+            fs.writeFileSync('RELEASE_NOTES.md', fallbackOutput.join('\n').trim() + '\n');
             process.exit(0);
           }
 
@@ -204,13 +207,14 @@ jobs:
 
           // -----------------------------------------
           // 1. Extract exact version section
+          //    Skip the matched heading itself so GitHub
+          //    release body does not duplicate the title
           // -----------------------------------------
           for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
 
             if (start === -1 && headingRegex.test(line.trim()) === true) {
               start = i;
-              output.push(line);
               continue;
             }
 
@@ -228,23 +232,27 @@ jobs:
           // -----------------------------------------
           if (start === -1) {
             console.warn(`No release notes found for v${version} in ${sourceFile}, using fallback text`);
-            output = [
-              `## v${version}`,
-              '',
-              isPrerelease === true
-                ? 'No published release notes for this pre-release.'
-                : 'No published release notes for this release.',
-              '',
-              isPrerelease === true
-                ? 'This is a development build and may contain incremental changes.'
-                : 'Please refer to CHANGELOG.md for details of recent changes.',
-            ];
+            output = [...fallbackOutput];
+          }
+
+          // Remove leading/trailing blank lines from extracted section
+          while (output.length > 0 && output[0].trim() === '') {
+            output.shift();
+          }
+
+          while (output.length > 0 && output[output.length - 1].trim() === '') {
+            output.pop();
+          }
+
+          // If section exists but contains no body, use fallback text
+          if (output.length === 0) {
+            output = [...fallbackOutput];
           }
 
           // -----------------------------------------
           // 3. Append global Known Issues for stable only
           // -----------------------------------------
-          if (isPrerelease === false) {
+          if (isPrerelease === false && fs.existsSync('CHANGELOG.md') === true) {
             const changelogLines = fs.readFileSync('CHANGELOG.md', 'utf8').split(/\r?\n/);
             let knownIssues = [];
             let inKnownIssues = false;
