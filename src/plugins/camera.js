@@ -86,7 +86,7 @@ const PREBUFFER_LENGTH = 4000;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2026.04.09'; // Code version
+  static VERSION = '2026.04.12'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -310,7 +310,8 @@ export default class NestCamera extends HomeKitDevice {
       'HomeKit Secure Video support' +
         (this.deviceData.model.includes('battery') === true && isNaN(this.deviceData?.battery_level) === false ? ' (on battery)' : ''),
     );
-    this.deviceData.ffmpeg.hwaccel === true && this.postSetupDetail('Video hardware acceleration');
+    this.deviceData.ffmpeg.hwaccel === true && this.postSetupDetail('Hardware video acceleration');
+    this.deviceData.ffmpeg.transcode === true && this.postSetupDetail('Video transcoding');
 
     // Setup repeat polling for camera events.
     // This is time-sensitive and we want to trigger HomeKit automations as close to real-time as possible
@@ -396,6 +397,7 @@ export default class NestCamera extends HomeKitDevice {
         this.streamer = new WebRTC(this.uuid, deviceData, {
           log: this.log,
           supportDump: this.deviceData.supportDump === true,
+          bufferDuration: PREBUFFER_LENGTH * 2,
         });
       }
 
@@ -407,6 +409,7 @@ export default class NestCamera extends HomeKitDevice {
         this.streamer = new NexusTalk(this.uuid, deviceData, {
           log: this.log,
           supportDump: this.deviceData.supportDump === true,
+          bufferDuration: PREBUFFER_LENGTH * 2,
         });
       }
 
@@ -417,7 +420,7 @@ export default class NestCamera extends HomeKitDevice {
           this.hap.Characteristic.Active.ACTIVE
       ) {
         await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_BUFFER, {
-          options: { localAccess: this.deviceData.localAccess === true },
+          options: {},
         });
       }
     }
@@ -674,6 +677,7 @@ export default class NestCamera extends HomeKitDevice {
       // Video output including hardware acceleration if available
       '-map',
       '0:v:0',
+
       '-codec:v',
       this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec !== undefined ? this.ffmpeg.hardwareH264Codec : 'libx264',
 
@@ -691,11 +695,15 @@ export default class NestCamera extends HomeKitDevice {
           ? '3.2'
           : '3.1',
 
-      ...(this.ffmpeg?.hardwareH264Codec === 'h264_videotoolbox' ? ['-realtime', 'true'] : []),
+      ...(this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_videotoolbox' ? ['-realtime', 'true'] : []),
 
       ...(this.deviceData?.ffmpeg?.hwaccel !== true ||
       ['libx264', 'h264_nvenc', 'h264_qsv'].includes(this.ffmpeg?.hardwareH264Codec || '') === true
         ? ['-preset', 'veryfast', '-bf', '0']
+        : []),
+
+      ...(this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_nvenc'
+        ? ['-tune', 'll', '-zerolatency', '1']
         : []),
 
       '-filter:v',
@@ -703,13 +711,16 @@ export default class NestCamera extends HomeKitDevice {
       '-fps_mode',
       'cfr',
       '-g:v',
-      Math.round(
-        (this.#recordingConfig.videoCodec.resolution[2] * this.#recordingConfig.videoCodec.parameters.iFrameInterval) / 1000,
+      Math.max(
+        1,
+        Math.round((this.#recordingConfig.videoCodec.resolution[2] * this.#recordingConfig.videoCodec.parameters.iFrameInterval) / 1000),
       ).toString(),
       '-b:v',
-      this.#recordingConfig.videoCodec.parameters.bitRate + 'k',
+      Math.round(this.#recordingConfig.videoCodec.parameters.bitRate * 2) + 'k',
+      '-maxrate',
+      Math.round(this.#recordingConfig.videoCodec.parameters.bitRate * 2) + 'k',
       '-bufsize',
-      this.#recordingConfig.videoCodec.parameters.bitRate * 2 + 'k',
+      Math.round(this.#recordingConfig.videoCodec.parameters.bitRate * 4) + 'k',
       '-video_track_timescale',
       '90000',
       '-movflags',
@@ -812,7 +823,6 @@ export default class NestCamera extends HomeKitDevice {
       options: {
         includeAudio: includeAudio === true,
         recordTime: Date.now() - PREBUFFER_LENGTH, // Start a few seconds in the past to try to capture pre-roll video before motion trigger
-        localAccess: this.deviceData.localAccess === true, // User local device access if configured otherswise fallback to cloud
       },
     });
 
@@ -892,7 +902,7 @@ export default class NestCamera extends HomeKitDevice {
       // Make sure have appropriate bandwidth!!!
       this?.log?.info?.('Recording was turned on for "%s"', this.deviceData.description);
       await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_BUFFER, {
-        options: { localAccess: this.deviceData.localAccess === true },
+        options: {},
       });
     }
 
@@ -1048,7 +1058,6 @@ export default class NestCamera extends HomeKitDevice {
         sessionID: request.sessionID,
         options: {
           includeAudio: includeAudio === true,
-          localAccess: this.deviceData.localAccess === true, // User local device access if configured otherwise fallback to cloud
           waitForReady: 2000, // Timeout to wait for source_ready before starting ffmpeg process
         },
       });
@@ -1110,23 +1119,31 @@ export default class NestCamera extends HomeKitDevice {
                   ? '3.2'
                   : '3.1',
 
-              ...(this.ffmpeg?.hardwareH264Codec === 'h264_videotoolbox' ? ['-realtime', 'true'] : []),
+              ...(this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_videotoolbox'
+                ? ['-realtime', 'true']
+                : []),
 
               ...(this.deviceData?.ffmpeg?.hwaccel !== true ||
               ['libx264', 'h264_nvenc', 'h264_qsv'].includes(this.ffmpeg?.hardwareH264Codec || '') === true
                 ? ['-preset', 'veryfast', '-bf', '0']
                 : []),
 
+              ...(this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_nvenc'
+                ? ['-tune', 'll', '-zerolatency', '1']
+                : []),
+
               '-filter:v',
-              'fps=fps=' + request.video.fps + ',format=yuv420p',
+              'format=yuv420p',
               '-fps_mode',
-              'cfr',
+              'passthrough',
               '-g:v',
-              Math.max(15, Math.round(request.video.fps)).toString(),
+              '15',
               '-b:v',
-              request.video.max_bit_rate * 2 + 'k',
+              Math.round(request.video.max_bit_rate * 1.25) + 'k',
+              '-maxrate',
+              Math.round(request.video.max_bit_rate * 1.25) + 'k',
               '-bufsize',
-              request.video.max_bit_rate * 4 + 'k',
+              Math.round(request.video.max_bit_rate * 2.5) + 'k',
             ]
           : ['-codec:v', 'copy', '-fps_mode', 'passthrough']),
 
@@ -1204,6 +1221,8 @@ export default class NestCamera extends HomeKitDevice {
         commandLine.join(' '),
       );
 
+      let liveFfmpegStderrTail = [];
+
       // Launch the ffmpeg process for streaming and connect it to streamer input/output
       let ffmpegStream = this.ffmpeg.createSession(
         this.uuid,
@@ -1211,6 +1230,18 @@ export default class NestCamera extends HomeKitDevice {
         commandLine,
         'live',
         (data) => {
+          for (let line of data
+            .toString()
+            .split(/\r?\n/)
+            .map((entry) => entry.trim())
+            .filter((entry) => entry !== '')) {
+            liveFfmpegStderrTail.push(line);
+          }
+
+          if (liveFfmpegStderrTail.length > 20) {
+            liveFfmpegStderrTail = liveFfmpegStderrTail.slice(-20);
+          }
+
           if (data.toString().includes('frame=') === false && this.deviceData.ffmpeg.debug === true) {
             this?.log?.debug?.(data.toString());
           }
@@ -1225,6 +1256,14 @@ export default class NestCamera extends HomeKitDevice {
             this.deviceData.description,
             code,
           );
+
+          if (liveFfmpegStderrTail.length > 0) {
+            this?.log?.error?.(
+              'Last ffmpeg stderr lines for live stream "%s": %s',
+              this.deviceData.description,
+              liveFfmpegStderrTail.join(' | '),
+            );
+          }
 
           // Stop the streamer and notify HomeKit that the stream has failed
           try {
@@ -1977,12 +2016,6 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         let deviceOptions = config?.devices?.find(
           (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
         );
-        // eslint-disable-next-line no-unused-vars
-        let homeOptions = config?.homes?.find(
-          (home) =>
-            home?.nest_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
-            home?.google_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
-        );
 
         // Insert any extra options we've read in from configuration file for this device
         tempDevice.eveHistory =
@@ -1990,7 +2023,6 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
         tempDevice.doorbellCooldown = parseDurationToSeconds(deviceOptions?.doorbellCooldown, { defaultValue: 60, min: 0, max: 300 });
         tempDevice.motionCooldown = parseDurationToSeconds(deviceOptions?.motionCooldown, { defaultValue: 60, min: 0, max: 300 });
         tempDevice.chimeSwitch = deviceOptions?.chimeSwitch === true;
-        tempDevice.localAccess = deviceOptions?.localAccess === true;
         tempDevice.ffmpeg = {
           binary: config.options.ffmpeg.binary,
           valid: config.options.ffmpeg.valid === true,

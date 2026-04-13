@@ -48,7 +48,7 @@ import { DATA_SOURCE, DEVICE_TYPE, PROTOBUF_RESOURCES, LOW_BATTERY_LEVEL } from 
 
 export default class NestLock extends HomeKitDevice {
   static TYPE = 'Lock';
-  static VERSION = '2026.04.01'; // Code version
+  static VERSION = '2026.04.13'; // Code version
 
   // Define lock bolt states
   static STATE = {
@@ -277,6 +277,11 @@ const LOCK_FIELD_MAP = {
   },
 
   // Naming / descriptive fields
+
+  softwareVersion: {
+    google: ({ sourceValue }) => sourceValue?.value?.device_identity?.softwareVersion,
+  },
+
   description: {
     google: ({ sourceValue }) => String(sourceValue?.value?.label?.label ?? ''),
   },
@@ -389,31 +394,32 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
       let tempDevice = {};
 
       try {
-        let mappedData = buildMappedObject(LOCK_FIELD_MAP, createMappingContext(rawData, object_key, undefined, value));
-
         if (
           value?.source === DATA_SOURCE.GOOGLE &&
           value.value?.configuration_done?.deviceReady === true &&
-          rawData?.[value.value?.device_info?.pairerId?.resourceId] !== undefined &&
-          mappedData.serialNumber !== undefined &&
-          mappedData.nest_google_device_uuid !== undefined &&
-          mappedData.nest_google_home_uuid !== undefined &&
-          mappedData.description !== undefined &&
-          mappedData.bolt_state !== undefined
+          rawData?.[value.value?.device_info?.pairerId?.resourceId] !== undefined
         ) {
-          tempDevice = processCommonData(
-            mappedData.nest_google_device_uuid,
-            mappedData.nest_google_home_uuid,
-            {
-              type: DEVICE_TYPE.LOCK,
-              model: 'x Yale Lock',
-              softwareVersion: value.value.device_identity.softwareVersion,
-              ...mappedData,
-            },
-            config,
-          );
-        }
+          let mappedData = buildMappedObject(LOCK_FIELD_MAP, createMappingContext(rawData, object_key, undefined, value));
 
+          if (
+            mappedData.serialNumber !== undefined &&
+            mappedData.nest_google_device_uuid !== undefined &&
+            mappedData.nest_google_home_uuid !== undefined &&
+            mappedData.softwareVersion !== undefined &&
+            (mappedData.description !== undefined || mappedData.location !== undefined)
+          ) {
+            tempDevice = processCommonData(
+              mappedData.nest_google_device_uuid,
+              mappedData.nest_google_home_uuid,
+              {
+                type: DEVICE_TYPE.LOCK,
+                model: 'x Yale Lock',
+                ...mappedData,
+              },
+              config,
+            );
+          }
+        }
         // eslint-disable-next-line no-unused-vars
       } catch (error) {
         log?.debug?.('Error processing lock data for "%s"', object_key);
@@ -426,12 +432,6 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
       ) {
         let deviceOptions = config?.devices?.find(
           (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
-        );
-        // eslint-disable-next-line no-unused-vars
-        let homeOptions = config?.homes?.find(
-          (home) =>
-            home?.nest_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
-            home?.google_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
         );
 
         // Insert any extra options we've read in from configuration file for this device

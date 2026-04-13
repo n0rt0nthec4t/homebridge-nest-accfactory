@@ -29,7 +29,7 @@
 // - FFmpeg validation determines availability of camera streaming and HKSV recording
 // - Used during plugin startup before any device initialisation
 //
-// Code version 2026.03.25
+// Code version 2026.04.13
 // Mark Hulskamp
 'use strict';
 
@@ -267,6 +267,7 @@ function buildConnections(config) {
         referer: fieldTest ? 'home.ft.nest.com' : 'home.nest.com',
         restAPIHost: fieldTest ? 'home.ft.nest.com' : 'home.nest.com',
         cameraAPIHost: fieldTest ? 'camera.home.ft.nest.com' : 'camera.home.nest.com',
+        grpcEndpointHost: fieldTest ? 'apigw.ft.nest.com' : 'apigw.production.nest.com',
         protobufAPIHost: fieldTest ? 'grpc-web.ft.nest.com' : 'grpc-web.production.nest.com',
         exclude: exclude,
       };
@@ -290,6 +291,7 @@ function buildConnections(config) {
         referer: fieldTest ? 'home.ft.nest.com' : 'home.nest.com',
         restAPIHost: fieldTest ? 'home.ft.nest.com' : 'home.nest.com',
         cameraAPIHost: fieldTest ? 'camera.home.ft.nest.com' : 'camera.home.nest.com',
+        grpcEndpointHost: fieldTest ? 'apigw.ft.nest.com' : 'apigw.production.nest.com',
         protobufAPIHost: fieldTest ? 'grpc-web.ft.nest.com' : 'grpc-web.production.nest.com',
         exclude: exclude,
       };

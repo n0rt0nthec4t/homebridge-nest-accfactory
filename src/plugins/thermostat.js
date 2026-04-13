@@ -74,7 +74,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2026.04.01'; // Code version
+  static VERSION = '2026.04.12'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -1851,12 +1851,12 @@ const THERMOSTAT_FIELD_MAP = {
       if (sourceValue?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE') {
         if (
           sourceValue?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled === true &&
-          sourceValue?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled === false
+          sourceValue?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled !== true
         ) {
           return 'ecoheat';
         }
         if (
-          sourceValue?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled === false &&
+          sourceValue?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled !== true &&
           sourceValue?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled === true
         ) {
           return 'ecocool';
@@ -2004,13 +2004,13 @@ const THERMOSTAT_FIELD_MAP = {
       if (sourceValue?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE') {
         if (
           sourceValue?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled === true &&
-          sourceValue?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled === false &&
+          sourceValue?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled !== true &&
           isNaN(sourceValue?.value?.eco_mode_settings?.ecoTemperatureHeat?.value?.value) === false
         ) {
           value = Number(sourceValue.value.eco_mode_settings.ecoTemperatureHeat.value.value);
         }
         if (
-          sourceValue?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled === false &&
+          sourceValue?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled !== true &&
           sourceValue?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled === true &&
           isNaN(sourceValue?.value?.eco_mode_settings?.ecoTemperatureCool?.value?.value) === false
         ) {
@@ -2393,12 +2393,6 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
       ) {
         let deviceOptions = config?.devices?.find(
           (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
-        );
-        //eslint-disable-next-line no-unused-vars
-        let homeOptions = config?.homes?.find(
-          (home) =>
-            home?.nest_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
-            home?.google_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
         );
 
         // Insert any extra options we've read in from configuration file for this device

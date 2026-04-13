@@ -1,12 +1,14 @@
 // WebRTC
 // Part of homebridge-nest-accfactory
 //
-// Implements WebRTC-based streaming for Google Nest cameras using the Foyer API.
+// Implements WebRTC-based streaming for Google Nest cameras using Google Home
+// Foyer/gRPC signaling and control.
 // Handles peer connection setup, RTP media processing, and integration with the
 // Streamer pipeline for HomeKit live streaming and recording.
 //
 // Responsibilities:
 // - Establish and manage RTCPeerConnection using the werift library
+// - Use a pooled Google gRPC transport/client for Foyer signaling and stream control
 // - Handle ICE negotiation and connection state lifecycle
 // - Receive and process RTP packets (H264 video, Opus audio)
 // - Apply jitter buffering and packet reordering for RTP streams
@@ -24,30 +26,28 @@
 // - Resilient handling of packet loss and stream stalls
 //
 // Notes:
+// - WebRTC signaling and stream control are performed via the shared Google gRPC transport/client
 // - Video readiness is determined by first video RTP packet arrival, not connection state
 // - ICE "connected" indicates transport readiness, not media availability
 // - Startup delays may occur due to upstream (Google) keyframe delivery behaviour
 //
-// Code version 2026.04.08
+// Code version 2026.04.13
 // Mark Hulskamp
 'use strict';
 
-// Define external library requirements
-import protobuf from 'protobufjs';
+// Define external module requirements
 import * as werift from 'werift';
 import { Decoder } from '@evan/opus';
 
 // Define nodejs module requirements
-import EventEmitter from 'node:events';
-import http2 from 'node:http2';
 import { Buffer } from 'node:buffer';
 import { setInterval, clearInterval, setTimeout, clearTimeout } from 'node:timers';
-import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
 // Define our modules
 import Streamer from './streamer.js';
+import GrpcTransport from './grpctransport.js';
 
 // Define constants
 import { USER_AGENT, __dirname } from './consts.js';
@@ -67,8 +67,17 @@ const RTP_OPUS_AUDIO_PAYLOAD_TYPE = 111; // Opus audio payload type
 const GOOGLE_HOME_FOYER_PREFIX = 'google.internal.home.foyer.v1.';
 const FU_A_TIMEOUT = 1500; // Time to wait for the completion of a fragmented FU-A NAL unit before discarding the incomplete data
 const IDR_TIMEOUT = 5000; // Time to wait for an IDR frame before considering the video stream stalled and attempting a reconnect
-const TIMESTAMP_MAX_VIDEO_DELTA = 250;
+const TIMESTAMP_MAX_VIDEO_DELTA = 450; // Maximum delta-frame playout step in ms
+const TIMESTAMP_MAX_KEYFRAME_DELTA = 450; // Maximum keyframe playout step in ms
+const TIMESTAMP_VIDEO_MAX_BEHIND = 500; // Keep emitted timestamps from lagging too far behind wall clock
+const TIMESTAMP_VIDEO_MAX_AHEAD = 450; // Allow variable-FPS bursts without compressing frame emission too aggressively
 const TIMESTAMP_MAX_AUDIO_DELTA = 120;
+const KEYFRAME_MAX_ASSEMBLY_MS = 1800; // Drop pathological keyframes assembled too slowly
+const KEYFRAME_MAX_BYTES = 95000; // Drop oversized keyframes that cause visible playback shock
+const HEALTH_BAD_WINDOW_MS = 3000; // Rolling window for stream-health bad events
+const HEALTH_UNSTABLE_BAD_THRESHOLD = 4; // Enter UNSTABLE when recent bad event score reaches this
+const HEALTH_RECOVERING_CLEAN_TARGET = 6; // Exit RECOVERING after this weighted clean score
+const DELTA_FU_SWITCH_GRACE_MS = 45; // Tiny grace before abandoning a young non-keyframe FU-A on timestamp switch
 const STALLED_TIMEOUT = 10000; // Time with no playback packets before we consider stream stalled and attempt restart
 const PCM_S16LE_48000_STEREO_BLANK = Buffer.alloc(960 * 2 * 2); // Default blank audio frame (20ms) in PCM S16LE, stereo @ 48kHz
 const PLAYOUT_TICK = 10; // Period used to drain jitter/reorder buffers and release media toward Streamer
@@ -80,6 +89,8 @@ const ADAPTIVE_PLAYOUT_MIN_DELAY = 50; // Minimum adaptive delay (ms)
 const ADAPTIVE_PLAYOUT_ADJUST_RATE = 0.1; // Adjustment rate (0.1 = 10% per tick)
 const MAX_NACK_BURST = 8; // Maximum number of missing video sequences to include in one NACK request
 const MAX_AUDIO_NACK_BURST = 4; // Maximum number of missing audio sequences to include in one NACK request
+const STARTUP_PLI_RETRY_INTERVAL = 1600; // Retry interval for startup PLI requests while waiting for first IDR
+const STARTUP_PLI_RETRY_WINDOW = 10000; // Maximum startup window to keep retrying PLI for first IDR
 
 // WebRTC object
 export default class WebRTC extends Streamer {
@@ -87,9 +98,7 @@ export default class WebRTC extends Streamer {
   blankAudio = PCM_S16LE_48000_STEREO_BLANK;
 
   // Internal data only for this class
-  #protobufFoyer = undefined; // Protobuf for Google Home Foyer
-  #googleHomeFoyer = undefined; // HTTP/2 connection to Google Home Foyer APIs
-  #googleHomeFoyerAPIHost = 'https://googlehomefoyer-pa.googleapis.com'; // Default API endpoint for Google Home Foyer
+  #grpcTransport = undefined; // Shared protobuf/gRPC client for Google Home Foyer APIs
   #streamId = undefined; // Stream ID
   #googleHomeDeviceUUID = undefined; // Normal Nest/Google protobuf device ID translated to a Google Foyer device ID
   #peerConnection = undefined;
@@ -97,9 +106,11 @@ export default class WebRTC extends Streamer {
   #audioTransceiver = undefined;
   #opusDecoder = new Decoder({ channels: 2, sample_rate: 48000 });
   #extendTimer = undefined; // Stream extend timer
-  #stalledTimer = undefined; // Timer object for no received data
-  #pingTimer = undefined; // Google Home Foyer periodic ping
+  #stalledTimer = undefined; // Interval object for no received data checks
+  #lastPacketAt = undefined; // Last playback packet receipt time in ms
   #playoutTimer = undefined; // Internal playout timer to release reordered RTP toward Streamer
+  #closeInProgress = false; // True while close() teardown is running to avoid re-entrant shutdown races
+  #connectToken = 0; // Monotonic token to invalidate stale async connect/close paths
   #reconnectPending = false; // Reconnect requested once socket closes
   #reconnectReason = undefined; // Reason for reconnect
   #tracks = { audio: {}, video: {}, talkback: {} }; // Track state for audio and video
@@ -127,37 +138,48 @@ export default class WebRTC extends Streamer {
   constructor(uuid, deviceData, options) {
     super(uuid, deviceData, options);
 
-    // Load the protobuf for Google Home Foyer. Needed to communicate with camera devices using webrtc
-    if (fs.existsSync(path.resolve(__dirname + '/protobuf/googlehome/foyer.proto')) === true) {
-      protobuf.util.Long = null;
-      protobuf.configure();
-      this.#protobufFoyer = protobuf.loadSync(path.resolve(__dirname + '/protobuf/googlehome/foyer.proto'));
-    }
-
     // Store data we need from the device data passed it
     this.token = deviceData?.apiAccess?.oauth2;
 
-    // Update Google Home Foyer api host if using field test
-    if (deviceData?.apiAccess?.fieldTest === true) {
-      this.#googleHomeFoyerAPIHost = 'https://preprod-googlehomefoyer-pa.sandbox.googleapis.com';
-    }
+    // Configure Google Home Foyer protobuf/gRPC client.
+    let googleHomeFoyerAPIHost =
+      deviceData?.apiAccess?.fieldTest === true
+        ? 'https://preprod-googlehomefoyer-pa.sandbox.googleapis.com'
+        : 'https://googlehomefoyer-pa.googleapis.com';
+
+    this.#grpcTransport = new GrpcTransport({
+      log: this.log,
+      protoPath: path.resolve(__dirname + '/protobuf/googlehome/foyer.proto'),
+      endpointHost: googleHomeFoyerAPIHost,
+      uuid: this.nest_google_device_uuid,
+      userAgent: USER_AGENT,
+      requestTimeout: GOOGLE_HOME_FOYER_REQUEST_TIMEOUT,
+      bufferInitial: GOOGLE_HOME_FOYER_BUFFER_INITIAL,
+      bufferMax: GOOGLE_HOME_FOYER_BUFFER_MAX,
+      getAuthHeader: () => (typeof this.token === 'string' && this.token.trim() !== '' ? 'Bearer ' + this.token : ''),
+    });
   }
 
   // Class functions
+  // eslint-disable-next-line no-unused-vars
   async connect(options = {}) {
+    let connectToken = ++this.#connectToken;
+
+    if (connectToken !== this.#connectToken) {
+      return;
+    }
+
     // Reset any previous session timers/state before attempting a new connection.
     // This ensures a reconnect starts from a clean baseline rather than reusing
     // timers or partially assembled media from an earlier session.
     clearInterval(this.#extendTimer);
-    clearTimeout(this.#stalledTimer);
-    clearInterval(this.#pingTimer);
+    clearInterval(this.#stalledTimer);
     clearInterval(this.#playoutTimer);
     clearTimeout(this.#tracks?.video?.h264?.fuTimer);
-    clearInterval(this.#tracks?.video?.startupPLITimer);
     this.#extendTimer = undefined;
     this.#stalledTimer = undefined;
-    this.#pingTimer = undefined;
     this.#playoutTimer = undefined;
+    this.#lastPacketAt = undefined;
     this.#streamId = undefined;
     this.#reconnectPending = false;
     this.#reconnectReason = undefined;
@@ -167,13 +189,21 @@ export default class WebRTC extends Streamer {
       return;
     }
 
+    if (connectToken !== this.#connectToken) {
+      return;
+    }
+
     if (this.#googleHomeDeviceUUID === undefined) {
       // We do not yet have the Google Home Foyer-specific device identifier for this camera.
       // Resolve it once from HomeGraph using our normal Nest/Google device UUID, then cache it
       // for future stream sessions.
-      let homeFoyerResponse = await this.#googleHomeFoyerCommand('StructuresService', 'GetHomeGraph', {
+      let homeFoyerResponse = await this.#grpcTransport.command(GOOGLE_HOME_FOYER_PREFIX, 'StructuresService', 'GetHomeGraph', {
         requestId: crypto.randomUUID(),
       });
+
+      if (connectToken !== this.#connectToken) {
+        return;
+      }
 
       if (homeFoyerResponse?.data?.[0]?.homes !== undefined) {
         Object.values(homeFoyerResponse.data[0].homes || {}).forEach((home) => {
@@ -201,7 +231,7 @@ export default class WebRTC extends Streamer {
     // This is transport/control readiness only and does not mean media is flowing yet.
     this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CONNECTING);
 
-    let homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'SendCameraViewIntent', {
+    let homeFoyerResponse = await this.#grpcTransport.command(GOOGLE_HOME_FOYER_PREFIX, 'CameraService', 'SendCameraViewIntent', {
       request: {
         googleDeviceId: {
           value: this.#googleHomeDeviceUUID,
@@ -209,6 +239,10 @@ export default class WebRTC extends Streamer {
         command: 'VIEW_INTENT_START',
       },
     });
+
+    if (connectToken !== this.#connectToken) {
+      return;
+    }
 
     if (homeFoyerResponse?.status !== 0) {
       this?.log?.debug?.('Request to start camera viewing was not accepted for uuid "%s"', this.nest_google_device_uuid);
@@ -219,7 +253,7 @@ export default class WebRTC extends Streamer {
     // Create our local WebRTC peer connection and advertise the codecs we support.
     // We receive H264 video and Opus audio from the camera, then convert that into
     // Streamer media items for live view and recording.
-    this.#peerConnection = new werift.RTCPeerConnection({
+    let peerConnection = new werift.RTCPeerConnection({
       iceUseIpv4: true,
       iceUseIpv6: false,
       bundlePolicy: 'max-bundle',
@@ -255,29 +289,40 @@ export default class WebRTC extends Streamer {
       },
     });
 
-    this.#peerConnection.createDataChannel('webrtc-datachannel');
+    this.#peerConnection = peerConnection;
 
-    this.#audioTransceiver = this.#peerConnection.addTransceiver('audio', {
+    peerConnection.createDataChannel('webrtc-datachannel');
+
+    this.#audioTransceiver = peerConnection.addTransceiver('audio', {
       direction: 'sendrecv',
     });
 
-    this.#videoTransceiver = this.#peerConnection.addTransceiver('video', {
+    this.#videoTransceiver = peerConnection.addTransceiver('video', {
       direction: 'recvonly',
     });
 
     // Create our SDP offer and send it to Google Home Foyer.
     // If accepted, we will get an SDP answer back plus a streamId for later extend/end/talkback calls.
-    let webRTCOffer = await this.#peerConnection.createOffer();
-    await this.#peerConnection.setLocalDescription(webRTCOffer);
+    let webRTCOffer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(webRTCOffer);
 
-    homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'JoinStream', {
+    homeFoyerResponse = await this.#grpcTransport.command(GOOGLE_HOME_FOYER_PREFIX, 'CameraService', 'JoinStream', {
       command: 'offer',
       deviceId: this.nest_google_device_uuid,
-      local: options?.localAccess === true,
+      local: false, // Request direct peer-to-peer connection if possible
       streamContext: 'STREAM_CONTEXT_DEFAULT',
-      requestedVideoResolution: 'VIDEO_RESOLUTION_FULL_HIGH',
+      requestedVideoResolution: 'VIDEO_RESOLUTION_STANDARD',
       sdp: webRTCOffer.sdp,
     });
+
+    if (connectToken !== this.#connectToken) {
+      try {
+        await peerConnection?.close?.();
+      } catch {
+        // Empty
+      }
+      return;
+    }
 
     if (
       homeFoyerResponse?.status !== 0 ||
@@ -285,9 +330,13 @@ export default class WebRTC extends Streamer {
       homeFoyerResponse?.data?.[0]?.streamId === undefined ||
       homeFoyerResponse?.data?.[0]?.sdp === undefined
     ) {
-      this.#peerConnection?.close?.();
+      peerConnection?.close?.();
       this.#peerConnection = undefined;
-      this?.log?.debug?.('WebRTC offer was not agreed with remote for uuid "%s"', this.nest_google_device_uuid);
+      this?.log?.debug?.(
+        'WebRTC offer was not agreed with remote for uuid "%s". Response: %j',
+        this.nest_google_device_uuid,
+        homeFoyerResponse,
+      );
       this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSED, 'offer-rejected');
       return;
     }
@@ -313,7 +362,7 @@ export default class WebRTC extends Streamer {
       this.#setupTracks(track);
 
       track.onReceiveRtp.subscribe((rtpPacket) => {
-        this.#ingestAudioRtpPacket(rtpPacket);
+        this.#ingestPlaybackAudioRtpPacket(rtpPacket);
       });
     });
 
@@ -322,13 +371,25 @@ export default class WebRTC extends Streamer {
       this.#setupTracks(track);
 
       track.onReceiveRtp.subscribe((rtpPacket) => {
-        this.#ingestVideoRtpPacket(rtpPacket);
+        this.#ingestPlaybackVideoRtpPacket(rtpPacket);
       });
     });
 
     this.#streamId = homeFoyerResponse.data[0].streamId;
 
-    await this.#peerConnection?.setRemoteDescription?.({
+    // connect() can overlap with close() during fast stream stop/reopen cycles.
+    // If teardown replaced or cleared the active peer connection while this async
+    // setup was in-flight, abort this stale connect attempt safely.
+    if (this.#peerConnection !== peerConnection) {
+      try {
+        await peerConnection?.close?.();
+      } catch {
+        // Empty
+      }
+      return;
+    }
+
+    await peerConnection?.setRemoteDescription?.({
       type: 'answer',
       sdp: homeFoyerResponse.data[0].sdp,
     });
@@ -339,13 +400,21 @@ export default class WebRTC extends Streamer {
     // This is the main separation between WebRTC and NexusTalk:
     // WebRTC gives us RTP packets that can be reordered, delayed or missing,
     // so we normalise that first before emitting media into Streamer.
-    this.#ensurePlayoutLoop();
+    this.#ensurePlaybackDrainLoop();
 
     // Monitor connection status. ICE "connected" means transport is ready,
     // not that media has actually started. Actual source readiness is promoted
     // later on first video packet arrival.
-    this.#peerConnection.iceConnectionStateChange.subscribe(() => {
-      let state = this.#peerConnection?.iceConnectionState;
+    peerConnection.iceConnectionStateChange.subscribe(() => {
+      if (this.#peerConnection !== peerConnection) {
+        return;
+      }
+
+      if (this.#closeInProgress === true) {
+        return;
+      }
+
+      let state = peerConnection?.iceConnectionState;
 
       if (state === 'connected' || state === 'completed' || state === 'checking') {
         if (this.sourceState !== Streamer.MESSAGE_TYPE.SOURCE_CONNECTED) {
@@ -354,12 +423,16 @@ export default class WebRTC extends Streamer {
         return;
       }
 
-      if (state === 'failed' || state === 'disconnected' || (state === 'closed' && this.hasActiveStreams() === true)) {
+      if (
+        (state === 'failed' || state === 'disconnected' || (state === 'closed' && this.hasActiveStreams() === true)) &&
+        this.sourceState !== Streamer.MESSAGE_TYPE.SOURCE_CLOSING &&
+        this.sourceState !== Streamer.MESSAGE_TYPE.SOURCE_CLOSED
+      ) {
         this?.log?.debug?.('WebRTC ICE state "%s" for uuid "%s", requesting reconnect', state, this.nest_google_device_uuid);
         this.#requestReconnect('ice-' + state);
 
         if (this.hasActiveStreams() === true) {
-          this.close();
+          this.requestSourceClose();
         }
       }
     });
@@ -369,12 +442,12 @@ export default class WebRTC extends Streamer {
     if (localAccessGranted !== true) {
       this.#extendTimer = setInterval(async () => {
         if (
-          this.#googleHomeFoyer !== undefined &&
+          this.#grpcTransport !== undefined &&
           this.sourceState === Streamer.MESSAGE_TYPE.SOURCE_READY &&
           this.#streamId !== undefined &&
           this.#googleHomeDeviceUUID !== undefined
         ) {
-          let extendResponse = await this.#googleHomeFoyerCommand('CameraService', 'JoinStream', {
+          let extendResponse = await this.#grpcTransport.command(GOOGLE_HOME_FOYER_PREFIX, 'CameraService', 'JoinStream', {
             command: 'extend',
             deviceId: this.nest_google_device_uuid,
             streamId: this.#streamId,
@@ -383,7 +456,7 @@ export default class WebRTC extends Streamer {
           if (extendResponse?.data?.[0]?.streamExtensionStatus !== 'STATUS_STREAM_EXTENDED') {
             this?.log?.debug?.('Error occurred while requesting stream extension for uuid "%s"', this.nest_google_device_uuid);
             this.#requestReconnect('extend-failed');
-            this.close();
+            this.requestSourceClose();
           }
         }
       }, EXTEND_INTERVAL);
@@ -391,92 +464,113 @@ export default class WebRTC extends Streamer {
   }
 
   async close() {
+    if (this.#closeInProgress === true) {
+      return;
+    }
+
+    this.#closeInProgress = true;
+    let closeToken = this.#connectToken;
+    let closingPeerConnection = this.#peerConnection;
+    let closingStreamId = this.#streamId;
     let reconnectReason = this.#reconnectReason;
     let talkbackActive = this.#tracks?.talkback?.active === true;
 
-    // Stop timers first so we stop producing any new work immediately.
-    clearInterval(this.#extendTimer);
-    clearTimeout(this.#stalledTimer);
-    clearInterval(this.#pingTimer);
-    clearInterval(this.#playoutTimer);
-    clearTimeout(this.#tracks?.video?.h264?.fuTimer);
-    clearInterval(this.#tracks?.video?.startupPLITimer);
-    this.#extendTimer = undefined;
-    this.#stalledTimer = undefined;
-    this.#pingTimer = undefined;
-    this.#playoutTimer = undefined;
-
-    // Flush any pending video access unit before tearing state down.
-    // Video is emitted frame-by-frame, so the last completed frame would otherwise
-    // be lost if close occurs before another packet triggers a normal flush.
-    this.#flushPendingVideoFrame();
-
-    // Clear transceiver/local track state before closing remote transport.
-    // This lets any in-flight callbacks naturally no-op while shutdown continues.
-    this.#videoTransceiver = undefined;
-    this.#audioTransceiver = undefined;
-    this.#tracks = { audio: {}, video: {}, talkback: {} };
-
-    if (this.#streamId !== undefined && talkbackActive === true) {
-      await this.#googleHomeFoyerCommand('CameraService', 'SendTalkback', {
-        googleDeviceId: {
-          value: this.#googleHomeDeviceUUID,
-        },
-        streamId: this.#streamId,
-        command: 'COMMAND_STOP',
-      });
-    }
-
-    if (this.#streamId !== undefined) {
-      this?.log?.debug?.('Notifying remote about closing connection for uuid "%s"', this.nest_google_device_uuid);
-
-      // Tell remote to end the stream session
-      await this.#googleHomeFoyerCommand('CameraService', 'JoinStream', {
-        command: 'end',
-        deviceId: this.nest_google_device_uuid,
-        streamId: this.#streamId,
-        endStreamReason: 'REASON_USER_EXITED_SESSION',
-      });
-    }
-
     try {
-      await this.#peerConnection?.close?.();
-    } catch {
-      // Empty
-    }
+      // Mark source as closing immediately so any in-flight playback callbacks
+      // stop accepting new packets while teardown is happening.
+      this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSING);
 
-    try {
-      this.#googleHomeFoyer?.destroy?.();
-    } catch {
-      // Empty
-    }
+      // Stop timers first so we stop producing any new work immediately.
+      clearInterval(this.#extendTimer);
+      clearInterval(this.#stalledTimer);
+      clearInterval(this.#playoutTimer);
+      clearTimeout(this.#tracks?.video?.h264?.fuTimer);
+      this.#extendTimer = undefined;
+      this.#stalledTimer = undefined;
+      this.#lastPacketAt = undefined;
+      this.#playoutTimer = undefined;
 
-    this.#streamId = undefined;
-    this.#googleHomeFoyer = undefined;
-    this.#peerConnection = undefined;
+      // Flush any pending video access unit before tearing state down.
+      // Video is emitted frame-by-frame, so the last completed frame would otherwise
+      // be lost if close occurs before another packet triggers a normal flush.
+      this.#flushPlaybackPendingVideoFrame();
 
-    if (this.#reconnectPending === true) {
-      // We have a reconnect pending, so reset the flag and attempt to reconnect.
-      // We do this only after the current session has really closed to avoid racing
-      // a new stream setup against a half-torn-down old connection.
-      this.#reconnectPending = false;
-      this.#reconnectReason = undefined;
+      // Clear transceiver/local track state before closing remote transport.
+      // This lets any in-flight callbacks naturally no-op while shutdown continues.
+      this.#videoTransceiver = undefined;
+      this.#audioTransceiver = undefined;
+      this.#tracks = { audio: {}, video: {}, talkback: {} };
 
-      this?.log?.debug?.(
-        'Connection closed to WebRTC for uuid "%s", attempting reconnect%s',
-        this.nest_google_device_uuid,
-        typeof reconnectReason === 'string' && reconnectReason !== '' ? ' (' + reconnectReason + ')' : '',
-      );
-
-      if (this.hasActiveStreams() === true) {
-        this.connect().catch((error) => {
-          this?.log?.debug?.('Error reconnecting WebRTC for uuid "%s": %s', this.nest_google_device_uuid, String(error));
+      if (closingStreamId !== undefined && talkbackActive === true) {
+        await this.#grpcTransport.command(GOOGLE_HOME_FOYER_PREFIX, 'CameraService', 'SendTalkback', {
+          googleDeviceId: {
+            value: this.#googleHomeDeviceUUID,
+          },
+          streamId: closingStreamId,
+          command: 'COMMAND_STOP',
         });
-        return;
       }
-    }
 
-    this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSED);
+      if (closingStreamId !== undefined) {
+        this?.log?.debug?.('Notifying remote about closing connection for uuid "%s"', this.nest_google_device_uuid);
+
+        // Tell remote to end the stream session
+        await this.#grpcTransport.command(GOOGLE_HOME_FOYER_PREFIX, 'CameraService', 'JoinStream', {
+          command: 'end',
+          deviceId: this.nest_google_device_uuid,
+          streamId: closingStreamId,
+          endStreamReason: 'REASON_USER_EXITED_SESSION',
+        });
+      }
+
+      try {
+        await closingPeerConnection?.close?.();
+      } catch {
+        // Empty
+      }
+
+      // NOTE: Do NOT release the gRPC client here. It should be reused across WebRTC reconnects
+      // and only released during final shutdown in onShutdown(). Releasing it during
+      // temporary disconnects causes in-flight requests to be canceled with "pending stream has been canceled".
+      if (this.#streamId === closingStreamId) {
+        this.#streamId = undefined;
+      }
+
+      if (this.#peerConnection === closingPeerConnection) {
+        this.#peerConnection = undefined;
+      }
+
+      if (this.#reconnectPending === true) {
+        // We have a reconnect pending, so reset the flag and attempt to reconnect.
+        // We do this only after the current session has really closed to avoid racing
+        // a new stream setup against a half-torn-down old connection.
+        this.#reconnectPending = false;
+        this.#reconnectReason = undefined;
+
+        this?.log?.debug?.(
+          'Connection closed to WebRTC for uuid "%s", attempting reconnect%s',
+          this.nest_google_device_uuid,
+          typeof reconnectReason === 'string' && reconnectReason !== '' ? ' (' + reconnectReason + ')' : '',
+        );
+
+        if (this.hasActiveStreams() === true) {
+          this.requestSourceConnect().catch((error) => {
+            this?.log?.debug?.('Error reconnecting WebRTC for uuid "%s": %s', this.nest_google_device_uuid, String(error));
+          });
+          return;
+        }
+      }
+
+      if (
+        closeToken === this.#connectToken &&
+        this.hasActiveStreams() !== true &&
+        this.sourceState === Streamer.MESSAGE_TYPE.SOURCE_CLOSING
+      ) {
+        this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSED);
+      }
+    } finally {
+      this.#closeInProgress = false;
+    }
   }
 
   async onUpdate(deviceData) {
@@ -505,7 +599,14 @@ export default class WebRTC extends Streamer {
   }
 
   async onShutdown() {
-    await this.close(); // Gracefully close peer connection and HTTP/2 session
+    await this.requestSourceClose(); // Gracefully close peer connection
+
+    // Release the gRPC client only during final shutdown, not on temporary disconnects
+    try {
+      this.#grpcTransport?.release?.();
+    } catch {
+      // Empty
+    }
   }
 
   async sendTalkback(talkingBuffer) {
@@ -540,7 +641,7 @@ export default class WebRTC extends Streamer {
 
         talk.started = true;
 
-        let homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'SendTalkback', {
+        let homeFoyerResponse = await this.#grpcTransport.command(GOOGLE_HOME_FOYER_PREFIX, 'CameraService', 'SendTalkback', {
           googleDeviceId: { value: this.#googleHomeDeviceUUID },
           streamId: this.#streamId,
           command: 'COMMAND_START',
@@ -606,7 +707,7 @@ export default class WebRTC extends Streamer {
         return;
       }
 
-      let homeFoyerResponse = await this.#googleHomeFoyerCommand('CameraService', 'SendTalkback', {
+      let homeFoyerResponse = await this.#grpcTransport.command(GOOGLE_HOME_FOYER_PREFIX, 'CameraService', 'SendTalkback', {
         googleDeviceId: { value: this.#googleHomeDeviceUUID },
         streamId: this.#streamId,
         command: 'COMMAND_STOP',
@@ -710,6 +811,7 @@ export default class WebRTC extends Streamer {
         lastNACKTime: undefined,
         lastIDRTime: undefined,
         startupPLIStartedAt: undefined,
+        startupPLILastTryAt: undefined,
         rtp: {
           // RTP state for timestamp calculation
           lastSequence: undefined,
@@ -724,6 +826,7 @@ export default class WebRTC extends Streamer {
           fuType: undefined,
           fuTimestamp: undefined,
           fuLength: 0,
+          fuFirstPacketTime: undefined,
 
           // SPS/PPS/IDR caching & emission tracking
           lastSPS: undefined,
@@ -734,8 +837,28 @@ export default class WebRTC extends Streamer {
           // Frame assembly state
           pendingParts: [],
           pendingRtpTimestamp: undefined,
+          pendingFirstPacketTime: undefined,
           pendingKeyFrame: false,
           pendingBytes: 0,
+          pendingHasVcl: false,
+          pendingMarkerSeen: false,
+          pendingCorrupt: false,
+        },
+        output: {
+          // Output timestamp state kept separate from RTP timestamp state
+          lastTimestamp: undefined,
+        },
+        health: {
+          state: 'STABLE',
+          events: [],
+          eventsStart: 0,
+          badEvents: 0,
+          badNonClampEvents: 0,
+          clampEvents: 0,
+          cleanScore: 0,
+          lastCleanKeyframeTime: undefined,
+          suppressDeltas: false,
+          lastSuppressedLogTime: undefined,
         },
         receive: {
           // Buffered receive / playout state for video RTP packets
@@ -754,38 +877,15 @@ export default class WebRTC extends Streamer {
           jitter: 0,
           currentDelay: VIDEO_PLAYOUT_DELAY,
         },
-        startupPLITimer: undefined,
       };
 
-      // Setup a short startup PLI retry loop for this video track.
-      // This helps request a fresh keyframe during initial stream startup.
-      clearInterval(this.#tracks.video.startupPLITimer);
-      this.#tracks.video.startupPLITimer = undefined;
       this.#tracks.video.startupPLIStartedAt = Date.now();
-
+      this.#tracks.video.startupPLILastTryAt = this.#tracks.video.startupPLIStartedAt;
       this.#sendVideoPLI('startup');
-
-      this.#tracks.video.startupPLITimer = setInterval(() => {
-        if (typeof this.#tracks?.video?.lastIDRTime === 'number') {
-          clearInterval(this.#tracks.video.startupPLITimer);
-          this.#tracks.video.startupPLITimer = undefined;
-          this.#tracks.video.startupPLIStartedAt = undefined;
-          return;
-        }
-
-        if (typeof this.#tracks?.video?.startupPLIStartedAt === 'number' && Date.now() - this.#tracks.video.startupPLIStartedAt >= 3000) {
-          clearInterval(this.#tracks.video.startupPLITimer);
-          this.#tracks.video.startupPLITimer = undefined;
-          this.#tracks.video.startupPLIStartedAt = undefined;
-          return;
-        }
-
-        this.#sendVideoPLI('startup keyframe retry');
-      }, 1000);
     }
   }
 
-  #ingestAudioRtpPacket(rtpPacket) {
+  #ingestPlaybackAudioRtpPacket(rtpPacket) {
     let audio = this.#tracks?.audio;
     let sequenceNumber = 0;
     let sequenceDelta = 0;
@@ -799,8 +899,14 @@ export default class WebRTC extends Streamer {
       return;
     }
 
+    if (this.sourceState === Streamer.MESSAGE_TYPE.SOURCE_CLOSING || this.sourceState === Streamer.MESSAGE_TYPE.SOURCE_CLOSED) {
+      // We received an audio RTP packet but we're already closing/closed
+      // so ignore this message since we're not going to be able to do anything with it
+      return;
+    }
+
     // If we dont receive a packet in 10s, force a reconnect
-    this.#refreshStallTimer();
+    this.#refreshPlaybackStallTimer();
 
     sequenceNumber = rtpPacket.header.sequenceNumber & RTP_SEQUENCE_MASK;
 
@@ -856,7 +962,7 @@ export default class WebRTC extends Streamer {
     audio.receive.buffer.set(sequenceNumber, rtpPacket);
   }
 
-  #ingestVideoRtpPacket(rtpPacket) {
+  #ingestPlaybackVideoRtpPacket(rtpPacket) {
     let video = this.#tracks?.video;
     let sequenceNumber = 0;
     let sequenceDelta = 0;
@@ -870,8 +976,14 @@ export default class WebRTC extends Streamer {
       return;
     }
 
+    if (this.sourceState === Streamer.MESSAGE_TYPE.SOURCE_CLOSING || this.sourceState === Streamer.MESSAGE_TYPE.SOURCE_CLOSED) {
+      // We received an video RTP packet but we're already closing/closed
+      // so ignore this message since we're not going to be able to do anything with it
+      return;
+    }
+
     // If we dont receive a packet in 10s, force a reconnect
-    this.#refreshStallTimer();
+    this.#refreshPlaybackStallTimer();
 
     // RTX packets are unwrapped back into the original media packet before they enter the
     // shared video reorder buffer. This allows retransmissions to repair frame assembly
@@ -883,7 +995,7 @@ export default class WebRTC extends Streamer {
         rtpPacket.header.sequenceNumber,
       );
 
-      rtpPacket = this.#unwrapVideoRTXPacket(rtpPacket);
+      rtpPacket = this.#unwrapPlaybackVideoRTXPacket(rtpPacket);
       if (rtpPacket === undefined) {
         return;
       }
@@ -949,7 +1061,7 @@ export default class WebRTC extends Streamer {
     video.receive.buffer.set(sequenceNumber, rtpPacket);
   }
 
-  #ensurePlayoutLoop() {
+  #ensurePlaybackDrainLoop() {
     if (this.#playoutTimer !== undefined) {
       return;
     }
@@ -959,31 +1071,92 @@ export default class WebRTC extends Streamer {
     // - release packets in sequence order
     // - give retransmissions a chance to arrive before declaring loss
     this.#playoutTimer = setInterval(() => {
-      this.#drainAudioPackets();
-      this.#drainVideoPackets();
+      this.#runPlaybackStartupVideoPLILoop();
+      this.#drainPlaybackAudioPackets();
+      this.#drainPlaybackVideoPackets();
     }, PLAYOUT_TICK);
   }
 
-  #refreshStallTimer() {
-    clearTimeout(this.#stalledTimer);
-    this.#stalledTimer = setTimeout(() => {
-      if (this.#peerConnection === undefined || this.#streamId === undefined || this.sourceState === Streamer.MESSAGE_TYPE.SOURCE_CLOSED) {
-        // Stream was stopped/closed after this timer was armed, so ignore the timeout
-        return;
-      }
+  #runPlaybackStartupVideoPLILoop() {
+    let video = this.#tracks?.video;
+    let now = Date.now();
+    let startupElapsed = 0;
 
+    if (typeof video !== 'object' || video === null || typeof video.startupPLIStartedAt !== 'number') {
+      return;
+    }
+
+    // First keyframe received, startup PLI retries can stop.
+    if (typeof video.lastIDRTime === 'number' && video.lastIDRTime >= video.startupPLIStartedAt) {
       this?.log?.debug?.(
-        'No WebRTC playback packets received for uuid "%s" in the past %s seconds. Closing connection',
+        'Startup IDR received for uuid "%s" after %sms',
         this.nest_google_device_uuid,
-        Math.round(STALLED_TIMEOUT / 1000),
+        Math.max(0, video.lastIDRTime - video.startupPLIStartedAt),
       );
+      video.startupPLIStartedAt = undefined;
+      video.startupPLILastTryAt = undefined;
+      return;
+    }
 
-      this.#requestReconnect('stall');
-      this.close();
-    }, STALLED_TIMEOUT);
+    startupElapsed = now - video.startupPLIStartedAt;
+    if (startupElapsed >= STARTUP_PLI_RETRY_WINDOW) {
+      this?.log?.debug?.(
+        'Startup PLI retry window expired for uuid "%s" after %sms without IDR',
+        this.nest_google_device_uuid,
+        startupElapsed,
+      );
+      video.startupPLIStartedAt = undefined;
+      video.startupPLILastTryAt = undefined;
+      return;
+    }
+
+    if (typeof video.startupPLILastTryAt !== 'number' || now - video.startupPLILastTryAt >= STARTUP_PLI_RETRY_INTERVAL) {
+      video.startupPLILastTryAt = now;
+      this.#sendVideoPLI('startup retry');
+    }
   }
 
-  #drainAudioPackets() {
+  #refreshPlaybackStallTimer() {
+    this.#lastPacketAt = Date.now();
+
+    if (this.#stalledTimer !== undefined) {
+      return;
+    }
+
+    this.#stalledTimer = setInterval(
+      () => {
+        if (typeof this.#lastPacketAt !== 'number') {
+          return;
+        }
+
+        if (Date.now() - this.#lastPacketAt <= STALLED_TIMEOUT) {
+          return;
+        }
+
+        if (
+          this.#peerConnection === undefined ||
+          this.#streamId === undefined ||
+          this.sourceState === Streamer.MESSAGE_TYPE.SOURCE_CLOSED
+        ) {
+          // Stream was stopped/closed after this timer was armed, so ignore the timeout
+          return;
+        }
+
+        this?.log?.debug?.(
+          'No WebRTC playback packets received for uuid "%s" in the past %s seconds. Closing connection',
+          this.nest_google_device_uuid,
+          Math.round(STALLED_TIMEOUT / 1000),
+        );
+
+        this.#lastPacketAt = undefined;
+        this.#requestReconnect('stall');
+        this.requestSourceClose();
+      },
+      Math.max(1000, Math.round(STALLED_TIMEOUT / 2)),
+    );
+  }
+
+  #drainPlaybackAudioPackets() {
     let audio = this.#tracks?.audio;
     let now = Date.now();
     let packet = undefined;
@@ -1034,7 +1207,7 @@ export default class WebRTC extends Streamer {
         receiveBuffer.delete(receive.expectedSequence);
         receive.expectedSequence = (receive.expectedSequence + 1) & RTP_SEQUENCE_MASK;
         receive.waitStart = undefined;
-        this.#handleOrderedAudioPacket(packet, false);
+        this.#handlePlaybackAudioPacket(packet, false);
         continue;
       }
 
@@ -1095,17 +1268,7 @@ export default class WebRTC extends Streamer {
           typeof audio.rtp.lastTimestamp === 'number' ? (audio.rtp.lastTimestamp + frameSamples) >>> 0 : frameSamples >>> 0;
 
         while (syntheticPackets > 0) {
-          this.#handleOrderedAudioPacket(
-            {
-              header: {
-                payloadType: audio.id,
-                sequenceNumber: syntheticSequence,
-                timestamp: syntheticTimestamp,
-              },
-              payload: Buffer.alloc(0),
-            },
-            true,
-          );
+          this.#emitSyntheticAudioFrame(audio, syntheticSequence, syntheticTimestamp);
 
           syntheticSequence = (syntheticSequence + 1) & RTP_SEQUENCE_MASK;
           syntheticTimestamp = (syntheticTimestamp + frameSamples) >>> 0;
@@ -1129,12 +1292,7 @@ export default class WebRTC extends Streamer {
       // At this point the jitter buffer state is likely no longer trustworthy, so reset it
       // and allow the next arriving packet to establish a fresh baseline.
       this?.log?.debug?.('Resetting WebRTC audio jitter buffer for uuid "%s" due to excessive gap', this.nest_google_device_uuid);
-      receiveBuffer.clear();
-      receive.expectedSequence = undefined;
-      receive.waitStart = undefined;
-      receive.playoutStart = undefined;
-      audio.adaptive.lastArrivalTime = undefined;
-      audio.adaptive.lastRtpTimestamp = undefined;
+      this.#resetAudioReceiveState(audio);
       break;
     }
 
@@ -1142,16 +1300,11 @@ export default class WebRTC extends Streamer {
     // cleanly rather than letting latency grow without bound.
     if (receiveBuffer.size > receive.maxSize) {
       this?.log?.debug?.('Resetting WebRTC audio jitter buffer for uuid "%s" due to overflow', this.nest_google_device_uuid);
-      receiveBuffer.clear();
-      receive.expectedSequence = undefined;
-      receive.waitStart = undefined;
-      receive.playoutStart = undefined;
-      audio.adaptive.lastArrivalTime = undefined;
-      audio.adaptive.lastRtpTimestamp = undefined;
+      this.#resetAudioReceiveState(audio);
     }
   }
 
-  #drainVideoPackets() {
+  #drainPlaybackVideoPackets() {
     let video = this.#tracks?.video;
     let now = Date.now();
     let packet = undefined;
@@ -1198,7 +1351,7 @@ export default class WebRTC extends Streamer {
         receive.expectedSequence = (receive.expectedSequence + 1) & RTP_SEQUENCE_MASK;
         receive.waitStart = undefined;
 
-        this.#handleOrderedVideoPacket(packet);
+        this.#handlePlaybackVideoPacket(packet);
         continue;
       }
 
@@ -1241,7 +1394,7 @@ export default class WebRTC extends Streamer {
       if (skippedPackets > 0) {
         // We have skipped one or more packets → current frame is likely corrupted.
         // Reset FU-A / frame assembly state so we do not emit partial frames.
-        this.#resetVideoAssemblyAfterLoss();
+        this.#resetPlaybackVideoAssemblyAfterLoss();
 
         // If more than one packet was lost, request a new keyframe (IDR) via PLI.
         // This helps recover decoder state quickly instead of waiting indefinitely.
@@ -1258,16 +1411,7 @@ export default class WebRTC extends Streamer {
       // Could not recover a usable next packet → jitter buffer likely invalid.
       // Reset jitter buffer and allow fresh resync from next arriving packet.
       this?.log?.debug?.('Resetting WebRTC video jitter buffer for uuid "%s" due to excessive gap', this.nest_google_device_uuid);
-
-      receiveBuffer.clear();
-      receive.expectedSequence = undefined;
-      receive.waitStart = undefined;
-      receive.playoutStart = undefined;
-
-      video.adaptive.lastArrivalTime = undefined;
-      video.adaptive.lastRtpTimestamp = undefined;
-
-      this.#resetVideoAssemblyAfterLoss();
+      this.#resetVideoReceiveState(video);
       break;
     }
 
@@ -1275,16 +1419,7 @@ export default class WebRTC extends Streamer {
     // If too many packets accumulate, drop everything and resync.
     if (receiveBuffer.size > receive.maxSize) {
       this?.log?.debug?.('Resetting WebRTC video jitter buffer for uuid "%s" due to overflow', this.nest_google_device_uuid);
-
-      receiveBuffer.clear();
-      receive.expectedSequence = undefined;
-      receive.waitStart = undefined;
-      receive.playoutStart = undefined;
-
-      video.adaptive.lastArrivalTime = undefined;
-      video.adaptive.lastRtpTimestamp = undefined;
-
-      this.#resetVideoAssemblyAfterLoss();
+      this.#resetVideoReceiveState(video);
     }
   }
 
@@ -1299,7 +1434,19 @@ export default class WebRTC extends Streamer {
       return undefined;
     }
 
-    let rtpTimestamp = packet.header.timestamp >>> 0;
+    return this.#calculateTimestampFromRtpTimestamp(packet.header.timestamp >>> 0, track, maxStepMs, options);
+  }
+
+  #calculateTimestampFromRtpTimestamp(rtpTimestamp, track, maxStepMs = undefined, options = {}) {
+    if (
+      typeof rtpTimestamp !== 'number' ||
+      typeof track?.sampleRate !== 'number' ||
+      track.sampleRate <= 0 ||
+      typeof track?.rtp !== 'object' ||
+      track.rtp === null
+    ) {
+      return undefined;
+    }
 
     if (typeof track.rtp.lastTimestamp !== 'number' || typeof track.rtp.lastCalculatedTimestamp !== 'number') {
       track.rtp.lastTimestamp = rtpTimestamp;
@@ -1337,8 +1484,74 @@ export default class WebRTC extends Streamer {
     return timestamp;
   }
 
-  #handleOrderedAudioPacket(rtpPacket, silencePacket = false) {
+  #emitSyntheticAudioFrame(audio, sequenceNumber, rtpTimestamp) {
+    let sequenceDelta = 0;
+    let timestamp = undefined;
+
+    if (typeof audio !== 'object' || audio === null || typeof sequenceNumber !== 'number' || typeof rtpTimestamp !== 'number') {
+      return;
+    }
+
+    if (typeof audio?.rtp?.lastSequence === 'number') {
+      sequenceDelta = this.#sequenceDelta(sequenceNumber, audio.rtp.lastSequence);
+
+      // Older/reordered synthetic packet
+      if (sequenceDelta > RTP_SEQUENCE_WRAP / 2) {
+        return;
+      }
+    }
+
+    audio.rtp.lastSequence = sequenceNumber;
+
+    timestamp = this.#calculateTimestampFromRtpTimestamp(rtpTimestamp, audio, TIMESTAMP_MAX_AUDIO_DELTA, { allowEqual: false });
+    if (typeof timestamp !== 'number') {
+      return;
+    }
+
+    this.addMedia({
+      type: Streamer.MEDIA_TYPE.AUDIO,
+      codec: this.codecs.audio,
+      sampleRate: Number.isFinite(audio?.sampleRate) === true && audio.sampleRate > 0 ? audio.sampleRate : undefined,
+      channels: Number.isFinite(audio?.channels) === true && audio.channels > 0 ? audio.channels : undefined,
+      timestamp: timestamp,
+      keyFrame: false,
+      data: this.#buildAudioSilenceFrame(),
+    });
+  }
+
+  #resetAudioReceiveState(audio) {
+    if (typeof audio?.receive !== 'object' || audio.receive === null) {
+      return;
+    }
+
+    audio.receive.buffer.clear();
+    audio.receive.expectedSequence = undefined;
+    audio.receive.waitStart = undefined;
+    audio.receive.playoutStart = undefined;
+    audio.adaptive.lastArrivalTime = undefined;
+    audio.adaptive.lastRtpTimestamp = undefined;
+  }
+
+  #resetVideoReceiveState(video) {
+    if (typeof video?.receive !== 'object' || video.receive === null) {
+      return;
+    }
+
+    video.receive.buffer.clear();
+    video.receive.expectedSequence = undefined;
+    video.receive.waitStart = undefined;
+    video.receive.playoutStart = undefined;
+    video.adaptive.lastArrivalTime = undefined;
+    video.adaptive.lastRtpTimestamp = undefined;
+
+    this.#resetPlaybackVideoAssemblyAfterLoss();
+  }
+
+  #handlePlaybackAudioPacket(rtpPacket, silencePacket = false) {
     let audio = this.#tracks?.audio;
+    let payload = undefined;
+    let decodePayload = undefined;
+    let decoded = undefined;
     let pcm = undefined;
     let timestamp = undefined;
     let mediaData = undefined;
@@ -1370,23 +1583,36 @@ export default class WebRTC extends Streamer {
     }
 
     if (silencePacket !== true) {
+      payload = rtpPacket.payload;
+
+      if (Buffer.isBuffer(payload) === true && payload.length > 0) {
+        // Fast path: payload from werift callback is usually already raw Opus payload.
+        try {
+          decoded = this.#opusDecoder.decode(payload);
+        } catch {
+          // Compatibility fallback for environments where depayloading is required.
+          try {
+            decodePayload = werift.OpusRtpPayload.deSerialize(payload)?.payload;
+            if (Buffer.isBuffer(decodePayload) === true && decodePayload.length > 0) {
+              decoded = this.#opusDecoder.decode(decodePayload);
+            }
+          } catch {
+            // Empty
+          }
+        }
+      }
+
       try {
-        let opus = werift.OpusRtpPayload.deSerialize(rtpPacket.payload);
+        if (Buffer.isBuffer(decoded) === true && decoded.length > 0) {
+          pcm = decoded;
+        }
 
-        if (Buffer.isBuffer(opus?.payload) === true && opus.payload.length > 0) {
-          let decoded = this.#opusDecoder.decode(opus.payload);
+        if (pcm === undefined && decoded instanceof Uint8Array && decoded.length > 0) {
+          pcm = Buffer.from(decoded.buffer, decoded.byteOffset, decoded.byteLength);
+        }
 
-          if (Buffer.isBuffer(decoded) === true && decoded.length > 0) {
-            pcm = decoded;
-          }
-
-          if (pcm === undefined && decoded instanceof Uint8Array && decoded.length > 0) {
-            pcm = Buffer.from(decoded.buffer, decoded.byteOffset, decoded.byteLength);
-          }
-
-          if (Buffer.isBuffer(pcm) === true && pcm.length > 0) {
-            audio.decode.lastDecodedPCMSize = pcm.length;
-          }
+        if (Buffer.isBuffer(pcm) === true && pcm.length > 0) {
+          audio.decode.lastDecodedPCMSize = pcm.length;
         }
       } catch (error) {
         this?.log?.debug?.('Error decoding Opus audio for uuid "%s": %s', this.nest_google_device_uuid, String(error));
@@ -1409,7 +1635,7 @@ export default class WebRTC extends Streamer {
     });
   }
 
-  #handleOrderedVideoPacket(rtpPacket) {
+  #handlePlaybackVideoPacket(rtpPacket) {
     let video = this.#tracks?.video;
     let now = Date.now();
     let payload = undefined;
@@ -1430,6 +1656,15 @@ export default class WebRTC extends Streamer {
     let nalu = undefined;
     let naluType = 0;
     let fragment = undefined;
+    let pendingAgeMs = undefined;
+    let fuAgeMs = undefined;
+    let incomingNalType = 0;
+    let incomingFuHeader = 0;
+    let incomingFuStart = false;
+    let incomingFuNalType = 0;
+    let incomingIsIdrFuStart = false;
+    let pendingHasContent = false;
+    let health = video?.health;
 
     if (
       typeof video !== 'object' ||
@@ -1448,7 +1683,7 @@ export default class WebRTC extends Streamer {
       let sequenceDelta = this.#sequenceDelta(rtpPacket.header.sequenceNumber, video.rtp.lastSequence);
 
       if (sequenceDelta > 1 && sequenceDelta < RTP_SEQUENCE_WRAP / 2) {
-        this.#resetVideoAssemblyAfterLoss();
+        this.#resetPlaybackVideoAssemblyAfterLoss();
 
         if (sequenceDelta > 2) {
           this.#sendVideoPLI('video packet loss');
@@ -1463,16 +1698,6 @@ export default class WebRTC extends Streamer {
 
     video.rtp.lastSequence = rtpPacket.header.sequenceNumber;
 
-    // If we have not received an IDR frame in a while, request a new one with a PLI to help recovery
-    if (typeof video.lastIDRTime === 'number' && now - video.lastIDRTime > IDR_TIMEOUT) {
-      this.#sendVideoPLI('idr refresh timeout');
-    }
-
-    payload = rtpPacket.payload;
-    nalHeader = payload[0];
-    type = nalHeader & 0x1f;
-    rtpTimestamp = rtpPacket.header.timestamp >>> 0;
-
     if (typeof video?.h264 !== 'object' || video.h264 === null) {
       video.h264 = {};
     }
@@ -1485,8 +1710,124 @@ export default class WebRTC extends Streamer {
       video.h264.pendingBytes = 0;
     }
 
+    if (typeof video.h264.pendingHasVcl !== 'boolean') {
+      video.h264.pendingHasVcl = false;
+    }
+
+    if (typeof video.h264.pendingMarkerSeen !== 'boolean') {
+      video.h264.pendingMarkerSeen = false;
+    }
+
+    if (typeof video.h264.pendingCorrupt !== 'boolean') {
+      video.h264.pendingCorrupt = false;
+    }
+
+    if (typeof video.h264.pendingFirstPacketTime !== 'number') {
+      video.h264.pendingFirstPacketTime = undefined;
+    }
+
     if (typeof video.h264.fuLength !== 'number') {
       video.h264.fuLength = 0;
+    }
+
+    if (typeof video.h264.fuFirstPacketTime !== 'number') {
+      video.h264.fuFirstPacketTime = undefined;
+    }
+
+    if (typeof health !== 'object' || health === null) {
+      video.health = {
+        state: 'STABLE',
+        events: [],
+        eventsStart: 0,
+        badEvents: 0,
+        badNonClampEvents: 0,
+        clampEvents: 0,
+        cleanScore: 0,
+        lastCleanKeyframeTime: undefined,
+        suppressDeltas: false,
+        lastSuppressedLogTime: undefined,
+      };
+      health = video.health;
+    }
+
+    // If we have not received an IDR frame in a while, request a new one with a PLI to help recovery
+    if (typeof video.lastIDRTime === 'number' && now - video.lastIDRTime > IDR_TIMEOUT) {
+      this.#sendVideoPLI('idr refresh timeout');
+    }
+
+    payload = rtpPacket.payload;
+    nalHeader = payload[0];
+    type = nalHeader & 0x1f;
+    rtpTimestamp = rtpPacket.header.timestamp >>> 0;
+
+    // Peek at incoming packet type so keyframe FU-A starts can preempt delta grace.
+    incomingNalType = type;
+    if (incomingNalType === Streamer.H264NALUS.TYPES.FU_A && payload.length >= 2) {
+      incomingFuHeader = payload[1];
+      incomingFuStart = (incomingFuHeader & 0x80) === 0x80;
+      incomingFuNalType = incomingFuHeader & 0x1f;
+      incomingIsIdrFuStart = incomingFuStart === true && incomingFuNalType === Streamer.H264NALUS.TYPES.IDR;
+    }
+
+    // Tiny grace for young non-keyframe FU-A units:
+    // ignore a newer timestamp briefly so we do not abandon a nearly-finished delta FU.
+    if (
+      typeof video.h264.fuTimestamp === 'number' &&
+      video.h264.fuTimestamp !== rtpTimestamp &&
+      video.h264.fuType === Streamer.H264NALUS.TYPES.SLICE_NON_IDR
+    ) {
+      fuAgeMs = typeof video.h264.fuFirstPacketTime === 'number' ? Date.now() - video.h264.fuFirstPacketTime : undefined;
+
+      if (Number.isFinite(fuAgeMs) === true && fuAgeMs <= DELTA_FU_SWITCH_GRACE_MS && incomingIsIdrFuStart !== true) {
+        return;
+      }
+    }
+
+    // If a new RTP timestamp arrives while a previous pending frame is still open,
+    // flush only when marker-complete, otherwise drop incomplete state.
+    if (typeof video.h264.pendingRtpTimestamp === 'number' && video.h264.pendingRtpTimestamp !== rtpTimestamp) {
+      pendingHasContent =
+        (Array.isArray(video.h264.pendingParts) === true && video.h264.pendingParts.length > 0) ||
+        (Number.isFinite(video.h264.pendingBytes) === true && video.h264.pendingBytes > 0);
+
+      if (pendingHasContent !== true) {
+        this.#resetPlaybackPendingVideoFrame();
+      } else if (video.h264.pendingMarkerSeen === true) {
+        this.#flushPlaybackPendingVideoFrame();
+      } else {
+        pendingAgeMs = typeof video.h264.pendingFirstPacketTime === 'number' ? Date.now() - video.h264.pendingFirstPacketTime : undefined;
+
+        if (video.h264.pendingKeyFrame === true || (Number.isFinite(pendingAgeMs) === true && pendingAgeMs >= 300)) {
+          this.#sendVideoPLI('pending-incomplete');
+          this.#recordVideoHealthEvent('pending-incomplete');
+        }
+
+        this.#resetPlaybackPendingVideoFrame();
+      }
+    }
+
+    // If a fragmented FU-A frame is still in progress but a new RTP timestamp arrives,
+    // drop the old fragment set and request recovery when appropriate.
+    if (typeof video.h264.fuTimestamp === 'number' && video.h264.fuTimestamp !== rtpTimestamp) {
+      fuAgeMs = typeof video.h264.fuFirstPacketTime === 'number' ? Date.now() - video.h264.fuFirstPacketTime : undefined;
+
+      if (video.h264.fuType === Streamer.H264NALUS.TYPES.IDR || (Number.isFinite(fuAgeMs) === true && fuAgeMs >= 300)) {
+        this.#sendVideoPLI('fu-incomplete');
+        this.#recordVideoHealthEvent('fu-incomplete');
+      }
+
+      clearTimeout(video.h264.fuTimer);
+      video.h264.fuBuffer = undefined;
+      video.h264.fuType = undefined;
+      video.h264.fuTimestamp = undefined;
+      video.h264.fuLength = 0;
+      video.h264.fuFirstPacketTime = undefined;
+    }
+
+    // Initialise the pending frame timestamp from the first packet we see for this frame.
+    if (typeof video.h264.pendingRtpTimestamp !== 'number') {
+      video.h264.pendingRtpTimestamp = rtpTimestamp;
+      video.h264.pendingFirstPacketTime = Date.now();
     }
 
     // Single-Time Aggregation Packet (STAP-A)
@@ -1498,6 +1839,7 @@ export default class WebRTC extends Streamer {
         offset += 2;
 
         if (naluLength <= 0 || offset + naluLength > payload.length) {
+          video.h264.pendingCorrupt = true;
           break;
         }
 
@@ -1505,11 +1847,12 @@ export default class WebRTC extends Streamer {
         naluType = nalu[0] & 0x1f;
         offset += naluLength;
 
-        this.#appendVideoNalu(nalu, rtpTimestamp, naluType, now);
+        this.#appendPlaybackVideoNalu(nalu, rtpTimestamp, naluType, now);
       }
 
       if (rtpPacket.header.marker === true) {
-        this.#flushPendingVideoFrame();
+        video.h264.pendingMarkerSeen = true;
+        this.#flushPlaybackPendingVideoFrame();
       }
       return;
     }
@@ -1517,6 +1860,7 @@ export default class WebRTC extends Streamer {
     // Fragmentation Unit A (FU-A)
     if (type === Streamer.H264NALUS.TYPES.FU_A) {
       if (payload.length < 3) {
+        video.h264.pendingCorrupt = true;
         return;
       }
 
@@ -1526,6 +1870,7 @@ export default class WebRTC extends Streamer {
       fragmentPayload = payload.subarray(2);
 
       if (fragmentPayload.length === 0) {
+        video.h264.pendingCorrupt = true;
         return;
       }
 
@@ -1536,18 +1881,42 @@ export default class WebRTC extends Streamer {
         video.h264.fuType = fuType;
         video.h264.fuTimestamp = rtpTimestamp;
         video.h264.fuLength = reconstructedNal.length + fragmentPayload.length;
+        video.h264.fuFirstPacketTime = Date.now();
+
+        if (typeof video.h264.pendingRtpTimestamp !== 'number') {
+          video.h264.pendingRtpTimestamp = rtpTimestamp;
+        }
+
+        if (typeof video.h264.pendingFirstPacketTime !== 'number') {
+          video.h264.pendingFirstPacketTime = Date.now();
+        }
 
         video.h264.fuTimer = setTimeout(() => {
+          let timedOutFuType = video.h264?.fuType;
+          let timedOutFuTimestamp = video.h264?.fuTimestamp;
+
+          if (typeof timedOutFuTimestamp === 'number' && timedOutFuTimestamp === video.h264?.pendingRtpTimestamp) {
+            video.h264.pendingCorrupt = true;
+          }
+
+          if (timedOutFuType === Streamer.H264NALUS.TYPES.IDR) {
+            this.#sendVideoPLI('fu-timeout-idr');
+          }
+
+          this.#recordVideoHealthEvent('fu-timeout');
+
           video.h264.fuBuffer = undefined;
           video.h264.fuType = undefined;
           video.h264.fuTimestamp = undefined;
           video.h264.fuLength = 0;
+          video.h264.fuFirstPacketTime = undefined;
         }, FU_A_TIMEOUT);
 
         return;
       }
 
       if (Array.isArray(video.h264.fuBuffer) !== true || video.h264.fuBuffer.length === 0) {
+        video.h264.pendingCorrupt = true;
         return;
       }
 
@@ -1564,6 +1933,7 @@ export default class WebRTC extends Streamer {
           video.h264.fuType = undefined;
           video.h264.fuTimestamp = undefined;
           video.h264.fuLength = 0;
+          video.h264.fuFirstPacketTime = undefined;
           return;
         }
 
@@ -1585,11 +1955,17 @@ export default class WebRTC extends Streamer {
         video.h264.fuType = undefined;
         video.h264.fuTimestamp = undefined;
         video.h264.fuLength = 0;
+        video.h264.fuFirstPacketTime = undefined;
 
-        this.#appendVideoNalu(completedBuffer, completedRtpTimestamp, completedType, now);
+        if (completedType === Streamer.H264NALUS.TYPES.IDR || completedType === Streamer.H264NALUS.TYPES.SLICE_NON_IDR) {
+          video.h264.pendingHasVcl = true;
+        }
+
+        this.#appendPlaybackVideoNalu(completedBuffer, completedRtpTimestamp, completedType, now);
 
         if (rtpPacket.header.marker === true) {
-          this.#flushPendingVideoFrame();
+          video.h264.pendingMarkerSeen = true;
+          this.#flushPlaybackPendingVideoFrame();
         }
       }
 
@@ -1597,14 +1973,19 @@ export default class WebRTC extends Streamer {
     }
 
     // Raw NAL unit
-    this.#appendVideoNalu(payload, rtpTimestamp, type, now);
+    this.#appendPlaybackVideoNalu(payload, rtpTimestamp, type, now);
+
+    if (type === Streamer.H264NALUS.TYPES.IDR || type === Streamer.H264NALUS.TYPES.SLICE_NON_IDR) {
+      video.h264.pendingHasVcl = true;
+    }
 
     if (rtpPacket.header.marker === true) {
-      this.#flushPendingVideoFrame();
+      video.h264.pendingMarkerSeen = true;
+      this.#flushPlaybackPendingVideoFrame();
     }
   }
 
-  #appendVideoNalu(nalu, rtpTimestamp, naluType, now) {
+  #appendPlaybackVideoNalu(nalu, rtpTimestamp, naluType, now) {
     let video = this.#tracks?.video;
     let h264 = video?.h264;
     let storedNalu = undefined;
@@ -1619,16 +2000,14 @@ export default class WebRTC extends Streamer {
       return;
     }
 
-    // If a new RTP timestamp arrives while we are still buffering NALs
-    // for a previous frame, drop the incomplete frame completely so the
-    // next access unit starts from a clean timestamp boundary.
-    if (typeof h264.pendingRtpTimestamp === 'number' && h264.pendingRtpTimestamp !== rtpTimestamp && h264.pendingParts.length > 0) {
-      this.#resetPendingVideoFrame();
-    }
-
     // Track frame timestamp
     if (typeof h264.pendingRtpTimestamp !== 'number') {
       h264.pendingRtpTimestamp = rtpTimestamp;
+      h264.pendingFirstPacketTime = Date.now();
+    }
+
+    if (typeof h264.pendingFirstPacketTime !== 'number') {
+      h264.pendingFirstPacketTime = Date.now();
     }
 
     if (Array.isArray(h264.pendingParts) !== true) {
@@ -1652,6 +2031,13 @@ export default class WebRTC extends Streamer {
       h264.lastIDR = Buffer.from(nalu);
       video.lastIDRTime = now;
       h264.pendingKeyFrame = true;
+      h264.pendingHasVcl = true;
+      video.startupPLIStartedAt = undefined;
+      video.startupPLILastTryAt = undefined;
+    }
+
+    if (naluType === Streamer.H264NALUS.TYPES.SLICE_NON_IDR) {
+      h264.pendingHasVcl = true;
     }
 
     // Normalise each pending NAL to Annex-B once, here.
@@ -1662,7 +2048,9 @@ export default class WebRTC extends Streamer {
     }
 
     if (storedNalu === undefined) {
-      storedNalu = Buffer.concat([Streamer.H264NALUS.START_CODE, nalu]);
+      storedNalu = Buffer.allocUnsafe(Streamer.H264NALUS.START_CODE.length + nalu.length);
+      Streamer.H264NALUS.START_CODE.copy(storedNalu, 0);
+      nalu.copy(storedNalu, Streamer.H264NALUS.START_CODE.length);
     }
 
     h264.pendingParts.push(storedNalu);
@@ -1692,7 +2080,7 @@ export default class WebRTC extends Streamer {
     return buffer;
   }
 
-  #unwrapVideoRTXPacket(rtpPacket) {
+  #unwrapPlaybackVideoRTXPacket(rtpPacket) {
     let video = this.#tracks?.video;
     let originalSequence = 0;
     let payload = undefined;
@@ -1732,7 +2120,7 @@ export default class WebRTC extends Streamer {
     };
   }
 
-  #resetVideoAssemblyAfterLoss() {
+  #resetPlaybackVideoAssemblyAfterLoss() {
     let video = this.#tracks?.video;
 
     if (typeof video !== 'object' || video === null) {
@@ -1744,8 +2132,9 @@ export default class WebRTC extends Streamer {
     video.h264.fuType = undefined;
     video.h264.fuTimestamp = undefined;
     video.h264.fuLength = 0;
+    video.h264.fuFirstPacketTime = undefined;
 
-    this.#resetPendingVideoFrame();
+    this.#resetPlaybackPendingVideoFrame();
 
     // Reset frame RTP timing baseline so the next completed frame starts from a clean anchor
     // after packet loss, but preserve the last emitted output timestamp so downstream video
@@ -1754,6 +2143,558 @@ export default class WebRTC extends Streamer {
     video.rtp.lastCalculatedTimestamp = undefined;
     video.adaptive.lastArrivalTime = undefined;
     video.adaptive.lastRtpTimestamp = undefined;
+  }
+
+  #resetPlaybackPendingVideoFrame() {
+    if (typeof this.#tracks?.video?.h264 !== 'object' || this.#tracks.video.h264 === null) {
+      return;
+    }
+
+    if (Array.isArray(this.#tracks.video.h264.pendingParts) === true) {
+      this.#tracks.video.h264.pendingParts.length = 0;
+    } else {
+      this.#tracks.video.h264.pendingParts = [];
+    }
+    this.#tracks.video.h264.pendingRtpTimestamp = undefined;
+    this.#tracks.video.h264.pendingFirstPacketTime = undefined;
+    this.#tracks.video.h264.pendingKeyFrame = false;
+    this.#tracks.video.h264.pendingBytes = 0;
+    this.#tracks.video.h264.pendingHasVcl = false;
+    this.#tracks.video.h264.pendingMarkerSeen = false;
+    this.#tracks.video.h264.pendingCorrupt = false;
+  }
+
+  #flushPlaybackPendingVideoFrame() {
+    let video = this.#tracks?.video;
+    let health = video?.health;
+    let h264 = video?.h264;
+    let videoRtp = video?.rtp;
+    let videoOutput = video?.output;
+    let pendingParts = h264?.pendingParts;
+    let pendingRtpTimestamp = h264?.pendingRtpTimestamp;
+    let pendingFirstPacketTime = h264?.pendingFirstPacketTime;
+    let pendingKeyFrame = h264?.pendingKeyFrame;
+    let pendingTimestamp = undefined;
+    let now = Date.now();
+    let index = 0;
+    let part = undefined;
+    let data = undefined;
+    let deltaTicks = 0;
+    let deltaMs = 0;
+    let totalLength = 0;
+    let writeOffset = 0;
+    let emitParts = [];
+    let emitBytes = 0;
+    let hasSPS = false;
+    let hasPPS = false;
+    let partOffset = 0;
+    let partType = 0;
+    let spsPart = undefined;
+    let ppsPart = undefined;
+    let keyframeAssemblyMs = undefined;
+    let maxVideoDeltaMs = TIMESTAMP_MAX_VIDEO_DELTA;
+    let recoveringDeltaProbe = false;
+
+    // Nothing buffered for the current access unit, so just clear state and return
+    if (Array.isArray(pendingParts) !== true || pendingParts.length === 0 || typeof pendingRtpTimestamp !== 'number') {
+      this.#resetPlaybackPendingVideoFrame();
+      return;
+    }
+
+    if (typeof videoRtp !== 'object' || videoRtp === null) {
+      this.#resetPlaybackPendingVideoFrame();
+      return;
+    }
+
+    if (typeof videoOutput !== 'object' || videoOutput === null) {
+      video.output = {
+        lastTimestamp: undefined,
+      };
+      videoOutput = video.output;
+    }
+
+    if (typeof h264.pendingBytes !== 'number') {
+      h264.pendingBytes = 0;
+    }
+
+    if (typeof h264.pendingHasVcl !== 'boolean') {
+      h264.pendingHasVcl = false;
+    }
+
+    if (typeof h264.pendingMarkerSeen !== 'boolean') {
+      h264.pendingMarkerSeen = false;
+    }
+
+    if (typeof h264.pendingCorrupt !== 'boolean') {
+      h264.pendingCorrupt = false;
+    }
+
+    if (typeof health !== 'object' || health === null) {
+      video.health = {
+        state: 'STABLE',
+        events: [],
+        eventsStart: 0,
+        badEvents: 0,
+        badNonClampEvents: 0,
+        clampEvents: 0,
+        cleanScore: 0,
+        lastCleanKeyframeTime: undefined,
+        suppressDeltas: false,
+        lastSuppressedLogTime: undefined,
+      };
+      health = video.health;
+    }
+
+    // Ignore access-unit fragments that never contained an actual video slice.
+    if (h264.pendingHasVcl !== true) {
+      this.#resetPlaybackPendingVideoFrame();
+      return;
+    }
+
+    // Wait until marker bit says the full frame/access unit has arrived.
+    if (h264.pendingMarkerSeen !== true) {
+      return;
+    }
+
+    // Ensure keyframes can recover decoders by prepending cached SPS/PPS when
+    // they are not already part of the assembled access unit.
+    if (pendingKeyFrame === true) {
+      index = 0;
+
+      while (index < pendingParts.length) {
+        part = pendingParts[index];
+
+        if (Buffer.isBuffer(part) === true && part.length > 0) {
+          partOffset = 0;
+
+          if (part.indexOf(Streamer.H264NALUS.START_CODE) === 0) {
+            partOffset = Streamer.H264NALUS.START_CODE.length;
+          }
+
+          if (part.length > partOffset) {
+            partType = part[partOffset] & 0x1f;
+
+            if (partType === Streamer.H264NALUS.TYPES.SPS) {
+              hasSPS = true;
+            }
+
+            if (partType === Streamer.H264NALUS.TYPES.PPS) {
+              hasPPS = true;
+            }
+          }
+        }
+
+        index++;
+      }
+
+      if (hasSPS !== true && Buffer.isBuffer(h264?.lastSPS) === true && h264.lastSPS.length > 0) {
+        spsPart = Buffer.allocUnsafe(Streamer.H264NALUS.START_CODE.length + h264.lastSPS.length);
+        Streamer.H264NALUS.START_CODE.copy(spsPart, 0);
+        h264.lastSPS.copy(spsPart, Streamer.H264NALUS.START_CODE.length);
+        emitParts.push(spsPart);
+        emitBytes += spsPart.length;
+      }
+
+      if (hasPPS !== true && Buffer.isBuffer(h264?.lastPPS) === true && h264.lastPPS.length > 0) {
+        ppsPart = Buffer.allocUnsafe(Streamer.H264NALUS.START_CODE.length + h264.lastPPS.length);
+        Streamer.H264NALUS.START_CODE.copy(ppsPart, 0);
+        h264.lastPPS.copy(ppsPart, Streamer.H264NALUS.START_CODE.length);
+        emitParts.push(ppsPart);
+        emitBytes += ppsPart.length;
+      }
+    }
+
+    emitParts = emitParts.concat(pendingParts);
+    emitBytes += h264.pendingBytes;
+
+    // If we only have one final part, avoid Buffer.concat() entirely.
+    if (emitParts.length === 1 && Buffer.isBuffer(emitParts[0]) === true && emitParts[0].length > 0) {
+      data = emitParts[0];
+    }
+
+    // Otherwise build one final Annex-B access unit.
+    if (data === undefined) {
+      totalLength = emitBytes;
+
+      if (totalLength <= 0) {
+        this.#resetPlaybackPendingVideoFrame();
+        return;
+      }
+
+      data = Buffer.allocUnsafe(totalLength);
+      index = 0;
+
+      while (index < emitParts.length) {
+        part = emitParts[index];
+
+        if (Buffer.isBuffer(part) === true && part.length > 0) {
+          part.copy(data, writeOffset);
+          writeOffset += part.length;
+        }
+
+        index++;
+      }
+    }
+
+    // Safety guard: if concatenation produced nothing useful, discard the pending frame
+    if (Buffer.isBuffer(data) !== true || data.length === 0) {
+      this.#resetPlaybackPendingVideoFrame();
+      return;
+    }
+
+    // Drop frames already marked corrupt during packet assembly.
+    if (h264.pendingCorrupt === true) {
+      if (pendingKeyFrame === true) {
+        this.#sendVideoPLI('corrupt-keyframe');
+        this.#recordVideoHealthEvent('corrupt-keyframe');
+      }
+
+      this.#resetPlaybackPendingVideoFrame();
+      return;
+    }
+
+    // While suppression is enabled, UNSTABLE drops deltas.
+    // RECOVERING lets a delta attempt pass deeper checks, but does not clear
+    // suppression until that delta is actually accepted for emission.
+    if (pendingKeyFrame !== true && health?.suppressDeltas === true) {
+      if (health?.state === 'UNSTABLE') {
+        if (typeof health?.lastSuppressedLogTime !== 'number' || Date.now() - health.lastSuppressedLogTime >= 1000) {
+          health.lastSuppressedLogTime = Date.now();
+          this?.log?.debug?.(
+            'Suppressing WebRTC delta frame for uuid "%s" while stream health is "%s"',
+            this.nest_google_device_uuid,
+            health.state,
+          );
+        }
+
+        this.#resetPlaybackPendingVideoFrame();
+        return;
+      }
+
+      if (health?.state === 'RECOVERING') {
+        recoveringDeltaProbe = true;
+      }
+    }
+
+    // Do not emit delta frames until at least one IDR has been accepted.
+    if (pendingKeyFrame !== true && (Buffer.isBuffer(h264.lastIDR) !== true || h264.lastIDR.length === 0)) {
+      this.#resetPlaybackPendingVideoFrame();
+      return;
+    }
+
+    // Keyframe shock absorber: avoid emitting giant/slow IDRs that tend to land as visible jumps.
+    if (pendingKeyFrame === true) {
+      keyframeAssemblyMs = typeof pendingFirstPacketTime === 'number' ? now - pendingFirstPacketTime : undefined;
+
+      if (
+        (Number.isFinite(keyframeAssemblyMs) === true && keyframeAssemblyMs > KEYFRAME_MAX_ASSEMBLY_MS) ||
+        data.length > KEYFRAME_MAX_BYTES
+      ) {
+        this.#sendVideoPLI('shock-keyframe');
+        this.#recordVideoHealthEvent('shock-keyframe');
+        this.#resetPlaybackPendingVideoFrame();
+        return;
+      }
+    }
+
+    // Hybrid timestamp model:
+    // - First frame anchors to first packet arrival time
+    // - Subsequent frames advance by RTP delta
+    // - Timestamps are clamped near wall clock so they neither run far behind nor race ahead
+    if (typeof videoRtp.lastTimestamp === 'number') {
+      deltaTicks = (pendingRtpTimestamp - videoRtp.lastTimestamp + RTP_TIMESTAMP_MASK) % RTP_TIMESTAMP_MASK;
+
+      if (deltaTicks > RTP_TIMESTAMP_MAX_DELTA) {
+        this.#resetPlaybackPendingVideoFrame();
+        return;
+      }
+
+      deltaMs = (deltaTicks / video.sampleRate) * 1000;
+
+      if (Number.isFinite(deltaMs) !== true || deltaMs < 0) {
+        deltaMs = 0;
+      }
+
+      if (pendingKeyFrame === true) {
+        maxVideoDeltaMs = TIMESTAMP_MAX_KEYFRAME_DELTA;
+      }
+
+      if (deltaMs > maxVideoDeltaMs) {
+        if (pendingKeyFrame === true) {
+          this.#recordVideoHealthEvent('keyframe-clamp');
+        }
+
+        deltaMs = maxVideoDeltaMs;
+      }
+    }
+
+    if (typeof videoOutput.lastTimestamp !== 'number') {
+      pendingTimestamp = typeof pendingFirstPacketTime === 'number' ? pendingFirstPacketTime : now;
+
+      // On startup, first packet timestamps can already be stale if keyframe wait took time.
+      // Clamp to a reasonable recent window so follow-up frames do not get time-compressed.
+      if (pendingTimestamp < now - TIMESTAMP_VIDEO_MAX_BEHIND) {
+        pendingTimestamp = now - TIMESTAMP_VIDEO_MAX_BEHIND;
+      }
+    }
+
+    if (typeof pendingTimestamp !== 'number') {
+      pendingTimestamp = videoOutput.lastTimestamp + deltaMs;
+
+      // Prevent output time from drifting too far behind wall clock.
+      if (pendingTimestamp < now - TIMESTAMP_VIDEO_MAX_BEHIND) {
+        pendingTimestamp = now - TIMESTAMP_VIDEO_MAX_BEHIND;
+      }
+
+      // Prevent output time from racing ahead and causing frames to queue up waiting.
+      if (pendingTimestamp > now + TIMESTAMP_VIDEO_MAX_AHEAD) {
+        pendingTimestamp = now + TIMESTAMP_VIDEO_MAX_AHEAD;
+      }
+    }
+
+    // Enforce monotonic output timestamps even when upstream timing is noisy.
+    pendingTimestamp =
+      typeof videoOutput.lastTimestamp === 'number' ? Math.max(pendingTimestamp, videoOutput.lastTimestamp + 1) : pendingTimestamp;
+
+    // Update RTP/output timing state only once per fully assembled frame.
+    videoRtp.lastTimestamp = pendingRtpTimestamp;
+    videoRtp.lastCalculatedTimestamp = pendingTimestamp;
+    videoRtp.lastEmittedTimestamp = pendingTimestamp;
+    videoOutput.lastTimestamp = pendingTimestamp;
+
+    if (pendingKeyFrame === true) {
+      video.lastIDRTime = now;
+      h264.lastSpsEmitTime = now;
+
+      if (this.sourceState !== Streamer.MESSAGE_TYPE.SOURCE_READY && this.sourceState !== Streamer.MESSAGE_TYPE.SOURCE_CLOSED) {
+        this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_READY);
+      }
+    }
+
+    if (recoveringDeltaProbe === true && health?.state === 'RECOVERING' && health?.suppressDeltas === true) {
+      health.suppressDeltas = false;
+      health.lastSuppressedLogTime = undefined;
+    }
+
+    // Emit exactly one media item per completed video frame/access unit.
+    // This is the only place video addMedia() should be called from WebRTC.
+    this.addMedia({
+      type: Streamer.MEDIA_TYPE.VIDEO,
+      codec: this.codecs.video,
+      profile: typeof this.video?.profile === 'string' ? this.video.profile : undefined,
+      bitrate: Number.isFinite(this.video?.bitrate) === true && this.video.bitrate > 0 ? this.video.bitrate : undefined,
+      timestamp: pendingTimestamp,
+      keyFrame: pendingKeyFrame === true,
+      data: data,
+    });
+
+    this.#recordCleanVideoFrame(pendingKeyFrame === true);
+
+    this.#resetPlaybackPendingVideoFrame();
+  }
+
+  #recordVideoHealthEvent(type = '') {
+    let video = this.#tracks?.video;
+    let health = video?.health;
+    let now = Date.now();
+    let clampCount = 0;
+    let hasOtherBad = false;
+    let isBad = true;
+    let badScore = 0;
+    let expired = undefined;
+
+    if (typeof video !== 'object' || video === null) {
+      return;
+    }
+
+    if (typeof health !== 'object' || health === null) {
+      health = {
+        state: 'STABLE',
+        events: [],
+        eventsStart: 0,
+        badEvents: 0,
+        badNonClampEvents: 0,
+        clampEvents: 0,
+        cleanScore: 0,
+        lastCleanKeyframeTime: undefined,
+        suppressDeltas: false,
+        lastSuppressedLogTime: undefined,
+      };
+      video.health = health;
+    }
+
+    if (Array.isArray(health.events) !== true) {
+      health.events = [];
+    }
+
+    if (Number.isInteger(health.eventsStart) !== true || health.eventsStart < 0) {
+      health.eventsStart = 0;
+    }
+
+    if (Number.isInteger(health.badEvents) !== true || health.badEvents < 0) {
+      health.badEvents = 0;
+    }
+
+    if (Number.isInteger(health.badNonClampEvents) !== true || health.badNonClampEvents < 0) {
+      health.badNonClampEvents = 0;
+    }
+
+    if (Number.isInteger(health.clampEvents) !== true || health.clampEvents < 0) {
+      health.clampEvents = 0;
+    }
+
+    // Prune expired rolling-window entries without reallocating on every call.
+    while (health.eventsStart < health.events.length) {
+      expired = health.events[health.eventsStart];
+
+      if (typeof expired?.time !== 'number' || now - expired.time <= HEALTH_BAD_WINDOW_MS) {
+        break;
+      }
+
+      if (expired.bad === true) {
+        health.badEvents = Math.max(0, health.badEvents - 1);
+
+        if (expired.type !== 'keyframe-clamp') {
+          health.badNonClampEvents = Math.max(0, health.badNonClampEvents - 1);
+        }
+      }
+
+      if (expired.type === 'keyframe-clamp') {
+        health.clampEvents = Math.max(0, health.clampEvents - 1);
+      }
+
+      health.eventsStart++;
+    }
+
+    // Compact occasionally so storage stays bounded without per-event churn.
+    if (health.eventsStart > 0 && (health.eventsStart >= 64 || health.eventsStart * 2 >= health.events.length)) {
+      health.events = health.events.slice(health.eventsStart);
+      health.eventsStart = 0;
+    }
+
+    if (type === 'keyframe-clamp') {
+      clampCount = health.clampEvents;
+      hasOtherBad = health.badNonClampEvents > 0;
+
+      // Clamp is only considered bad when repeated in-window or alongside other bad signals.
+      // Current event is not pushed yet, so clampCount>=1 means this is at least the second clamp.
+      isBad = clampCount >= 1 || hasOtherBad === true;
+    }
+
+    health.events.push({
+      time: now,
+      type: type,
+      bad: isBad === true,
+    });
+
+    if (type === 'keyframe-clamp') {
+      health.clampEvents++;
+    }
+
+    if (isBad === true) {
+      health.badEvents++;
+
+      if (type !== 'keyframe-clamp') {
+        health.badNonClampEvents++;
+      }
+    }
+
+    badScore = health.badEvents;
+
+    if (health.state === 'RECOVERING' && isBad === true) {
+      health.state = 'UNSTABLE';
+      health.cleanScore = 0;
+      health.suppressDeltas = true;
+      return;
+    }
+
+    if (badScore >= HEALTH_UNSTABLE_BAD_THRESHOLD && health.state !== 'UNSTABLE') {
+      health.state = 'UNSTABLE';
+      health.cleanScore = 0;
+      health.suppressDeltas = true;
+    }
+  }
+
+  #recordCleanVideoFrame(isKeyFrame = false) {
+    let health = this.#tracks?.video?.health;
+    let now = Date.now();
+    let expired = undefined;
+
+    if (typeof health !== 'object' || health === null) {
+      return;
+    }
+
+    if (Array.isArray(health.events) === true) {
+      if (Number.isInteger(health.eventsStart) !== true || health.eventsStart < 0) {
+        health.eventsStart = 0;
+      }
+
+      if (Number.isInteger(health.badEvents) !== true || health.badEvents < 0) {
+        health.badEvents = 0;
+      }
+
+      if (Number.isInteger(health.badNonClampEvents) !== true || health.badNonClampEvents < 0) {
+        health.badNonClampEvents = 0;
+      }
+
+      if (Number.isInteger(health.clampEvents) !== true || health.clampEvents < 0) {
+        health.clampEvents = 0;
+      }
+
+      while (health.eventsStart < health.events.length) {
+        expired = health.events[health.eventsStart];
+
+        if (typeof expired?.time !== 'number' || now - expired.time <= HEALTH_BAD_WINDOW_MS) {
+          break;
+        }
+
+        if (expired.bad === true) {
+          health.badEvents = Math.max(0, health.badEvents - 1);
+
+          if (expired.type !== 'keyframe-clamp') {
+            health.badNonClampEvents = Math.max(0, health.badNonClampEvents - 1);
+          }
+        }
+
+        if (expired.type === 'keyframe-clamp') {
+          health.clampEvents = Math.max(0, health.clampEvents - 1);
+        }
+
+        health.eventsStart++;
+      }
+
+      if (health.eventsStart > 0 && (health.eventsStart >= 64 || health.eventsStart * 2 >= health.events.length)) {
+        health.events = health.events.slice(health.eventsStart);
+        health.eventsStart = 0;
+      }
+    }
+
+    if (isKeyFrame === true) {
+      health.lastCleanKeyframeTime = now;
+    }
+
+    if (health.state === 'UNSTABLE' && isKeyFrame === true) {
+      health.state = 'RECOVERING';
+      // Slightly stricter: first clean keyframe enters RECOVERING.
+      // Delta emission is re-enabled only after an accepted delta in flush path.
+      health.suppressDeltas = true;
+      health.cleanScore = 2;
+      return;
+    }
+
+    if (health.state === 'RECOVERING') {
+      health.cleanScore += isKeyFrame === true ? 2 : 1;
+
+      if (health.cleanScore >= HEALTH_RECOVERING_CLEAN_TARGET) {
+        health.state = 'STABLE';
+        health.cleanScore = 0;
+        health.events = [];
+        health.eventsStart = 0;
+        health.badEvents = 0;
+        health.badNonClampEvents = 0;
+        health.clampEvents = 0;
+      }
+    }
   }
 
   #sendVideoPLI(reason = '') {
@@ -1872,441 +2813,5 @@ export default class WebRTC extends Streamer {
     this.#reconnectReason = reason;
 
     this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_RECONNECTING, reason);
-  }
-
-  #resetPendingVideoFrame() {
-    if (typeof this.#tracks?.video?.h264 !== 'object' || this.#tracks.video.h264 === null) {
-      return;
-    }
-
-    this.#tracks.video.h264.pendingParts = [];
-    this.#tracks.video.h264.pendingRtpTimestamp = undefined;
-    this.#tracks.video.h264.pendingKeyFrame = false;
-    this.#tracks.video.h264.pendingBytes = 0;
-  }
-
-  #flushPendingVideoFrame() {
-    let video = this.#tracks?.video;
-    let h264 = video?.h264;
-    let videoRtp = video?.rtp;
-    let pendingParts = h264?.pendingParts;
-    let pendingRtpTimestamp = h264?.pendingRtpTimestamp;
-    let pendingKeyFrame = h264?.pendingKeyFrame;
-    let pendingTimestamp = undefined;
-    let index = 0;
-    let part = undefined;
-    let data = undefined;
-    let deltaTicks = 0;
-    let deltaMs = 0;
-    let totalLength = 0;
-    let writeOffset = 0;
-    let emitParts = [];
-    let emitBytes = 0;
-    let hasSPS = false;
-    let hasPPS = false;
-    let partOffset = 0;
-    let partType = 0;
-    let spsPart = undefined;
-    let ppsPart = undefined;
-
-    // Nothing buffered for the current access unit, so just clear state and return
-    if (Array.isArray(pendingParts) !== true || pendingParts.length === 0 || typeof pendingRtpTimestamp !== 'number') {
-      this.#resetPendingVideoFrame();
-      return;
-    }
-
-    if (typeof videoRtp !== 'object' || videoRtp === null) {
-      this.#resetPendingVideoFrame();
-      return;
-    }
-
-    if (typeof h264.pendingBytes !== 'number') {
-      h264.pendingBytes = 0;
-    }
-
-    // Ensure keyframes can recover decoders by prepending cached SPS/PPS when
-    // they are not already part of the assembled access unit.
-    if (pendingKeyFrame === true) {
-      index = 0;
-
-      while (index < pendingParts.length) {
-        part = pendingParts[index];
-
-        if (Buffer.isBuffer(part) === true && part.length > 0) {
-          partOffset = 0;
-
-          if (part.indexOf(Streamer.H264NALUS.START_CODE) === 0) {
-            partOffset = Streamer.H264NALUS.START_CODE.length;
-          }
-
-          if (part.length > partOffset) {
-            partType = part[partOffset] & 0x1f;
-
-            if (partType === Streamer.H264NALUS.TYPES.SPS) {
-              hasSPS = true;
-            }
-
-            if (partType === Streamer.H264NALUS.TYPES.PPS) {
-              hasPPS = true;
-            }
-          }
-        }
-
-        index++;
-      }
-
-      if (hasSPS !== true && Buffer.isBuffer(h264?.lastSPS) === true && h264.lastSPS.length > 0) {
-        spsPart = Buffer.concat([Streamer.H264NALUS.START_CODE, h264.lastSPS]);
-        emitParts.push(spsPart);
-        emitBytes += spsPart.length;
-      }
-
-      if (hasPPS !== true && Buffer.isBuffer(h264?.lastPPS) === true && h264.lastPPS.length > 0) {
-        ppsPart = Buffer.concat([Streamer.H264NALUS.START_CODE, h264.lastPPS]);
-        emitParts.push(ppsPart);
-        emitBytes += ppsPart.length;
-      }
-    }
-
-    emitParts = emitParts.concat(pendingParts);
-    emitBytes += h264.pendingBytes;
-
-    // If we only have one final part, avoid Buffer.concat() entirely.
-    if (emitParts.length === 1 && Buffer.isBuffer(emitParts[0]) === true && emitParts[0].length > 0) {
-      data = emitParts[0];
-    }
-
-    // Otherwise build one final Annex-B access unit.
-    if (data === undefined) {
-      totalLength = emitBytes;
-
-      if (totalLength <= 0) {
-        this.#resetPendingVideoFrame();
-        return;
-      }
-
-      data = Buffer.allocUnsafe(totalLength);
-      index = 0;
-
-      while (index < emitParts.length) {
-        part = emitParts[index];
-
-        if (Buffer.isBuffer(part) === true && part.length > 0) {
-          part.copy(data, writeOffset);
-          writeOffset += part.length;
-        }
-
-        index++;
-      }
-    }
-
-    // Safety guard: if concatenation produced nothing useful, discard the pending frame
-    if (Buffer.isBuffer(data) !== true || data.length === 0) {
-      this.#resetPendingVideoFrame();
-      return;
-    }
-
-    // First emitted frame for this track:
-    // initialise our RTP timing baseline directly from the completed frame RTP timestamp
-    if (typeof videoRtp.lastTimestamp !== 'number' || typeof videoRtp.lastCalculatedTimestamp !== 'number') {
-      videoRtp.lastTimestamp = pendingRtpTimestamp;
-      videoRtp.lastCalculatedTimestamp = Date.now();
-      pendingTimestamp = videoRtp.lastCalculatedTimestamp;
-    }
-
-    // For subsequent frames, calculate one timestamp per completed access unit
-    // from the difference between this frame RTP timestamp and the previous frame RTP timestamp
-    if (typeof pendingTimestamp !== 'number') {
-      deltaTicks = (pendingRtpTimestamp - videoRtp.lastTimestamp + RTP_TIMESTAMP_MASK) % RTP_TIMESTAMP_MASK;
-
-      // If this looks like an older/reordered frame timestamp, drop it rather than emit backwards time
-      if (deltaTicks > RTP_TIMESTAMP_MAX_DELTA) {
-        this.#resetPendingVideoFrame();
-        return;
-      }
-
-      deltaMs = (deltaTicks / video.sampleRate) * 1000;
-
-      // Clamp invalid values back to zero rather than poisoning output timing
-      if (Number.isFinite(deltaMs) !== true || deltaMs < 0) {
-        deltaMs = 0;
-      }
-
-      // Guard against very large RTP jumps causing huge frame time jumps downstream
-      if (deltaMs > TIMESTAMP_MAX_VIDEO_DELTA) {
-        deltaMs = TIMESTAMP_MAX_VIDEO_DELTA;
-      }
-
-      pendingTimestamp = videoRtp.lastCalculatedTimestamp + deltaMs;
-    }
-
-    // Final monotonicity guard:
-    // completed video frames must always move forward in output time, even if RTP timing
-    // wobbles slightly after packet loss, reordering or frame assembly resets.
-    pendingTimestamp =
-      typeof videoRtp.lastEmittedTimestamp === 'number' ? Math.max(pendingTimestamp, videoRtp.lastEmittedTimestamp + 1) : pendingTimestamp;
-
-    // Update RTP/frame timing state only once per fully assembled frame
-    videoRtp.lastTimestamp = pendingRtpTimestamp;
-    videoRtp.lastCalculatedTimestamp = pendingTimestamp;
-    videoRtp.lastEmittedTimestamp = pendingTimestamp;
-
-    if (pendingKeyFrame === true) {
-      video.lastIDRTime = Date.now();
-      h264.lastSpsEmitTime = Date.now();
-      clearInterval(video?.startupPLITimer);
-      video.startupPLITimer = undefined;
-    }
-
-    // Emit exactly one media item per completed video frame/access unit.
-    // This is the only place video addMedia() should be called from WebRTC.
-    this.addMedia({
-      type: Streamer.MEDIA_TYPE.VIDEO,
-      codec: this.codecs.video,
-      profile: typeof this.video?.profile === 'string' ? this.video.profile : undefined,
-      bitrate: Number.isFinite(this.video?.bitrate) === true && this.video.bitrate > 0 ? this.video.bitrate : undefined,
-      timestamp: pendingTimestamp,
-      keyFrame: pendingKeyFrame === true,
-      data: data,
-    });
-
-    this.#resetPendingVideoFrame();
-  }
-
-  // Need more work in here*
-  // < error handling
-  // < timeout?
-  async #googleHomeFoyerCommand(service, command, values) {
-    let buffer = undefined;
-    let offset = 0;
-    let TraitMapRequest = undefined;
-    let TraitMapResponse = undefined;
-    let commandResponse = {
-      status: undefined,
-      message: '',
-      data: [],
-    };
-
-    if (
-      typeof service !== 'string' ||
-      service === '' ||
-      typeof command !== 'string' ||
-      command === '' ||
-      typeof values !== 'object' ||
-      values === null
-    ) {
-      return;
-    }
-
-    if (this.#protobufFoyer === undefined) {
-      commandResponse.status = 500;
-      commandResponse.message = 'Google Home Foyer protobuf support is unavailable';
-      return commandResponse;
-    }
-
-    TraitMapRequest = this.#protobufFoyer.lookup(GOOGLE_HOME_FOYER_PREFIX + command + 'Request');
-    TraitMapResponse = this.#protobufFoyer.lookup(GOOGLE_HOME_FOYER_PREFIX + command + 'Response');
-    buffer = Buffer.allocUnsafe(GOOGLE_HOME_FOYER_BUFFER_INITIAL);
-
-    if (TraitMapRequest !== null && TraitMapResponse !== null && typeof this.token === 'string' && this.token.trim() !== '') {
-      try {
-        if (this.#googleHomeFoyer === undefined || (this.#googleHomeFoyer?.connected === false && this.#googleHomeFoyer?.closed === true)) {
-          // No current HTTP/2 connection or current session is closed
-          this?.log?.debug?.('Connection started to Google Home Foyer "%s"', this.#googleHomeFoyerAPIHost);
-          this.#googleHomeFoyer = http2.connect(this.#googleHomeFoyerAPIHost);
-        }
-
-        // Register event handlers if not already attached to this connection
-        if (this.#googleHomeFoyer?.listenerCount?.('connect') === 0) {
-          this.#googleHomeFoyer.on('connect', () => {
-            this?.log?.debug?.('Connection established to Google Home Foyer "%s"', this.#googleHomeFoyerAPIHost);
-
-            clearInterval(this.#pingTimer);
-            this.#pingTimer = setInterval(() => {
-              let session = this.#googleHomeFoyer;
-              if (session === undefined || session.destroyed === true || session.closed === true) {
-                return;
-              }
-
-              try {
-                // eslint-disable-next-line no-unused-vars
-                session.ping((error, duration, payload) => {
-                  // Do we log error to debug?
-                });
-              } catch {
-                clearInterval(this.#pingTimer);
-                this.#pingTimer = undefined;
-              }
-            }, 60000); // Every minute?
-          });
-
-          // eslint-disable-next-line no-unused-vars
-          this.#googleHomeFoyer.on('goaway', (errorCode, lastStreamID, opaqueData) => {
-            //console.log('http2 goaway', errorCode);
-          });
-
-          this.#googleHomeFoyer.on('error', (error) => {
-            this?.log?.debug?.('Google Home Foyer connection error: %s', String(error));
-            clearInterval(this.#pingTimer);
-            this.#pingTimer = undefined;
-            try {
-              this.#googleHomeFoyer.destroy();
-            } catch {
-              // Empty
-            }
-            this.#googleHomeFoyer = undefined;
-          });
-
-          this.#googleHomeFoyer.on('close', () => {
-            clearInterval(this.#pingTimer);
-            this.#pingTimer = undefined;
-            this.#googleHomeFoyer = undefined;
-            this?.log?.debug?.('Connection closed to Google Home Foyer "%s"', this.#googleHomeFoyerAPIHost);
-          });
-        }
-
-        let request = this.#googleHomeFoyer.request({
-          ':method': 'post',
-          ':path': '/' + GOOGLE_HOME_FOYER_PREFIX + service + '/' + command,
-          authorization: 'Bearer ' + this.token,
-          'content-type': 'application/grpc',
-          'user-agent': USER_AGENT,
-          te: 'trailers',
-          'request-id': crypto.randomUUID(),
-          'grpc-timeout': '10S',
-        });
-
-        request.on('data', (data) => {
-          let newSize = 0;
-          let newBuffer = undefined;
-
-          if (commandResponse.status === 413) {
-            return;
-          }
-
-          if (offset + data.length > GOOGLE_HOME_FOYER_BUFFER_MAX) {
-            commandResponse.status = 413;
-            commandResponse.message = 'gRPC response exceeds maximum buffer size';
-            try {
-              request.close();
-            } catch {
-              // Empty
-            }
-            return;
-          }
-
-          while (offset + data.length > buffer.length) {
-            newSize = buffer.length * 2;
-            if (newSize > GOOGLE_HOME_FOYER_BUFFER_MAX) {
-              newSize = GOOGLE_HOME_FOYER_BUFFER_MAX;
-            }
-
-            if (newSize < offset + data.length) {
-              if (newSize === GOOGLE_HOME_FOYER_BUFFER_MAX) {
-                commandResponse.status = 413;
-                commandResponse.message = 'gRPC response exceeds maximum buffer size';
-                try {
-                  request.close();
-                } catch {
-                  // Empty
-                }
-                return;
-              }
-
-              continue;
-            }
-
-            newBuffer = Buffer.allocUnsafe(newSize);
-            buffer.copy(newBuffer, 0, 0, offset);
-            buffer = newBuffer;
-          }
-
-          data.copy(buffer, offset);
-          offset += data.length;
-
-          while (offset >= 5) {
-            let headerSize = 5;
-            let dataSize = buffer.readUInt32BE(1);
-            if (offset < headerSize + dataSize) {
-              break;
-            }
-
-            commandResponse.data.push(TraitMapResponse.decode(buffer.subarray(headerSize, headerSize + dataSize)).toJSON());
-
-            buffer.copy(buffer, 0, headerSize + dataSize, offset);
-            offset -= headerSize + dataSize;
-          }
-        });
-
-        request.on('trailers', (headers) => {
-          if (isNaN(Number(headers?.['grpc-status'])) === false) {
-            commandResponse.status = Number(headers['grpc-status']);
-          }
-
-          if (headers?.['grpc-message'] !== undefined) {
-            commandResponse.message = headers['grpc-message'];
-          }
-        });
-
-        request.on('error', (error) => {
-          commandResponse.status = error.code;
-          commandResponse.message = error.message;
-          commandResponse.data = [];
-
-          try {
-            request.close();
-          } catch {
-            // Empty
-          }
-        });
-
-        if (request !== undefined && request?.closed === false && request?.destroyed === false) {
-          // Encode our request values, prefix with header (size of data), then send
-          let encodedData = TraitMapRequest.encode(TraitMapRequest.fromObject(values)).finish();
-          let header = Buffer.alloc(5);
-          header.writeUInt32BE(encodedData.length, 1);
-          request.write(Buffer.concat([header, encodedData]));
-          request.end();
-
-          // Set client-side timeout to prevent stuck requests
-          let requestTimeout = setTimeout(() => {
-            try {
-              request.close();
-            } catch {
-              // Empty
-            }
-          }, GOOGLE_HOME_FOYER_REQUEST_TIMEOUT);
-
-          request.on('close', () => clearTimeout(requestTimeout));
-
-          await EventEmitter.once(request, 'close');
-        }
-
-        try {
-          // No longer need this request
-          request.destroy();
-        } catch {
-          // Empty
-        }
-      } catch (error) {
-        commandResponse.status = error.code;
-        commandResponse.message = String(error.message || error);
-        commandResponse.data = [];
-
-        this?.log?.debug?.('Google Home Foyer request failed: %s', commandResponse.message);
-        clearInterval(this.#pingTimer);
-        this.#pingTimer = undefined;
-
-        try {
-          this.#googleHomeFoyer?.destroy();
-        } catch {
-          // Empty
-        }
-
-        this.#googleHomeFoyer = undefined;
-      }
-    }
-
-    return commandResponse;
   }
 }

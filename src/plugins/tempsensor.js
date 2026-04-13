@@ -48,7 +48,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestTemperatureSensor extends HomeKitDevice {
   static TYPE = 'TemperatureSensor';
-  static VERSION = '2026.04.01'; // Code version
+  static VERSION = '2026.04.12'; // Code version
 
   batteryService = undefined;
   temperatureService = undefined;
@@ -372,12 +372,6 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
     ) {
       let deviceOptions = config?.devices?.find(
         (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
-      );
-      //eslint-disable-next-line no-unused-vars
-      let homeOptions = config?.homes?.find(
-        (home) =>
-          home?.nest_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
-          home?.google_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
       );
 
       tempDevice.eveHistory =

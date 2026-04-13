@@ -88,15 +88,11 @@ message TraitOperationList {
 }
 
 message ObserveResponse {
-    message ObserveResponse {
-        repeated ResourceMeta resourceMetas = 1;
-        bool initialResourceMetasContinue = 2;
-        repeated TraitState traitStates = 3;
-        repeated TraitOperationList traitOperationLists = 4;
-        google.protobuf.Timestamp currentTime = 5;
-    }
-
-    repeated ObserveResponse observeResponse = 1;
+    repeated ResourceMeta resourceMetas = 1;
+    bool initialResourceMetasContinue = 2;
+    repeated TraitState traitStates = 3;
+    repeated TraitOperationList traitOperationLists = 4;
+    google.protobuf.Timestamp currentTime = 5;
 }
 
 service GatewayService {

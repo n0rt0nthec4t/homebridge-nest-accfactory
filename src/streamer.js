@@ -3,18 +3,27 @@
 //
 // Base class for all Camera/Doorbell streaming.
 //
-// Maintains a shared rolling buffer of audio/video data and allows multiple
-// HomeKit clients to consume the same upstream stream for live viewing and/or recording.
-// Each output (live, record) maintains its own cursor into the shared buffer.
+// Maintains a shared rotating media buffer using RingBuffer and allows multiple
+// HomeKit clients to consume the same upstream source for live viewing, buffering,
+// and/or recording. Each live or recording output maintains its own cursor into
+// the shared buffer.
+//
+// Note:
+// - RingBuffer is also exposed for reuse by transport implementations
+//   (e.g. NexusTalk, WebRTC) for efficient queueing and buffering.
 //
 // IMPORTANT:
-// Extending classes are responsible for managing the upstream stream source (e.g. WebRTC, NexusTalk)
-// and MUST notify the Streamer of source state changes using setSourceState(..) calls.
-// This ensures correct buffer handling, connection lifecycle, and fallback frame behaviour.
+// Extending classes are responsible for managing the upstream stream source
+// (e.g. WebRTC, NexusTalk) and MUST notify Streamer of source lifecycle changes
+// using setSourceState(..). This ensures correct buffer handling, connection
+// lifecycle behaviour, fallback frame behaviour, and output startup logic.
 //
-// At a minimum, the extending class MUST signal:
+// Typical source lifecycle states are:
 // - SOURCE_CONNECTING   -> when initiating connection to upstream source
+// - SOURCE_CONNECTED    -> when transport is established but media may not yet be flowing
 // - SOURCE_READY        -> when media items are flowing and valid
+// - SOURCE_RECONNECTING -> when source is retrying after interruption
+// - SOURCE_CLOSING      -> when source teardown has started
 // - SOURCE_CLOSED       -> when the source has stopped or disconnected
 //
 // Failure to signal correct source state may result in:
@@ -23,42 +32,61 @@
 // - missing recordings or live stream failures
 //
 // Media Model:
-// - Streamer expects complete media frames (not partial frames ie: NALUs)
+// - Streamer expects complete media frames (not partial frames such as raw NALU fragments)
 // - Video should be provided as complete H264 NAL units or access units
 // - Audio should be provided as complete frames (AAC or PCM)
 // - Streamer handles pacing, buffering, and fan-out to outputs
 //
 // Buffering Model:
-// - A shared rolling buffer stores recent media frames/items
+// - A shared RingBuffer stores recent media frames/items
+// - Appends and trimming are O(1); no front-splice copying occurs
+// - Buffer capacity grows only when required; normal operation does not re-pack items
 // - Live and recording sessions read from the buffer using independent cursors
-// - New live viewers align to existing viewers or start near the most recent keyframe
+// - Items are referenced using logical indexes; physical storage may wrap
+//
+// Live Streaming Behaviour:
+// - Live outputs prefer starting at the most recent safe decoder point (IDR keyframe)
+// - If a sufficiently recent keyframe is retained, it is used to bootstrap playback
+// - If no recent keyframe is available, the stream attaches near the live edge
+// - In this case, video is suppressed until the next keyframe arrives naturally
+// - This avoids replaying stale buffered media and keeps latency low
+//
+// Recording Behaviour:
+// - Recording outputs start from a requested timestamp when provided
+// - For H264, the nearest suitable keyframe is selected to ensure decodability
+// - If no exact match exists, the closest valid keyframe before/after is used
+// - If no keyframe is found, fallback to the latest safe decoder position
 //
 // H264 Handling:
 // - Streamer manages Annex-B start codes for H264 output
 // - Extending classes should provide clean NAL units without start codes where possible
+// - SPS/PPS are tracked and injected as needed for decoder startup
 //
 // Synchronisation:
 // - Audio output is suppressed until a video keyframe (IDR) is seen for a session
 // - This ensures correct A/V alignment for HomeKit consumers
 //
-// The following functions should be defined in your class which extends this:
+// Extending classes are expected to implement or override, as needed:
 //
 // streamer.connect(options)
 // streamer.close()
-// streamer.sendTalkback(talkingBuffer)
 // streamer.onUpdate(deviceData)
-// streamer.onShutdown() <- should stop all streaming and buffering and clean up resources
+// streamer.onShutdown()
 //
-// The following getters should be overridden in your class which extends this:
+// The following should be implemented when supported by the transport:
+//
+// streamer.sendTalkback(talkingBuffer)
+//
+// The following getters should be overridden:
 //
 // streamer.codecs <- return object with codecs being used (video, audio, talkback)
 // streamer.capabilities <- return object with streaming capabilities (live, record, talkback, buffering)
 //
-// The following properties should be overridden in your class which extends this:
+// The following properties should be overridden when required:
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2026.04.09
+// Code version 2026.04.13
 // Mark Hulskamp
 'use strict';
 
@@ -75,10 +103,185 @@ import HomeKitDevice from './HomeKitDevice.js';
 // Define constants
 import { TIMERS, RESOURCE_FRAMES, RESOURCE_PATH, LOG_LEVELS, __dirname } from './consts.js';
 
-const MAX_BUFFER_AGE = 5000; // Keep last 5s of media in shared rotating buffer
 const MAX_BUFFERED_ITEMS_PER_OUTPUT_PER_TICK = 20; // Prevent one output starving others
 const STREAM_FRAME_INTERVAL = 1000 / 30; // 30fps approx
 const OUTPUT_LOOP_INTERVAL = 10; // Shared output scheduler interval
+const LIVE_START_MAX_KEYFRAME_AGE = 250; // Max age (ms) for reusing a retained keyframe when attaching live viewers
+const OUTPUT_BUDGET_LOG_INTERVAL = 30000; // Throttle per-streamer over-budget debug logs
+
+// Default capacity for generic RingBuffer usage.
+// This should remain a sensible general-purpose default and not be tied to
+// any specific streaming or media retention behaviour.
+const RINGBUFFER_DEFAULT_CAPACITY = 1024;
+
+// Initial capacity used by Streamer for its shared media buffer.
+// This may diverge from the generic RingBuffer default as buffering strategy,
+// retention window, or media characteristics evolve.
+const STREAMER_INITIAL_BUFFER_CAPACITY = 1024;
+
+// RingBuffer
+//
+// Fixed-capacity circular buffer with logical indexing.
+// - O(1) push and shift (no array reallocation or front-splice)
+// - Grows by doubling when capacity is exceeded
+// - Maintains a monotonically increasing logical startIndex
+//   so external consumers can track absolute positions even as data is trimmed
+//
+// Terminology:
+// - head: physical index of the first logical item
+// - size: number of valid items currently stored
+// - startIndex: logical index of the first item (external reference point)
+//
+// Access is done via logical offsets (0..size-1), which are translated
+// to physical positions via modulo arithmetic.
+export class RingBuffer {
+  items = [];
+  capacity = 0;
+  head = 0;
+  size = 0;
+  startIndex = 0;
+
+  constructor(startIndex = 0, capacity = RINGBUFFER_DEFAULT_CAPACITY) {
+    // capacity = physical storage size (number of slots in the circular array)
+    this.capacity = Number.isInteger(capacity) === true && capacity > 0 ? capacity : RINGBUFFER_DEFAULT_CAPACITY;
+
+    // Preallocate backing array to avoid resizing on every push
+    this.items = new Array(this.capacity);
+
+    // startIndex = logical index of the first item in the buffer
+    // (used by external consumers to map absolute positions)
+    this.startIndex = Number.isInteger(startIndex) === true && startIndex >= 0 ? startIndex : 0;
+  }
+
+  physicalOffset(offset) {
+    // Convert a logical offset (0..size-1) into a physical array index.
+    // head = physical position of logical offset 0.
+    // We wrap using modulo to stay within the circular buffer.
+    if (Number.isInteger(offset) !== true || offset < 0) {
+      return -1;
+    }
+
+    return (this.head + offset) % this.capacity;
+  }
+
+  getByOffset(offset) {
+    let physicalOffset = 0;
+
+    // Bounds check against current logical size
+    if (Number.isInteger(offset) !== true || offset < 0 || offset >= this.size) {
+      return undefined;
+    }
+
+    // Translate logical offset -> physical slot
+    physicalOffset = this.physicalOffset(offset);
+
+    // Return stored item (or undefined if something went wrong)
+    return physicalOffset >= 0 ? this.items[physicalOffset] : undefined;
+  }
+
+  grow() {
+    // Double capacity to amortize growth cost (O(n), but infrequent)
+    let newCapacity = this.capacity * 2;
+    let newItems = new Array(newCapacity);
+    let index = 0;
+
+    // Re-pack items linearly starting at index 0
+    // This removes wrap-around and resets head to 0
+    while (index < this.size) {
+      newItems[index] = this.getByOffset(index);
+      index++;
+    }
+
+    this.items = newItems;
+    this.capacity = newCapacity;
+
+    // After re-pack, logical offset 0 is now at physical index 0
+    this.head = 0;
+  }
+
+  push(item) {
+    let tailOffset = 0;
+
+    // Grow if buffer is full (no overwriting policy here)
+    if (this.size >= this.capacity) {
+      this.grow();
+    }
+
+    // Tail = logical position "size"
+    tailOffset = this.physicalOffset(this.size);
+    if (tailOffset < 0) {
+      return;
+    }
+
+    // Insert at tail and increase size
+    this.items[tailOffset] = item;
+    this.size++;
+  }
+
+  shift(count, resetStartIndex = undefined) {
+    let removeCount = 0;
+    let index = 0;
+    let physicalOffset = 0;
+
+    // Remove N items from the head (logical front of buffer)
+    if (Number.isInteger(count) !== true || count <= 0) {
+      return;
+    }
+
+    removeCount = Math.min(count, this.size);
+
+    // Clear references so GC can reclaim memory
+    while (index < removeCount) {
+      physicalOffset = this.physicalOffset(index);
+      if (physicalOffset >= 0) {
+        this.items[physicalOffset] = undefined;
+      }
+      index++;
+    }
+
+    // Advance head forward (wrap if needed)
+    this.head = (this.head + removeCount) % this.capacity;
+
+    // Shrink logical size
+    this.size -= removeCount;
+
+    // Advance logical index base
+    this.startIndex += removeCount;
+
+    // If buffer is now empty, normalize state
+    if (this.size === 0) {
+      // Reset physical head to 0 so future pushes are contiguous
+      this.head = 0;
+
+      // Optionally reset logical index baseline.
+      // Default behaviour keeps startIndex monotonic unless an explicit
+      // resetStartIndex is supplied by the caller.
+      if (Number.isInteger(resetStartIndex) === true && resetStartIndex >= 0) {
+        this.startIndex = resetStartIndex;
+      }
+    }
+  }
+
+  clear(resetStartIndex = 0) {
+    let index = 0;
+    let physicalOffset = 0;
+
+    while (index < this.size) {
+      physicalOffset = this.physicalOffset(index);
+      if (physicalOffset >= 0) {
+        this.items[physicalOffset] = undefined;
+      }
+      index++;
+    }
+
+    this.head = 0;
+    this.size = 0;
+
+    if (Number.isInteger(resetStartIndex) === true && resetStartIndex >= 0) {
+      this.startIndex = resetStartIndex;
+    }
+  }
+}
 
 // Streamer object
 export default class Streamer {
@@ -140,6 +343,7 @@ export default class Streamer {
     SOURCE_CONNECTING: 'source-connecting',
     SOURCE_READY: 'source-ready',
     SOURCE_RECONNECTING: 'source-reconnecting',
+    SOURCE_CLOSING: 'source-closing',
     SOURCE_CLOSED: 'source-closed',
   };
 
@@ -176,19 +380,22 @@ export default class Streamer {
 
   // Internal data only for this class
   #HomeKitDeviceUUID = undefined; // HomeKitDevice uuid for this streamer
-  #buffer = undefined; // Shared rotating media buffer (frames/items) used by buffering, live and recording outputs
-  #record = undefined; // Single recording output for this camera instance
-  #live = new Map(); // Live outputs keyed by session id
+  #bufferDuration = 0; // Duration of media to keep in the shared buffer based on media timestamps
+  #bufferEnabled = false; // Retained buffering policy flag owned by Streamer
+  #buffer = undefined; // Shared rotating ring buffer used by buffering, live and recording outputs
+  #outputs = new Map(); // Live and recording outputs keyed by session id
   #cameraFrames = {}; // H264 resource frames for offline, video off, transferring
   #sequenceCounters = {}; // Sequence counters for item types
   #itemIndex = 0; // Monotonic item index for shared buffer cursor tracking
   #videoState = {}; // Video state tracking
   #audioState = {}; // Audio state tracking
   #lastFallbackFrameTime = 0; // Timer for pacing fallback frames
+  #lastBudgetLogTime = 0; // Last time budget processing was sampled/logged
   #outputErrors = 0; // Consecutive output loop failures for this instance
   #lastMediaTime = {}; // Track last buffered media time per type for fallback ordering guards
   #sourceState = Streamer.MESSAGE_TYPE.SOURCE_CLOSED; // Track stream source state from messages for internal logic and logging
   #connectOptions = {}; // Store options from connect to use on reconnects
+  #lifecycleQueue = Promise.resolve(); // Serializes source connect/close operations to avoid lifecycle races
   #stats = {
     source: {
       connectingAt: undefined,
@@ -237,27 +444,23 @@ export default class Streamer {
   }
 
   constructor(uuid, deviceData, options) {
-    // Setup logger object if passed as option
     if (Object.values(LOG_LEVELS).every((fn) => typeof options?.log?.[fn] === 'function')) {
       this.log = options.log;
     }
 
     this.#HomeKitDeviceUUID = uuid;
 
-    // Setup HomeKitDevice message type handler back to HomeKitDevice classes
     HomeKitDevice.message(uuid, Streamer.MESSAGE, this);
-    HomeKitDevice.message(uuid, HomeKitDevice.UPDATE, this); // Register for 'update' message for this uuid also
-    HomeKitDevice.message(uuid, HomeKitDevice.TIMER, this); // Register for 'timer' message for this uuid also
-    HomeKitDevice.message(uuid, HomeKitDevice.SHUTDOWN, this); // Register for 'shutdown' message for this uuid also
+    HomeKitDevice.message(uuid, HomeKitDevice.UPDATE, this);
+    HomeKitDevice.message(uuid, HomeKitDevice.TIMER, this);
+    HomeKitDevice.message(uuid, HomeKitDevice.SHUTDOWN, this);
 
-    // Store data we need from the device data passed it
     this.migrating = deviceData?.migrating === true;
     this.online = deviceData?.online === true;
     this.videoEnabled = deviceData?.streaming_enabled === true;
     this.audioEnabled = deviceData?.audio_enabled === true;
     this.nest_google_device_uuid = deviceData?.nest_google_device_uuid;
 
-    // Load support video frame files as required
     const loadFrameResource = (filename, label) => {
       let buffer = undefined;
       let file = path.resolve(__dirname, RESOURCE_PATH, filename);
@@ -281,18 +484,22 @@ export default class Streamer {
     };
 
     this.#lastFallbackFrameTime = Date.now();
-
     this.supportDump = options?.supportDump === true;
+
+    // Setup buffer duration if passed in as an option, otherwise default to 5s
+    // Clamp to sane bounds to avoid invalid or excessive buffer sizes
+    this.#bufferDuration =
+      Number.isInteger(options?.bufferDuration) === true && options.bufferDuration > 0
+        ? Math.min(Math.max(options.bufferDuration, 2000), 15000)
+        : 5000;
   }
 
-  // Class functions
   async onUpdate(deviceData) {
     if (typeof deviceData !== 'object') {
       return;
     }
 
     if (deviceData?.migrating !== undefined && this.migrating !== deviceData?.migrating) {
-      // Migration status has changed
       this.migrating = deviceData.migrating;
     }
 
@@ -300,10 +507,8 @@ export default class Streamer {
       this.nest_google_device_uuid = deviceData?.nest_google_device_uuid;
 
       if (this.hasActiveStreams() === true) {
-        // Since the Nest/Google device uuid has changed if there any any active streams, close and connect again
-        // This may occur if a device has migrated between Nest and Google APIs
-        this.#doClose();
-        this.#doConnect();
+        await this.#doClose();
+        await this.#doConnect();
       }
     }
 
@@ -312,7 +517,6 @@ export default class Streamer {
       (deviceData?.streaming_enabled !== undefined && this.videoEnabled !== deviceData.streaming_enabled) ||
       (deviceData?.audio_enabled !== undefined && this.audioEnabled !== deviceData.audio_enabled)
     ) {
-      // Online status or streaming status has changed
       if (deviceData?.online !== undefined) {
         this.online = deviceData.online === true;
       }
@@ -326,11 +530,12 @@ export default class Streamer {
       }
 
       if (this.hasActiveStreams() === true) {
-        // Since online, video, audio enabled status has changed, if there are any active streams, close and connect again
         if (this.online === false || this.videoEnabled === false || this.audioEnabled === false) {
-          this.#doClose(); // as offline or streaming not enabled, close streamer
+          await this.#doClose();
+          return;
         }
-        this.#doConnect();
+
+        await this.#doConnect();
       }
     }
   }
@@ -343,202 +548,232 @@ export default class Streamer {
     let sessionID = message?.sessionID !== undefined ? String(message.sessionID) : undefined;
 
     if (type === Streamer.MESSAGE_TYPE.START_BUFFER) {
-      // Respond to request to start buffering stream
+      // Enable retained buffer and ensure source is connected.
+      // This does not create an output stream, only prepares buffering for future use.
       if (this.capabilities.buffering !== true) {
         this?.log?.debug?.('Buffering is unsupported for "%s"', this.nest_google_device_uuid);
         return;
       }
 
       await this.#startBuffering(message?.options);
+      return;
     }
 
     if (type === Streamer.MESSAGE_TYPE.STOP_BUFFER) {
-      // Respond to request to stop buffering stream
+      // Disable retained buffer.
+      // If no outputs are active, this may also allow the source to close.
       if (this.capabilities.buffering !== true) {
         this?.log?.debug?.('Buffering is unsupported for "%s"', this.nest_google_device_uuid);
         return;
       }
 
       await this.#stopBuffering();
+      return;
     }
 
     if (type === Streamer.MESSAGE_TYPE.START_LIVE) {
-      // Request to start live stream for session id
+      // Start a live streaming output for HomeKit.
+      // This creates PassThrough streams and begins feeding real-time data.
       if (this.capabilities.live !== true) {
         this?.log?.debug?.('Live streaming is unsupported for "%s"', this.nest_google_device_uuid);
         return;
       }
 
-      return await this.#startLiveStream(sessionID, message?.options);
+      return await this.#createOutput(sessionID, Streamer.STREAM_TYPE.LIVE, message?.options);
     }
 
     if (type === Streamer.MESSAGE_TYPE.STOP_LIVE) {
-      // Request to stop live stream for session id
+      // Stop a live streaming output.
+      // Cleans up streams and may close source if no other outputs remain.
       if (this.capabilities.live !== true) {
         this?.log?.debug?.('Live streaming is unsupported for "%s"', this.nest_google_device_uuid);
         return;
       }
 
-      await this.#stopLiveStream(sessionID);
+      await this.#stopOutput(sessionID, Streamer.STREAM_TYPE.LIVE);
+      return;
     }
 
     if (type === Streamer.MESSAGE_TYPE.START_RECORD) {
-      // Request to start recording stream for session id
+      // Start a recording output (HKSV).
+      // Uses retained buffer and aligns start position to a safe frame (e.g. H264 keyframe).
       if (this.capabilities.record !== true) {
         this?.log?.debug?.('Recording is unsupported for "%s"', this.nest_google_device_uuid);
         return;
       }
 
-      return await this.#startRecording(sessionID, message?.options);
+      return await this.#createOutput(sessionID, Streamer.STREAM_TYPE.RECORD, message?.options);
     }
 
     if (type === Streamer.MESSAGE_TYPE.STOP_RECORD) {
-      // Request to stop recording stream for session id
+      // Stop a recording output.
+      // If no sessionID is provided, stops the first active recording stream.
       if (this.capabilities.record !== true) {
         this?.log?.debug?.('Recording is unsupported for "%s"', this.nest_google_device_uuid);
         return;
       }
 
-      await this.#stopRecording(sessionID);
+      await this.#stopOutput(sessionID, Streamer.STREAM_TYPE.RECORD);
+      return;
     }
 
-    // Respond to stream source status messages to update internal state and log status
     if (
       type === Streamer.MESSAGE_TYPE.SOURCE_CONNECTING ||
       type === Streamer.MESSAGE_TYPE.SOURCE_CONNECTED ||
       type === Streamer.MESSAGE_TYPE.SOURCE_RECONNECTING ||
+      type === Streamer.MESSAGE_TYPE.SOURCE_CLOSING ||
       type === Streamer.MESSAGE_TYPE.SOURCE_CLOSED ||
       type === Streamer.MESSAGE_TYPE.SOURCE_READY
     ) {
-      this.#sourceState = type; // Update internal source state for use in logic and logging
+      // Handle lifecycle events from the underlying stream source (WebRTC, NexusTalk, etc).
+      // These events reflect connection state and readiness for media delivery.
 
+      // Ignore duplicate state transitions to avoid log spam and unnecessary stat updates
+      if (this.#sourceState === type) {
+        return;
+      }
+
+      // Prevent reconnecting -> connecting downgrade, which can occur during retry loops
+      if (this.#sourceState === Streamer.MESSAGE_TYPE.SOURCE_RECONNECTING && type === Streamer.MESSAGE_TYPE.SOURCE_CONNECTING) {
+        return;
+      }
+
+      this.#sourceState = type;
+
+      // Reset transient state when connection is starting, restarting, or fully closed
       if (
         type === Streamer.MESSAGE_TYPE.SOURCE_CONNECTING ||
         type === Streamer.MESSAGE_TYPE.SOURCE_RECONNECTING ||
         type === Streamer.MESSAGE_TYPE.SOURCE_CLOSED
       ) {
-        // Reset stream statistics and internal audio/video state on source connecting, reconnecting or close
         this.#resetSourceState();
         this.#resetSourceStats();
       }
 
-      // Track source timing stats
+      // Track timing and reconnect metrics for diagnostics/support dump
       if (typeof this.#stats === 'object' && this.#stats !== null) {
         let now = Date.now();
+
+        // Initial connection attempt
         if (type === Streamer.MESSAGE_TYPE.SOURCE_CONNECTING) {
           this.#stats.source.connectingAt = now;
         }
+
+        // Transport connected (but not yet ready for frames)
         if (type === Streamer.MESSAGE_TYPE.SOURCE_CONNECTED) {
           this.#stats.source.connectedAt = now;
         }
+
+        // Source ready and delivering media
         if (type === Streamer.MESSAGE_TYPE.SOURCE_READY) {
           this.#stats.source.readyAt = now;
         }
+
+        // Count reconnect attempts separately
         if (type === Streamer.MESSAGE_TYPE.SOURCE_RECONNECTING) {
           this.#stats.source.reconnects = (this.#stats.source.reconnects ?? 0) + 1;
         }
       }
 
-      // Log source status changes with reason if provided in message
+      // Log unified source state for visibility across different transport implementations
       this?.log?.debug?.(
         'Stream source is "%s" for uuid "%s"%s',
         type,
         this.nest_google_device_uuid,
         typeof message?.reason === 'string' && message.reason !== '' ? ' (' + message.reason + ')' : '',
       );
+
       return;
     }
   }
 
-  onShutdown() {
+  async onShutdown() {
     Streamer.#removeStreamer(this);
-    this.stopEverything();
+    await this.stopEverything();
   }
 
-  stopEverything() {
+  async stopEverything() {
     if (this.hasActiveStreams() === true) {
       this?.log?.debug?.('Stopped buffering, live and recording from device uuid "%s"', this.nest_google_device_uuid);
 
-      this.#cleanupOutput(this.#record);
-
-      for (let output of this.#live.values()) {
+      for (let output of this.#outputs.values()) {
         this.#cleanupOutput(output);
       }
 
-      this.#buffer = undefined;
-      this.#record = undefined;
-      this.#live.clear();
-      this.#sequenceCounters = {}; // Reset sequence tracking
-      this.#itemIndex = 0; // Reset shared item index tracking
-      this.#videoState = {}; // Reset video state tracking
-      this.#audioState = {}; // Reset audio state tracking
-      this.#lastMediaTime = {};
+      this.#outputs.clear();
+      this.#resetRetainedState();
       this.#syncSchedulerState();
-      this.#doClose(); // Trigger subclass-defined stream close logic
+      await this.#doClose();
     }
   }
 
   addMedia(media) {
+    let mediaType = undefined;
     let codec = undefined;
-    let nalUnits = undefined;
-    let containsFrame = false;
     let now = Date.now();
-    let data = media.data;
-    let previousFPS = undefined;
-    let frameDelta = 0;
-    let fps = 0;
-    let currentFPS = 0;
-    let prevFPS = 0;
-    let delta = 0;
+    let data = undefined;
     let audioFrameDuration = 0;
     let sequence = 0;
     let sourceTimestamp = 0;
     let mediaTime = 0;
-    let resolution = undefined;
-    let isAnnexB = false;
+    let keyFrame = false;
+    let h264Result = undefined;
 
+    // Validate incoming media object
+    if (typeof media !== 'object' || media === null) {
+      return;
+    }
+
+    mediaType = typeof media.type === 'string' ? media.type.toLowerCase() : undefined;
+    keyFrame = media?.keyFrame === true;
+
+    // Validate media type and payload
     if (
-      typeof media !== 'object' ||
-      media === null ||
-      Buffer.isBuffer(media?.data) !== true ||
-      media.data.length === 0 ||
-      typeof media?.type !== 'string' ||
-      media.type.trim() === '' ||
-      Streamer.MEDIA_TYPE?.[media.type.trim().toUpperCase()] === undefined
+      typeof mediaType !== 'string' ||
+      mediaType.trim() === '' ||
+      (mediaType !== Streamer.MEDIA_TYPE.VIDEO &&
+        mediaType !== Streamer.MEDIA_TYPE.AUDIO &&
+        mediaType !== Streamer.MEDIA_TYPE.TALK &&
+        mediaType !== Streamer.MEDIA_TYPE.METADATA) ||
+      Buffer.isBuffer(media.data) !== true ||
+      media.data.length === 0
     ) {
       return;
     }
 
-    media.type = media.type.toLowerCase();
-
+    // Do not process if no active outputs
     if (this.hasActiveStreams() !== true) {
       return;
     }
 
-    // Ensure shared buffer exists for buffering/live/record outputs
-    this.#ensureSharedBuffer();
+    data = media.data;
 
+    // Ensure shared buffer exists before proceeding
+    this.#ensureSharedBuffer();
     if (this.#buffer === undefined) {
       return;
     }
 
+    // Resolve codec (explicit media override first, otherwise fallback to configured codecs)
     codec =
       typeof media?.codec === 'string'
         ? media.codec.toLowerCase()
-        : media.type === Streamer.MEDIA_TYPE.VIDEO
+        : mediaType === Streamer.MEDIA_TYPE.VIDEO
           ? this.codecs?.video
-          : media.type === Streamer.MEDIA_TYPE.AUDIO
+          : mediaType === Streamer.MEDIA_TYPE.AUDIO
             ? this.codecs?.audio
-            : media.type === Streamer.MEDIA_TYPE.TALK
+            : mediaType === Streamer.MEDIA_TYPE.TALK
               ? this.codecs?.talkback
-              : undefined;
+              : mediaType === Streamer.MEDIA_TYPE.METADATA
+                ? Streamer.CODEC_TYPE.META
+                : undefined;
 
     if (typeof codec !== 'string' || codec.trim() === '') {
       return;
     }
 
-    // Track top-level stream codec info
-    if (media.type === Streamer.MEDIA_TYPE.VIDEO) {
+    // Update advertised video stream properties
+    if (mediaType === Streamer.MEDIA_TYPE.VIDEO) {
       this.video.codec = codec;
 
       if (media?.profile?.trim?.() !== '') {
@@ -550,7 +785,8 @@ export default class Streamer {
       }
     }
 
-    if (media.type === Streamer.MEDIA_TYPE.AUDIO) {
+    // Update advertised audio stream properties
+    if (mediaType === Streamer.MEDIA_TYPE.AUDIO) {
       this.audio.codec = codec;
 
       if (media?.profile?.trim?.() !== '') {
@@ -570,115 +806,218 @@ export default class Streamer {
       }
     }
 
-    // Preserve media sequence if upstream provided one, otherwise assign local sequence
-    if (typeof this.#sequenceCounters?.[media.type] !== 'number') {
-      this.#sequenceCounters[media.type] = 0;
+    // Initialise sequence counter if required
+    if (typeof this.#sequenceCounters?.[mediaType] !== 'number') {
+      this.#sequenceCounters[mediaType] = 0;
     }
 
-    sequence = typeof media?.sequence === 'number' ? media.sequence : this.#sequenceCounters[media.type]++;
+    // Use provided sequence/timestamp or fallback to generated values
+    sequence = Number.isFinite(media?.sequence) === true ? media.sequence : this.#sequenceCounters[mediaType]++;
+    sourceTimestamp = Number.isFinite(media?.timestamp) === true ? Math.round(media.timestamp) : now;
 
-    // Preserve original source timestamp exactly as supplied by upstream module
-    sourceTimestamp = typeof media?.timestamp === 'number' && Number.isFinite(media.timestamp) === true ? Math.round(media.timestamp) : now;
-
-    // Start buffered media time from source timestamp
-    mediaTime = sourceTimestamp;
-
-    if (typeof this.#lastMediaTime?.[media.type] !== 'number') {
-      this.#lastMediaTime[media.type] = 0;
+    // Ensure monotonic media time (never goes backwards)
+    if (typeof this.#lastMediaTime?.[mediaType] !== 'number') {
+      this.#lastMediaTime[mediaType] = 0;
     }
 
-    // Only repair clearly invalid buffered timing here.
-    // Upstream stream modules are now responsible for assigning sane media timestamps.
-    if (typeof mediaTime !== 'number' || Number.isFinite(mediaTime) !== true) {
-      mediaTime = now;
-    }
+    mediaTime = sourceTimestamp < this.#lastMediaTime[mediaType] ? this.#lastMediaTime[mediaType] : sourceTimestamp;
+    this.#lastMediaTime[mediaType] = mediaTime;
 
-    // Fallback monotonic guard only for obviously broken backwards jumps.
-    // Do not rewrite equal/near-equal upstream timing by default.
-    if (mediaTime < this.#lastMediaTime[media.type]) {
-      mediaTime = this.#lastMediaTime[media.type];
-    }
+    // Codec-specific H264 processing
+    if (mediaType === Streamer.MEDIA_TYPE.VIDEO && codec === Streamer.CODEC_TYPE.H264) {
+      h264Result = this.#processH264VideoMedia(data, sourceTimestamp, keyFrame, now);
 
-    this.#lastMediaTime[media.type] = mediaTime;
-
-    // H264-specific NALU validation and metadata tracking
-    if (media.type === Streamer.MEDIA_TYPE.VIDEO && codec === Streamer.CODEC_TYPE.H264) {
-      isAnnexB = data.indexOf(Streamer.H264NALUS.START_CODE) === 0;
-      nalUnits = this.#getH264NALUnits(data);
-
-      if (Array.isArray(nalUnits) !== true || nalUnits.length === 0) {
+      if (typeof h264Result !== 'object' || h264Result === null) {
         return;
       }
 
-      // Track SPS/PPS/IDR from this media and determine if this media contains an actual frame
-      nalUnits.forEach((nalu) => {
-        if (nalu.type === Streamer.H264NALUS.TYPES.SPS) {
-          this.#videoState.lastSPS = Buffer.from(nalu.data);
+      data = h264Result.data;
+      keyFrame = h264Result.keyFrame === true;
+    }
 
-          resolution = this.#decodeH264SPS(nalu.data);
-          if (typeof resolution === 'object' && resolution !== null) {
-            if (Number.isInteger(resolution.width) === true && resolution.width > 0) {
-              this.video.width = resolution.width;
+    // Audio frame timing smoothing
+    if (mediaType === Streamer.MEDIA_TYPE.AUDIO) {
+      if (typeof this.#audioState.lastSourceFrameTime === 'number') {
+        audioFrameDuration = sourceTimestamp - this.#audioState.lastSourceFrameTime;
+
+        if (audioFrameDuration > 0) {
+          let isOutlier = false;
+
+          if (typeof this.audio.frameDuration === 'number' && this.audio.frameDuration > 0) {
+            let deviance = Math.abs(audioFrameDuration - this.audio.frameDuration) / this.audio.frameDuration;
+            if (deviance > 0.5) {
+              isOutlier = true;
             }
+          }
 
-            if (Number.isInteger(resolution.height) === true && resolution.height > 0) {
-              this.video.height = resolution.height;
+          if (isOutlier !== true) {
+            if (typeof this.audio.frameDuration === 'number') {
+              this.audio.frameDuration = this.audio.frameDuration * 0.8 + audioFrameDuration * 0.2;
+            } else {
+              this.audio.frameDuration = audioFrameDuration;
             }
           }
         }
-
-        if (nalu.type === Streamer.H264NALUS.TYPES.PPS) {
-          this.#videoState.lastPPS = Buffer.from(nalu.data);
-        }
-
-        if (nalu.type === Streamer.H264NALUS.TYPES.IDR) {
-          this.#videoState.lastIDR = Buffer.from(nalu.data);
-          containsFrame = true;
-        }
-
-        if (nalu.type === Streamer.H264NALUS.TYPES.SLICE_NON_IDR) {
-          containsFrame = true;
-        }
-      });
-
-      // Treat media as key frame when an IDR is present, even if upstream did not explicitly flag it
-      if (media?.keyFrame !== true) {
-        media.keyFrame = nalUnits.some((nalu) => nalu.type === Streamer.H264NALUS.TYPES.IDR);
       }
 
-      // Normalise H264 only if upstream supplied a raw single NAL unit.
-      // If upstream already supplied Annex-B data (single or multi-NAL access unit),
-      // preserve it exactly as-is to avoid unnecessary Buffer.concat() churn.
-      if (isAnnexB !== true) {
-        if (nalUnits.length !== 1) {
-          return;
-        }
+      this.#audioState.lastSourceFrameTime = sourceTimestamp;
+    }
 
-        data = Buffer.concat([Streamer.H264NALUS.START_CODE, nalUnits[0].data]);
+    // Update source/item stats for support dump and diagnostics
+    if (this.supportDump === true && typeof this.#stats?.source === 'object' && this.#stats.source !== null) {
+      if (keyFrame === true && typeof this.#stats.source.firstKeyframeAt !== 'number') {
+        this.#stats.source.firstKeyframeAt = now;
       }
 
-      // Track FPS using actual video frame NAL units (IDR and non-IDR slices)
-      // Use source timestamps so FPS reflects actual upstream frame cadence
-      if (containsFrame === true) {
-        if (typeof this.#videoState.lastSourceFrameTime === 'number' && sourceTimestamp > this.#videoState.lastSourceFrameTime) {
-          frameDelta = sourceTimestamp - this.#videoState.lastSourceFrameTime;
+      this.#stats.source.lastItemAt = now;
+
+      if (mediaType === Streamer.MEDIA_TYPE.VIDEO) {
+        this.#stats.source.lastVideoItemAt = now;
+
+        if (typeof this.#stats.source.firstVideoItemAt !== 'number') {
+          this.#stats.source.firstVideoItemAt = now;
+        }
+      }
+
+      if (mediaType === Streamer.MEDIA_TYPE.AUDIO) {
+        this.#stats.source.lastAudioItemAt = now;
+
+        if (typeof this.#stats.source.firstAudioItemAt !== 'number') {
+          this.#stats.source.firstAudioItemAt = now;
+        }
+      }
+
+      if (keyFrame === true) {
+        this.#stats.source.lastKeyframeAt = now;
+      }
+    }
+
+    if (this.supportDump === true && typeof this.#stats?.items === 'object' && this.#stats.items !== null) {
+      if (mediaType === Streamer.MEDIA_TYPE.VIDEO) {
+        this.#stats.items.video++;
+      }
+
+      if (mediaType === Streamer.MEDIA_TYPE.AUDIO) {
+        this.#stats.items.audio++;
+      }
+
+      if (mediaType === Streamer.MEDIA_TYPE.TALK) {
+        this.#stats.items.talk++;
+      }
+
+      if (mediaType === Streamer.MEDIA_TYPE.METADATA) {
+        this.#stats.items.metadata++;
+      }
+
+      if (keyFrame === true) {
+        this.#stats.items.keyframes++;
+      }
+    }
+
+    // Push final packet into shared buffer
+    this.#buffer.push({
+      index: this.#itemIndex++,
+      type: mediaType,
+      codec: codec,
+      time: mediaTime,
+      sourceTimestamp: sourceTimestamp,
+      sequence: sequence,
+      keyFrame: keyFrame === true,
+      data: data,
+    });
+  }
+
+  #processH264VideoMedia(data, sourceTimestamp, keyFrame, now) {
+    let nalUnits = undefined;
+    let containsFrame = false;
+    let resolution = undefined;
+    let isAnnexB = false;
+    let previousFPS = undefined;
+    let frameDelta = 0;
+    let fps = 0;
+
+    // Split incoming payload into NAL units
+    nalUnits = this.#getH264NALUnits(data);
+
+    if (nalUnits.length === 0) {
+      return undefined;
+    }
+
+    // Derive Annex-B from parser behaviour:
+    // - Non-Annex-B returns original buffer reference
+    // - Annex-B returns subarray views
+    isAnnexB = nalUnits[0].data !== data;
+
+    for (let nalu of nalUnits) {
+      // SPS -> update resolution and cache
+      if (nalu.type === Streamer.H264NALUS.TYPES.SPS) {
+        this.#videoState.lastSPS = Buffer.from(nalu.data);
+
+        resolution = this.#decodeH264SPS(nalu.data);
+        if (typeof resolution === 'object' && resolution !== null) {
+          if (Number.isInteger(resolution.width) === true && resolution.width > 0) {
+            this.video.width = resolution.width;
+          }
+
+          if (Number.isInteger(resolution.height) === true && resolution.height > 0) {
+            this.video.height = resolution.height;
+          }
+        }
+      }
+
+      // PPS -> cache for future keyframes
+      if (nalu.type === Streamer.H264NALUS.TYPES.PPS) {
+        this.#videoState.lastPPS = Buffer.from(nalu.data);
+      }
+
+      // IDR (keyframe)
+      if (nalu.type === Streamer.H264NALUS.TYPES.IDR) {
+        this.#videoState.lastIDR = Buffer.from(nalu.data);
+        containsFrame = true;
+        keyFrame = true;
+      }
+
+      // Non-IDR slice still represents a frame
+      if (nalu.type === Streamer.H264NALUS.TYPES.SLICE_NON_IDR) {
+        containsFrame = true;
+      }
+    }
+
+    // Convert non-Annex-B to Annex-B format for downstream compatibility
+    if (isAnnexB !== true) {
+      if (nalUnits.length !== 1) {
+        return undefined;
+      }
+
+      data = Buffer.concat([Streamer.H264NALUS.START_CODE, nalUnits[0].data]);
+    }
+
+    // FPS estimation based on source timestamps
+    if (containsFrame === true) {
+      if (typeof this.#videoState.lastSourceFrameTime === 'number' && sourceTimestamp > this.#videoState.lastSourceFrameTime) {
+        frameDelta = sourceTimestamp - this.#videoState.lastSourceFrameTime;
+        previousFPS = this.video.fps;
+
+        if (
+          typeof previousFPS !== 'number' ||
+          previousFPS <= 0 ||
+          Math.abs(frameDelta - 1000 / previousFPS) / (1000 / previousFPS) <= 0.5
+        ) {
           fps = 1000 / frameDelta;
-          previousFPS = this.video.fps;
 
-          // Smooth or assign FPS
-          if (typeof this.video.fps === 'number') {
-            this.video.fps = this.video.fps * 0.8 + fps * 0.2;
+          if (typeof previousFPS === 'number') {
+            this.video.fps = previousFPS * 0.8 + fps * 0.2;
           } else {
             this.video.fps = fps;
           }
 
-          // First-time announce (when fps becomes available AND we have dimensions)
           if (
-            typeof previousFPS !== 'number' &&
+            this.#videoState.streamInfoLogged !== true &&
             typeof this.video.width === 'number' &&
             typeof this.video.height === 'number' &&
             typeof this.video.fps === 'number'
           ) {
+            this.#videoState.streamInfoLogged = true;
             this?.log?.debug?.(
               'Receiving incoming stream from device "%s": %s %sx%s @ %sfps',
               this.nest_google_device_uuid,
@@ -689,186 +1028,117 @@ export default class Streamer {
             );
           }
 
-          // FPS change detection (only if we already had a value)
           if (typeof previousFPS === 'number' && typeof this.video.fps === 'number') {
-            currentFPS = Math.round(this.video.fps);
-            prevFPS = Math.round(previousFPS);
-            delta = Math.abs(currentFPS - prevFPS);
-
-            // Only log if:
-            // - meaningful FPS shift (>= 2 fps)
-            // - AND at least 3 seconds since last log
-            if (delta >= 2 && (typeof this.#videoState.lastFPSLogTime !== 'number' || now - this.#videoState.lastFPSLogTime >= 3000)) {
+            if (
+              Math.abs(Math.round(this.video.fps) - Math.round(previousFPS)) >= 3 &&
+              (typeof this.#videoState.lastFPSLogTime !== 'number' || now - this.#videoState.lastFPSLogTime >= 30000)
+            ) {
               this.#videoState.lastFPSLogTime = now;
               this?.log?.debug?.('FPS from device "%s" has changed to %sfps', this.nest_google_device_uuid, Math.round(this.video.fps));
             }
           }
         }
-
-        this.#videoState.lastSourceFrameTime = sourceTimestamp;
       }
 
-      // Track most recent keyframe index in rolling buffer
-      if (media.keyFrame === true) {
-        this.#videoState.lastIDRIndex = this.#itemIndex;
-      }
+      this.#videoState.lastSourceFrameTime = sourceTimestamp;
     }
 
-    // Track audio frame duration from source timestamps
-    if (media.type === Streamer.MEDIA_TYPE.AUDIO) {
-      if (
-        typeof this.audio.sampleRate !== 'number' &&
-        typeof media?.sampleRate === 'number' &&
-        Number.isFinite(media.sampleRate) === true &&
-        media.sampleRate > 0
-      ) {
-        this.audio.sampleRate = media.sampleRate;
-      }
-
-      if (
-        typeof this.audio.channels !== 'number' &&
-        typeof media?.channels === 'number' &&
-        Number.isFinite(media.channels) === true &&
-        media.channels > 0
-      ) {
-        this.audio.channels = media.channels;
-      }
-
-      if (typeof this.#lastMediaTime.audio === 'number' && typeof sourceTimestamp === 'number') {
-        audioFrameDuration = sourceTimestamp - (this.#audioState.lastSourceFrameTime ?? sourceTimestamp);
-
-        if (audioFrameDuration > 0) {
-          if (typeof this.audio.frameDuration === 'number') {
-            this.audio.frameDuration = this.audio.frameDuration * 0.8 + audioFrameDuration * 0.2;
-          } else {
-            this.audio.frameDuration = audioFrameDuration;
-          }
-        }
-      }
-
-      this.#audioState.lastSourceFrameTime = sourceTimestamp;
+    // Track last keyframe index for buffer trimming / recording alignment
+    if (keyFrame === true) {
+      this.#videoState.lastIDRIndex = this.#itemIndex;
     }
 
-    // Track first items / first keyframe arrival for support/debugging
-    if (typeof this.#stats?.source === 'object' && this.#stats.source !== null) {
-      if (media?.keyFrame === true && typeof this.#stats.source.firstKeyframeAt !== 'number') {
-        this.#stats.source.firstKeyframeAt = now;
-      }
-
-      this.#stats.source.lastItemAt = now;
-
-      if (media.type === Streamer.MEDIA_TYPE.VIDEO) {
-        this.#stats.source.lastVideoItemAt = now;
-
-        if (typeof this.#stats.source.firstVideoItemAt !== 'number') {
-          this.#stats.source.firstVideoItemAt = now;
-        }
-      }
-
-      if (media.type === Streamer.MEDIA_TYPE.AUDIO) {
-        this.#stats.source.lastAudioItemAt = now;
-
-        if (typeof this.#stats.source.firstAudioItemAt !== 'number') {
-          this.#stats.source.firstAudioItemAt = now;
-        }
-      }
-
-      if (media?.keyFrame === true) {
-        this.#stats.source.lastKeyframeAt = now;
-      }
-    }
-
-    // Track item counters for support/debugging
-    if (typeof this.#stats?.items === 'object' && this.#stats.items !== null) {
-      if (media.type === Streamer.MEDIA_TYPE.VIDEO) {
-        this.#stats.items.video++;
-      }
-
-      if (media.type === Streamer.MEDIA_TYPE.AUDIO) {
-        this.#stats.items.audio++;
-      }
-
-      if (media.type === Streamer.MEDIA_TYPE.TALK) {
-        this.#stats.items.talk++;
-      }
-
-      if (media.type === Streamer.MEDIA_TYPE.METADATA) {
-        this.#stats.items.metadata++;
-      }
-
-      if (media.keyFrame === true) {
-        this.#stats.items.keyframes++;
-      }
-    }
-
-    this.#buffer.items.push({
-      index: this.#itemIndex++,
-      type: media.type,
-      codec: codec,
-      time: mediaTime, // Buffered media timestamp used by Streamer scheduling
-      sourceTimestamp: sourceTimestamp, // Original upstream timestamp preserved for timing diagnostics
-      sequence: sequence,
-      keyFrame: media?.keyFrame === true,
+    return {
       data: data,
-    });
+      keyFrame: keyFrame,
+    };
   }
 
-  #startBuffering(options = {}) {
+  async #startBuffering(options = {}) {
     this.#ensureSharedBuffer();
 
-    if (this.#buffer.enabled === true) {
+    if (this.#bufferEnabled === true) {
       return;
     }
 
-    this.#buffer.enabled = true;
+    this.#bufferEnabled = true;
     this.log?.debug?.('Started buffering from device uuid "%s"', this.nest_google_device_uuid);
     this.#syncSchedulerState();
 
-    this.#doConnect(options);
+    await this.#doConnect(options);
   }
 
-  #stopBuffering() {
-    if (this.#buffer?.enabled !== true) {
+  async #stopBuffering() {
+    if (this.#bufferEnabled !== true) {
       return;
     }
 
-    this.#buffer.enabled = false;
+    this.#bufferEnabled = false;
     this.log?.debug?.('Stopped buffering from device uuid "%s"', this.nest_google_device_uuid);
 
-    // If no live/record outputs remain, fully remove buffer and close connection
     if (this.isStreaming() === false) {
-      this.#buffer = undefined;
-      this.#itemIndex = 0;
-      this.#videoState = {};
-      this.#audioState = {};
-      this.#lastMediaTime = {};
+      this.#resetRetainedState();
       this.#syncSchedulerState();
-      this.#doClose();
+      await this.#doClose();
       return;
     }
 
     this.#syncSchedulerState();
   }
 
-  async #startLiveStream(sessionID, options = {}) {
+  async #createOutput(sessionID, type, options) {
     let existing = undefined;
-    let includeAudio = options?.includeAudio === true;
-    let videoOut = undefined;
-    let audioOut = null;
-    let talkbackIn = null;
-    let startCursor = this.#itemIndex;
-    let buffer = this.#buffer;
-    let bufferStart = undefined;
-    let maxCursor = undefined;
     let output = undefined;
+    let video = undefined;
+    let audio = null;
+    let talkback = null;
+    let includeAudio = options?.includeAudio === true;
+    let waitForReady = Number.isInteger(options?.waitForReady) === true ? options.waitForReady : 0;
+    let startCursor = this.#itemIndex;
+    let buffer = undefined;
+    let itemsLength = 0;
+    let bufferStart = 0;
+    let item = undefined;
+    let isH264 = this.codecs?.video === Streamer.CODEC_TYPE.H264;
+    let recordTime = options?.recordTime;
+    let bestBeforeOffset = -1;
+    let bestAfterOffset = -1;
+    let bestBeforeTime = Number.NEGATIVE_INFINITY;
+    let bestAfterTime = Number.POSITIVE_INFINITY;
+    let latestKeyFrameOffset = -1;
+    let index = 0;
+    let itemTime = 0;
+    let startTime = Date.now();
 
+    // Validate session id
     if (typeof sessionID !== 'string' || sessionID === '') {
       return;
     }
 
-    if (this.#live.has(sessionID) === true) {
-      this?.log?.warn?.('Live stream already exists for uuid "%s" and session id "%s"', this.nest_google_device_uuid, sessionID);
-      existing = this.#live.get(sessionID);
+    // Check for existing output with this session id
+    existing = this.#outputs.get(sessionID);
+
+    // Only allow a single record output, regardless of session id
+    if (type === Streamer.STREAM_TYPE.RECORD && existing === undefined) {
+      for (output of this.#outputs.values()) {
+        if (output?.type === Streamer.STREAM_TYPE.RECORD) {
+          existing = output;
+          break;
+        }
+      }
+    }
+
+    // Reuse existing output when possible, otherwise reject type conflict
+    if (existing !== undefined) {
+      if (existing.type !== type) {
+        this?.log?.warn?.(
+          'Cannot start output for device uuid "%s" and session id "%s" as it is already in use for "%s"',
+          this.nest_google_device_uuid,
+          sessionID,
+          existing.type,
+        );
+        return;
+      }
 
       return {
         video: existing.video,
@@ -877,81 +1147,137 @@ export default class Streamer {
       };
     }
 
-    // Create stream outputs for ffmpeg to consume
-    videoOut = new PassThrough();
-    audioOut = includeAudio === true ? new PassThrough() : null;
-    talkbackIn = includeAudio === true ? new PassThrough({ highWaterMark: 1024 * 16 }) : null;
-
-    // eslint-disable-next-line no-unused-vars
-    videoOut?.on?.('error', (error) => {});
-    // eslint-disable-next-line no-unused-vars
-    audioOut?.on?.('error', (error) => {});
-    // eslint-disable-next-line no-unused-vars
-    talkbackIn?.on?.('error', (error) => {});
-
+    // Ensure retained buffer exists and start/connect source if needed
     this.#ensureSharedBuffer();
+    await this.#doConnect(options);
     buffer = this.#buffer;
-    bufferStart = buffer?.startIndex;
 
-    // Get starting cursor for live stream.
-    // If there are already live viewers, align this viewer to the most advanced
-    // shared live position so "live" remains as close to current as possible.
-    // Otherwise, start at the current live edge and let buffered output gating
-    // wait for the next safe decoder point if needed.
-    if (typeof bufferStart === 'number' && this.#live.size !== 0) {
-      for (output of this.#live.values()) {
-        if (typeof output?.cursor === 'number') {
-          if (typeof maxCursor !== 'number' || output.cursor > maxCursor) {
-            maxCursor = output.cursor;
+    if (buffer instanceof RingBuffer !== true) {
+      return;
+    }
+
+    // Create streams for this output
+    video = new PassThrough();
+    audio = includeAudio === true ? new PassThrough() : null;
+    talkback = type === Streamer.STREAM_TYPE.LIVE && includeAudio === true ? new PassThrough({ highWaterMark: 1024 * 16 }) : null;
+
+    // Prevent unhandled stream errors from bubbling
+    video?.on?.('error', () => {});
+    audio?.on?.('error', () => {});
+    talkback?.on?.('error', () => {});
+
+    // Determine initial cursor for recording
+    if (type === Streamer.STREAM_TYPE.RECORD) {
+      itemsLength = buffer.size;
+      bufferStart = buffer.startIndex;
+      bestBeforeOffset = -1;
+      bestAfterOffset = -1;
+      bestBeforeTime = Number.NEGATIVE_INFINITY;
+      bestAfterTime = Number.POSITIVE_INFINITY;
+      latestKeyFrameOffset = -1;
+      index = 0;
+
+      // Default to buffer start if valid
+      if (typeof bufferStart === 'number') {
+        startCursor = bufferStart;
+      }
+
+      // Only attempt precise positioning if we have retained data and a valid time
+      if (itemsLength !== 0 && typeof recordTime === 'number' && Number.isFinite(recordTime) === true) {
+        if (isH264 === true) {
+          // For H264 we MUST start on a keyframe (IDR) or decoding will fail.
+          // We scan the retained buffer once and track:
+          // - closest keyframe before the requested time
+          // - closest keyframe after the requested time
+          // - latest keyframe overall as fallback
+          while (index < itemsLength) {
+            item = buffer.getByOffset(index);
+
+            if (
+              item?.type === Streamer.MEDIA_TYPE.VIDEO &&
+              item?.codec === Streamer.CODEC_TYPE.H264 &&
+              item?.keyFrame === true &&
+              typeof item?.time === 'number'
+            ) {
+              itemTime = item.time;
+              latestKeyFrameOffset = index;
+
+              if (itemTime <= recordTime && itemTime >= bestBeforeTime) {
+                bestBeforeTime = itemTime;
+                bestBeforeOffset = index;
+              }
+
+              if (itemTime > recordTime && itemTime < bestAfterTime) {
+                bestAfterTime = itemTime;
+                bestAfterOffset = index;
+              }
+            }
+
+            index++;
+          }
+
+          // Prefer nearest valid decoder start before requested time
+          if (bestBeforeOffset !== -1) {
+            startCursor = buffer.getByOffset(bestBeforeOffset)?.index;
+          }
+
+          // Otherwise nearest valid decoder start after requested time
+          if (bestBeforeOffset === -1 && bestAfterOffset !== -1) {
+            startCursor = buffer.getByOffset(bestAfterOffset)?.index;
+          }
+
+          // Otherwise use latest retained keyframe
+          if (bestBeforeOffset === -1 && bestAfterOffset === -1 && latestKeyFrameOffset !== -1) {
+            startCursor = buffer.getByOffset(latestKeyFrameOffset)?.index;
+          }
+
+          // Final fallback: last globally seen IDR if it is still inside retained window
+          if (
+            bestBeforeOffset === -1 &&
+            bestAfterOffset === -1 &&
+            latestKeyFrameOffset === -1 &&
+            typeof this.#videoState?.lastIDRIndex === 'number' &&
+            typeof bufferStart === 'number' &&
+            this.#videoState.lastIDRIndex >= bufferStart
+          ) {
+            startCursor = this.#videoState.lastIDRIndex;
+          }
+        }
+
+        if (isH264 !== true) {
+          // Non-H264 can start at first retained frame at or after requested time
+          index = 0;
+
+          while (index < itemsLength) {
+            item = buffer.getByOffset(index);
+
+            if (typeof item?.time === 'number' && item.time >= recordTime) {
+              startCursor = item.index;
+              break;
+            }
+
+            index++;
           }
         }
       }
 
-      if (typeof maxCursor === 'number') {
-        startCursor = maxCursor < bufferStart ? bufferStart : maxCursor;
+      // Never allow cursor to point before current retained window
+      if (typeof bufferStart === 'number' && startCursor < bufferStart) {
+        startCursor = bufferStart;
       }
     }
 
-    if (typeof bufferStart === 'number' && this.#live.size === 0 && startCursor < bufferStart) {
-      startCursor = bufferStart;
-    }
-
-    // Setup talkback handler
-    talkbackIn?.on?.('data', (data) => {
-      output = this.#live.get(sessionID);
-
-      // Received audio data to send onto camera/doorbell for output
-      if (typeof this?.sendTalkback === 'function' && output !== undefined) {
-        this.sendTalkback(data);
-
-        clearTimeout(output.talkbackTimeout);
-        output.talkbackTimeout = setTimeout(() => {
-          this.sendTalkback(Buffer.alloc(0));
-        }, TIMERS.TALKBACK_AUDIO.interval);
-      }
-    });
-
-    talkbackIn?.on?.('close', () => {
-      output = this.#live.get(sessionID);
-
-      clearTimeout(output?.talkbackTimeout);
-
-      if (typeof this?.sendTalkback === 'function') {
-        this.sendTalkback(Buffer.alloc(0));
-      }
-    });
-
-    // Ensure upstream connection is active
-    await this.#doConnect(options);
-
-    this.#live.set(sessionID, {
+    // Create output state
+    output = {
       sessionID: sessionID,
-      video: videoOut,
-      audio: audioOut,
-      talkback: talkbackIn,
+      type: type,
+      video: video,
+      audio: audio,
+      talkback: talkback,
       talkbackTimeout: undefined,
       includeAudio: includeAudio,
-      cursor: startCursor,
+      cursor: type === Streamer.STREAM_TYPE.RECORD ? startCursor : undefined,
+      catchingUp: type === Streamer.STREAM_TYPE.RECORD,
       sentCodecConfig: false,
       seenKeyFrame: false,
       lastVideoWriteTime: 0,
@@ -962,27 +1288,40 @@ export default class Streamer {
         firstWriteAt: undefined,
         firstVideoWriteAt: undefined,
         firstAudioWriteAt: undefined,
-        writes: {
-          total: 0,
-          video: 0,
-          audio: 0,
-        },
-        drops: {
-          videoBeforeKeyframe: 0,
-          audioBeforeKeyframe: 0,
-          bufferTrimmed: 0,
-        },
+        writes: { total: 0, video: 0, audio: 0 },
+        drops: { videoBeforeKeyframe: 0, audioBeforeKeyframe: 0, bufferTrimmed: 0 },
       },
-    });
+    };
 
+    // Attach talkback handling for live streams
+    if (talkback !== null) {
+      talkback.on('data', (data) => {
+        if (typeof this?.sendTalkback === 'function') {
+          this.sendTalkback(data);
+
+          clearTimeout(output.talkbackTimeout);
+          output.talkbackTimeout = setTimeout(() => {
+            this.sendTalkback(Buffer.alloc(0));
+          }, TIMERS.TALKBACK_AUDIO.interval);
+        }
+      });
+
+      talkback.on('close', () => {
+        clearTimeout(output?.talkbackTimeout);
+
+        if (typeof this?.sendTalkback === 'function') {
+          this.sendTalkback(Buffer.alloc(0));
+        }
+      });
+    }
+
+    // Register output before any optional readiness wait
+    this.#outputs.set(sessionID, output);
     this.#syncSchedulerState();
 
-    // Optional short wait for upstream source to reach a usable state before returning.
-    // This helps avoid ffmpeg starting while the source is still connecting/redirecting.
-    if (Number.isInteger(options?.waitForReady) === true && options?.waitForReady > 0) {
-      let started = Date.now();
-
-      while (Date.now() - started < options?.waitForReady) {
+    // Optionally wait for source readiness before returning stream handles
+    if (waitForReady > 0) {
+      while (Date.now() - startTime < waitForReady) {
         if (
           this.#sourceState === Streamer.MESSAGE_TYPE.SOURCE_READY ||
           this.#sourceState === Streamer.MESSAGE_TYPE.SOURCE_CLOSED ||
@@ -995,309 +1334,192 @@ export default class Streamer {
       }
     }
 
-    this?.log?.debug?.('Started live stream from device uuid "%s" and session id "%s"', this.nest_google_device_uuid, sessionID);
-    return { video: videoOut, audio: audioOut, talkback: talkbackIn };
+    this?.log?.debug?.(
+      'Started %s stream from device uuid "%s" and session id "%s"',
+      type === Streamer.STREAM_TYPE.LIVE ? 'live' : 'record',
+      this.nest_google_device_uuid,
+      sessionID,
+    );
+
+    return {
+      video: video,
+      audio: audio,
+      talkback: talkback,
+    };
   }
 
-  #stopLiveStream(sessionID) {
-    let output = this.#live.get(sessionID);
+  async #stopOutput(sessionID, type) {
+    let output = undefined;
+    let hasOtherLiveOutputs = false;
+    let id = undefined;
+    let activeOutput = undefined;
 
-    if (output !== undefined) {
-      if (this.supportDump === true && output !== undefined && this.#live.size === 1) {
-        // Output stats on demand when the final live stream stops for support diagnostics
-        this.#outputStats(output, Date.now());
+    // Resolve output by session id if provided
+    if (typeof sessionID === 'string' && sessionID !== '') {
+      output = this.#outputs.get(sessionID);
+    }
+
+    // For recording, allow stopping the first active record stream if no session id was provided
+    if (output === undefined && type === Streamer.STREAM_TYPE.RECORD) {
+      for (let candidate of this.#outputs.values()) {
+        if (candidate?.type === Streamer.STREAM_TYPE.RECORD) {
+          output = candidate;
+          break;
+        }
       }
-
-      this?.log?.debug?.('Stopped live stream from device uuid "%s" and session id "%s"', this.nest_google_device_uuid, sessionID);
-
-      this.#cleanupOutput(output);
-      this.#live.delete(sessionID);
     }
 
-    if (this.#live.size === 0 && this.#record === undefined && this.#buffer?.enabled !== true) {
-      this.#buffer = undefined;
-      this.#itemIndex = 0;
-      this.#videoState = {};
-      this.#audioState = {};
-    }
-
-    this.#syncSchedulerState();
-
-    // If no more active streams, close the upstream connection
-    if (this.isStreaming() === false && this.isBuffering() === false) {
-      this.#doClose();
-    }
-  }
-
-  #startRecording(sessionID, options = {}) {
-    let buffer = undefined;
-    let items = undefined;
-    let itemsLength = 0;
-    let bufferStart = undefined;
-    let startCursor = this.#itemIndex;
-    let videoOut = undefined;
-    let audioOut = null;
-    let includeAudio = options?.includeAudio === true;
-    let isH264 = this.codecs?.video === Streamer.CODEC_TYPE.H264;
-    let recordTime = options?.recordTime;
-    let bestBeforeOffset = -1;
-    let bestAfterOffset = -1;
-    let bestBeforeTime = Number.NEGATIVE_INFINITY;
-    let bestAfterTime = Number.POSITIVE_INFINITY;
-    let latestKeyFrameOffset = -1;
-    let index = 0;
-    let itemTime = 0;
-
-    if (typeof sessionID !== 'string' || sessionID === '') {
+    // Nothing matched to stop
+    if (output === undefined) {
       return;
     }
 
-    // Prevent duplicate recording sessions
-    if (this.#record !== undefined) {
+    // Ensure we are not stopping a mismatched type (e.g. live vs record)
+    if (output.type !== type) {
       this?.log?.warn?.(
-        'Recording stream already exists for uuid "%s" and session id "%s"',
+        'Cannot stop stream for device uuid "%s" and session id "%s" as it is type "%s" not "%s"',
         this.nest_google_device_uuid,
-        this.#record.sessionID,
+        output.sessionID,
+        output.type,
+        type,
       );
-
-      return {
-        video: this.#record.video,
-        audio: this.#record.audio,
-      };
+      return;
     }
 
-    // Create stream outputs for ffmpeg to consume
-    videoOut = new PassThrough();
-    audioOut = includeAudio === true ? new PassThrough() : null;
-
-    // eslint-disable-next-line no-unused-vars
-    videoOut?.on?.('error', (error) => {});
-    // eslint-disable-next-line no-unused-vars
-    audioOut?.on?.('error', (error) => {});
-
-    this.#ensureSharedBuffer();
-
-    // Ensure upstream connection is active
-    this.#doConnect(options);
-
-    buffer = this.#buffer;
-    items = buffer?.items;
-    itemsLength = Array.isArray(items) === true ? items.length : 0;
-    bufferStart = buffer?.startIndex;
-
-    if (typeof bufferStart === 'number') {
-      startCursor = bufferStart;
-    }
-
-    // If recordTime is supplied, try to start as close as possible to that time.
-    // For H264, prefer the latest buffered keyframe at or before the requested time
-    // so recording starts on a decodable frame without skipping past the requested prebuffer point.
-    // If no earlier keyframe exists, fall forward to the earliest buffered keyframe after recordTime.
-    // If no keyframe around recordTime exists, fall back to the most recent buffered keyframe.
-    if (itemsLength !== 0 && typeof recordTime === 'number' && Number.isFinite(recordTime) === true) {
-      if (isH264 === true) {
-        while (index < itemsLength) {
-          if (
-            items[index]?.type === Streamer.MEDIA_TYPE.VIDEO &&
-            items[index]?.codec === Streamer.CODEC_TYPE.H264 &&
-            items[index]?.keyFrame === true &&
-            typeof items[index]?.time === 'number'
-          ) {
-            itemTime = items[index].time;
-            latestKeyFrameOffset = index;
-
-            if (itemTime <= recordTime && itemTime >= bestBeforeTime) {
-              bestBeforeTime = itemTime;
-              bestBeforeOffset = index;
-            }
-
-            if (itemTime > recordTime && itemTime < bestAfterTime) {
-              bestAfterTime = itemTime;
-              bestAfterOffset = index;
-            }
-          }
-
-          index++;
-        }
-
-        if (bestBeforeOffset !== -1) {
-          startCursor = items[bestBeforeOffset].index;
-        }
-
-        if (bestBeforeOffset === -1 && bestAfterOffset !== -1) {
-          startCursor = items[bestAfterOffset].index;
-        }
-
-        if (bestBeforeOffset === -1 && bestAfterOffset === -1 && latestKeyFrameOffset !== -1) {
-          startCursor = items[latestKeyFrameOffset].index;
-        }
-
-        if (
-          bestBeforeOffset === -1 &&
-          bestAfterOffset === -1 &&
-          latestKeyFrameOffset === -1 &&
-          typeof this.#videoState?.lastIDRIndex === 'number' &&
-          typeof bufferStart === 'number' &&
-          this.#videoState.lastIDRIndex >= bufferStart
-        ) {
-          startCursor = this.#videoState.lastIDRIndex;
+    // If this is the last live output and support dump is enabled, log per-output stats before cleanup
+    if (output.type === Streamer.STREAM_TYPE.LIVE && this.supportDump === true) {
+      for ([id, activeOutput] of this.#outputs) {
+        if (id !== output.sessionID && activeOutput?.type === Streamer.STREAM_TYPE.LIVE) {
+          hasOtherLiveOutputs = true;
+          break;
         }
       }
 
-      if (isH264 !== true) {
-        while (index < itemsLength) {
-          if (typeof items[index]?.time === 'number' && items[index].time >= recordTime) {
-            startCursor = items[index].index;
-            break;
-          }
-
-          index++;
-        }
+      if (hasOtherLiveOutputs !== true) {
+        this.#outputStats(output, Date.now());
       }
     }
-
-    // Final clamp to current retained window
-    if (typeof bufferStart === 'number' && startCursor < bufferStart) {
-      startCursor = bufferStart;
-    }
-
-    // Register recording session
-    this.#record = {
-      sessionID: sessionID,
-      video: videoOut,
-      audio: audioOut,
-      includeAudio: includeAudio,
-      cursor: startCursor,
-      sentCodecConfig: false,
-      seenKeyFrame: false,
-      catchingUp: true,
-      lastVideoWriteTime: 0,
-      sourceBaseTime: undefined,
-      wallclockBaseTime: undefined,
-      stats: {
-        startedAt: Date.now(),
-        firstWriteAt: undefined,
-        firstVideoWriteAt: undefined,
-        firstAudioWriteAt: undefined,
-        writes: {
-          total: 0,
-          video: 0,
-          audio: 0,
-        },
-        drops: {
-          videoBeforeKeyframe: 0,
-          audioBeforeKeyframe: 0,
-          bufferTrimmed: 0,
-        },
-      },
-    };
 
     this?.log?.debug?.(
-      'Started recording stream from device uuid "%s" with session id of "%s"%s',
+      'Stopping %s stream from device uuid "%s" and session id "%s"',
+      type === Streamer.STREAM_TYPE.LIVE ? 'live' : 'record',
       this.nest_google_device_uuid,
-      sessionID,
-      typeof recordTime === 'number' ? ' using record time ' + recordTime : '',
+      output.sessionID,
     );
 
-    this.#syncSchedulerState();
+    // Cleanup streams, timers, and any talkback state
+    this.#cleanupOutput(output);
 
-    return { video: videoOut, audio: audioOut };
-  }
+    // Remove from active outputs
+    this.#outputs.delete(output.sessionID);
 
-  #stopRecording(sessionID) {
-    if (this.#record !== undefined && (sessionID === undefined || this.#record.sessionID === sessionID)) {
-      this?.log?.debug?.('Stopped recording stream from device uuid "%s"', this.nest_google_device_uuid);
-
-      this.#cleanupOutput(this.#record);
-      this.#record = undefined;
+    // Clear retained state when last output stops and buffering is disabled.
+    // This prevents stale buffered media being reused by the next session.
+    if (this.#outputs.size === 0 && this.#bufferEnabled !== true) {
+      this.#resetRetainedState();
     }
 
-    if (this.#record === undefined && this.#live.size === 0 && this.#buffer?.enabled !== true) {
-      this.#buffer = undefined;
-      this.#itemIndex = 0;
-      this.#videoState = {};
-      this.#audioState = {};
-    }
-
+    // Update scheduler based on remaining activity
     this.#syncSchedulerState();
 
-    // If we have no more output streams active, we'll close the connection
+    // If nothing remains active, fully close underlying source
     if (this.isStreaming() === false && this.isBuffering() === false) {
-      this.#doClose();
+      await this.#doClose();
     }
   }
 
   isBuffering() {
-    // Is buffering active?
-    return this.#buffer?.enabled === true;
+    return this.#bufferEnabled === true;
   }
 
   isStreaming() {
-    // Any live or recording streams active?
-    return this.#record !== undefined || this.#live.size !== 0;
+    return this.#outputs.size !== 0;
   }
 
   isRecording() {
-    // Is recording stream active?
-    return this.#record !== undefined;
+    for (let output of this.#outputs.values()) {
+      if (output?.type === Streamer.STREAM_TYPE.RECORD) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   isLiveStreaming() {
-    // Are any live streams active?
-    return this.#live.size !== 0;
+    for (let output of this.#outputs.values()) {
+      if (output?.type === Streamer.STREAM_TYPE.LIVE) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   hasActiveStreams() {
-    // Do we have any active streams or buffering?
-    return this.#buffer?.enabled === true || this.#record !== undefined || this.#live.size !== 0;
+    return this.#bufferEnabled === true || this.#outputs.size !== 0;
   }
 
   isSourceReady() {
-    // Is the stream source ready and presumably delivering data?
     return this.#sourceState === Streamer.MESSAGE_TYPE.SOURCE_READY;
   }
 
   setSourceState(type, reason) {
-    // Set stream source state for internal logic and logging
     if (typeof type !== 'string' || type === '') {
       return;
     }
 
-    HomeKitDevice.message(this.#HomeKitDeviceUUID, Streamer.MESSAGE, type, {
-      reason: reason,
+    HomeKitDevice.message(this.#HomeKitDeviceUUID, Streamer.MESSAGE, type, { reason: reason });
+  }
+
+  async requestSourceConnect(options = undefined) {
+    return await this.#doConnect(options);
+  }
+
+  async requestSourceClose() {
+    return await this.#doClose();
+  }
+
+  #queueLifecycle(task) {
+    let run = this.#lifecycleQueue.then(async () => {
+      return await task();
     });
+
+    // Keep queue alive even if one task fails, and avoid unhandled rejection noise.
+    this.#lifecycleQueue = run.catch(() => {
+      // Empty
+    });
+
+    return run;
   }
 
   async #doConnect(options = undefined) {
-    if (this.online !== true || this.videoEnabled !== true) {
-      // Don't attempt to connect if device is offline or streaming is not enabled
-      return;
-    }
+    return await this.#queueLifecycle(async () => {
+      if (this.online !== true || this.videoEnabled !== true) {
+        return;
+      }
 
-    // Cache any connection options for use on reconnects (e.g. after a stream source disconnect or error)
-    if (typeof options === 'object' && options !== null) {
-      this.#connectOptions = {
-        ...(typeof this.#connectOptions === 'object' && this.#connectOptions !== null ? this.#connectOptions : {}),
-        ...options,
-      };
-    }
+      if (typeof options === 'object' && options !== null) {
+        this.#connectOptions = {
+          ...(typeof this.#connectOptions === 'object' && this.#connectOptions !== null ? this.#connectOptions : {}),
+          ...options,
+        };
+      }
 
-    if (this.#sourceState !== Streamer.MESSAGE_TYPE.SOURCE_CLOSED) {
-      // Source is already connected or connecting, so no need to connect again
-      return;
-    }
+      if (this.#sourceState !== Streamer.MESSAGE_TYPE.SOURCE_CLOSED) {
+        return;
+      }
 
-    // Pass to the subclass to handle the actual connection logic and stream source management
-    await this?.connect?.(this.#connectOptions);
+      await this?.connect?.(this.#connectOptions);
+    });
   }
 
   async #doClose() {
-    // Reset video details on close/disconnect
-    this.#resetSourceState();
-    this.#resetSourceStats();
-
-    // Pass to the subclass to handle the actual stream source disconnection logic
-    await this?.close?.();
+    return await this.#queueLifecycle(async () => {
+      this.#resetSourceState();
+      this.#resetSourceStats();
+      await this?.close?.();
+    });
   }
 
   #cleanupOutput(output) {
@@ -1306,36 +1528,36 @@ export default class Streamer {
     }
 
     clearTimeout(output?.talkbackTimeout);
-
     output?.video?.removeAllListeners?.();
     output?.audio?.removeAllListeners?.();
     output?.talkback?.removeAllListeners?.();
-
     output?.video?.end?.();
     output?.audio?.end?.();
     output?.talkback?.end?.();
   }
 
+  #resetRetainedState() {
+    this.#bufferEnabled = false;
+    this.#buffer = undefined;
+    this.#sequenceCounters = {};
+    this.#itemIndex = 0;
+    this.#videoState = {};
+    this.#audioState = {};
+    this.#lastMediaTime = {};
+  }
+
   #ensureSharedBuffer() {
     if (this.#buffer === undefined) {
-      this.#buffer = {
-        enabled: false,
-        items: [],
-        startIndex: this.#itemIndex,
-      };
+      // Shared media is stored in a circular buffer so appends and expiry remain O(1).
+      // Output cursors still use logical item indexes, which keeps live/record start
+      // semantics stable even though physical storage is now wrapped.
+      this.#buffer = new RingBuffer(this.#itemIndex, STREAMER_INITIAL_BUFFER_CAPACITY);
     }
   }
 
   #resetSourceState() {
     this.#videoState = {};
-    this.video = {
-      codec: undefined,
-      profile: undefined,
-      width: undefined,
-      height: undefined,
-      fps: undefined,
-      bitrate: undefined,
-    };
+    this.video = { codec: undefined, profile: undefined, width: undefined, height: undefined, fps: undefined, bitrate: undefined };
 
     this.#audioState = {};
     this.audio = {
@@ -1353,10 +1575,8 @@ export default class Streamer {
       return;
     }
 
-    // Track reconnects across source disconnects, so preserve existing count if present
     let reconnects = this.#stats?.source?.reconnects ?? 0;
 
-    // Reset all other source stats
     this.#stats.source = {
       connectingAt: undefined,
       connectedAt: undefined,
@@ -1374,54 +1594,93 @@ export default class Streamer {
 
   #getH264NALUnits(data) {
     let nalUnits = [];
-    let offset = 0;
-    let start = -1;
-    let nextStart = -1;
+    let index = 0;
+    let naluStart = -1;
+    let naluEnd = -1;
     let startCodeLength = 0;
 
+    // Validate input
     if (Buffer.isBuffer(data) !== true || data.length === 0) {
       return nalUnits;
     }
 
-    if (data.indexOf(Streamer.H264NALUS.START_CODE) !== 0) {
+    // Detect if buffer begins with Annex-B start code (3-byte or 4-byte)
+    if (
+      data.length < 3 ||
+      data[0] !== 0x00 ||
+      data[1] !== 0x00 ||
+      (data[2] !== 0x01 && (data.length < 4 || data[2] !== 0x00 || data[3] !== 0x01))
+    ) {
+      // Not Annex-B formatted -> treat entire buffer as a single NAL unit
       return [{ type: data[0] & 0x1f, data: data }];
     }
 
-    while (offset < data.length - 3) {
-      if (data[offset] === 0x00 && data[offset + 1] === 0x00 && data[offset + 2] === 0x00 && data[offset + 3] === 0x01) {
-        start = offset;
-        startCodeLength = 4;
-        offset += 4;
-        nextStart = data.indexOf(Streamer.H264NALUS.START_CODE, offset);
+    // Determine initial start code length (3 or 4 bytes)
+    startCodeLength = data[2] === 0x01 ? 3 : 4;
 
-        if (nextStart === -1) {
-          nextStart = data.length;
-        }
+    index = startCodeLength;
+    naluStart = index;
 
-        if (start + startCodeLength < nextStart) {
+    // Single-pass scan for subsequent start codes
+    while (index <= data.length - 3) {
+      // Check for 3-byte start code (00 00 01)
+      if (data[index] === 0x00 && data[index + 1] === 0x00 && data[index + 2] === 0x01) {
+        naluEnd = index;
+
+        // Push previous NAL unit if valid
+        if (naluEnd > naluStart) {
           nalUnits.push({
-            type: data[start + startCodeLength] & 0x1f,
-            data: data.subarray(start + startCodeLength, nextStart),
+            type: data[naluStart] & 0x1f,
+            data: data.subarray(naluStart, naluEnd),
           });
         }
 
-        offset = nextStart;
+        index += 3;
+        naluStart = index;
         continue;
       }
 
-      offset++;
+      // Check for 4-byte start code (00 00 00 01)
+      if (
+        index <= data.length - 4 &&
+        data[index] === 0x00 &&
+        data[index + 1] === 0x00 &&
+        data[index + 2] === 0x00 &&
+        data[index + 3] === 0x01
+      ) {
+        naluEnd = index;
+
+        // Push previous NAL unit if valid
+        if (naluEnd > naluStart) {
+          nalUnits.push({
+            type: data[naluStart] & 0x1f,
+            data: data.subarray(naluStart, naluEnd),
+          });
+        }
+
+        index += 4;
+        naluStart = index;
+        continue;
+      }
+
+      index++;
+    }
+
+    // Push final NAL unit (if any data remains after last start code)
+    if (naluStart < data.length) {
+      nalUnits.push({
+        type: data[naluStart] & 0x1f,
+        data: data.subarray(naluStart),
+      });
     }
 
     return nalUnits;
   }
 
   #decodeH264SPS(sps) {
-    // H.264 SPS (Sequence Parameter Set) Parsing
-    // This function extracts the video width and height from a raw SPS NAL unit buffer.
-    // It implements a minimal H.264 bitstream parser for the fields needed for resolution.
-
     let data = undefined;
     let bitOffset = 0;
+    let bitLength = 0;
     let profileIdc = 0;
     let chromaFormatIdc = 1;
     let picWidthInMbsMinus1 = 0;
@@ -1434,138 +1693,156 @@ export default class Streamer {
     let cropUnitX = 1;
     let cropUnitY = 2;
 
-    // Validate input: must be a buffer, at least 4 bytes, and an SPS NAL unit (type 7)
+    // SPS NAL only
     if (Buffer.isBuffer(sps) !== true || sps.length < 4 || (sps[0] & 0x1f) !== Streamer.H264NALUS.TYPES.SPS) {
       return undefined;
     }
 
-    // Read a single bit from the bitstream
+    // Strip emulation-prevention bytes (00 00 03) so we can read RBSP bits directly
+    data = Buffer.allocUnsafe(sps.length);
+    let r = 0;
+    let w = 0;
+
+    while (r < sps.length) {
+      if (r + 2 < sps.length && sps[r] === 0x00 && sps[r + 1] === 0x00 && sps[r + 2] === 0x03) {
+        data[w++] = 0x00;
+        data[w++] = 0x00;
+        r += 3;
+        continue;
+      }
+
+      data[w++] = sps[r++];
+    }
+
+    data = data.subarray(0, w);
+    bitLength = data.length * 8;
+
+    // Bit reader helpers for Exp-Golomb coded SPS fields
     let readBit = () => {
-      let value = 0;
-      if (bitOffset >= data.length * 8) {
+      if (bitOffset >= bitLength) {
         return 0;
       }
-      value = (data[Math.floor(bitOffset / 8)] >> (7 - (bitOffset % 8))) & 0x01;
+      let byteOffset = bitOffset >> 3;
+      let value = (data[byteOffset] >> (7 - (bitOffset & 0x07))) & 0x01;
       bitOffset++;
       return value;
     };
 
-    // Read multiple bits as an unsigned integer
     let readBits = (count) => {
       let value = 0;
-      let index = 0;
-      while (index < count) {
+      while (count--) {
         value = (value << 1) | readBit();
-        index++;
       }
       return value >>> 0;
     };
 
-    // Read an unsigned Exp-Golomb code (UE)
     let readUE = () => {
       let zeros = 0;
-      let value = 0;
-      while (bitOffset < data.length * 8 && readBit() === 0) {
+      while (bitOffset < bitLength && readBit() === 0) {
         zeros++;
       }
-      value = (1 << zeros) - 1;
+      let value = Math.pow(2, zeros) - 1;
       if (zeros > 0) {
         value += readBits(zeros);
       }
       return value >>> 0;
     };
 
-    // Read a signed Exp-Golomb code (SE)
     let readSE = () => {
       let value = readUE();
-      return (value & 0x01) === 0 ? -(value >>> 1) : (value + 1) >>> 1;
+      return (value & 1) === 0 ? -(value >>> 1) : (value + 1) >>> 1;
     };
 
-    // These are inserted to prevent accidental start code emulation in the bitstream
-    data = [];
-    let offset = 0;
-    while (offset < sps.length) {
-      if (offset + 2 < sps.length && sps[offset] === 0x00 && sps[offset + 1] === 0x00 && sps[offset + 2] === 0x03) {
-        data.push(0x00, 0x00);
-        offset += 3;
-        continue;
-      }
-      data.push(sps[offset]);
-      offset++;
-    }
-    data = Buffer.from(data);
+    readBits(8); // nal_unit_type header byte
+    profileIdc = readBits(8); // profile_idc
+    readBits(16); // constraint_set_flags + level_idc
+    readUE(); // seq_parameter_set_id
 
-    // Parse SPS fields needed for resolution
-    readBits(8); // Skip NAL header (forbidden_zero_bit, nal_ref_idc, nal_unit_type)
-    profileIdc = readBits(8); // Read Profile IDC (e.g., Baseline, Main, High)
-    readBits(8); // Constraint flags + reserved
-    readBits(8); // Level IDC
-    readUE(); // seq_parameter_set_id (UE)
-
-    // Some profiles have extra fields
-    if ([100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135].includes(profileIdc) === true) {
+    // High-profile SPS carries extra chroma / scaling-list fields
+    if (
+      profileIdc === 100 ||
+      profileIdc === 110 ||
+      profileIdc === 122 ||
+      profileIdc === 244 ||
+      profileIdc === 44 ||
+      profileIdc === 83 ||
+      profileIdc === 86 ||
+      profileIdc === 118 ||
+      profileIdc === 128 ||
+      profileIdc === 138 ||
+      profileIdc === 139 ||
+      profileIdc === 134 ||
+      profileIdc === 135
+    ) {
       chromaFormatIdc = readUE();
       if (chromaFormatIdc === 3) {
-        readBit(); // separate_colour_plane_flag
+        readBit();
       }
-      readUE(); // bit_depth_luma_minus8
-      readUE(); // bit_depth_chroma_minus8
-      readBit(); // qpprime_y_zero_transform_bypass_flag
-      // Scaling matrix present flag
+
+      readUE();
+      readUE();
+      readBit();
+
       if (readBit() === 1) {
-        let scalingListCount = chromaFormatIdc !== 3 ? 8 : 12;
-        let index = 0;
-        while (index < scalingListCount) {
+        let count = chromaFormatIdc !== 3 ? 8 : 12;
+        let i = 0;
+
+        while (i < count) {
           if (readBit() === 1) {
-            // Skip scaling list data
-            let size = index < 6 ? 16 : 64;
-            let lastScale = 8;
-            let nextScale = 8;
-            let scan = 0;
-            while (scan < size) {
-              if (nextScale !== 0) {
-                nextScale = (lastScale + readSE() + 256) % 256;
+            let size = i < 6 ? 16 : 64;
+            let last = 8;
+            let next = 8;
+            let j = 0;
+
+            while (j < size) {
+              if (next !== 0) {
+                next = (last + readSE() + 256) % 256;
               }
-              lastScale = nextScale === 0 ? lastScale : nextScale;
-              scan++;
+              last = next === 0 ? last : next;
+              j++;
             }
           }
-          index++;
+          i++;
         }
       }
     }
 
-    readUE(); // log2_max_frame_num_minus4
+    // Skip picture order / reference frame fields until width/height fields
+    readUE();
     let picOrderCntType = readUE();
+
     if (picOrderCntType === 0) {
-      readUE(); // log2_max_pic_order_cnt_lsb_minus4
+      readUE();
     }
+
     if (picOrderCntType === 1) {
-      let index = 0;
-      let count = 0;
-      readBit(); // delta_pic_order_always_zero_flag
-      readSE(); // offset_for_non_ref_pic
-      readSE(); // offset_for_top_to_bottom_field
-      count = readUE(); // num_ref_frames_in_pic_order_cnt_cycle
-      while (index < count) {
+      let i = 0;
+      readBit();
+      readSE();
+      readSE();
+      let count = readUE();
+
+      while (i < count) {
         readSE();
-        index++;
+        i++;
       }
     }
 
-    readUE(); // max_num_ref_frames
-    readBit(); // gaps_in_frame_num_value_allowed_flag
+    readUE();
+    readBit();
 
-    // Resolution fields
+    // Frame dimensions in macroblocks
     picWidthInMbsMinus1 = readUE();
     picHeightInMapUnitsMinus1 = readUE();
     frameMbsOnlyFlag = readBit();
-    if (frameMbsOnlyFlag === 0) {
-      readBit(); // mb_adaptive_frame_field_flag
-    }
-    readBit(); // direct_8x8_inference_flag
 
-    // Frame cropping
+    if (frameMbsOnlyFlag === 0) {
+      readBit();
+    }
+
+    readBit();
+
+    // Optional frame cropping offsets
     if (readBit() === 1) {
       frameCropLeftOffset = readUE();
       frameCropRightOffset = readUE();
@@ -1573,61 +1850,39 @@ export default class Streamer {
       frameCropBottomOffset = readUE();
     }
 
-    // Calculate crop units based on chroma format and frame type
-    if (chromaFormatIdc === 0) {
-      cropUnitX = 1;
-      cropUnitY = 2 - frameMbsOnlyFlag;
-    }
-    if (chromaFormatIdc === 1) {
+    // Crop units depend on chroma format and whether picture is frame- or field-coded
+    if (chromaFormatIdc === 1 || chromaFormatIdc === 2) {
       cropUnitX = 2;
-      cropUnitY = 2 * (2 - frameMbsOnlyFlag);
-    }
-    if (chromaFormatIdc === 2) {
-      cropUnitX = 2;
-      cropUnitY = 1 * (2 - frameMbsOnlyFlag);
-    }
-    if (chromaFormatIdc === 3) {
-      cropUnitX = 1;
-      cropUnitY = 1 * (2 - frameMbsOnlyFlag);
     }
 
-    // Final width and height calculation
-    // Each macroblock is 16x16 pixels; apply cropping if present
+    cropUnitY = chromaFormatIdc === 1 ? 2 * (2 - frameMbsOnlyFlag) : 2 - frameMbsOnlyFlag;
+
+    // Return decoded display resolution only
     return {
       width: (picWidthInMbsMinus1 + 1) * 16 - (frameCropLeftOffset + frameCropRightOffset) * cropUnitX,
       height: (2 - frameMbsOnlyFlag) * (picHeightInMapUnitsMinus1 + 1) * 16 - (frameCropTopOffset + frameCropBottomOffset) * cropUnitY,
     };
   }
 
-  #statsDrop(output, type) {
-    let outputStats = output?.stats;
-    let outputDrops = outputStats?.drops;
-
+  #ensureOutputDrops(outputStats) {
     if (typeof outputStats !== 'object' || outputStats === null) {
-      return;
+      return undefined;
     }
 
-    if (typeof outputDrops !== 'object' || outputDrops === null) {
-      outputStats.drops = {
-        videoBeforeKeyframe: 0,
-        audioBeforeKeyframe: 0,
-        bufferTrimmed: 0,
-      };
-      outputDrops = outputStats.drops;
+    if (typeof outputStats.drops !== 'object' || outputStats.drops === null) {
+      outputStats.drops = { videoBeforeKeyframe: 0, audioBeforeKeyframe: 0, bufferTrimmed: 0 };
     }
 
-    if (type === Streamer.MEDIA_TYPE.VIDEO) {
-      outputDrops.videoBeforeKeyframe++;
-    }
-
-    if (type === Streamer.MEDIA_TYPE.AUDIO) {
-      outputDrops.audioBeforeKeyframe++;
-    }
+    return outputStats.drops;
   }
 
   #statsWrite(output, type, dateNow) {
     let outputStats = output?.stats;
     let outputWrites = outputStats?.writes;
+
+    if (this.supportDump !== true) {
+      return;
+    }
 
     if (typeof outputStats !== 'object' || outputStats === null) {
       return;
@@ -1666,338 +1921,466 @@ export default class Streamer {
     }
   }
 
-  #writeFallback(output, fallbackFrame) {
+  #statsDrop(output, type) {
+    let outputStats = output?.stats;
+
+    if (this.supportDump !== true) {
+      return;
+    }
+
+    if (typeof outputStats !== 'object' || outputStats === null) {
+      return;
+    }
+
+    let outputDrops = this.#ensureOutputDrops(outputStats);
+
+    if (type === Streamer.MEDIA_TYPE.VIDEO) {
+      outputDrops.videoBeforeKeyframe++;
+    }
+
+    if (type === Streamer.MEDIA_TYPE.AUDIO) {
+      outputDrops.audioBeforeKeyframe++;
+    }
+  }
+
+  #writeFallback(output, fallbackFrame, dateNow = undefined) {
+    let outputVideo = undefined;
+    let outputAudio = undefined;
+    let isH264 = false;
+
     if (Buffer.isBuffer(fallbackFrame) !== true || typeof output !== 'object' || output === null) {
       return;
     }
 
-    let dateNow = Date.now();
-    let outputVideo = output?.video;
-    let outputAudio = output?.audio;
+    outputVideo = output.video;
+    outputAudio = output.audio;
+    isH264 = this.codecs?.video === Streamer.CODEC_TYPE.H264;
+    if (typeof dateNow !== 'number') {
+      dateNow = Date.now();
+    }
 
     this.#statsWrite(output, Streamer.MEDIA_TYPE.VIDEO, dateNow);
 
-    if (this.codecs?.video === Streamer.CODEC_TYPE.H264) {
-      // H264 video streams require each frame to be prefixed with an Annex B start code (0x00000001)
-      outputVideo?.write?.(Streamer.H264NALUS.START_CODE);
+    if (isH264 === true) {
+      outputVideo.write(Streamer.H264NALUS.START_CODE);
     }
 
-    outputVideo?.write?.(fallbackFrame);
+    outputVideo.write(fallbackFrame);
 
-    if (output?.includeAudio === true && Buffer.isBuffer(this.blankAudio) === true) {
+    if (output.includeAudio === true && Buffer.isBuffer(this.blankAudio) === true) {
       this.#statsWrite(output, Streamer.MEDIA_TYPE.AUDIO, dateNow);
-      outputAudio?.write?.(this.blankAudio);
+      outputAudio.write(this.blankAudio);
     }
   }
 
   #processBufferedOutput(output, dateNow, streamType, budgetMs) {
-    if (
-      typeof output !== 'object' ||
-      output === null ||
-      typeof dateNow !== 'number' ||
-      typeof streamType !== 'string' ||
-      typeof this.#buffer !== 'object' ||
-      this.#buffer === null ||
-      Array.isArray(this.#buffer.items) !== true ||
-      typeof this.#buffer.startIndex !== 'number'
-    ) {
-      return;
-    }
-
     let buffer = this.#buffer;
-    let items = buffer.items;
-    let startIndex = buffer.startIndex;
-    let itemsLength = items.length;
+    let startIndex = undefined;
+    let itemsLength = 0;
     let processed = 0;
     let offset = 0;
     let item = undefined;
     let nextCursor = 0;
     let dueTime = 0;
-    let startedAt = Date.now();
-    let latestItemTime = itemsLength !== 0 && typeof items[itemsLength - 1]?.time === 'number' ? items[itemsLength - 1].time : undefined;
+    let latestItem = undefined;
+    let latestItemTime = undefined;
     let catchupAudioWrites = 0;
     let catchupExitedThisTick = false;
     let dueTolerance = 2;
+    let dueSlack = 10;
     let catchupExitThresholdMs = 250;
     let catchupAudioBurstLimit = streamType === Streamer.STREAM_TYPE.RECORD ? 4 : 2;
-    let outputVideo = output?.video;
-    let outputAudio = output?.audio;
-    let isH264Output = this.codecs?.video === Streamer.CODEC_TYPE.H264;
-    let isLive = streamType === Streamer.STREAM_TYPE.LIVE;
-    let isRecord = streamType === Streamer.STREAM_TYPE.RECORD;
-    let includeAudio = output?.includeAudio === true;
-    let lastSPS = this.#videoState.lastSPS;
-    let lastPPS = this.#videoState.lastPPS;
-    let isVideo = false;
-    let isAudio = false;
-    let isH264Media = false;
+    let outputVideo = undefined;
+    let outputAudio = undefined;
+    let isH264Output = false;
+    let isLive = false;
+    let includeAudio = false;
+    let lastSPS = undefined;
+    let lastPPS = undefined;
+    let hasSPS = false;
+    let hasPPS = false;
     let shouldCatchUp = false;
-    let startupPending = false;
     let bootstrapOffset = 0;
     let bootstrapItem = undefined;
-    let bootstrapFound = false;
+    let latestVideoOffset = 0;
+    let latestVideoItem = undefined;
+    let liveStartKeyframeAgeMs = 0;
+    let budgetDeadline = 0;
+    let outputCursor = 0;
+    let outputSeenKeyFrame = false;
+    let outputSentCodecConfig = false;
+    let outputCatchingUp = false;
+    let outputSourceBaseTime = undefined;
+    let outputWallclockBaseTime = undefined;
+    let outputLastVideoWriteTime = 0;
 
-    let advanceOutputCursor = () => {
-      output.cursor = nextCursor;
-      offset = output.cursor - startIndex;
-      processed++;
-    };
+    if (
+      typeof output !== 'object' ||
+      output === null ||
+      typeof dateNow !== 'number' ||
+      typeof streamType !== 'string' ||
+      buffer instanceof RingBuffer !== true
+    ) {
+      return;
+    }
 
-    let finishCatchupIfNeeded = () => {
-      if (shouldCatchUp !== true) {
-        return;
-      }
+    // Pull commonly used references/flags into locals for this scheduler tick
+    startIndex = buffer.startIndex;
+    itemsLength = buffer.size;
+    outputVideo = output.video;
+    outputAudio = output.audio;
+    includeAudio = output.includeAudio === true;
+    isH264Output = this.codecs?.video === Streamer.CODEC_TYPE.H264;
+    isLive = streamType === Streamer.STREAM_TYPE.LIVE;
+    lastSPS = this.#videoState.lastSPS;
+    lastPPS = this.#videoState.lastPPS;
+    hasSPS = Buffer.isBuffer(lastSPS) === true && lastSPS.length > 0;
+    hasPPS = Buffer.isBuffer(lastPPS) === true && lastPPS.length > 0;
+    latestItem = itemsLength !== 0 ? buffer.getByOffset(itemsLength - 1) : undefined;
+    latestItemTime = typeof latestItem?.time === 'number' ? latestItem.time : undefined;
+    budgetDeadline = typeof budgetMs === 'number' && budgetMs > 0 ? dateNow + budgetMs : 0;
 
-      if (typeof latestItemTime !== 'number' || typeof item?.time !== 'number') {
-        return;
-      }
-
-      if (latestItemTime - item.time <= catchupExitThresholdMs) {
-        output.catchingUp = false;
-        output.sourceBaseTime = item.time;
-        output.wallclockBaseTime = dateNow;
-        catchupExitedThisTick = true;
-      }
-    };
+    if (itemsLength === 0) {
+      return;
+    }
 
     if (isLive === true && isH264Output === true) {
-      // Live H264 output is a little more sensitive to scheduler jitter and uneven upstream cadence.
+      // Live H264 is more sensitive to timer jitter than record output.
+      // Give it a slightly wider due window so packets that are effectively due now
+      // are not delayed by tiny scheduler timing variations.
       dueTolerance = 10;
     }
 
-    // Cursor has fallen behind our rotating window, so clamp to earliest retained item
+    // Resolve startup cursor for a new live output against the current retained buffer.
+    // For live H264, attach from the newest retained safe point rather than replaying
+    // buffered history, so live view starts as close to real time as possible.
+    if (typeof output.cursor !== 'number') {
+      if (isLive === true && isH264Output === true) {
+        bootstrapOffset = itemsLength - 1;
+
+        while (bootstrapOffset >= 0) {
+          bootstrapItem = buffer.getByOffset(bootstrapOffset);
+
+          if (
+            typeof bootstrapItem === 'object' &&
+            bootstrapItem !== null &&
+            bootstrapItem.type === Streamer.MEDIA_TYPE.VIDEO &&
+            bootstrapItem.codec === Streamer.CODEC_TYPE.H264 &&
+            bootstrapItem.keyFrame === true &&
+            typeof bootstrapItem.index === 'number'
+          ) {
+            liveStartKeyframeAgeMs =
+              typeof latestItemTime === 'number' && typeof bootstrapItem.time === 'number' ? latestItemTime - bootstrapItem.time : 0;
+
+            // Only use the retained keyframe if it is still close enough to live
+            if (liveStartKeyframeAgeMs <= LIVE_START_MAX_KEYFRAME_AGE) {
+              output.cursor = bootstrapItem.index;
+              output.catchingUp = false;
+              output.sourceBaseTime = bootstrapItem.time;
+              output.wallclockBaseTime = dateNow;
+            }
+
+            break;
+          }
+
+          bootstrapOffset--;
+        }
+
+        // No recent safe keyframe found, so attach at the live edge and wait for
+        // the next fresh keyframe naturally rather than replaying stale buffered video
+        if (typeof output.cursor !== 'number') {
+          // Prefer the newest retained video item as the live-edge anchor so
+          // "live edge" means latest video edge rather than latest packet edge.
+          latestVideoOffset = itemsLength - 1;
+
+          while (latestVideoOffset >= 0) {
+            latestVideoItem = buffer.getByOffset(latestVideoOffset);
+            if (latestVideoItem?.type === Streamer.MEDIA_TYPE.VIDEO && typeof latestVideoItem?.index === 'number') {
+              break;
+            }
+            latestVideoOffset--;
+          }
+
+          if (latestVideoOffset >= 0) {
+            bootstrapItem = buffer.getByOffset(latestVideoOffset);
+          } else {
+            bootstrapItem = buffer.getByOffset(itemsLength - 1);
+          }
+
+          if (typeof bootstrapItem?.index === 'number') {
+            output.cursor = bootstrapItem.index;
+            output.catchingUp = false;
+            output.sourceBaseTime = typeof bootstrapItem.time === 'number' ? bootstrapItem.time : undefined;
+            output.wallclockBaseTime = dateNow;
+          }
+
+          if (typeof output.cursor !== 'number') {
+            output.cursor = startIndex;
+            output.catchingUp = false;
+            output.sourceBaseTime = undefined;
+            output.wallclockBaseTime = undefined;
+          }
+        }
+      }
+
+      if (isLive !== true || isH264Output !== true) {
+        output.cursor = startIndex;
+      }
+    }
+
+    // Clamp cursor so it can never point before the currently retained window
     if (typeof output.cursor !== 'number' || output.cursor < startIndex) {
       output.cursor = startIndex;
     }
 
-    offset = output.cursor - startIndex;
-
-    // Live H264 startup bootstrap:
-    // Before normal mixed audio/video scheduling begins, scan forward for the first
-    // buffered video keyframe and start from there. This prevents startup being held
-    // behind earlier audio items or normal due-time pacing before the first decodable
-    // video frame has actually been emitted.
-    if (isLive === true && isH264Output === true && output.seenKeyFrame !== true && output.catchingUp !== true) {
-      bootstrapOffset = offset;
-      bootstrapFound = false;
-
-      while (bootstrapOffset < itemsLength) {
-        bootstrapItem = items[bootstrapOffset];
-
-        if (
-          typeof bootstrapItem === 'object' &&
-          bootstrapItem !== null &&
-          bootstrapItem.type === Streamer.MEDIA_TYPE.VIDEO &&
-          bootstrapItem.codec === Streamer.CODEC_TYPE.H264 &&
-          bootstrapItem.keyFrame === true &&
-          typeof bootstrapItem.time === 'number'
-        ) {
-          bootstrapFound = true;
-          break;
-        }
-
-        bootstrapOffset++;
-      }
-
-      if (bootstrapFound === true) {
-        output.cursor = bootstrapItem.index;
-        output.sourceBaseTime = bootstrapItem.time;
-        output.wallclockBaseTime = dateNow;
-        offset = output.cursor - startIndex;
-      }
-    }
+    outputCursor = output.cursor;
+    outputSeenKeyFrame = output.seenKeyFrame === true;
+    outputSentCodecConfig = output.sentCodecConfig === true;
+    outputCatchingUp = output.catchingUp === true;
+    outputSourceBaseTime = output.sourceBaseTime;
+    outputWallclockBaseTime = output.wallclockBaseTime;
+    outputLastVideoWriteTime = typeof output.lastVideoWriteTime === 'number' ? output.lastVideoWriteTime : 0;
+    offset = outputCursor - startIndex;
 
     while (offset < itemsLength && processed < MAX_BUFFERED_ITEMS_PER_OUTPUT_PER_TICK) {
-      if (typeof budgetMs === 'number' && budgetMs > 0 && Date.now() - startedAt >= budgetMs) {
+      if (budgetDeadline !== 0 && (processed & 0x03) === 0 && Date.now() >= budgetDeadline) {
         break;
       }
 
-      item = items[offset];
+      item = buffer.getByOffset(offset);
 
       if (typeof item?.time !== 'number') {
         break;
       }
 
-      isVideo = item.type === Streamer.MEDIA_TYPE.VIDEO;
-      isAudio = item.type === Streamer.MEDIA_TYPE.AUDIO;
-      isH264Media = item.codec === Streamer.CODEC_TYPE.H264;
       nextCursor = item.index + 1;
-      shouldCatchUp = isRecord === true && output?.catchingUp === true && catchupExitedThisTick !== true;
-      startupPending =
-        shouldCatchUp !== true && (typeof output.sourceBaseTime !== 'number' || typeof output.wallclockBaseTime !== 'number');
+      shouldCatchUp = outputCatchingUp === true && catchupExitedThisTick === false;
 
+      // In normal paced mode, map media time to wall clock and only emit items that are due.
+      // In catch-up mode this timing gate is bypassed so the output can drain toward the live edge.
       if (shouldCatchUp !== true) {
-        // Establish output timing only once we are no longer catching up
-        if (startupPending === true) {
-          output.sourceBaseTime = item.time;
-          output.wallclockBaseTime = dateNow;
+        if (typeof outputSourceBaseTime !== 'number' || typeof outputWallclockBaseTime !== 'number') {
+          outputSourceBaseTime = item.time;
+          outputWallclockBaseTime = dateNow;
         }
 
-        dueTime = output.wallclockBaseTime + (item.time - output.sourceBaseTime);
+        dueTime = outputWallclockBaseTime + (item.time - outputSourceBaseTime);
 
-        // Emit the due portion of the timeline only.
-        // Once we hit a future item, stop and continue next scheduler tick.
-        if (dueTime > dateNow + dueTolerance + 10) {
+        // Add a little slack beyond dueTolerance so scheduler jitter does not keep nudging
+        // near-due packets into the next tick.
+        if (dueTime > dateNow + dueTolerance + dueSlack) {
           break;
         }
       }
 
-      if (isVideo === true) {
-        if (isH264Media === true) {
-          if (output.seenKeyFrame !== true && item.keyFrame !== true) {
+      if (item.type === Streamer.MEDIA_TYPE.VIDEO) {
+        if (item.codec === Streamer.CODEC_TYPE.H264) {
+          // Never feed non-keyframe H264 to a fresh output before the first keyframe.
+          // Decoder must start from a safe point.
+          if (outputSeenKeyFrame !== true && item.keyFrame !== true) {
             this.#statsDrop(output, Streamer.MEDIA_TYPE.VIDEO);
-            advanceOutputCursor();
+            outputCursor = nextCursor;
+            offset = outputCursor - startIndex;
+            processed++;
             continue;
           }
 
-          if (item.keyFrame === true && output.sentCodecConfig !== true) {
-            if (Buffer.isBuffer(lastSPS) === true && lastSPS.length > 0) {
-              outputVideo?.write?.(Streamer.H264NALUS.START_CODE);
-              outputVideo?.write?.(lastSPS);
+          // Before the first keyframe write for this output, prepend the latest retained SPS/PPS
+          // so downstream decoder configuration is in place.
+          if (item.keyFrame === true && outputSentCodecConfig !== true) {
+            if (hasSPS === true) {
+              outputVideo.write(Streamer.H264NALUS.START_CODE);
+              outputVideo.write(lastSPS);
             }
 
-            if (Buffer.isBuffer(lastPPS) === true && lastPPS.length > 0) {
-              outputVideo?.write?.(Streamer.H264NALUS.START_CODE);
-              outputVideo?.write?.(lastPPS);
+            if (hasPPS === true) {
+              outputVideo.write(Streamer.H264NALUS.START_CODE);
+              outputVideo.write(lastPPS);
             }
 
-            output.sentCodecConfig = true;
+            outputSentCodecConfig = true;
           }
 
           if (item.keyFrame === true) {
-            output.seenKeyFrame = true;
+            outputSeenKeyFrame = true;
           }
         }
 
         if (isH264Output === true) {
-          outputVideo?.write?.(Streamer.H264NALUS.START_CODE);
+          outputVideo.write(Streamer.H264NALUS.START_CODE);
         }
 
-        outputVideo?.write?.(item.data);
-        output.lastVideoWriteTime = dateNow;
+        outputVideo.write(item.data);
+        outputLastVideoWriteTime = dateNow;
         this.#statsWrite(output, Streamer.MEDIA_TYPE.VIDEO, dateNow);
-        finishCatchupIfNeeded();
-        advanceOutputCursor();
+
+        // If this output was catching up and is now near the live edge, switch it back to
+        // normal paced mode anchored from the current item.
+        if (shouldCatchUp === true && typeof latestItemTime === 'number' && latestItemTime - item.time <= catchupExitThresholdMs) {
+          outputCatchingUp = false;
+          outputSourceBaseTime = item.time;
+          outputWallclockBaseTime = dateNow;
+          catchupExitedThisTick = true;
+        }
+
+        outputCursor = nextCursor;
+        offset = outputCursor - startIndex;
+        processed++;
         continue;
       }
 
-      if (isAudio === true) {
+      if (item.type === Streamer.MEDIA_TYPE.AUDIO) {
         if (includeAudio !== true) {
-          advanceOutputCursor();
+          outputCursor = nextCursor;
+          offset = outputCursor - startIndex;
+          processed++;
           continue;
         }
 
-        if (isRecord === true && isH264Output === true && output.seenKeyFrame !== true) {
+        // Suppress audio until the output has seen its first video keyframe.
+        // This keeps startup A/V aligned and avoids audio-only lead-in.
+        if (isH264Output === true && outputSeenKeyFrame !== true) {
           this.#statsDrop(output, Streamer.MEDIA_TYPE.AUDIO);
-          advanceOutputCursor();
+          outputCursor = nextCursor;
+          offset = outputCursor - startIndex;
+          processed++;
           continue;
         }
 
-        // Recording catch-up can burst a little, but keep it bounded.
+        // In catch-up mode, limit how much audio can be written in one tick so a backlog
+        // does not dump a big burst of PCM/AAC into ffmpeg.
         if (shouldCatchUp === true && catchupAudioWrites >= catchupAudioBurstLimit) {
           break;
         }
 
-        outputAudio?.write?.(item.data);
+        outputAudio.write(item.data);
         catchupAudioWrites++;
         this.#statsWrite(output, Streamer.MEDIA_TYPE.AUDIO, dateNow);
-        finishCatchupIfNeeded();
-        advanceOutputCursor();
+
+        if (shouldCatchUp === true && typeof latestItemTime === 'number' && latestItemTime - item.time <= catchupExitThresholdMs) {
+          outputCatchingUp = false;
+          outputSourceBaseTime = item.time;
+          outputWallclockBaseTime = dateNow;
+          catchupExitedThisTick = true;
+        }
+
+        outputCursor = nextCursor;
+        offset = outputCursor - startIndex;
+        processed++;
         continue;
       }
 
-      advanceOutputCursor();
+      // Unknown/non-media item type: just advance cursor past it
+      outputCursor = nextCursor;
+      offset = outputCursor - startIndex;
+      processed++;
     }
+
+    output.cursor = outputCursor;
+    output.seenKeyFrame = outputSeenKeyFrame;
+    output.sentCodecConfig = outputSentCodecConfig;
+    output.catchingUp = outputCatchingUp;
+    output.sourceBaseTime = outputSourceBaseTime;
+    output.wallclockBaseTime = outputWallclockBaseTime;
+    output.lastVideoWriteTime = outputLastVideoWriteTime;
   }
 
   #processOutput(dateNow, budgetMs) {
     let buffer = this.#buffer;
-    let items = buffer?.items;
-    let itemsLength = Array.isArray(items) === true ? items.length : 0;
-    let live = this.#live;
-    let record = this.#record;
+    let itemsLength = 0;
+    let hasOutputs = false;
     let cutoffTime = 0;
     let trimCount = 0;
     let oldestProtectedCursor = this.#itemIndex;
     let protectedOffset = -1;
     let fallbackFrame = undefined;
+    let firstItem = undefined;
+    let output = undefined;
 
-    // Keep our rotating buffer under control, but never trim past the oldest active consumer.
+    if (buffer instanceof RingBuffer !== true) {
+      return;
+    }
+
+    itemsLength = typeof buffer.size === 'number' ? buffer.size : 0;
+    hasOutputs = this.#outputs.size !== 0;
+
+    // Determine if buffer contains items older than retention window
     if (itemsLength !== 0) {
-      cutoffTime = dateNow - MAX_BUFFER_AGE;
+      cutoffTime = dateNow - this.#bufferDuration;
+      firstItem = buffer.getByOffset(0);
 
-      if (record !== undefined && typeof record?.cursor === 'number' && record.cursor < oldestProtectedCursor) {
-        oldestProtectedCursor = record.cursor;
-      }
-
-      for (let output of live.values()) {
-        if (typeof output?.cursor === 'number' && output.cursor < oldestProtectedCursor) {
-          oldestProtectedCursor = output.cursor;
-        }
-      }
-
-      if (typeof buffer?.startIndex === 'number' && oldestProtectedCursor > buffer.startIndex) {
-        protectedOffset = oldestProtectedCursor - buffer.startIndex;
-      }
-
-      while (trimCount < itemsLength) {
-        if (typeof items[trimCount]?.time !== 'number') {
-          break;
+      // Only consider trimming if oldest item is outside buffer duration
+      if (typeof firstItem?.time === 'number' && firstItem.time < cutoffTime) {
+        // Find the earliest cursor across all outputs
+        // This represents the oldest item still needed by any active stream
+        for (output of this.#outputs.values()) {
+          if (typeof output.cursor === 'number' && output.cursor < oldestProtectedCursor) {
+            oldestProtectedCursor = output.cursor;
+          }
         }
 
-        if (items[trimCount].time >= cutoffTime) {
-          break;
+        // Convert protected cursor into buffer-relative offset
+        // Items before this offset must not be trimmed
+        if (oldestProtectedCursor >= buffer.startIndex) {
+          protectedOffset = oldestProtectedCursor - buffer.startIndex;
         }
 
-        if (protectedOffset !== -1 && trimCount >= protectedOffset) {
-          break;
-        }
+        // If protectedOffset === 0 -> first item still needed -> no trimming possible
+        if (protectedOffset !== 0) {
+          // Walk buffer from oldest forward and count how many items can be safely trimmed
+          while (trimCount < itemsLength) {
+            firstItem = buffer.getByOffset(trimCount);
 
-        trimCount++;
+            // Stop if item has no valid timestamp
+            if (typeof firstItem?.time !== 'number') {
+              break;
+            }
+
+            // Stop once items are within retention window
+            if (firstItem.time >= cutoffTime) {
+              break;
+            }
+
+            // Stop if we reach the protected region required by outputs
+            if (protectedOffset !== -1 && trimCount >= protectedOffset) {
+              break;
+            }
+
+            trimCount++;
+          }
+        }
       }
 
       if (trimCount !== 0) {
-        if (typeof record?.stats === 'object' && record.stats !== null) {
-          if (typeof record.stats.drops !== 'object' || record.stats.drops === null) {
-            record.stats.drops = {
-              videoBeforeKeyframe: 0,
-              audioBeforeKeyframe: 0,
-              bufferTrimmed: 0,
-            };
-          }
-
-          record.stats.drops.bufferTrimmed += trimCount;
-        }
-
-        for (let output of live.values()) {
-          if (typeof output?.stats === 'object' && output.stats !== null) {
-            if (typeof output.stats.drops !== 'object' || output.stats.drops === null) {
-              output.stats.drops = {
-                videoBeforeKeyframe: 0,
-                audioBeforeKeyframe: 0,
-                bufferTrimmed: 0,
-              };
+        // Only record buffer trimming stats when support dump is enabled.
+        // This avoids unnecessary per-output stat updates on the hot path.
+        if (this.supportDump === true) {
+          for (output of this.#outputs.values()) {
+            if (typeof output.stats === 'object' && output.stats !== null) {
+              // Ensure drops structure exists and record trimmed items
+              this.#ensureOutputDrops(output.stats).bufferTrimmed += trimCount;
             }
-
-            output.stats.drops.bufferTrimmed += trimCount;
           }
         }
 
-        items.splice(0, trimCount);
-        buffer.startIndex += trimCount;
-
-        if (items.length === 0) {
-          buffer.startIndex = this.#itemIndex;
-        }
-
-        itemsLength = items.length;
+        // Always trim buffer regardless of stats collection
+        buffer.shift(trimCount, this.#itemIndex);
+        itemsLength -= trimCount;
       }
     }
 
-    // Output fallback frame directly for offline, video disabled, or migrating
-    // This owns the scheduler tick when active.
+    // No outputs attached means we only need buffer retention maintenance this tick.
+    if (hasOutputs !== true) {
+      return;
+    }
+
+    // If fallback is not due and the source is not ready, there is nothing to fan out yet.
+    if (this.#sourceState !== Streamer.MESSAGE_TYPE.SOURCE_READY && dateNow - this.#lastFallbackFrameTime < STREAM_FRAME_INTERVAL) {
+      return;
+    }
+
     if (dateNow - this.#lastFallbackFrameTime >= STREAM_FRAME_INTERVAL) {
-      if (this.online === false && Buffer.isBuffer(this.#cameraFrames?.offline) === true) {
+      if (this.online === false && Buffer.isBuffer(this.#cameraFrames.offline) === true) {
         fallbackFrame = this.#cameraFrames.offline;
       }
 
@@ -2005,22 +2388,18 @@ export default class Streamer {
         fallbackFrame === undefined &&
         this.online === true &&
         this.videoEnabled === false &&
-        Buffer.isBuffer(this.#cameraFrames?.off) === true
+        Buffer.isBuffer(this.#cameraFrames.off) === true
       ) {
         fallbackFrame = this.#cameraFrames.off;
       }
 
-      if (fallbackFrame === undefined && this.migrating === true && Buffer.isBuffer(this.#cameraFrames?.transfer) === true) {
+      if (fallbackFrame === undefined && this.migrating === true && Buffer.isBuffer(this.#cameraFrames.transfer) === true) {
         fallbackFrame = this.#cameraFrames.transfer;
       }
 
       if (Buffer.isBuffer(fallbackFrame) === true) {
-        if (record !== undefined) {
-          this.#writeFallback(record, fallbackFrame);
-        }
-
-        for (let output of live.values()) {
-          this.#writeFallback(output, fallbackFrame);
+        for (output of this.#outputs.values()) {
+          this.#writeFallback(output, fallbackFrame, dateNow);
         }
 
         this.#lastFallbackFrameTime = dateNow;
@@ -2028,15 +2407,13 @@ export default class Streamer {
       }
     }
 
-    // Normal buffered output using actual item timestamps
-    if (this.#sourceState === Streamer.MESSAGE_TYPE.SOURCE_READY) {
-      if (record !== undefined) {
-        this.#processBufferedOutput(record, dateNow, Streamer.STREAM_TYPE.RECORD, budgetMs);
-      }
+    if (this.#sourceState !== Streamer.MESSAGE_TYPE.SOURCE_READY) {
+      // Source is not ready and no fallback was sent, so there is nothing to fan out this tick.
+      return;
+    }
 
-      for (let output of live.values()) {
-        this.#processBufferedOutput(output, dateNow, Streamer.STREAM_TYPE.LIVE, budgetMs);
-      }
+    for (output of this.#outputs.values()) {
+      this.#processBufferedOutput(output, dateNow, output.type, budgetMs);
     }
   }
 
@@ -2047,9 +2424,7 @@ export default class Streamer {
     let sourceStats = this.#stats?.source;
     let itemStats = this.#stats?.items;
 
-    let elapsed = (start, end) => {
-      return typeof start === 'number' && typeof end === 'number' ? end - start + 'ms' : '-';
-    };
+    let elapsed = (start, end) => (typeof start === 'number' && typeof end === 'number' ? end - start + 'ms' : '-');
 
     let age = (time) => {
       if (typeof time !== 'number') {
@@ -2135,9 +2510,6 @@ export default class Streamer {
     this?.log?.info?.('End of support dump for device uuid "%s" data.', this.nest_google_device_uuid);
   }
 
-  // Start the shared output processing loop
-  // Runs every OUTPUT_LOOP_INTERVAL ms and processes all active streamers
-  // Automatically stops when no streamers remain
   static #start() {
     if (this.#timer !== undefined) {
       return;
@@ -2147,39 +2519,43 @@ export default class Streamer {
       let dateNow = Date.now();
       let streamers = this.#streamers;
       let removals = [];
+      let shouldCheckBudget = false;
       let streamerStartTime = 0;
+      let streamerElapsed = 0;
       let streamerBudget = Math.max(2, Math.floor(OUTPUT_LOOP_INTERVAL / Math.max(streamers.size, 1)));
 
       for (let streamer of streamers.values()) {
         try {
-          // Skip streamers with no active outputs.
-          // This avoids spending scheduler time on instances that have nothing to write.
           if (streamer.hasActiveStreams() === false) {
             streamer.#outputErrors = 0;
             continue;
           }
 
-          streamerStartTime = Date.now();
+          shouldCheckBudget = dateNow - streamer.#lastBudgetLogTime >= OUTPUT_BUDGET_LOG_INTERVAL;
+
+          if (shouldCheckBudget === true) {
+            streamer.#lastBudgetLogTime = dateNow;
+            streamerStartTime = Date.now();
+          }
+
           streamer.#processOutput(dateNow, streamerBudget);
           streamer.#outputErrors = 0;
+          if (shouldCheckBudget === true) {
+            streamerElapsed = Date.now() - streamerStartTime;
+          }
 
-          // Simple per-streamer output budget.
-          // If one streamer is taking too long in a shared tick, stop processing it further until the next scheduler run.
-          if (Date.now() - streamerStartTime > streamerBudget) {
+          if (shouldCheckBudget === true && streamerElapsed > streamerBudget) {
             streamer?.log?.debug?.(
               'Output processing budget exceeded for device uuid "%s" (%sms > %sms)',
               streamer?.nest_google_device_uuid,
-              Date.now() - streamerStartTime,
+              streamerElapsed,
               streamerBudget,
             );
           }
         } catch (error) {
           streamer.#outputErrors++;
-
           streamer?.log?.error?.('Output processing error for device uuid "%s": %s', streamer?.nest_google_device_uuid, String(error));
 
-          // If a streamer repeatedly fails, remove it from scheduler
-          // to prevent one bad instance impacting all others
           if (streamer.#outputErrors >= 5) {
             streamer?.log?.warn?.('Stopping output processing for unstable device uuid "%s"', streamer?.nest_google_device_uuid);
             removals.push(streamer);
@@ -2192,7 +2568,6 @@ export default class Streamer {
         streamer.stopEverything();
       }
 
-      // Stop scheduler if no active streamers remain
       if (streamers.size === 0) {
         clearInterval(this.#timer);
         this.#timer = undefined;
@@ -2200,8 +2575,6 @@ export default class Streamer {
     }, OUTPUT_LOOP_INTERVAL);
   }
 
-  // Register a streamer instance with the shared scheduler
-  // Called when the instance has active streams (buffer/live/record)
   static #addStreamer(streamer) {
     if (streamer instanceof Streamer === false) {
       return;
@@ -2215,8 +2588,6 @@ export default class Streamer {
     this.#start();
   }
 
-  // Remove a streamer instance from the shared scheduler
-  // Called when the instance no longer has any active streams
   static #removeStreamer(streamer) {
     if (streamer instanceof Streamer === false) {
       return;
@@ -2228,25 +2599,20 @@ export default class Streamer {
 
     this.#streamers.delete(streamer.#HomeKitDeviceUUID);
 
-    // Stop scheduler if no streamers remain
     if (this.#streamers.size === 0 && this.#timer !== undefined) {
       clearInterval(this.#timer);
       this.#timer = undefined;
     }
   }
 
-  // Check if this streamer has active streams and add/remove from scheduler accordingly
-  // Called whenever streams are started or stopped to ensure scheduler is always in sync with active streamers
   #syncSchedulerState() {
     if (this.hasActiveStreams() === true) {
-      // Only add if not already registered
       if (Streamer.#streamers.has(this.#HomeKitDeviceUUID) === false) {
         Streamer.#addStreamer(this);
       }
       return;
     }
 
-    // Only remove if currently registered
     if (Streamer.#streamers.has(this.#HomeKitDeviceUUID) === true) {
       Streamer.#removeStreamer(this);
     }

@@ -4,6 +4,44 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.0-alpha.22 (2026/04/13)
+
+Due to the volume of changes in this release, versioning has been reverted to alpha
+
+- Reworked stream processing in `streamer.js` using a shared `RingBuffer` to eliminate O(n) buffer shifts and reduce latency  
+- Added reusable `RingBuffer` implementation for media queueing  
+- Improved live stream startup, catch-up, and playback responsiveness  
+- Simplified and stabilised output loop timing for more consistent real-time playback  
+- Improved fallback frame handling for missing or delayed video  
+- Improved internal tracking of streaming, recording, and buffering state transitions  
+- Fixed issue where stream startup details (resolution and FPS) were not always logged in `streamer.js`  
+
+- Refactored WebRTC pipeline in `webrtc.js`  
+  - Improved H264 NAL unit handling and FU-A reassembly  
+  - Improved RTP packet handling, ordering, and jitter tolerance  
+  - Improved stream readiness and startup behaviour  
+
+- Added shared Google gRPC transport for protobuf-based API communication  
+  - Centralised HTTP/2 session pooling and lifecycle management  
+  - System-level Google API communication now uses HTTP/2 (gRPC)  
+  - Improved request/response parsing and validation  
+  - Improved error handling and terminal state tracking  
+
+- Integrated gRPC transport into WebRTC (Google Foyer) signaling and control  
+- Improved NexusTalk stability and buffering (aligned with new streamer model)  
+
+- Removed `localAccess` device configuration option  
+- Fixed configuration schema types (`fanDuration`, `hotwaterBoostTime`, `motionCooldown`, `doorbellCooldown`)  
+  [@retuer-commits](https://github.com/retuer-commits)  
+
+- Fixed regression from `0.3.9` where Nest x Yale locks were no longer discovered  
+  [@DigitalFokus](https://github.com/DigitalFokus)  
+
+- Small fix in `thermostat.js` for eco mode temperature checks  
+
+- *Testing* direct local WebRTC stream path enabled by default for Google Home cameras (bypassing remote relay where available) in `webrtc.js`  
+- *Testing* 15fps default live transcoding output to better match source frame rate in `camera.js`   
+
 ## v0.4.0-beta.12 (2026/04/09)
 
 - Updated project dependencies: `protobufjs` and `HomeKitDevice`

@@ -148,7 +148,7 @@ The following options are available in the `config.json` `"options"` object. The
 | ffmpegDebug        | Enable additional debugging output when ffmpeg is invoked                                    | false          |
 | ffmpegHWaccel      | Enable video hardware acceleration for camera(s) and doorbell(s) where supported             | false          |
 | ffmpegPath         | Path to an ffmpeg binary (defaults to `ffmpeg` in system path)                               | /usr/local/bin |
-| ffmpegTranscode    | Enable video and audio transcoding for camera(s) and doorbell(s) (higher CPU usage)          | false          |
+| ffmpegTranscode    | Enable video transcoding for camera(s) and doorbell(s) (higher CPU usage)                    | false          |
 | logMotionEvents    | Enable logging of motion events for camera(s), doorbell(s) and Nest Protect device(s)        | true           |
 | maxStreams         | Maximum simultaneous live view streams per camera                                            | 2              |
 | supportDump        | Enable Support Dump logging of raw Nest and Google API data                                  | false          |
@@ -174,12 +174,11 @@ The `"name"` field is optional and is only used to help identify the entry in th
 | fanDuration        | Fan runtime duration                                                                         |         |
 | ffmpegDebug        | Enable additional debugging output when ffmpeg is invoked                                    | false   |
 | ffmpegHWaccel      | Enable video hardware acceleration for camera(s) and doorbell(s) where supported             | false   |
-| ffmpegTranscode    | Enable video and audio transcoding for camera(s) and doorbell(s) (higher CPU usage)          | false   |
+| ffmpegTranscode    | Enable video transcoding for camera(s) and doorbell(s) (higher CPU usage)                    | false   |
 | hotwaterBoostTime  | Duration for hot water boost heating (30, 60, 120 mins)                                      | 30mins  |
 | hotwaterMaxTemp    | Maximum supported temperature for hot water heating                                          | 70c     |
 | hotwaterMinTemp    | Minimum supported temperature for hot water heating                                          | 30c     |
 | humiditySensor     | Enable a separate humidity sensor for thermostat(s) where supported                          | false   |
-| localAccess        | Enable direct local streaming access for Google Home camera(s) and doorbell(s)               | false   |
 | logMotionEvents    | Enable logging of motion events for camera(s), doorbell(s) and Nest Protect device(s)        | true    |
 | motionCooldown     | Time between detected motion events                                                          | 60s     |
 | name               | Optional label to help identify this device entry                                            |         |

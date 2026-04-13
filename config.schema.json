@@ -147,7 +147,7 @@
               "type": "boolean"
             },
             "doorbellCooldown": {
-              "type": "number"
+              "type": "string"
             },
             "eveHistory": {
               "type": "boolean"
@@ -159,7 +159,7 @@
               "type": "string"
             },
             "fanDuration": {
-              "type": "boolean"
+              "type": "string"
             },
             "ffmpegDebug": {
               "type": "boolean"
@@ -167,11 +167,11 @@
             "ffmpegHWAccel": {
               "type": "boolean"
             },
-          "ffmpegTranscode": {
-            "type": "boolean"
-          },
+            "ffmpegTranscode": {
+              "type": "boolean"
+            },
             "hotwaterBoostTime": {
-              "type": "number"
+              "type": "string"
             },
             "hotwaterMaxTemp": {
               "type": "string"
@@ -189,7 +189,7 @@
                "type": "boolean"
             },
             "motionCooldown": {
-              "type": "number"
+              "type": "string"
             }
           }
         }
@@ -380,7 +380,7 @@
         },
         {
           "key": "options.ffmpegTranscode",
-          "title": "Enable Video and Audio Transcoding"
+          "title": "Enable Video Transcoding"
         },
         {
           "key": "options.maxStreams",

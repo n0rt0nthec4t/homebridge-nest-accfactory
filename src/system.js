@@ -33,7 +33,7 @@
 // - Maintains connection state, protobuf definitions, raw data cache, and tracked devices
 // - Creates and updates HomeKitDevice-based instances for supported device types
 //
-// Code version 2026.04.08
+// Code version 2026.04.13
 // Mark Hulskamp
 'use strict';
 
@@ -51,6 +51,7 @@ import os from 'node:os';
 import { URL } from 'node:url';
 
 // Import our modules
+import GrpcTransport from './grpctransport.js';
 import HomeKitDevice from './HomeKitDevice.js';
 import { loadDeviceModules, getDeviceHKCategory } from './devices.js';
 import { processConfig, buildConnections } from './config.js';
@@ -166,7 +167,9 @@ export default class NestAccfactory {
 
       // Clear any running connection timers (auth token refresh, reconnect loops, etc)
       for (let uuid of Object.keys(this.#connections ?? {})) {
-        clearTimeout(this.#connections[uuid].timer);
+        clearTimeout(this.#connections?.[uuid]?.timer);
+
+        this.#connections?.[uuid]?.grpcTransport?.release?.();
       }
 
       // Cleanup internal data
@@ -296,6 +299,20 @@ export default class NestAccfactory {
             oauth2: googleOAuth2Token,
             fieldTest: this.#connections[uuid]?.fieldTest === true, // preserve fieldTest flag
           },
+          grpcTransport:
+            this.config?.options?.useGoogleAPI === true
+              ? new GrpcTransport({
+                  log: this.log,
+                  protoPath: path.join(__dirname, 'protobuf/root.proto'),
+                  endpointHost: 'https://' + this.#connections[uuid].grpcEndpointHost,
+                  uuid: uuid, // Use connection uuid as identifier for multiple connections to same endpoint
+                  userAgent: USER_AGENT,
+                  getAuthHeader: () => {
+                    let token = this.#connections?.[uuid]?.token;
+                    return typeof token === 'string' && token.trim() !== '' ? 'Basic ' + token : '';
+                  },
+                })
+              : undefined,
         });
 
         clearTimeout(this.#connections[uuid].timer);
@@ -403,6 +420,20 @@ export default class NestAccfactory {
             token: nestToken,
             fieldTest: this.#connections[uuid].fieldTest === true,
           },
+          grpcTransport:
+            this.config?.options?.useGoogleAPI === true
+              ? new GrpcTransport({
+                  log: this.log,
+                  protoPath: path.join(__dirname, 'protobuf/root.proto'),
+                  endpointHost: 'https://' + this.#connections[uuid].grpcEndpointHost,
+                  uuid: uuid, // Use connection uuid as identifier for multiple connections to same endpoint
+                  userAgent: USER_AGENT,
+                  getAuthHeader: () => {
+                    let token = this.#connections?.[uuid]?.token;
+                    return typeof token === 'string' && token.trim() !== '' ? 'Basic ' + token : '';
+                  },
+                })
+              : undefined,
         });
 
         // Schedule token refresh every 24h
@@ -649,6 +680,7 @@ export default class NestAccfactory {
       this.#protobufRoot === null ||
       typeof this.#connections?.[uuid] !== 'object' ||
       this.#connections?.[uuid]?.authorised !== true ||
+      this.#connections?.[uuid]?.grpcTransport === undefined ||
       this.config?.options?.useGoogleAPI !== true
     ) {
       // Not a valid connection object and/or we're not authorised
@@ -691,112 +723,115 @@ export default class NestAccfactory {
       this?.log?.debug?.('Starting Google API observe for connection "%s"', this.#connections[uuid].name);
     }
 
-    this.#protobufCommand(
-      uuid,
-      'nestlabs.gateway.v2.GatewayService',
-      'Observe',
-      { stateTypes: ['CONFIRMED', 'ACCEPTED'], traitTypeParams: observeTraitsList },
-      async (message) => {
-        // We'll use the resource status message to look for structure and/or device removals
-        // We could also check for structure and/or device additions here, but we'll want to be flagged
-        // that a device is 'ready' for use before we add in. This data is populated in the trait data
-        for (let observeResponse of message?.observeResponse ?? []) {
-          // resourceMetas
-          if (Array.isArray(observeResponse?.resourceMetas) === true) {
-            for (let resource of observeResponse.resourceMetas) {
-              if (
-                resource.status === 'REMOVED' &&
-                (resource.resourceId.startsWith('STRUCTURE_') === true || resource.resourceId.startsWith('DEVICE_') === true)
-              ) {
-                // We have the removal of a 'home' and/or device
-                // Tidy up tracked devices since this one is removed
-                if (this.#trackedDevices[this.#rawData?.[resource.resourceId]?.value?.device_identity?.serialNumber] !== undefined) {
-                  // Send removed notice onto HomeKit device for it to process
-                  HomeKitDevice.message(
-                    this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber].uuid,
-                    HomeKitDevice.REMOVE,
-                    {},
+    this.#connections[uuid].grpcTransport
+      .observe(
+        'nestlabs.gateway.v2.',
+        'GatewayService',
+        'Observe',
+        { stateTypes: ['CONFIRMED', 'ACCEPTED'], traitTypeParams: observeTraitsList },
+        async (message) => {
+          let observeResponses = Array.isArray(message?.observeResponse) === true ? message.observeResponse : [message].filter(Boolean);
+
+          // We'll use the resource status message to look for structure and/or device removals
+          // We could also check for structure and/or device additions here, but we'll want to be flagged
+          // that a device is 'ready' for use before we add in. This data is populated in the trait data
+          for (let observeResponse of observeResponses) {
+            // resourceMetas
+            if (Array.isArray(observeResponse?.resourceMetas) === true) {
+              for (let resource of observeResponse.resourceMetas) {
+                if (
+                  resource.status === 'REMOVED' &&
+                  (resource.resourceId.startsWith('STRUCTURE_') === true || resource.resourceId.startsWith('DEVICE_') === true)
+                ) {
+                  // We have the removal of a 'home' and/or device
+                  // Tidy up tracked devices since this one is removed
+                  if (this.#trackedDevices[this.#rawData?.[resource.resourceId]?.value?.device_identity?.serialNumber] !== undefined) {
+                    // Send removed notice onto HomeKit device for it to process
+                    HomeKitDevice.message(
+                      this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber].uuid,
+                      HomeKitDevice.REMOVE,
+                      {},
+                    );
+
+                    // Finally, remove from tracked devices
+                    delete this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber];
+                  }
+                  delete this.#rawData[resource.resourceId];
+                }
+              }
+            }
+
+            // traitStates
+            if (Array.isArray(observeResponse?.traitStates) === true) {
+              // Tidy up our received trait states. This ensures we only have one status for the trait in the data we process
+              // We'll favour a trait with accepted status over the same with confirmed status
+              let traits = observeResponse.traitStates;
+              let acceptedKeys = new Set(
+                traits
+                  .filter((trait) => trait.stateTypes.includes('ACCEPTED') === true)
+                  .map((trait) => trait.traitId.resourceId + '/' + trait.traitId.traitLabel),
+              );
+              observeResponse.traitStates = [
+                ...traits.filter((trait) => acceptedKeys.has(trait.traitId.resourceId + '/' + trait.traitId.traitLabel) === false),
+                ...traits.filter((trait) => trait.stateTypes.includes('ACCEPTED') === true),
+              ];
+
+              for (let trait of observeResponse.traitStates) {
+                // Create or update trait entry and assign latest patch values
+                this.#rawData[trait.traitId.resourceId] = {
+                  connection: uuid,
+                  source: DATA_SOURCE.GOOGLE,
+                  value: Object.assign(
+                    {}, // base object
+                    this.#rawData?.[trait.traitId.resourceId]?.value, // existing values (if any)
+                    {
+                      [trait.traitId.traitLabel]: trait?.patch?.values ?? {}, // latest patch for this trait
+                    },
+                  ),
+                };
+
+                // Remove trait type metadata — we don't need to store it
+                delete this.#rawData[trait.traitId.resourceId]?.value?.[trait.traitId.traitLabel]?.['@type'];
+
+                // If we have structure location details and associated geo-location details, get the weather data for the location
+                // We'll store this in the object key/value as per Nest API
+                if (
+                  trait.traitId.resourceId.startsWith('STRUCTURE_') === true &&
+                  trait.traitId.traitLabel === 'structure_location' &&
+                  (trait.patch.values?.postalCode?.value?.trim?.() ?? '') !== '' &&
+                  (trait.patch.values?.countryCode?.value?.trim?.() ?? '') !== ''
+                ) {
+                  let weatherData = await this.#getLocationWeather(
+                    uuid,
+                    trait.traitId.resourceId,
+                    trait.patch.values.postalCode.value,
+                    trait.patch.values.countryCode.value,
                   );
-
-                  // Finally, remove from tracked devices
-                  delete this.#trackedDevices[this.#rawData[resource.resourceId].value.device_identity.serialNumber];
+                  if (weatherData !== undefined && typeof this.#rawData?.[trait.traitId.resourceId]?.value === 'object') {
+                    this.#rawData[trait.traitId.resourceId].value.weather = { ...weatherData };
+                  }
                 }
-                delete this.#rawData[resource.resourceId];
+
+                // Store the internal Nest and Google structure uuids if matched to a defined home array entry
+                if (
+                  trait.traitId.resourceId.startsWith('STRUCTURE_') === true &&
+                  trait.traitId.traitLabel === 'structure_info' &&
+                  (trait.patch.values?.name?.trim?.() ?? '') !== ''
+                ) {
+                  Object.assign(
+                    this.config?.homes?.find(
+                      (home) => home?.name?.trim?.().toUpperCase() === trait.patch.values.name?.trim?.().toUpperCase(),
+                    ) || {},
+                    { nest_home_uuid: trait.patch.values.rtsStructureId, google_home_uuid: trait.traitId.resourceId },
+                  );
+                }
               }
             }
           }
 
-          // traitStates
-          if (Array.isArray(observeResponse?.traitStates) === true) {
-            // Tidy up our received trait states. This ensures we only have one status for the trait in the data we process
-            // We'll favour a trait with accepted status over the same with confirmed status
-            let traits = observeResponse.traitStates;
-            let acceptedKeys = new Set(
-              traits
-                .filter((trait) => trait.stateTypes.includes('ACCEPTED') === true)
-                .map((trait) => trait.traitId.resourceId + '/' + trait.traitId.traitLabel),
-            );
-            observeResponse.traitStates = [
-              ...traits.filter((trait) => acceptedKeys.has(trait.traitId.resourceId + '/' + trait.traitId.traitLabel) === false),
-              ...traits.filter((trait) => trait.stateTypes.includes('ACCEPTED') === true),
-            ];
-
-            for (let trait of observeResponse.traitStates) {
-              // Create or update trait entry and assign latest patch values
-              this.#rawData[trait.traitId.resourceId] = {
-                connection: uuid,
-                source: DATA_SOURCE.GOOGLE,
-                value: Object.assign(
-                  {}, // base object
-                  this.#rawData?.[trait.traitId.resourceId]?.value, // existing values (if any)
-                  {
-                    [trait.traitId.traitLabel]: trait?.patch?.values ?? {}, // latest patch for this trait
-                  },
-                ),
-              };
-
-              // Remove trait type metadata — we don't need to store it
-              delete this.#rawData[trait.traitId.resourceId]?.value?.[trait.traitId.traitLabel]?.['@type'];
-
-              // If we have structure location details and associated geo-location details, get the weather data for the location
-              // We'll store this in the object key/value as per Nest API
-              if (
-                trait.traitId.resourceId.startsWith('STRUCTURE_') === true &&
-                trait.traitId.traitLabel === 'structure_location' &&
-                (trait.patch.values?.postalCode?.value?.trim?.() ?? '') !== '' &&
-                (trait.patch.values?.countryCode?.value?.trim?.() ?? '') !== ''
-              ) {
-                let weatherData = await this.#getLocationWeather(
-                  uuid,
-                  trait.traitId.resourceId,
-                  trait.patch.values.postalCode.value,
-                  trait.patch.values.countryCode.value,
-                );
-                if (weatherData !== undefined && typeof this.#rawData?.[trait.traitId.resourceId]?.value === 'object') {
-                  this.#rawData[trait.traitId.resourceId].value.weather = { ...weatherData };
-                }
-              }
-
-              // Store the internal Nest and Google structure uuids if matched to a defined home array entry
-              if (
-                trait.traitId.resourceId.startsWith('STRUCTURE_') === true &&
-                trait.traitId.traitLabel === 'structure_info' &&
-                (trait.patch.values?.name?.trim?.() ?? '') !== ''
-              ) {
-                Object.assign(
-                  this.config?.homes?.find(
-                    (home) => home?.name?.trim?.().toUpperCase() === trait.patch.values.name?.trim?.().toUpperCase(),
-                  ) || {},
-                  { nest_home_uuid: trait.patch.values.rtsStructureId, google_home_uuid: trait.traitId.resourceId },
-                );
-              }
-            }
-          }
-        }
-
-        await this.#processData(uuid);
-      },
-    )
+          await this.#processData(uuid);
+        },
+      )
       .catch((error) => {
         this?.log?.debug?.(
           'Google API observe failed for connection "%s": %s',
@@ -1043,7 +1078,10 @@ export default class NestAccfactory {
           continue;
         }
 
-        if (this.#rawData?.[nest_google_device_uuid]?.source === DATA_SOURCE.GOOGLE) {
+        if (
+          this.#rawData?.[nest_google_device_uuid]?.source === DATA_SOURCE.GOOGLE &&
+          this.#connections?.[uuid]?.grpcTransport !== undefined
+        ) {
           let updatedTraits = [];
           let commandTraits = [];
 
@@ -1431,18 +1469,30 @@ export default class NestAccfactory {
 
           // Perform any direct trait updates we have to do. This can be done via a single call in a batch
           if (updatedTraits.length !== 0) {
-            let commandResponse = await this.#protobufCommand(uuid, 'nestlabs.gateway.v1.TraitBatchApi', 'BatchUpdateState', {
-              batchUpdateStateRequest: updatedTraits,
-            });
-            if (commandResponse?.batchUpdateStateResponse?.[0]?.traitOperations?.[0]?.progress !== 'COMPLETE') {
+            let grpcResult = await this.#connections[uuid].grpcTransport.command(
+              'nestlabs.gateway.v1.',
+              'TraitBatchApi',
+              'BatchUpdateState',
+              {
+                batchUpdateStateRequest: updatedTraits,
+              },
+            );
+            let commandResponse = Array.isArray(grpcResult?.data) === true ? grpcResult.data[0] : undefined;
+            if (commandResponse?.traitOperations?.[0]?.progress !== 'COMPLETE') {
               this?.log?.debug?.('Google API had error updating traits for device uuid "%s"', nest_google_device_uuid);
             }
           }
 
           // Perform any trait updates required via resource commands. Each one is done separately
           for (let command of commandTraits ?? []) {
-            let commandResponse = await this.#protobufCommand(uuid, 'nestlabs.gateway.v1.ResourceApi', 'SendCommand', command);
-            if (commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.progress !== 'COMPLETE') {
+            let grpcResult = await this.#connections[uuid].grpcTransport.command(
+              'nestlabs.gateway.v1.',
+              'ResourceApi',
+              'SendCommand',
+              command,
+            );
+            let commandResponse = Array.isArray(grpcResult?.data) === true ? grpcResult.data[0] : undefined;
+            if (commandResponse?.traitOperations?.[0]?.progress !== 'COMPLETE') {
               this?.log?.debug?.(
                 'Google API had error setting "%s" for device uuid "%s"',
                 command?.resourceCommands?.[0]?.traitLabel,
@@ -1789,10 +1839,11 @@ export default class NestAccfactory {
     }
 
     // Normalised snapshot state for this device regardless of API source.
-    // image      = last successfully downloaded snapshot buffer
-    // fetched_at = local time we downloaded the image
-    // timestamp  = upstream freshness timestamp (protobuf) or synthetic Date.now() for Nest
-    // url        = upstream image URL if provided (protobuf only)
+    // image                = last successfully downloaded snapshot buffer
+    // fetched_at           = local time we downloaded the image
+    // timestamp            = upstream freshness timestamp (protobuf) or synthetic Date.now() for Nest
+    // url                  = upstream image URL if provided (protobuf only)
+    // last_refresh_attempt = local time we last attempted an upstream refresh
     this.#rawData[nest_google_device_uuid].value.snapshot = {
       image:
         Buffer.isBuffer(this.#rawData[nest_google_device_uuid].value?.snapshot?.image) === true
@@ -1810,18 +1861,87 @@ export default class NestAccfactory {
         typeof this.#rawData[nest_google_device_uuid].value?.snapshot?.url === 'string'
           ? this.#rawData[nest_google_device_uuid].value.snapshot.url
           : '',
+      last_refresh_attempt:
+        isNaN(this.#rawData[nest_google_device_uuid].value?.snapshot?.last_refresh_attempt) === false
+          ? Number(this.#rawData[nest_google_device_uuid].value.snapshot.last_refresh_attempt)
+          : 0,
     };
 
     // Fast cache window keeps HomeKit snapshot handling responsive.
     // Fallback cache window allows us to return the last good image if upstream refresh is slow or fails.
-    let fastCacheAge = 3000;
+    // Refresh throttle avoids repeatedly forcing Google snapshot refresh when the backend
+    // keeps returning the same upload_live_image state.
+    let fastCacheAge = 15000;
     let fallbackCacheAge = 30000;
+    let refreshThrottle = 60000;
     let snapshot = undefined;
-    let now = Date.now();
     let snapshotState = this.#rawData[nest_google_device_uuid].value.snapshot;
+    let now = Date.now();
+
+    // Helper logic inline for protobuf timestamp normalisation
+    let getSnapshotTime = (uploadLiveImage) => {
+      if (isNaN(uploadLiveImage?.timestamp?.seconds) === false && isNaN(uploadLiveImage?.timestamp?.nanos) === false) {
+        return Number(uploadLiveImage.timestamp.seconds) * 1000 + Math.floor(Number(uploadLiveImage.timestamp.nanos) / 1000000);
+      }
+
+      if (isNaN(uploadLiveImage?.timestamp?.seconds) === false) {
+        return Number(uploadLiveImage.timestamp.seconds) * 1000;
+      }
+
+      return 0;
+    };
+
+    // Shared image fetch/update logic for both Nest and Google snapshot paths.
+    // This keeps snapshot download, validation, caching, and logging consistent.
+    let fetchSnapshotImage = async (url, headers, timestamp = Date.now(), sourceUrl = '') => {
+      try {
+        let response = await fetchWrapper('get', url, {
+          headers,
+          retry: 2,
+          timeout: 4000,
+        });
+
+        let image = Buffer.from(await response.arrayBuffer());
+
+        if (image?.length === 0) {
+          this?.log?.debug?.('Snapshot fetch returned empty image for device uuid "%s"', nest_google_device_uuid);
+          return;
+        }
+
+        snapshotState.image = image;
+        snapshotState.fetched_at = Date.now();
+        snapshotState.timestamp = timestamp;
+        snapshotState.url = sourceUrl;
+
+        return image;
+      } catch (error) {
+        if (
+          error?.cause === undefined ||
+          (error.cause?.message?.toUpperCase?.()?.includes('TIMEOUT') === false &&
+            error.cause?.code?.toUpperCase?.()?.includes('TIMEOUT') === false)
+        ) {
+          this?.log?.debug?.(
+            'Snapshot fetch failed for device uuid "%s". Error was "%s"',
+            nest_google_device_uuid,
+            typeof error?.message === 'string' ? error.message : String(error),
+          );
+        }
+      }
+    };
 
     // If we already have a very recent snapshot, return it immediately
     if (Buffer.isBuffer(snapshotState.image) === true && snapshotState.image.length > 0 && now - snapshotState.fetched_at <= fastCacheAge) {
+      return snapshotState.image;
+    }
+
+    // If we already have a usable cached snapshot and we attempted a refresh recently,
+    // return the cached image instead of forcing another upstream refresh.
+    if (
+      Buffer.isBuffer(snapshotState.image) === true &&
+      snapshotState.image.length > 0 &&
+      now - snapshotState.fetched_at <= fallbackCacheAge &&
+      now - snapshotState.last_refresh_attempt <= refreshThrottle
+    ) {
       return snapshotState.image;
     }
 
@@ -1834,58 +1954,31 @@ export default class NestAccfactory {
       (this.#connections?.[uuid]?.cameraAPI?.value ?? '') !== '' &&
       (this.#connections?.[uuid]?.cameraAPI?.token ?? '') !== ''
     ) {
+      // Track refresh attempts so repeated snapshot requests do not hammer the upstream path
+      snapshotState.last_refresh_attempt = Date.now();
+
       // Attempt to retrieve snapshot from camera via Nest API.
       // Nest does not provide the same freshness metadata as protobuf,
       // so a successful image fetch is treated as the newest available snapshot.
-      try {
-        let response = await fetchWrapper(
-          'get',
-          new URL(
-            '/get_image?uuid=' + nest_google_device_uuid.trim().split('.')[1],
-            this.#rawData[nest_google_device_uuid].value.nexus_api_http_server_url.trim(),
-          ).href,
-          {
-            headers: {
-              Referer: 'https://' + this.#connections[uuid].referer,
-              Origin: 'https://' + this.#connections[uuid].referer,
-              [this.#connections[uuid].cameraAPI.key]: this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
-              'User-Agent': USER_AGENT,
-              'Sec-Fetch-Mode': 'cors',
-              'Sec-Fetch-Site': 'same-origin',
-            },
-            retry: 2,
-            timeout: 4000,
-          },
-        );
+      snapshot = await fetchSnapshotImage(
+        new URL(
+          '/get_image?uuid=' + nest_google_device_uuid.trim().split('.')[1],
+          this.#rawData[nest_google_device_uuid].value.nexus_api_http_server_url.trim(),
+        ).href,
+        {
+          Referer: 'https://' + this.#connections[uuid].referer,
+          Origin: 'https://' + this.#connections[uuid].referer,
+          [this.#connections[uuid].cameraAPI.key]: this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
+          'User-Agent': USER_AGENT,
+          'Sec-Fetch-Mode': 'cors',
+          'Sec-Fetch-Site': 'same-origin',
+        },
+        Date.now(),
+        '',
+      );
 
-        snapshot = Buffer.from(await response.arrayBuffer());
-
-        if (snapshot?.length === 0) {
-          snapshot = undefined;
-          this?.log?.debug?.('Nest API returned empty snapshot for device uuid "%s"', nest_google_device_uuid);
-        }
-
-        if (Buffer.isBuffer(snapshot) === true && snapshot.length > 0) {
-          snapshotState.image = snapshot;
-          snapshotState.fetched_at = Date.now();
-          snapshotState.timestamp = snapshotState.fetched_at;
-          snapshotState.url = '';
-
-          return snapshot;
-        }
-      } catch (error) {
-        // Log unexpected errors (excluding timeouts) for debugging
-        if (
-          error?.cause === undefined ||
-          (error.cause?.message?.toUpperCase?.()?.includes('TIMEOUT') === false &&
-            error.cause?.code?.toUpperCase?.()?.includes('TIMEOUT') === false)
-        ) {
-          this?.log?.debug?.(
-            'Nest API camera snapshot failed with error for device uuid "%s". Error was "%s"',
-            nest_google_device_uuid,
-            typeof error?.message === 'string' ? error.message : String(error),
-          );
-        }
+      if (Buffer.isBuffer(snapshot) === true && snapshot.length > 0) {
+        return snapshot;
       }
     }
 
@@ -1893,33 +1986,41 @@ export default class NestAccfactory {
       this.config?.options?.useGoogleAPI === true &&
       nest_google_device_uuid.startsWith('DEVICE_') === true &&
       (this.#connections?.[uuid]?.token ?? '') !== '' &&
+      this.#connections?.[uuid]?.grpcTransport !== undefined &&
       (PROTOBUF_RESOURCES.CAMERA.includes(this.#rawData?.[nest_google_device_uuid]?.value?.device_info?.typeName) === true ||
         PROTOBUF_RESOURCES.DOORBELL.includes(this.#rawData?.[nest_google_device_uuid]?.value?.device_info?.typeName) === true ||
         PROTOBUF_RESOURCES.FLOODLIGHT.includes(this.#rawData?.[nest_google_device_uuid]?.value?.device_info?.typeName) === true)
     ) {
-      // Helper to normalise protobuf timestamp into epoch milliseconds
-      let getSnapshotTime = (uploadLiveImage) => {
-        if (isNaN(uploadLiveImage?.timestamp?.seconds) === false && isNaN(uploadLiveImage?.timestamp?.nanos) === false) {
-          return Number(uploadLiveImage.timestamp.seconds) * 1000 + Math.floor(Number(uploadLiveImage.timestamp.nanos) / 1000000);
-        }
+      // Track refresh attempts so repeated snapshot requests do not hammer the upstream path
+      snapshotState.last_refresh_attempt = Date.now();
 
-        if (isNaN(uploadLiveImage?.timestamp?.seconds) === false) {
-          return Number(uploadLiveImage.timestamp.seconds) * 1000;
-        }
+      // Last snapshot we successfully accepted and cached
+      let previousAcceptedTime = snapshotState.timestamp;
 
-        return 0;
-      };
+      // Protobuf upload_live_image state that existed BEFORE we asked for a new snapshot.
+      // This is critical on startup so we do not treat an already-existing old trait value as "new".
+      let beforeRequestUploadLiveImage = structuredClone(this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image ?? {});
+      let beforeRequestUrl = beforeRequestUploadLiveImage?.liveImageUrl ?? '';
+      let beforeRequestTime = getSnapshotTime(beforeRequestUploadLiveImage);
 
-      // Compare against the last successfully accepted snapshot for this device,
-      // not just the currently observed raw protobuf trait value.
-      let previousTime = snapshotState.timestamp;
-      let previousUrl = snapshotState.url;
-      let latestUploadLiveImage = structuredClone(this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image ?? {});
-      let latestUrl = latestUploadLiveImage?.liveImageUrl ?? '';
-      let latestTime = getSnapshotTime(latestUploadLiveImage);
+      let latestUploadLiveImage = beforeRequestUploadLiveImage;
+      let latestUrl = beforeRequestUrl;
+      let latestTime = beforeRequestTime;
 
-      // Send protobuf command to request a fresh image from device/cloud path
-      let commandResponse = await this.#protobufCommand(uuid, 'nestlabs.gateway.v1.ResourceApi', 'SendCommand', {
+      // On cold start or when we have no accepted snapshot yet, do not use the older fallback cache too eagerly
+      if (
+        previousAcceptedTime === 0 &&
+        Buffer.isBuffer(snapshotState.image) === true &&
+        snapshotState.image.length > 0 &&
+        now - snapshotState.fetched_at > fastCacheAge
+      ) {
+        snapshotState.image = undefined;
+        snapshotState.fetched_at = 0;
+        snapshotState.url = '';
+      }
+
+      // Send gRPC command to request a fresh image from device/cloud path
+      let grpcResult = await this.#connections[uuid].grpcTransport.command('nestlabs.gateway.v1.', 'ResourceApi', 'SendCommand', {
         resourceRequest: {
           resourceId: nest_google_device_uuid,
           requestId: crypto.randomUUID(),
@@ -1935,24 +2036,25 @@ export default class NestAccfactory {
         ],
       });
 
-      // Only continue if protobuf reports the snapshot request completed successfully
+      let commandResponse = Array.isArray(grpcResult?.data) === true ? grpcResult.data[0] : undefined;
+
+      // Only continue if gRPC reports the snapshot request completed successfully
       if (
-        commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.progress === 'COMPLETE' &&
-        commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.event?.event?.status === 'STATUS_SUCCESSFUL'
+        commandResponse?.traitOperations?.[0]?.progress === 'COMPLETE' &&
+        commandResponse?.traitOperations?.[0]?.event?.event?.status === 'STATUS_SUCCESSFUL'
       ) {
         // Poll briefly for updated upload_live_image trait state to arrive through observe.
-        // We prefer a strictly newer timestamp. URL change is only used as a fallback
-        // if the upstream timestamp is missing.
-        for (let attempt = 0; attempt < 2; attempt++) {
+        // We only accept it if it advanced beyond the trait state we had BEFORE this request.
+        for (let attempt = 0; attempt < 3; attempt++) {
           latestUploadLiveImage = structuredClone(this.#rawData?.[nest_google_device_uuid]?.value?.upload_live_image ?? {});
           latestUrl = latestUploadLiveImage?.liveImageUrl ?? '';
           latestTime = getSnapshotTime(latestUploadLiveImage);
 
-          if (latestUrl !== '' && (latestTime > previousTime || (latestTime === 0 && latestUrl !== previousUrl))) {
+          if (latestUrl !== '' && (latestTime > beforeRequestTime || (latestTime === 0 && latestUrl !== beforeRequestUrl))) {
             break;
           }
 
-          await new Promise((resolve) => setTimeout(resolve, 250));
+          await new Promise((resolve) => setTimeout(resolve, 300));
         }
 
         // Re-read the latest protobuf snapshot metadata after polling
@@ -1960,62 +2062,39 @@ export default class NestAccfactory {
         latestUrl = latestUploadLiveImage?.liveImageUrl ?? '';
         latestTime = getSnapshotTime(latestUploadLiveImage);
 
-        // Only download the image if protobuf metadata indicates it is newer than
-        // the last successfully accepted snapshot, or if timestamp is unavailable
-        // but the image URL changed.
-        if (latestUrl !== '' && (latestTime > previousTime || (latestTime === 0 && latestUrl !== previousUrl))) {
-          try {
-            let response = await fetchWrapper('get', latestUrl, {
-              headers: {
-                Referer: 'https://' + this.#connections[uuid].referer,
-                Origin: 'https://' + this.#connections[uuid].referer,
-                Authorization: 'Basic ' + this.#connections[uuid].token,
-                'User-Agent': USER_AGENT,
-                'Sec-Fetch-Mode': 'cors',
-                'Sec-Fetch-Site': 'same-origin',
-              },
-              retry: 2,
-              timeout: 4000,
-            });
+        // If we do not yet have a cached snapshot image, allow the current protobuf snapshot URL
+        // to seed the cache even if the metadata did not advance for this request.
+        let haveCachedImage = Buffer.isBuffer(snapshotState.image) === true && snapshotState.image.length > 0;
 
-            snapshot = Buffer.from(await response.arrayBuffer());
-
-            if (snapshot?.length === 0) {
-              snapshot = undefined;
-              this?.log?.debug?.('Google API returned empty snapshot for device uuid "%s"', nest_google_device_uuid);
-            }
-
-            if (Buffer.isBuffer(snapshot) === true && snapshot.length > 0) {
-              snapshotState.image = snapshot;
-              snapshotState.fetched_at = Date.now();
-              snapshotState.timestamp = latestTime !== 0 ? latestTime : snapshotState.fetched_at;
-              snapshotState.url = latestUrl;
-
-              return snapshot;
-            }
-          } catch (error) {
-            // Only log non-timeout errors to avoid noise
-            if (
-              error?.cause === undefined ||
-              (error.cause?.message?.toUpperCase?.()?.includes('TIMEOUT') === false &&
-                error.cause?.code?.toUpperCase?.()?.includes('TIMEOUT') === false)
-            ) {
-              this?.log?.debug?.(
-                'Google API camera snapshot failed with error for device uuid "%s". Error was "%s"',
-                nest_google_device_uuid,
-                typeof error?.message === 'string' ? error.message : String(error),
-              );
-            }
-          }
-        } else {
-          // Snapshot metadata did not advance quickly enough to prove freshness.
-          // We will fall back to any still-valid cached snapshot below.
-          this?.log?.debug?.(
-            'Google API snapshot did not update for device uuid "%s". Previous time="%s", latest time="%s"',
-            nest_google_device_uuid,
-            previousTime,
-            latestTime,
+        // Only download the image if:
+        // - protobuf metadata advanced beyond the pre-request trait state, OR
+        // - timestamp is unavailable but the URL changed, OR
+        // - we do not yet have any cached snapshot image and need to seed the cache
+        //
+        // Also make sure it is not older than the last snapshot we already accepted
+        // unless we are seeding an empty cache.
+        if (
+          latestUrl !== '' &&
+          (latestTime > beforeRequestTime || (latestTime === 0 && latestUrl !== beforeRequestUrl) || haveCachedImage === false) &&
+          (haveCachedImage === false || latestTime === 0 || latestTime >= previousAcceptedTime)
+        ) {
+          snapshot = await fetchSnapshotImage(
+            latestUrl,
+            {
+              Referer: 'https://' + this.#connections[uuid].referer,
+              Origin: 'https://' + this.#connections[uuid].referer,
+              Authorization: 'Basic ' + this.#connections[uuid].token,
+              'User-Agent': USER_AGENT,
+              'Sec-Fetch-Mode': 'cors',
+              'Sec-Fetch-Site': 'same-origin',
+            },
+            latestTime !== 0 ? latestTime : Date.now(),
+            latestUrl,
           );
+
+          if (Buffer.isBuffer(snapshot) === true && snapshot.length > 0) {
+            return snapshot;
+          }
         }
       }
     }
@@ -2177,79 +2256,79 @@ export default class NestAccfactory {
       return [];
     }
 
-    if (this.config?.options?.useGoogleAPI === true && nest_google_device_uuid.startsWith('DEVICE_') === true) {
-      try {
-        let commandResponse = await this.#protobufCommand(uuid, 'nestlabs.gateway.v1.ResourceApi', 'SendCommand', {
-          resourceRequest: {
-            resourceId: nest_google_device_uuid,
-            requestId: crypto.randomUUID(),
-          },
-          resourceCommands: [
-            {
-              traitLabel: 'camera_observation_history',
-              command: {
-                type_url: 'type.nestlabs.com/nest.trait.history.CameraObservationHistoryTrait.CameraObservationHistoryRequest',
-                value: {
-                  // We want camera history from upto 15seconds ago until now
-                  queryStartTime: {
-                    seconds: Math.floor((Date.now() - 15000) / 1000),
-                    nanos: ((Date.now() - 15000) % 1000) * 1e6,
-                  },
-                  queryEndTime: {
-                    seconds: Math.floor(Date.now() / 1000),
-                    nanos: (Date.now() % 1000) * 1e6,
-                  },
+    if (
+      this.config?.options?.useGoogleAPI === true &&
+      nest_google_device_uuid.startsWith('DEVICE_') === true &&
+      this.#connections?.[uuid]?.grpcTransport !== undefined
+    ) {
+      let grpcResult = await this.#connections[uuid].grpcTransport.command('nestlabs.gateway.v1.', 'ResourceApi', 'SendCommand', {
+        resourceRequest: {
+          resourceId: nest_google_device_uuid,
+          requestId: crypto.randomUUID(),
+        },
+        resourceCommands: [
+          {
+            traitLabel: 'camera_observation_history',
+            command: {
+              type_url: 'type.nestlabs.com/nest.trait.history.CameraObservationHistoryTrait.CameraObservationHistoryRequest',
+              value: {
+                // We want camera history from up to 15 seconds ago until now
+                queryStartTime: {
+                  seconds: Math.floor((Date.now() - 15000) / 1000),
+                  nanos: ((Date.now() - 15000) % 1000) * 1e6,
+                },
+                queryEndTime: {
+                  seconds: Math.floor(Date.now() / 1000),
+                  nanos: (Date.now() % 1000) * 1e6,
                 },
               },
             },
-          ],
-        });
+          },
+        ],
+      });
 
-        let eventData = commandResponse?.sendCommandResponse?.[0]?.traitOperations?.[0]?.event?.event;
-        if (typeof eventData === 'object' && eventData?.constructor === Object) {
-          let events =
-            Array.isArray(eventData?.cameraEventWindow?.cameraEvent) === true
-              ? eventData.cameraEventWindow.cameraEvent
-                  .map((event) => ({
-                    playback_time: parseInt(event.startTime.seconds) * 1000 + parseInt(event.startTime.nanos) / 1000000,
-                    start_time: parseInt(event.startTime.seconds) * 1000 + parseInt(event.startTime.nanos) / 1000000,
-                    end_time: parseInt(event.endTime.seconds) * 1000 + parseInt(event.endTime.nanos) / 1000000,
-                    id: event.eventId,
-                    zone_ids:
-                      Array.isArray(event.activityZone) === true
-                        ? event.activityZone.map((zone) => (zone?.zoneIndex !== undefined ? zone.zoneIndex : zone.internalIndex))
-                        : [],
-                    types:
-                      Array.isArray(event.eventType) === true
-                        ? event.eventType
-                            .map((type) => {
-                              if (type === 'EVENT_UNFAMILIAR_FACE') {
-                                return 'unfamiliar-face';
-                              }
-                              if (type === 'EVENT_PERSON_TALKING') {
-                                return 'personHeard';
-                              }
-                              if (type === 'EVENT_DOG_BARKING') {
-                                return 'dogBarking';
-                              }
-                              return type.startsWith('EVENT_') === true ? type.slice(6).toLowerCase() : '';
-                            })
-                            .filter(Boolean)
-                        : [],
-                  }))
-                  .sort((a, b) => b.start_time - a.start_time)
-              : [];
+      let commandResponse = Array.isArray(grpcResult?.data) === true ? grpcResult.data[0] : undefined;
 
-          return events; // Return events from Google API
-        }
+      // Only continue if gRPC reports the snapshot request completed successfully
+      if (commandResponse?.traitOperations?.[0]?.progress === 'COMPLETE') {
+        let events =
+          Array.isArray(commandResponse?.traitOperations?.[0]?.event?.event?.cameraEventWindow?.cameraEvent) === true
+            ? commandResponse.traitOperations[0].event.event.cameraEventWindow.cameraEvent
+                .map((event) => ({
+                  playback_time: parseInt(event.startTime.seconds) * 1000 + parseInt(event.startTime.nanos) / 1000000,
+                  start_time: parseInt(event.startTime.seconds) * 1000 + parseInt(event.startTime.nanos) / 1000000,
+                  end_time: parseInt(event.endTime.seconds) * 1000 + parseInt(event.endTime.nanos) / 1000000,
+                  id: event.eventId,
+                  zone_ids:
+                    Array.isArray(event.activityZone) === true
+                      ? event.activityZone.map((zone) => (zone?.zoneIndex !== undefined ? zone.zoneIndex : zone.internalIndex))
+                      : [],
+                  types:
+                    Array.isArray(event.eventType) === true
+                      ? event.eventType
+                          .map((type) => {
+                            if (type === 'EVENT_UNFAMILIAR_FACE') {
+                              return 'unfamiliar-face';
+                            }
+                            if (type === 'EVENT_PERSON_TALKING') {
+                              return 'personHeard';
+                            }
+                            if (type === 'EVENT_DOG_BARKING') {
+                              return 'dogBarking';
+                            }
+                            return type.startsWith('EVENT_') === true ? type.slice(6).toLowerCase() : '';
+                          })
+                          .filter(Boolean)
+                      : [],
+                }))
+                .sort((a, b) => b.start_time - a.start_time)
+            : [];
 
-        this?.log?.debug?.('Google API returned no camera/doorbell activity notifications for device "%s"', nest_google_device_uuid);
-        return [];
-      } catch (error) {
+        return events; // Return events from Google API
+      } else {
         this?.log?.debug?.(
           'Google API had error retrieving camera/doorbell activity notifications for device "%s". Error was "%s"',
           nest_google_device_uuid,
-          typeof error?.message === 'string' ? error.message : String(error),
         );
         return [];
       }
@@ -2320,201 +2399,6 @@ export default class NestAccfactory {
     }
 
     return [];
-  }
-
-  async #protobufCommand(uuid, service, command, values, onMessage = undefined) {
-    if (
-      this.#protobufRoot === null ||
-      (uuid?.trim?.() ?? '') === '' ||
-      (service?.trim?.() ?? '') === '' ||
-      (command?.trim?.() ?? '') === '' ||
-      typeof values !== 'object' ||
-      values?.constructor !== Object ||
-      this.#connections?.[uuid]?.authorised !== true ||
-      (this.#connections?.[uuid]?.protobufAPIHost ?? '') === '' ||
-      (this.#connections?.[uuid]?.referer ?? '') === '' ||
-      (this.#connections?.[uuid]?.token ?? '') === ''
-    ) {
-      return;
-    }
-
-    const encodeValues = (object) => {
-      if (typeof object === 'object' && object !== null) {
-        // We have a type_url and value object at this same level, we'll treat this a trait requiring encoding
-        if (typeof object.type_url === 'string' && object.value !== undefined) {
-          let typeName = object.type_url.split('/')[1];
-          let TraitMap = this.#protobufRoot.lookup(typeName);
-          if (TraitMap !== null) {
-            object.value = TraitMap.encode(TraitMap.fromObject(object.value)).finish();
-          }
-        }
-
-        for (const key in object) {
-          if (object[key] !== undefined) {
-            encodeValues(object[key]);
-          }
-        }
-      }
-    };
-
-    // Retrieve both 'Request' and 'Response' traits for the associated service and command
-    service = service.trim();
-    command = command.trim();
-    let TraitMapService = this.#protobufRoot.lookup(service);
-    let TraitMapRequest = this.#protobufRoot.lookup(TraitMapService?.methods?.[command]?.requestType);
-    let TraitMapResponse = this.#protobufRoot.lookup(TraitMapService?.methods?.[command]?.responseType);
-
-    if (TraitMapRequest === null || TraitMapResponse === null) {
-      return undefined;
-    }
-
-    // Encode any trait values in our passed in object
-    encodeValues(values);
-    let encodedRequest = TraitMapRequest.encode(TraitMapRequest.fromObject(values)).finish();
-
-    return fetchWrapper(
-      'post',
-      new URL('/' + service + '/' + command, 'https://' + this.#connections[uuid].protobufAPIHost).href,
-      {
-        headers: {
-          Referer: 'https://' + this.#connections[uuid].referer,
-          Origin: 'https://' + this.#connections[uuid].referer,
-          Authorization: 'Basic ' + this.#connections[uuid].token,
-          Connection: 'keep-alive',
-          'User-Agent': USER_AGENT,
-          'Content-Type': 'application/x-protobuf',
-          'X-Accept-Content-Transfer-Encoding': 'binary',
-          'X-Accept-Response-Streaming': 'true',
-          'Sec-Fetch-Mode': 'cors',
-          'Sec-Fetch-Site': 'same-origin',
-        },
-        retry: 3,
-      },
-      encodedRequest,
-    )
-      .then(async (response) => {
-        let buffer = Buffer.alloc(0);
-
-        if (TraitMapService?.methods?.[command]?.responseStream === true && typeof response.body?.getReader === 'function') {
-          let reader = response.body.getReader();
-          try {
-            while (true) {
-              let { done, value } = await reader.read();
-              if (done === true) {
-                break;
-              }
-
-              if (value instanceof Uint8Array === false || value.length === 0) {
-                continue;
-              }
-
-              buffer = Buffer.concat([buffer, Buffer.from(value)]);
-
-              while (buffer.length >= 5) {
-                // Decode gRPC-Web message length (varint after tag byte)
-                let msgLen = 0;
-                let shift = 0;
-                let varintLen = 0;
-                for (varintLen = 1; varintLen <= 5; varintLen++) {
-                  if (varintLen >= buffer.length) {
-                    break;
-                  }
-                  let byte = buffer[varintLen];
-                  msgLen |= (byte & 0x7f) << shift;
-                  if ((byte & 0x80) === 0) {
-                    break;
-                  }
-                  shift += 7;
-                }
-
-                let totalLen = 1 + varintLen + msgLen;
-                if (buffer.length < totalLen) {
-                  break;
-                }
-
-                let payload = buffer.subarray(0, totalLen);
-                buffer = buffer.subarray(totalLen);
-
-                try {
-                  // Attempt to decode the assembled response buffer (so far) into a JSON object
-                  // If successful, send onto callback if defined.
-                  // We don't return the response via function by return
-                  let decoded = TraitMapResponse.decode(payload).toJSON();
-                  await onMessage?.(decoded);
-                } catch (error) {
-                  this?.log?.debug?.(
-                    'Failed to decode protobuf message for command "%s" in service "%s": %s',
-                    command,
-                    service,
-                    typeof error?.message === 'string' ? error.message : String(error),
-                  );
-                }
-              }
-            }
-          } catch (error) {
-            // Log unexpected errors only. Stream termination/abort is expected and will reconnect.
-            if (
-              error?.message?.toUpperCase?.()?.includes('TERMINATED') === false &&
-              error?.message?.toUpperCase?.()?.includes('ABORTED') === false
-            ) {
-              this?.log?.debug?.(
-                'Streaming protobuf read error for command "%s" in service "%s": %s',
-                command,
-                service,
-                typeof error?.message === 'string' ? error.message : String(error),
-              );
-            }
-          } finally {
-            try {
-              await reader.cancel();
-            } catch {
-              // Empty
-            }
-          }
-          return undefined;
-        }
-
-        if (TraitMapService?.methods?.[command]?.responseStream !== true) {
-          try {
-            // If the trait response is not a readable stream, treat as a normal array buffer
-            buffer = Buffer.from(await response.arrayBuffer());
-
-            // Attempt to decode the response buffer into a JSON object.
-            // If successful, send onto callback if defined
-            // We'll also return the response by function return
-            let decoded = TraitMapResponse.decode(buffer).toJSON();
-            await onMessage?.(decoded);
-            return decoded;
-          } catch (error) {
-            this?.log?.debug?.(
-              'Failed to decode protobuf response for command "%s" in service "%s": %s',
-              command,
-              service,
-              typeof error?.message === 'string' ? error.message : String(error),
-            );
-            return undefined;
-          }
-        }
-
-        return undefined;
-      })
-      .catch((error) => {
-        let isTimeout =
-          error?.cause?.message?.toUpperCase?.()?.includes('TIMEOUT') === true ||
-          error?.cause?.code?.toUpperCase?.()?.includes('TIMEOUT') === true ||
-          error?.message?.toUpperCase?.()?.includes('TIMEOUT') === true ||
-          error?.code?.toUpperCase?.()?.includes('TIMEOUT') === true;
-
-        this?.log?.debug?.(
-          'Protobuf command "%s" %s for service "%s": %s',
-          command,
-          isTimeout === true ? 'timed out' : 'failed',
-          service,
-          typeof error?.message === 'string' ? error.message : String(error),
-        );
-
-        return undefined;
-      });
   }
 
   #loadProtobufRoot() {

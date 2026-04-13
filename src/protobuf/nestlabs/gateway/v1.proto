@@ -251,12 +251,8 @@ message SendCommandRequest {
 }
 
 message SendCommandResponse {
-    message ResourceCommandResponse {
-        ResourceRequest resourceRequest = 1;
-        repeated TraitOperation traitOperations = 2;
-    }
-
-    repeated ResourceCommandResponse sendCommandResponse = 1;
+    ResourceRequest resourceRequest = 1;
+    repeated TraitOperation traitOperations = 2;
 }
 
 message BatchUpdateStateRequest {
@@ -264,10 +260,7 @@ message BatchUpdateStateRequest {
 }
 
 message BatchUpdateStateResponse {
-    message TraitOperationStateResponse {   
-        repeated TraitOperation traitOperations = 1;
-    }
-    repeated TraitOperationStateResponse  batchUpdateStateResponse = 1;
+    repeated TraitOperation traitOperations = 1;
 }
 
 service TraitBatchApi {

@@ -6,10 +6,11 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Known Issues
 
-- The ip npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the werift library
-- Some newer Nest/Google cameras may use different video sizes or shapes, causing the video to look slightly cropped or not fill the screen correctly.
-- HomeKit Secure Video (HKSV) can be enabled on battery powered cameras, which will significantly reduce battery life
+- The `ip` npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the `werift` library
+- Some newer Nest/Google cameras may use different video sizes or aspect ratios, causing the video to appear slightly cropped or not fill the screen correctly
+- Enabling HomeKit Secure Video (HKSV) on battery-powered cameras will significantly reduce battery life
 - Motion sensing on wired Nest Protect devices may report incorrect states due to recent firmware changes
+- Video from Google Home-hosted streams be slow to start up
 
 ## v0.4.0 (xxxx/xx/xx)
 
@@ -91,7 +92,6 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 ### 📦 Dependency Updates
 
 - Removed `undici` dependancy 
-- Updated `werift` from `0.22.8` to `0.22.9`
 - Updated `protobufjs` from `8.0.0` to `8.0.1`
 
 ## v0.3.9 (2026/02/18)
