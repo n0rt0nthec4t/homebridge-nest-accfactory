@@ -4,6 +4,24 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.0-alpha.23 (2026/04/16)
+
+- Refactored thermostat, temperature sensor, lock, camera, and protect data processing to use a unified field mapping structure
+- Simplified `processRawData()` across modules to align with updated implementation
+- Removed cross-device raw data mutation between thermostat and temperature sensor modules
+- Temperature sensor now derives associated thermostat directly from thermostat relationships during processing
+- Added `active_rcs_sensor_temperature` to thermostat data model and aligned behaviour across Google and Nest APIs
+- Thermostat `current_temperature` now consistently reflects the active remote sensor when selected
+- Improved handling of partial vs full updates using shared mapping logic
+- Reduced complexity and duplication in device processing pipelines
+- Improved consistency between Google and Nest data handling
+- Cleaner separation of responsibilities between device modules
+- More predictable and maintainable data flow
+- Relaxed live camera stream startup logic to improve compatibility with older Nest cameras (Hello, Indoor, Outdoor)  
+- Live streams now attach directly to the buffer and begin output immediately instead of waiting for a recent keyframe  
+- Improves stream startup time and resolves cases where live view would fail to start  
+- Recording (HKSV) pipeline unchanged  
+
 ## v0.4.0-alpha.22 (2026/04/13)
 
 Due to the volume of changes in this release, versioning has been reverted to alpha

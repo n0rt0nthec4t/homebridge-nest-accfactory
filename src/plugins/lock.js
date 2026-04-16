@@ -40,7 +40,7 @@
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
-import { processCommonData, scaleValue } from '../utils.js';
+import { processSoftwareVersion, scaleValue } from '../utils.js';
 import { buildMappedObject, createMappingContext } from '../translator.js';
 
 // Define constants
@@ -246,133 +246,181 @@ export default class NestLock extends HomeKitDevice {
   }
 }
 
-// Data translation functions for lock data.
-// We use this to translate RAW Google data into the format we want for our
-// lock device(s) using the field map below.
-//
-// This keeps all translation logic in one place and makes it easier to maintain as
-// Google source data evolves over time.
-//
-// Field map conventions:
-// - Return undefined for missing values rather than placeholder defaults
-// - processRawData() determines if enough data exists to build the device
-// - Optional fields may remain undefined
-//
 // Lock field translation map
+// Maps raw source data -> normalised lock device fields
+// - fields: top-level raw fields this mapping depends on (for delta updates)
+// - related: top-level raw fields on related objects this mapping depends on
+// - translate: converts raw -> final normalised value
 const LOCK_FIELD_MAP = {
   // Identity fields
   serialNumber: {
-    google: ({ sourceValue }) =>
-      typeof sourceValue?.value?.device_identity?.serialNumber === 'string' && sourceValue.value.device_identity.serialNumber.trim() !== ''
-        ? sourceValue.value.device_identity.serialNumber
-        : undefined,
+    required: true,
+    google: {
+      fields: ['device_identity'],
+      translate: ({ raw }) =>
+        typeof raw?.value?.device_identity?.serialNumber === 'string' && raw.value.device_identity.serialNumber.trim() !== ''
+          ? raw.value.device_identity.serialNumber.trim().toUpperCase()
+          : undefined,
+    },
   },
 
   nest_google_device_uuid: {
-    google: ({ objectKey }) => objectKey,
+    required: true,
+    google: {
+      fields: [],
+      translate: ({ objectKey }) => objectKey,
+    },
   },
 
   nest_google_home_uuid: {
-    google: ({ sourceValue }) => sourceValue?.value?.device_info?.pairerId?.resourceId,
+    google: {
+      fields: ['device_info'],
+      translate: ({ raw }) => raw?.value?.device_info?.pairerId?.resourceId,
+    },
   },
 
   // Naming / descriptive fields
-
   softwareVersion: {
-    google: ({ sourceValue }) => sourceValue?.value?.device_identity?.softwareVersion,
+    required: true,
+    google: {
+      fields: ['device_identity'],
+      translate: ({ raw }) =>
+        typeof raw?.value?.device_identity?.softwareVersion === 'string' && raw.value.device_identity.softwareVersion.trim() !== ''
+          ? processSoftwareVersion(raw.value.device_identity.softwareVersion)
+          : undefined,
+    },
   },
 
   description: {
-    google: ({ sourceValue }) => String(sourceValue?.value?.label?.label ?? ''),
-  },
+    required: true,
+    google: {
+      fields: ['label', 'device_info', 'device_located_settings'],
+      related: ['located_annotations'],
+      translate: ({ rawData, raw }) => {
+        let description = String(raw?.value?.label?.label ?? '').trim();
+        let location = String(
+          [
+            ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {}),
+            ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {}),
+          ].find((where) => where?.whereId?.resourceId === raw?.value?.device_located_settings?.whereAnnotationRid?.resourceId)?.label
+            ?.literal ?? '',
+        ).trim();
 
-  location: {
-    google: ({ rawData, sourceValue }) =>
-      String(
-        [
-          ...Object.values(
-            rawData?.[sourceValue?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {},
-          ),
-          ...Object.values(
-            rawData?.[sourceValue?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {},
-          ),
-        ].find((where) => where?.whereId?.resourceId === sourceValue?.value?.device_located_settings?.whereAnnotationRid?.resourceId)?.label
-          ?.literal ?? '',
-      ),
+        if (description === '' && location !== '') {
+          description = location;
+          location = '';
+        }
+
+        if (description === '' && location === '') {
+          description = 'unknown description';
+        }
+
+        return HomeKitDevice.makeValidHKName(location === '' ? description : description + ' - ' + location);
+      },
+    },
   },
 
   // Core operational fields
   online: {
-    google: ({ sourceValue }) => sourceValue?.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
+    required: true,
+    google: {
+      fields: ['liveness'],
+      translate: ({ raw }) => raw?.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
+    },
   },
 
   tampered: {
-    google: ({ sourceValue }) => sourceValue?.value?.tamper?.tamperState === 'TAMPER_STATE_TAMPERED',
+    required: true,
+    google: {
+      fields: ['tamper'],
+      translate: ({ raw }) => raw?.value?.tamper?.tamperState === 'TAMPER_STATE_TAMPERED',
+    },
   },
 
   bolt_state: {
-    google: ({ sourceValue }) =>
-      sourceValue?.value?.bolt_lock?.actuatorState?.startsWith?.('BOLT_ACTUATOR_STATE_JAMMED') === true
-        ? NestLock.STATE.JAMMED
-        : sourceValue?.value?.bolt_lock?.actuatorState === 'BOLT_ACTUATOR_STATE_LOCKING'
-          ? NestLock.STATE.LOCKING
-          : sourceValue?.value?.bolt_lock?.actuatorState === 'BOLT_ACTUATOR_STATE_UNLOCKING'
-            ? NestLock.STATE.UNLOCKING
-            : sourceValue?.value?.bolt_lock?.lockedState === 'BOLT_LOCKED_STATE_LOCKED'
-              ? NestLock.STATE.LOCKED
-              : sourceValue?.value?.bolt_lock?.lockedState === 'BOLT_LOCKED_STATE_UNLOCKED'
-                ? NestLock.STATE.UNLOCKED
-                : NestLock.STATE.UNKNOWN,
+    required: true,
+    google: {
+      fields: ['bolt_lock'],
+      translate: ({ raw }) =>
+        raw?.value?.bolt_lock?.actuatorState?.startsWith?.('BOLT_ACTUATOR_STATE_JAMMED') === true
+          ? NestLock.STATE.JAMMED
+          : raw?.value?.bolt_lock?.actuatorState === 'BOLT_ACTUATOR_STATE_LOCKING'
+            ? NestLock.STATE.LOCKING
+            : raw?.value?.bolt_lock?.actuatorState === 'BOLT_ACTUATOR_STATE_UNLOCKING'
+              ? NestLock.STATE.UNLOCKING
+              : raw?.value?.bolt_lock?.lockedState === 'BOLT_LOCKED_STATE_LOCKED'
+                ? NestLock.STATE.LOCKED
+                : raw?.value?.bolt_lock?.lockedState === 'BOLT_LOCKED_STATE_UNLOCKED'
+                  ? NestLock.STATE.UNLOCKED
+                  : NestLock.STATE.UNKNOWN,
+    },
   },
 
   bolt_actor: {
-    google: ({ sourceValue }) =>
-      sourceValue?.value?.bolt_lock?.boltLockActor?.method === 'BOLT_LOCK_ACTOR_METHOD_PHYSICAL'
-        ? NestLock.LAST_ACTION.PHYSICAL
-        : sourceValue?.value?.bolt_lock?.boltLockActor?.method === 'BOLT_LOCK_ACTOR_METHOD_KEYPAD_PIN'
-          ? NestLock.LAST_ACTION.KEYPAD
-          : [
-              'BOLT_LOCK_ACTOR_METHOD_REMOTE_USER_EXPLICIT',
-              'BOLT_LOCK_ACTOR_METHOD_REMOTE_USER_IMPLICIT',
-              'BOLT_LOCK_ACTOR_METHOD_REMOTE_USER_OTHER',
-              'BOLT_LOCK_ACTOR_METHOD_REMOTE_DELEGATE',
-            ].includes(sourceValue?.value?.bolt_lock?.boltLockActor?.method) === true
-              ? NestLock.LAST_ACTION.REMOTE
-              : sourceValue?.value?.bolt_lock?.boltLockActor?.method === 'BOLT_LOCK_ACTOR_METHOD_VOICE_ASSISTANT'
-                ? NestLock.LAST_ACTION.VOICE
-                : ['BOLT_LOCK_ACTOR_METHOD_LOCAL_IMPLICIT', 'BOLT_LOCK_ACTOR_METHOD_LOW_POWER_SHUTDOWN'].includes(
-                    sourceValue?.value?.bolt_lock?.boltLockActor?.method,
-                  ) === true
-                    ? NestLock.LAST_ACTION.IMPLICIT
-                    : NestLock.LAST_ACTION.PHYSICAL,
+    required: true,
+    google: {
+      fields: ['bolt_lock'],
+      translate: ({ raw }) =>
+        raw?.value?.bolt_lock?.boltLockActor?.method === 'BOLT_LOCK_ACTOR_METHOD_PHYSICAL'
+          ? NestLock.LAST_ACTION.PHYSICAL
+          : raw?.value?.bolt_lock?.boltLockActor?.method === 'BOLT_LOCK_ACTOR_METHOD_KEYPAD_PIN'
+            ? NestLock.LAST_ACTION.KEYPAD
+            : [
+                'BOLT_LOCK_ACTOR_METHOD_REMOTE_USER_EXPLICIT',
+                'BOLT_LOCK_ACTOR_METHOD_REMOTE_USER_IMPLICIT',
+                'BOLT_LOCK_ACTOR_METHOD_REMOTE_USER_OTHER',
+                'BOLT_LOCK_ACTOR_METHOD_REMOTE_DELEGATE',
+              ].includes(raw?.value?.bolt_lock?.boltLockActor?.method) === true
+                ? NestLock.LAST_ACTION.REMOTE
+                : raw?.value?.bolt_lock?.boltLockActor?.method === 'BOLT_LOCK_ACTOR_METHOD_VOICE_ASSISTANT'
+                  ? NestLock.LAST_ACTION.VOICE
+                  : ['BOLT_LOCK_ACTOR_METHOD_LOCAL_IMPLICIT', 'BOLT_LOCK_ACTOR_METHOD_LOW_POWER_SHUTDOWN'].includes(
+                      raw?.value?.bolt_lock?.boltLockActor?.method,
+                    ) === true
+                      ? NestLock.LAST_ACTION.IMPLICIT
+                      : NestLock.LAST_ACTION.PHYSICAL,
+    },
   },
 
   battery_level: {
-    google: ({ sourceValue }) =>
-      // Google API reports lock battery remaining as fractional percentage (0–1)
-      isNaN(sourceValue?.value?.battery_power_source?.remaining?.remainingPercent?.value) === false
-        ? scaleValue(Number(sourceValue.value.battery_power_source.remaining.remainingPercent.value), 0, 1, 0, 100)
-        : undefined,
+    required: true,
+    google: {
+      fields: ['battery_power_source'],
+      translate: ({ raw }) =>
+        // Google API reports lock battery remaining as fractional percentage (0–1)
+        isNaN(raw?.value?.battery_power_source?.remaining?.remainingPercent?.value) === false
+          ? Math.round(scaleValue(Number(raw.value.battery_power_source.remaining.remainingPercent.value), 0, 1, 0, 100))
+          : undefined,
+    },
   },
 
-  // Optional configuration fields
+  // Optional configuration/state fields
   auto_relock_duration: {
-    google: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.bolt_lock_settings?.autoRelockDuration?.seconds) === false
-        ? Number(sourceValue.value.bolt_lock_settings.autoRelockDuration.seconds)
-        : undefined,
+    required: true,
+    google: {
+      fields: ['bolt_lock_settings'],
+      translate: ({ raw }) =>
+        isNaN(raw?.value?.bolt_lock_settings?.autoRelockDuration?.seconds) === false
+          ? Number(raw.value.bolt_lock_settings.autoRelockDuration.seconds)
+          : undefined,
+    },
   },
 
   max_auto_relock_duration: {
-    google: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.bolt_lock_capabilities?.maxAutoRelockDuration?.seconds) === false
-        ? Number(sourceValue.value.bolt_lock_capabilities.maxAutoRelockDuration.seconds)
-        : undefined,
+    required: true,
+    google: {
+      fields: ['bolt_lock_capabilities'],
+      translate: ({ raw }) =>
+        isNaN(raw?.value?.bolt_lock_capabilities?.maxAutoRelockDuration?.seconds) === false
+          ? Number(raw.value.bolt_lock_capabilities.maxAutoRelockDuration.seconds)
+          : undefined,
+    },
   },
 };
 
 // Function to process our RAW Google data for lock devices
-export function processRawData(log, rawData, config, deviceType = undefined) {
+// eslint-disable-next-line no-unused-vars
+export function processRawData(log, rawData, config, deviceType = undefined, changedData = undefined) {
   if (
     rawData === null ||
     typeof rawData !== 'object' ||
@@ -388,57 +436,92 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
 
   Object.entries(rawData)
     .filter(
-      ([key, value]) => key.startsWith('DEVICE_') === true && PROTOBUF_RESOURCES.LOCK.includes(value.value?.device_info?.typeName) === true,
+      ([key, value]) =>
+        key.startsWith('DEVICE_') === true && PROTOBUF_RESOURCES.LOCK.includes(value?.value?.device_info?.typeName) === true,
     )
     .forEach(([object_key, value]) => {
-      let tempDevice = {};
-
       try {
+        // Only process valid Google lock devices that are ready and linked to a known home object
         if (
-          value?.source === DATA_SOURCE.GOOGLE &&
-          value.value?.configuration_done?.deviceReady === true &&
-          rawData?.[value.value?.device_info?.pairerId?.resourceId] !== undefined
+          value?.source !== DATA_SOURCE.GOOGLE ||
+          value?.value?.configuration_done?.deviceReady !== true ||
+          rawData?.[value?.value?.device_info?.pairerId?.resourceId] === undefined
         ) {
-          let mappedData = buildMappedObject(LOCK_FIELD_MAP, createMappingContext(rawData, object_key, undefined, value));
-
-          if (
-            mappedData.serialNumber !== undefined &&
-            mappedData.nest_google_device_uuid !== undefined &&
-            mappedData.nest_google_home_uuid !== undefined &&
-            mappedData.softwareVersion !== undefined &&
-            (mappedData.description !== undefined || mappedData.location !== undefined)
-          ) {
-            tempDevice = processCommonData(
-              mappedData.nest_google_device_uuid,
-              mappedData.nest_google_home_uuid,
-              {
-                type: DEVICE_TYPE.LOCK,
-                model: 'x Yale Lock',
-                ...mappedData,
-              },
-              config,
-            );
-          }
+          return;
         }
-        // eslint-disable-next-line no-unused-vars
-      } catch (error) {
-        log?.debug?.('Error processing lock data for "%s"', object_key);
-      }
 
-      if (
-        Object.entries(tempDevice).length !== 0 &&
-        typeof devices[tempDevice.serialNumber] === 'undefined' &&
-        (deviceType === undefined || (typeof deviceType === 'string' && deviceType !== '' && tempDevice.type === deviceType))
-      ) {
-        let deviceOptions = config?.devices?.find(
-          (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+        // Map raw device data into our normalised lock schema
+        let mappedResult = buildMappedObject(
+          LOCK_FIELD_MAP,
+          createMappingContext(rawData, object_key, {
+            google: value,
+          }),
+          changedData instanceof Map ? changedData.get(object_key)?.fields : undefined,
         );
 
-        // Insert any extra options we've read in from configuration file for this device
-        tempDevice.eveHistory =
-          deviceOptions?.eveHistory !== undefined ? deviceOptions.eveHistory === true : config.options?.eveHistory === true;
+        let serialNumber = mappedResult?.data?.serialNumber;
+        let existingDevice = devices[serialNumber];
 
-        devices[tempDevice.serialNumber] = tempDevice;
+        // If we have all required fields, build the full lock device data object
+        if (mappedResult?.hasRequired === true) {
+          let tempDevice = {
+            type: DEVICE_TYPE.LOCK,
+            model: 'x Yale Lock',
+            manufacturer: 'Nest',
+            ...mappedResult.data,
+          };
+
+          // Check for any device or home configuration options that match this device
+          // We'll use the serial number to match against device options, and the home uuid to match against home options
+          let deviceOptions = config?.devices?.find(
+            (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+          );
+          let homeOptions = config?.homes?.find(
+            (home) =>
+              home?.nest_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
+              home?.google_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
+          );
+
+          // Insert any extra options we've read in from configuration file for this device
+          tempDevice.eveHistory =
+            deviceOptions?.eveHistory !== undefined ? deviceOptions.eveHistory === true : config?.options?.eveHistory === true;
+
+          // Process additional exclusion details
+          tempDevice.excluded =
+            deviceOptions?.exclude === true ||
+            (deviceOptions?.exclude !== false &&
+              (homeOptions?.exclude === true || (homeOptions?.exclude !== false && config?.options?.exclude === true)));
+
+          // Store full device
+          // Full always overrides partial if present
+          if (existingDevice?.full !== true) {
+            devices[tempDevice.serialNumber] = {
+              full: true,
+              data: tempDevice,
+            };
+          }
+        }
+
+        // Refresh existing device reference after potential full insert
+        existingDevice = devices[serialNumber];
+
+        // Only store partial data if nothing has already been stored for this serial in this pass.
+        // A later full payload will replace an earlier partial payload.
+        if (
+          mappedResult?.hasRequired === false &&
+          serialNumber !== undefined &&
+          typeof mappedResult?.data === 'object' &&
+          mappedResult.data?.constructor === Object &&
+          Object.keys(mappedResult.data).length !== 0 &&
+          existingDevice === undefined
+        ) {
+          devices[serialNumber] = {
+            full: false,
+            data: mappedResult.data,
+          };
+        }
+      } catch (error) {
+        log?.error?.('Error processing lock data for "%s": %s', object_key, String(error));
       }
     });
 

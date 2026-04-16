@@ -55,7 +55,7 @@ import { pathToFileURL } from 'node:url';
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
-import { processCommonData, scaleValue, adjustTemperature, parseDurationToSeconds } from '../utils.js';
+import { processSoftwareVersion, scaleValue, adjustTemperature, parseDurationToSeconds } from '../utils.js';
 import { buildMappedObject, createMappingContext } from '../translator.js';
 
 // Define constants
@@ -74,7 +74,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = 'Thermostat';
-  static VERSION = '2026.04.12'; // Code version
+  static VERSION = '2026.04.16'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -1497,777 +1497,1102 @@ export default class NestThermostat extends HomeKitDevice {
   }
 }
 
-// Data translation functions for thermostat data.
-// We use this to translate RAW Nest and Google data into the format we want for our
-// thermostat device(s) using the field map below.
-//
-// This keeps all translation logic in one place and makes it easier to maintain as
-// Nest and Google sources evolve over time.
-//
-// Field map conventions:
-// - Return undefined for missing values rather than placeholder defaults
-// - processRawData() determines if enough data exists to build the device
-// - Optional fields may remain undefined
-//
 // Thermostat field translation map
+// Maps raw source data -> normalised thermostat device fields
+// - fields: top-level raw fields this mapping depends on (for delta updates)
+// - related: top-level raw fields on related objects this mapping depends on
+// - translate: converts raw -> final normalised value
 const THERMOSTAT_FIELD_MAP = {
   // Identity fields
   serialNumber: {
-    google: ({ sourceValue }) =>
-      typeof sourceValue?.value?.device_identity?.serialNumber === 'string' && sourceValue.value.device_identity.serialNumber.trim() !== ''
-        ? sourceValue.value.device_identity.serialNumber
-        : undefined,
-    nest: ({ sourceValue }) =>
-      typeof sourceValue?.value?.serial_number === 'string' && sourceValue.value.serial_number.trim() !== ''
-        ? sourceValue.value.serial_number
-        : undefined,
+    required: true,
+    google: {
+      fields: [],
+      translate: ({ raw }) =>
+        typeof raw?.value?.device_identity?.serialNumber === 'string' && raw.value.device_identity.serialNumber.trim() !== ''
+          ? raw.value.device_identity.serialNumber.trim().toUpperCase()
+          : undefined,
+    },
+    nest: {
+      fields: [],
+      translate: ({ raw }) =>
+        typeof raw?.value?.serial_number === 'string' && raw.value.serial_number.trim() !== ''
+          ? raw.value.serial_number.trim().toUpperCase()
+          : undefined,
+    },
   },
 
   nest_google_device_uuid: {
-    google: ({ objectKey }) => objectKey,
-    nest: ({ objectKey }) => objectKey,
+    required: true,
+    google: {
+      fields: [],
+      translate: ({ objectKey }) => objectKey,
+    },
+    nest: {
+      fields: [],
+      translate: ({ objectKey }) => objectKey,
+    },
   },
 
   nest_google_home_uuid: {
-    google: ({ sourceValue }) => sourceValue?.value?.device_info?.pairerId?.resourceId,
-    nest: ({ rawData, sourceValue }) => rawData?.['link.' + sourceValue?.value?.serial_number]?.value?.structure,
+    google: {
+      fields: ['device_info'],
+      translate: ({ raw }) => raw?.value?.device_info?.pairerId?.resourceId,
+    },
+    nest: {
+      fields: ['serial_number'],
+      related: ['structure'],
+      translate: ({ rawData, raw }) => rawData?.['link.' + raw?.value?.serial_number]?.value?.structure,
+    },
   },
 
   // Naming / descriptive fields
   model: {
-    google: ({ sourceValue }) => {
-      let typeName = sourceValue?.value?.device_info?.typeName ?? '';
+    required: true,
+    google: {
+      fields: ['device_info'],
+      translate: ({ raw }) => {
+        let typeName = raw?.value?.device_info?.typeName ?? '';
 
-      if (typeName === 'nest.resource.NestLearningThermostat1Resource') {
-        return 'Learning Thermostat (1st gen)';
-      }
-      if (typeName === 'nest.resource.NestLearningThermostat2Resource' || typeName === 'nest.resource.NestAmber1DisplayResource') {
-        return 'Learning Thermostat (2nd gen)';
-      }
-      if (
-        typeName === 'nest.resource.NestLearningThermostat3Resource' ||
-        typeName === 'nest.resource.NestLearningThermostat3v2Resource' ||
-        typeName === 'nest.resource.NestAmber2DisplayResource'
-      ) {
-        return 'Learning Thermostat (3rd gen)';
-      }
-      if (typeName === 'google.resource.GoogleBismuth1Resource') {
-        return 'Learning Thermostat (4th gen)';
-      }
-      if (typeName === 'nest.resource.NestOnyxResource' || typeName === 'nest.resource.NestAgateDisplayResource') {
-        return 'Thermostat E (1st gen)';
-      }
-      if (typeName === 'google.resource.GoogleZirconium1Resource') {
-        return 'Thermostat (2020)';
-      }
+        if (typeName === 'nest.resource.NestLearningThermostat1Resource') {
+          return 'Learning Thermostat (1st gen)';
+        }
+        if (typeName === 'nest.resource.NestLearningThermostat2Resource' || typeName === 'nest.resource.NestAmber1DisplayResource') {
+          return 'Learning Thermostat (2nd gen)';
+        }
+        if (
+          typeName === 'nest.resource.NestLearningThermostat3Resource' ||
+          typeName === 'nest.resource.NestLearningThermostat3v2Resource' ||
+          typeName === 'nest.resource.NestAmber2DisplayResource'
+        ) {
+          return 'Learning Thermostat (3rd gen)';
+        }
+        if (typeName === 'google.resource.GoogleBismuth1Resource') {
+          return 'Learning Thermostat (4th gen)';
+        }
+        if (typeName === 'nest.resource.NestOnyxResource' || typeName === 'nest.resource.NestAgateDisplayResource') {
+          return 'Thermostat E (1st gen)';
+        }
+        if (typeName === 'google.resource.GoogleZirconium1Resource') {
+          return 'Thermostat (2020)';
+        }
 
-      return 'Thermostat (unknown)';
+        return 'Thermostat (unknown)';
+      },
     },
+    nest: {
+      fields: ['serial_number'],
+      translate: ({ raw }) => {
+        let serial = raw?.value?.serial_number ?? '';
 
-    nest: ({ sourceValue }) => {
-      let serial = sourceValue?.value?.serial_number ?? '';
+        if (serial.substring(0, 2) === '15') {
+          return 'Thermostat E (1st gen)';
+        }
+        if (serial.substring(0, 2) === '09' || serial.substring(0, 2) === '10') {
+          return 'Learning Thermostat (3rd gen)';
+        }
+        if (serial.substring(0, 2) === '02') {
+          return 'Learning Thermostat (2nd gen)';
+        }
+        if (serial.substring(0, 2) === '01') {
+          return 'Learning Thermostat (1st gen)';
+        }
 
-      if (serial.substring(0, 2) === '15') {
-        return 'Thermostat E (1st gen)';
-      }
-      if (serial.substring(0, 2) === '09' || serial.substring(0, 2) === '10') {
-        return 'Learning Thermostat (3rd gen)';
-      }
-      if (serial.substring(0, 2) === '02') {
-        return 'Learning Thermostat (2nd gen)';
-      }
-      if (serial.substring(0, 2) === '01') {
-        return 'Learning Thermostat (1st gen)';
-      }
-
-      return 'Thermostat (unknown)';
+        return 'Thermostat (unknown)';
+      },
     },
   },
 
   softwareVersion: {
-    google: ({ sourceValue }) => sourceValue?.value?.device_identity?.softwareVersion,
-    nest: ({ sourceValue }) => sourceValue?.value?.current_version,
+    required: true,
+    google: {
+      fields: ['device_identity'],
+      translate: ({ raw }) =>
+        typeof raw?.value?.device_identity?.softwareVersion === 'string' && raw.value.device_identity.softwareVersion.trim() !== ''
+          ? processSoftwareVersion(raw.value.device_identity.softwareVersion)
+          : undefined,
+    },
+    nest: {
+      fields: ['current_version'],
+      translate: ({ raw }) =>
+        typeof raw?.value?.current_version === 'string' && raw.value.current_version.trim() !== ''
+          ? processSoftwareVersion(raw.value.current_version)
+          : undefined,
+    },
   },
 
   description: {
-    google: ({ sourceValue }) => String(sourceValue?.value?.label?.label ?? ''),
-    nest: ({ rawData, sourceValue }) => String(rawData?.['shared.' + sourceValue?.value?.serial_number]?.value?.name ?? ''),
-  },
+    required: true,
+    google: {
+      fields: ['label', 'device_info', 'device_located_settings'],
+      related: ['located_annotations'],
+      translate: ({ rawData, raw }) => {
+        let description = String(raw?.value?.label?.label ?? '').trim();
+        let location = String(
+          [
+            ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {}),
+            ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {}),
+          ].find((where) => where?.whereId?.resourceId === raw?.value?.device_located_settings?.whereAnnotationRid?.resourceId)?.label
+            ?.literal ?? '',
+        ).trim();
 
-  location: {
-    google: ({ rawData, sourceValue }) =>
-      String(
-        [
-          ...Object.values(
-            rawData?.[sourceValue?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {},
-          ),
-          ...Object.values(
-            rawData?.[sourceValue?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {},
-          ),
-        ].find((where) => where?.whereId?.resourceId === sourceValue?.value?.device_located_settings?.whereAnnotationRid?.resourceId)?.label
-          ?.literal ?? '',
-      ),
-    nest: ({ rawData, sourceValue }) =>
-      String(
-        rawData?.[
-          'where.' + rawData?.['link.' + sourceValue?.value?.serial_number]?.value?.structure?.split?.('.')[1]
-        ]?.value?.wheres?.find((where) => where?.where_id === sourceValue?.value?.where_id)?.name ?? '',
-      ),
+        if (description === '' && location !== '') {
+          description = location;
+          location = '';
+        }
+
+        if (description === '' && location === '') {
+          description = 'unknown description';
+        }
+
+        return HomeKitDevice.makeValidHKName(location === '' ? description : description + ' - ' + location);
+      },
+    },
+    nest: {
+      fields: ['serial_number'],
+      related: ['name', 'wheres', 'structure'],
+      translate: ({ rawData, raw }) => {
+        let description = String(rawData?.['shared.' + raw?.value?.serial_number]?.value?.name ?? '').trim();
+        let location = String(
+          rawData?.['where.' + rawData?.['link.' + raw?.value?.serial_number]?.value?.structure?.split?.('.')[1]]?.value?.wheres?.find(
+            (where) => where?.where_id === raw?.value?.where_id,
+          )?.name ?? '',
+        ).trim();
+
+        if (description === '' && location !== '') {
+          description = location;
+          location = '';
+        }
+
+        if (description === '' && location === '') {
+          description = 'unknown description';
+        }
+
+        return HomeKitDevice.makeValidHKName(location === '' ? description : description + ' - ' + location);
+      },
+    },
   },
 
   // Core environmental / status fields
   current_humidity: {
-    google: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.current_humidity?.humidityValue?.humidity?.value) === false
-        ? Number(sourceValue.value.current_humidity.humidityValue.humidity.value)
-        : undefined,
-    nest: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.current_humidity) === false ? Number(sourceValue.value.current_humidity) : undefined,
+    google: {
+      fields: ['current_humidity'],
+      translate: ({ raw }) =>
+        isNaN(raw?.value?.current_humidity?.humidityValue?.humidity?.value) === false
+          ? Number(raw.value.current_humidity.humidityValue.humidity.value)
+          : undefined,
+    },
+    nest: {
+      fields: ['current_humidity'],
+      translate: ({ raw }) => (isNaN(raw?.value?.current_humidity) === false ? Number(raw.value.current_humidity) : undefined),
+    },
   },
 
   temperature_scale: {
-    google: ({ sourceValue }) => (sourceValue?.value?.display_settings?.temperatureScale === 'TEMPERATURE_SCALE_F' ? 'F' : 'C'),
-    nest: ({ sourceValue }) => (sourceValue?.value?.temperature_scale?.toUpperCase?.() === 'F' ? 'F' : 'C'),
+    required: true,
+    google: {
+      fields: ['display_settings'],
+      translate: ({ raw }) => (raw?.value?.display_settings?.temperatureScale === 'TEMPERATURE_SCALE_F' ? 'F' : 'C'),
+    },
+    nest: {
+      fields: ['temperature_scale'],
+      translate: ({ raw }) => (raw?.value?.temperature_scale?.toUpperCase?.() === 'F' ? 'F' : 'C'),
+    },
   },
 
   removed_from_base: {
-    google: ({ sourceValue }) =>
-      Array.isArray(sourceValue?.value?.display?.thermostatState) === true &&
-      sourceValue.value.display.thermostatState.includes('bpd') === true,
-    nest: ({ sourceValue }) => sourceValue?.value?.nlclient_state?.toUpperCase?.() === 'BPD',
+    google: {
+      fields: ['display'],
+      translate: ({ raw }) =>
+        Array.isArray(raw?.value?.display?.thermostatState) === true && raw.value.display.thermostatState.includes('bpd') === true,
+    },
+    nest: {
+      fields: ['nlclient_state'],
+      translate: ({ raw }) => raw?.value?.nlclient_state?.toUpperCase?.() === 'BPD',
+    },
   },
 
   backplate_temperature: {
-    google: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.backplate_temperature?.temperatureValue?.temperature?.value) === false
-        ? adjustTemperature(Number(sourceValue.value.backplate_temperature.temperatureValue.temperature.value), 'C', 'C', true)
-        : undefined,
-    nest: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.backplate_temperature) === false
-        ? adjustTemperature(Number(sourceValue.value.backplate_temperature), 'C', 'C', true)
-        : undefined,
+    google: {
+      fields: ['backplate_temperature'],
+      translate: ({ raw }) =>
+        isNaN(raw?.value?.backplate_temperature?.temperatureValue?.temperature?.value) === false
+          ? adjustTemperature(Number(raw.value.backplate_temperature.temperatureValue.temperature.value), 'C', 'C', true)
+          : undefined,
+    },
+    nest: {
+      fields: ['backplate_temperature'],
+      translate: ({ raw }) =>
+        isNaN(raw?.value?.backplate_temperature) === false
+          ? adjustTemperature(Number(raw.value.backplate_temperature), 'C', 'C', true)
+          : undefined,
+    },
   },
 
   current_temperature: {
-    google: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.current_temperature?.temperatureValue?.temperature?.value) === false
-        ? adjustTemperature(Number(sourceValue.value.current_temperature.temperatureValue.temperature.value), 'C', 'C', true)
-        : undefined,
-    nest: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.backplate_temperature) === false
-        ? adjustTemperature(Number(sourceValue.value.backplate_temperature), 'C', 'C', true)
-        : undefined,
+    google: {
+      fields: ['current_temperature'],
+      translate: ({ raw }) =>
+        isNaN(raw?.value?.current_temperature?.temperatureValue?.temperature?.value) === false
+          ? adjustTemperature(Number(raw.value.current_temperature.temperatureValue.temperature.value), 'C', 'C', true)
+          : undefined,
+    },
+    nest: {
+      fields: ['backplate_temperature'],
+      translate: ({ raw }) =>
+        isNaN(raw?.value?.backplate_temperature) === false
+          ? adjustTemperature(Number(raw.value.backplate_temperature), 'C', 'C', true)
+          : undefined,
+    },
   },
 
   battery_level: {
-    google: ({ sourceValue }) => {
-      let voltage =
-        isNaN(sourceValue?.value?.battery_voltage?.batteryValue?.batteryVoltage?.value) === false
-          ? Number(sourceValue.value.battery_voltage.batteryValue.batteryVoltage.value)
-          : undefined;
+    google: {
+      fields: ['battery_voltage', 'device_info'],
+      translate: ({ raw }) => {
+        let voltage =
+          isNaN(raw?.value?.battery_voltage?.batteryValue?.batteryVoltage?.value) === false
+            ? Number(raw.value.battery_voltage.batteryValue.batteryVoltage.value)
+            : undefined;
 
-      if (voltage === undefined) {
-        return undefined;
-      }
+        if (voltage === undefined) {
+          return undefined;
+        }
 
-      // Lower battery voltages for the "2020" mirror thermostat. Levels are a guestimate.
-      if (sourceValue?.value?.device_info?.typeName === 'google.resource.GoogleZirconium1Resource') {
-        return scaleValue(voltage, 2.9, 3.2, 0, 100);
-      }
+        if (raw?.value?.device_info?.typeName === 'google.resource.GoogleZirconium1Resource') {
+          return Math.round(scaleValue(voltage, 2.9, 3.2, 0, 100));
+        }
 
-      return scaleValue(voltage, 3.6, 4.0, 0, 100);
+        return Math.round(scaleValue(voltage, 3.6, 4.0, 0, 100));
+      },
     },
-
-    nest: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.battery_level) === false
-        ? scaleValue(Number(sourceValue.value.battery_level), 3.6, 4.0, 0, 100)
-        : undefined,
+    nest: {
+      fields: ['battery_level'],
+      translate: ({ raw }) =>
+        isNaN(raw?.value?.battery_level) === false ? Math.round(scaleValue(Number(raw.value.battery_level), 3.6, 4.0, 0, 100)) : undefined,
+    },
   },
 
   online: {
-    google: ({ sourceValue }) => sourceValue?.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
-    nest: ({ rawData, sourceValue }) => rawData?.['track.' + sourceValue?.value?.serial_number]?.value?.online === true,
+    required: true,
+    google: {
+      fields: ['liveness'],
+      translate: ({ raw }) => raw?.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
+    },
+    nest: {
+      fields: ['serial_number'],
+      related: ['online'],
+      translate: ({ rawData, raw }) => rawData?.['track.' + raw?.value?.serial_number]?.value?.online === true,
+    },
   },
 
   leaf: {
-    google: ({ sourceValue }) => sourceValue?.value?.leaf?.active === true,
-    nest: ({ sourceValue }) => sourceValue?.value?.leaf === true,
+    google: {
+      fields: ['leaf'],
+      translate: ({ raw }) => raw?.value?.leaf?.active === true,
+    },
+    nest: {
+      fields: ['leaf'],
+      translate: ({ raw }) => raw?.value?.leaf === true,
+    },
   },
 
   can_cool: {
-    google: ({ sourceValue }) =>
-      sourceValue?.value?.hvac_equipment_capabilities?.hasStage1Cool === true ||
-      sourceValue?.value?.hvac_equipment_capabilities?.hasStage2Cool === true ||
-      sourceValue?.value?.hvac_equipment_capabilities?.hasStage3Cool === true,
-    nest: ({ rawData, sourceValue }) => rawData?.['shared.' + sourceValue?.value?.serial_number]?.value?.can_cool === true,
+    google: {
+      fields: ['hvac_equipment_capabilities'],
+      translate: ({ raw }) =>
+        raw?.value?.hvac_equipment_capabilities?.hasStage1Cool === true ||
+        raw?.value?.hvac_equipment_capabilities?.hasStage2Cool === true ||
+        raw?.value?.hvac_equipment_capabilities?.hasStage3Cool === true,
+    },
+    nest: {
+      fields: ['serial_number'],
+      related: ['can_cool'],
+      translate: ({ rawData, raw }) => rawData?.['shared.' + raw?.value?.serial_number]?.value?.can_cool === true,
+    },
   },
 
   can_heat: {
-    google: ({ sourceValue }) =>
-      sourceValue?.value?.hvac_equipment_capabilities?.hasStage1Heat === true ||
-      sourceValue?.value?.hvac_equipment_capabilities?.hasStage2Heat === true ||
-      sourceValue?.value?.hvac_equipment_capabilities?.hasStage3Heat === true,
-    nest: ({ rawData, sourceValue }) => rawData?.['shared.' + sourceValue?.value?.serial_number]?.value?.can_heat === true,
+    google: {
+      fields: ['hvac_equipment_capabilities'],
+      translate: ({ raw }) =>
+        raw?.value?.hvac_equipment_capabilities?.hasStage1Heat === true ||
+        raw?.value?.hvac_equipment_capabilities?.hasStage2Heat === true ||
+        raw?.value?.hvac_equipment_capabilities?.hasStage3Heat === true,
+    },
+    nest: {
+      fields: ['serial_number'],
+      related: ['can_heat'],
+      translate: ({ rawData, raw }) => rawData?.['shared.' + raw?.value?.serial_number]?.value?.can_heat === true,
+    },
   },
 
   temperature_lock: {
-    google: ({ sourceValue }) => sourceValue?.value?.temperature_lock_settings?.enabled === true,
-    nest: ({ sourceValue }) => sourceValue?.value?.temperature_lock === true,
+    google: {
+      fields: ['temperature_lock_settings'],
+      translate: ({ raw }) => raw?.value?.temperature_lock_settings?.enabled === true,
+    },
+    nest: {
+      fields: ['temperature_lock'],
+      translate: ({ raw }) => raw?.value?.temperature_lock === true,
+    },
   },
 
   temperature_lock_pin_hash: {
-    google: ({ sourceValue }) =>
-      sourceValue?.value?.temperature_lock_settings?.enabled === true ? sourceValue.value.temperature_lock_settings.pinHash : '',
-    nest: ({ sourceValue }) =>
-      typeof sourceValue?.value?.temperature_lock_pin_hash === 'string' ? sourceValue.value.temperature_lock_pin_hash : '',
+    google: {
+      fields: ['temperature_lock_settings'],
+      translate: ({ raw }) => (raw?.value?.temperature_lock_settings?.enabled === true ? raw.value.temperature_lock_settings.pinHash : ''),
+    },
+    nest: {
+      fields: ['temperature_lock_pin_hash'],
+      translate: ({ raw }) => (typeof raw?.value?.temperature_lock_pin_hash === 'string' ? raw.value.temperature_lock_pin_hash : ''),
+    },
   },
 
   away: {
-    google: ({ sourceValue }) => sourceValue?.value?.structure_mode?.structureMode === 'STRUCTURE_MODE_AWAY',
-    nest: ({ rawData, sourceValue }) =>
-      rawData?.[rawData?.['link.' + sourceValue?.value?.serial_number]?.value?.structure]?.value?.away === true,
+    google: {
+      fields: ['structure_mode'],
+      translate: ({ raw }) => raw?.value?.structure_mode?.structureMode === 'STRUCTURE_MODE_AWAY',
+    },
+    nest: {
+      fields: ['serial_number'],
+      related: ['away'],
+      translate: ({ rawData, raw }) => rawData?.[rawData?.['link.' + raw?.value?.serial_number]?.value?.structure]?.value?.away === true,
+    },
   },
 
   occupancy: {
-    google: ({ sourceValue }) => sourceValue?.value?.structure_mode?.structureMode === 'STRUCTURE_MODE_HOME',
-    nest: ({ rawData, sourceValue }) =>
-      rawData?.[rawData?.['link.' + sourceValue?.value?.serial_number]?.value?.structure]?.value?.away === false,
+    google: {
+      fields: ['structure_mode'],
+      translate: ({ raw }) => raw?.value?.structure_mode?.structureMode === 'STRUCTURE_MODE_HOME',
+    },
+    nest: {
+      fields: ['serial_number'],
+      related: ['away'],
+      translate: ({ rawData, raw }) => rawData?.[rawData?.['link.' + raw?.value?.serial_number]?.value?.structure]?.value?.away === false,
+    },
   },
 
   vacation_mode: {
-    google: ({ sourceValue }) => sourceValue?.value?.structure_mode?.structureMode === 'STRUCTURE_MODE_VACATION',
-    nest: ({ rawData, sourceValue }) =>
-      rawData?.[rawData?.['link.' + sourceValue?.value?.serial_number]?.value?.structure]?.value?.vacation_mode === true,
+    google: {
+      fields: ['structure_mode'],
+      translate: ({ raw }) => raw?.value?.structure_mode?.structureMode === 'STRUCTURE_MODE_VACATION',
+    },
+    nest: {
+      fields: ['serial_number'],
+      related: ['vacation_mode'],
+      translate: ({ rawData, raw }) =>
+        rawData?.[rawData?.['link.' + raw?.value?.serial_number]?.value?.structure]?.value?.vacation_mode === true,
+    },
   },
 
   has_humidifier: {
-    google: ({ sourceValue }) => sourceValue?.value?.hvac_equipment_capabilities?.hasHumidifier === true,
-    nest: ({ sourceValue }) => sourceValue?.value?.has_humidifier === true,
+    google: {
+      fields: ['hvac_equipment_capabilities'],
+      translate: ({ raw }) => raw?.value?.hvac_equipment_capabilities?.hasHumidifier === true,
+    },
+    nest: {
+      fields: ['has_humidifier'],
+      translate: ({ raw }) => raw?.value?.has_humidifier === true,
+    },
   },
 
   has_dehumidifier: {
-    google: ({ sourceValue }) => sourceValue?.value?.hvac_equipment_capabilities?.hasDehumidifier === true,
-    nest: ({ sourceValue }) => sourceValue?.value?.has_dehumidifier === true,
+    google: {
+      fields: ['hvac_equipment_capabilities'],
+      translate: ({ raw }) => raw?.value?.hvac_equipment_capabilities?.hasDehumidifier === true,
+    },
+    nest: {
+      fields: ['has_dehumidifier'],
+      translate: ({ raw }) => raw?.value?.has_dehumidifier === true,
+    },
   },
 
   has_fan: {
-    google: ({ sourceValue }) =>
-      typeof sourceValue?.value?.fan_control_capabilities?.maxAvailableSpeed === 'string' &&
-      sourceValue.value.fan_control_capabilities.maxAvailableSpeed !== 'FAN_SPEED_SETTING_OFF',
-    nest: ({ sourceValue }) => sourceValue?.value?.has_fan === true,
+    google: {
+      fields: ['fan_control_capabilities'],
+      translate: ({ raw }) =>
+        typeof raw?.value?.fan_control_capabilities?.maxAvailableSpeed === 'string' &&
+        raw.value.fan_control_capabilities.maxAvailableSpeed !== 'FAN_SPEED_SETTING_OFF',
+    },
+    nest: {
+      fields: ['has_fan'],
+      translate: ({ raw }) => raw?.value?.has_fan === true,
+    },
   },
 
   fan_state: {
-    google: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.fan_control_settings?.timerEnd?.seconds) === false &&
-      Number(sourceValue.value.fan_control_settings.timerEnd.seconds) > 0,
-    nest: ({ sourceValue }) => isNaN(sourceValue?.value?.fan_timer_timeout) === false && Number(sourceValue.value.fan_timer_timeout) > 0,
+    google: {
+      fields: ['fan_control_settings'],
+      translate: ({ raw }) =>
+        isNaN(raw?.value?.fan_control_settings?.timerEnd?.seconds) === false && Number(raw.value.fan_control_settings.timerEnd.seconds) > 0,
+    },
+    nest: {
+      fields: ['fan_timer_timeout'],
+      translate: ({ raw }) => isNaN(raw?.value?.fan_timer_timeout) === false && Number(raw.value.fan_timer_timeout) > 0,
+    },
   },
 
   fan_timer_speed: {
-    google: ({ sourceValue }) =>
-      sourceValue?.value?.fan_control_settings?.timerSpeed?.includes?.('FAN_SPEED_SETTING_STAGE') === true &&
-      isNaN(sourceValue.value.fan_control_settings.timerSpeed.split('FAN_SPEED_SETTING_STAGE')[1]) === false
-        ? Number(sourceValue.value.fan_control_settings.timerSpeed.split('FAN_SPEED_SETTING_STAGE')[1])
-        : undefined,
-    nest: ({ sourceValue }) =>
-      sourceValue?.value?.fan_timer_speed?.includes?.('stage') === true &&
-      isNaN(sourceValue.value.fan_timer_speed.split('stage')[1]) === false
-        ? Number(sourceValue.value.fan_timer_speed.split('stage')[1])
-        : undefined,
+    google: {
+      fields: ['fan_control_settings'],
+      translate: ({ raw }) =>
+        raw?.value?.fan_control_settings?.timerSpeed?.includes?.('FAN_SPEED_SETTING_STAGE') === true &&
+        isNaN(raw.value.fan_control_settings.timerSpeed.split('FAN_SPEED_SETTING_STAGE')[1]) === false
+          ? Number(raw.value.fan_control_settings.timerSpeed.split('FAN_SPEED_SETTING_STAGE')[1])
+          : undefined,
+    },
+    nest: {
+      fields: ['fan_timer_speed'],
+      translate: ({ raw }) =>
+        raw?.value?.fan_timer_speed?.includes?.('stage') === true && isNaN(raw.value.fan_timer_speed.split('stage')[1]) === false
+          ? Number(raw.value.fan_timer_speed.split('stage')[1])
+          : undefined,
+    },
   },
 
   fan_max_speed: {
-    google: ({ sourceValue }) =>
-      sourceValue?.value?.fan_control_capabilities?.maxAvailableSpeed?.includes?.('FAN_SPEED_SETTING_STAGE') === true &&
-      isNaN(sourceValue.value.fan_control_capabilities.maxAvailableSpeed.split('FAN_SPEED_SETTING_STAGE')[1]) === false
-        ? Number(sourceValue.value.fan_control_capabilities.maxAvailableSpeed.split('FAN_SPEED_SETTING_STAGE')[1])
-        : undefined,
-    nest: ({ sourceValue }) =>
-      sourceValue?.value?.fan_capabilities?.includes?.('stage') === true &&
-      isNaN(sourceValue.value.fan_capabilities.split('stage')[1]) === false
-        ? Number(sourceValue.value.fan_capabilities.split('stage')[1])
-        : undefined,
+    google: {
+      fields: ['fan_control_capabilities'],
+      translate: ({ raw }) =>
+        raw?.value?.fan_control_capabilities?.maxAvailableSpeed?.includes?.('FAN_SPEED_SETTING_STAGE') === true &&
+        isNaN(raw.value.fan_control_capabilities.maxAvailableSpeed.split('FAN_SPEED_SETTING_STAGE')[1]) === false
+          ? Number(raw.value.fan_control_capabilities.maxAvailableSpeed.split('FAN_SPEED_SETTING_STAGE')[1])
+          : undefined,
+    },
+    nest: {
+      fields: ['fan_capabilities'],
+      translate: ({ raw }) =>
+        raw?.value?.fan_capabilities?.includes?.('stage') === true && isNaN(raw.value.fan_capabilities.split('stage')[1]) === false
+          ? Number(raw.value.fan_capabilities.split('stage')[1])
+          : undefined,
+    },
   },
 
   fan_duration: {
-    google: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.fan_control_settings?.timerDuration?.seconds) === false
-        ? Number(sourceValue.value.fan_control_settings.timerDuration.seconds)
-        : undefined,
-    nest: ({ sourceValue }) => (isNaN(sourceValue?.value?.fan_duration) === false ? Number(sourceValue.value.fan_duration) : undefined),
+    google: {
+      fields: ['fan_control_settings'],
+      translate: ({ raw }) =>
+        isNaN(raw?.value?.fan_control_settings?.timerDuration?.seconds) === false
+          ? Number(raw.value.fan_control_settings.timerDuration.seconds)
+          : undefined,
+    },
+    nest: {
+      fields: ['fan_duration'],
+      translate: ({ raw }) => (isNaN(raw?.value?.fan_duration) === false ? Number(raw.value.fan_duration) : undefined),
+    },
   },
 
   target_humidity_humidifier: {
-    google: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.humidity_control_settings?.humidifierTargetHumidity?.value) === false
-        ? Number(sourceValue.value.humidity_control_settings.humidifierTargetHumidity.value)
-        : undefined,
-    nest: () => undefined,
+    google: {
+      fields: ['humidity_control_settings'],
+      translate: ({ raw }) =>
+        isNaN(raw?.value?.humidity_control_settings?.humidifierTargetHumidity?.value) === false
+          ? Number(raw.value.humidity_control_settings.humidifierTargetHumidity.value)
+          : undefined,
+    },
+    nest: {
+      fields: [],
+      translate: () => undefined,
+    },
   },
 
   target_humidity_dehumidifier: {
-    google: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.humidity_control_settings?.dehumidifierTargetHumidity?.value) === false
-        ? Number(sourceValue.value.humidity_control_settings.dehumidifierTargetHumidity.value)
-        : undefined,
-    nest: () => undefined,
+    google: {
+      fields: ['humidity_control_settings'],
+      translate: ({ raw }) =>
+        isNaN(raw?.value?.humidity_control_settings?.dehumidifierTargetHumidity?.value) === false
+          ? Number(raw.value.humidity_control_settings.dehumidifierTargetHumidity.value)
+          : undefined,
+    },
+    nest: {
+      fields: [],
+      translate: () => undefined,
+    },
   },
 
   target_humidity: {
-    nest: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.target_humidity) === false ? Number(sourceValue.value.target_humidity) : undefined,
+    nest: {
+      fields: ['target_humidity'],
+      translate: ({ raw }) => (isNaN(raw?.value?.target_humidity) === false ? Number(raw.value.target_humidity) : undefined),
+    },
   },
 
   humidifier_state: {
-    google: ({ sourceValue }) => sourceValue?.value?.hvac_control?.hvacState?.humidifierActive === true,
-    nest: ({ sourceValue }) => sourceValue?.value?.humidifier_state === true,
+    google: {
+      fields: ['hvac_control'],
+      translate: ({ raw }) => raw?.value?.hvac_control?.hvacState?.humidifierActive === true,
+    },
+    nest: {
+      fields: ['humidifier_state'],
+      translate: ({ raw }) => raw?.value?.humidifier_state === true,
+    },
   },
 
   dehumidifier_state: {
-    google: ({ sourceValue }) => sourceValue?.value?.hvac_control?.hvacState?.dehumidifierActive === true,
-    nest: ({ sourceValue }) => sourceValue?.value?.dehumidifier_state === true,
+    google: {
+      fields: ['hvac_control'],
+      translate: ({ raw }) => raw?.value?.hvac_control?.hvacState?.dehumidifierActive === true,
+    },
+    nest: {
+      fields: ['dehumidifier_state'],
+      translate: ({ raw }) => raw?.value?.dehumidifier_state === true,
+    },
   },
 
   has_air_filter: {
-    google: ({ sourceValue }) => sourceValue?.value?.hvac_equipment_capabilities?.hasAirFilter === true,
-    nest: ({ sourceValue }) => sourceValue?.value?.has_air_filter === true,
+    google: {
+      fields: ['hvac_equipment_capabilities'],
+      translate: ({ raw }) => raw?.value?.hvac_equipment_capabilities?.hasAirFilter === true,
+    },
+    nest: {
+      fields: ['has_air_filter'],
+      translate: ({ raw }) => raw?.value?.has_air_filter === true,
+    },
   },
 
   filter_replacement_needed: {
-    google: ({ sourceValue }) => sourceValue?.value?.filter_reminder?.filterReplacementNeeded?.value === true,
-    nest: ({ sourceValue }) => sourceValue?.value?.filter_replacement_needed === true,
+    google: {
+      fields: ['filter_reminder'],
+      translate: ({ raw }) => raw?.value?.filter_reminder?.filterReplacementNeeded?.value === true,
+    },
+    nest: {
+      fields: ['filter_replacement_needed'],
+      translate: ({ raw }) => raw?.value?.filter_replacement_needed === true,
+    },
   },
 
   // HVAC mode / setpoint fields
   hvac_mode: {
-    google: ({ sourceValue }) => {
-      let mode =
-        sourceValue?.value?.target_temperature_settings?.enabled?.value === true &&
-        sourceValue?.value?.target_temperature_settings?.targetTemperature?.setpointType !== undefined
-          ? sourceValue.value.target_temperature_settings.targetTemperature.setpointType.split('SET_POINT_TYPE_')[1].toLowerCase()
-          : 'off';
+    google: {
+      fields: ['target_temperature_settings', 'eco_mode_state', 'eco_mode_settings'],
+      translate: ({ raw }) => {
+        let mode =
+          raw?.value?.target_temperature_settings?.enabled?.value === true &&
+          raw?.value?.target_temperature_settings?.targetTemperature?.setpointType !== undefined
+            ? raw.value.target_temperature_settings.targetTemperature.setpointType.split('SET_POINT_TYPE_')[1].toLowerCase()
+            : 'off';
 
-      if (sourceValue?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE') {
-        if (
-          sourceValue?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled === true &&
-          sourceValue?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled !== true
-        ) {
-          return 'ecoheat';
+        if (raw?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE') {
+          if (
+            raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled === true &&
+            raw?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled !== true
+          ) {
+            return 'ecoheat';
+          }
+          if (
+            raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled !== true &&
+            raw?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled === true
+          ) {
+            return 'ecocool';
+          }
+          if (
+            raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled === true &&
+            raw?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled === true
+          ) {
+            return 'ecorange';
+          }
         }
-        if (
-          sourceValue?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled !== true &&
-          sourceValue?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled === true
-        ) {
-          return 'ecocool';
-        }
-        if (
-          sourceValue?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled === true &&
-          sourceValue?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled === true
-        ) {
-          return 'ecorange';
-        }
-      }
 
-      return mode;
+        return mode;
+      },
     },
+    nest: {
+      fields: ['serial_number', 'eco', 'away_temperature_low_enabled', 'away_temperature_high_enabled'],
+      related: ['target_temperature_type'],
+      translate: ({ rawData, raw }) => {
+        let mode =
+          rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_type !== undefined
+            ? rawData['shared.' + raw.value.serial_number].value.target_temperature_type
+            : 'off';
 
-    nest: ({ rawData, sourceValue }) => {
-      let mode =
-        rawData?.['shared.' + sourceValue?.value?.serial_number]?.value?.target_temperature_type !== undefined
-          ? rawData['shared.' + sourceValue.value.serial_number].value.target_temperature_type
-          : 'off';
+        if (raw?.value?.eco?.mode?.toUpperCase?.() === 'AUTO-ECO' || raw?.value?.eco?.mode?.toUpperCase?.() === 'MANUAL-ECO') {
+          if (raw?.value?.away_temperature_low_enabled === true && raw?.value?.away_temperature_high_enabled === false) {
+            return 'ecoheat';
+          }
+          if (raw?.value?.away_temperature_high_enabled === true && raw?.value?.away_temperature_low_enabled === false) {
+            return 'ecocool';
+          }
+          if (raw?.value?.away_temperature_high_enabled === true && raw?.value?.away_temperature_low_enabled === true) {
+            return 'ecorange';
+          }
+        }
 
-      if (
-        sourceValue?.value?.eco?.mode?.toUpperCase?.() === 'AUTO-ECO' ||
-        sourceValue?.value?.eco?.mode?.toUpperCase?.() === 'MANUAL-ECO'
-      ) {
-        if (sourceValue?.value?.away_temperature_low_enabled === true && sourceValue?.value?.away_temperature_high_enabled === false) {
-          return 'ecoheat';
-        }
-        if (sourceValue?.value?.away_temperature_high_enabled === true && sourceValue?.value?.away_temperature_low_enabled === false) {
-          return 'ecocool';
-        }
-        if (sourceValue?.value?.away_temperature_high_enabled === true && sourceValue?.value?.away_temperature_low_enabled === true) {
-          return 'ecorange';
-        }
-      }
-
-      return mode;
+        return mode;
+      },
     },
   },
 
   target_temperature_low: {
-    google: ({ sourceValue }) => {
-      let value;
+    google: {
+      fields: ['target_temperature_settings', 'eco_mode_state', 'eco_mode_settings'],
+      translate: ({ raw }) => {
+        let value;
 
-      if (isNaN(sourceValue?.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value) === false) {
-        value = Number(sourceValue.value.target_temperature_settings.targetTemperature.heatingTarget.value);
-      }
-
-      if (sourceValue?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE') {
-        if (isNaN(sourceValue?.value?.eco_mode_settings?.ecoTemperatureHeat?.value?.value) === false) {
-          value = Number(sourceValue.value.eco_mode_settings.ecoTemperatureHeat.value.value);
+        if (isNaN(raw?.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value) === false) {
+          value = Number(raw.value.target_temperature_settings.targetTemperature.heatingTarget.value);
         }
-      }
 
-      return value !== undefined ? adjustTemperature(value, 'C', 'C', true) : undefined;
+        if (raw?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE') {
+          if (isNaN(raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.value?.value) === false) {
+            value = Number(raw.value.eco_mode_settings.ecoTemperatureHeat.value.value);
+          }
+        }
+
+        return value !== undefined ? adjustTemperature(value, 'C', 'C', true) : undefined;
+      },
     },
+    nest: {
+      fields: ['serial_number', 'eco', 'away_temperature_low'],
+      related: ['target_temperature_low'],
+      translate: ({ rawData, raw }) => {
+        let value;
 
-    nest: ({ rawData, sourceValue }) => {
-      let value;
-
-      if (isNaN(rawData?.['shared.' + sourceValue?.value?.serial_number]?.value?.target_temperature_low) === false) {
-        value = Number(rawData['shared.' + sourceValue.value.serial_number].value.target_temperature_low);
-      }
-
-      if (
-        sourceValue?.value?.eco?.mode?.toUpperCase?.() === 'AUTO-ECO' ||
-        sourceValue?.value?.eco?.mode?.toUpperCase?.() === 'MANUAL-ECO'
-      ) {
-        if (isNaN(sourceValue?.value?.away_temperature_low) === false) {
-          value = Number(sourceValue.value.away_temperature_low);
+        if (isNaN(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_low) === false) {
+          value = Number(rawData['shared.' + raw.value.serial_number].value.target_temperature_low);
         }
-      }
 
-      return value !== undefined ? adjustTemperature(value, 'C', 'C', true) : undefined;
+        if (raw?.value?.eco?.mode?.toUpperCase?.() === 'AUTO-ECO' || raw?.value?.eco?.mode?.toUpperCase?.() === 'MANUAL-ECO') {
+          if (isNaN(raw?.value?.away_temperature_low) === false) {
+            value = Number(raw.value.away_temperature_low);
+          }
+        }
+
+        return value !== undefined ? adjustTemperature(value, 'C', 'C', true) : undefined;
+      },
     },
   },
 
   target_temperature_high: {
-    google: ({ sourceValue }) => {
-      let value;
+    google: {
+      fields: ['target_temperature_settings', 'eco_mode_state', 'eco_mode_settings'],
+      translate: ({ raw }) => {
+        let value;
 
-      if (isNaN(sourceValue?.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value) === false) {
-        value = Number(sourceValue.value.target_temperature_settings.targetTemperature.coolingTarget.value);
-      }
-
-      if (sourceValue?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE') {
-        if (isNaN(sourceValue?.value?.eco_mode_settings?.ecoTemperatureCool?.value?.value) === false) {
-          value = Number(sourceValue.value.eco_mode_settings.ecoTemperatureCool.value.value);
+        if (isNaN(raw?.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value) === false) {
+          value = Number(raw.value.target_temperature_settings.targetTemperature.coolingTarget.value);
         }
-      }
 
-      return value !== undefined ? adjustTemperature(value, 'C', 'C', true) : undefined;
+        if (raw?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE') {
+          if (isNaN(raw?.value?.eco_mode_settings?.ecoTemperatureCool?.value?.value) === false) {
+            value = Number(raw.value.eco_mode_settings.ecoTemperatureCool.value.value);
+          }
+        }
+
+        return value !== undefined ? adjustTemperature(value, 'C', 'C', true) : undefined;
+      },
     },
+    nest: {
+      fields: ['serial_number', 'eco', 'away_temperature_high'],
+      related: ['target_temperature_high'],
+      translate: ({ rawData, raw }) => {
+        let value;
 
-    nest: ({ rawData, sourceValue }) => {
-      let value;
-
-      if (isNaN(rawData?.['shared.' + sourceValue?.value?.serial_number]?.value?.target_temperature_high) === false) {
-        value = Number(rawData['shared.' + sourceValue.value.serial_number].value.target_temperature_high);
-      }
-
-      if (
-        sourceValue?.value?.eco?.mode?.toUpperCase?.() === 'AUTO-ECO' ||
-        sourceValue?.value?.eco?.mode?.toUpperCase?.() === 'MANUAL-ECO'
-      ) {
-        if (isNaN(sourceValue?.value?.away_temperature_high) === false) {
-          value = Number(sourceValue.value.away_temperature_high);
+        if (isNaN(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_high) === false) {
+          value = Number(rawData['shared.' + raw.value.serial_number].value.target_temperature_high);
         }
-      }
 
-      return value !== undefined ? adjustTemperature(value, 'C', 'C', true) : undefined;
+        if (raw?.value?.eco?.mode?.toUpperCase?.() === 'AUTO-ECO' || raw?.value?.eco?.mode?.toUpperCase?.() === 'MANUAL-ECO') {
+          if (isNaN(raw?.value?.away_temperature_high) === false) {
+            value = Number(raw.value.away_temperature_high);
+          }
+        }
+
+        return value !== undefined ? adjustTemperature(value, 'C', 'C', true) : undefined;
+      },
     },
   },
 
   target_temperature: {
-    google: ({ sourceValue }) => {
-      let value;
-      let setpointType = sourceValue?.value?.target_temperature_settings?.targetTemperature?.setpointType;
+    google: {
+      fields: ['target_temperature_settings', 'eco_mode_state', 'eco_mode_settings'],
+      translate: ({ raw }) => {
+        let value;
+        let setpointType = raw?.value?.target_temperature_settings?.targetTemperature?.setpointType;
 
-      if (
-        setpointType === 'SET_POINT_TYPE_COOL' &&
-        isNaN(sourceValue?.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value) === false
-      ) {
-        value = Number(sourceValue.value.target_temperature_settings.targetTemperature.coolingTarget.value);
-      }
-
-      if (
-        setpointType === 'SET_POINT_TYPE_HEAT' &&
-        isNaN(sourceValue?.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value) === false
-      ) {
-        value = Number(sourceValue.value.target_temperature_settings.targetTemperature.heatingTarget.value);
-      }
-
-      if (
-        setpointType === 'SET_POINT_TYPE_RANGE' &&
-        isNaN(sourceValue?.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value) === false &&
-        isNaN(sourceValue?.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value) === false
-      ) {
-        value =
-          (Number(sourceValue.value.target_temperature_settings.targetTemperature.coolingTarget.value) +
-            Number(sourceValue.value.target_temperature_settings.targetTemperature.heatingTarget.value)) *
-          0.5;
-      }
-
-      if (sourceValue?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE') {
         if (
-          sourceValue?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled === true &&
-          sourceValue?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled !== true &&
-          isNaN(sourceValue?.value?.eco_mode_settings?.ecoTemperatureHeat?.value?.value) === false
+          setpointType === 'SET_POINT_TYPE_COOL' &&
+          isNaN(raw?.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value) === false
         ) {
-          value = Number(sourceValue.value.eco_mode_settings.ecoTemperatureHeat.value.value);
+          value = Number(raw.value.target_temperature_settings.targetTemperature.coolingTarget.value);
         }
+
         if (
-          sourceValue?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled !== true &&
-          sourceValue?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled === true &&
-          isNaN(sourceValue?.value?.eco_mode_settings?.ecoTemperatureCool?.value?.value) === false
+          setpointType === 'SET_POINT_TYPE_HEAT' &&
+          isNaN(raw?.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value) === false
         ) {
-          value = Number(sourceValue.value.eco_mode_settings.ecoTemperatureCool.value.value);
+          value = Number(raw.value.target_temperature_settings.targetTemperature.heatingTarget.value);
         }
+
         if (
-          sourceValue?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled === true &&
-          sourceValue?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled === true &&
-          isNaN(sourceValue?.value?.eco_mode_settings?.ecoTemperatureHeat?.value?.value) === false &&
-          isNaN(sourceValue?.value?.eco_mode_settings?.ecoTemperatureCool?.value?.value) === false
+          setpointType === 'SET_POINT_TYPE_RANGE' &&
+          isNaN(raw?.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value) === false &&
+          isNaN(raw?.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value) === false
         ) {
           value =
-            (Number(sourceValue.value.eco_mode_settings.ecoTemperatureCool.value.value) +
-              Number(sourceValue.value.eco_mode_settings.ecoTemperatureHeat.value.value)) *
+            (Number(raw.value.target_temperature_settings.targetTemperature.coolingTarget.value) +
+              Number(raw.value.target_temperature_settings.targetTemperature.heatingTarget.value)) *
             0.5;
         }
-      }
 
-      return value !== undefined ? adjustTemperature(value, 'C', 'C', true) : undefined;
+        if (raw?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE') {
+          if (
+            raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled === true &&
+            raw?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled !== true &&
+            isNaN(raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.value?.value) === false
+          ) {
+            value = Number(raw.value.eco_mode_settings.ecoTemperatureHeat.value.value);
+          }
+          if (
+            raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled !== true &&
+            raw?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled === true &&
+            isNaN(raw?.value?.eco_mode_settings?.ecoTemperatureCool?.value?.value) === false
+          ) {
+            value = Number(raw.value.eco_mode_settings.ecoTemperatureCool.value.value);
+          }
+          if (
+            raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled === true &&
+            raw?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled === true &&
+            isNaN(raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.value?.value) === false &&
+            isNaN(raw?.value?.eco_mode_settings?.ecoTemperatureCool?.value?.value) === false
+          ) {
+            value =
+              (Number(raw.value.eco_mode_settings.ecoTemperatureCool.value.value) +
+                Number(raw.value.eco_mode_settings.ecoTemperatureHeat.value.value)) *
+              0.5;
+          }
+        }
+
+        return value !== undefined ? adjustTemperature(value, 'C', 'C', true) : undefined;
+      },
     },
+    nest: {
+      fields: [
+        'serial_number',
+        'eco',
+        'away_temperature_low_enabled',
+        'away_temperature_high_enabled',
+        'away_temperature_low',
+        'away_temperature_high',
+      ],
+      related: ['target_temperature', 'target_temperature_type', 'target_temperature_low', 'target_temperature_high'],
+      translate: ({ rawData, raw }) => {
+        let targetType = rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_type?.toUpperCase?.() ?? 'OFF';
+        let value;
 
-    nest: ({ rawData, sourceValue }) => {
-      let targetType = rawData?.['shared.' + sourceValue?.value?.serial_number]?.value?.target_temperature_type?.toUpperCase?.() ?? 'OFF';
-      let value;
-
-      if (isNaN(rawData?.['shared.' + sourceValue?.value?.serial_number]?.value?.target_temperature) === false) {
-        value = Number(rawData['shared.' + sourceValue.value.serial_number].value.target_temperature);
-      }
-
-      if (targetType === 'COOL') {
-        if (isNaN(rawData?.['shared.' + sourceValue?.value?.serial_number]?.value?.target_temperature_high) === false) {
-          value = Number(rawData['shared.' + sourceValue.value.serial_number].value.target_temperature_high);
+        if (isNaN(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature) === false) {
+          value = Number(rawData['shared.' + raw.value.serial_number].value.target_temperature);
         }
-      }
 
-      if (targetType === 'HEAT') {
-        if (isNaN(rawData?.['shared.' + sourceValue?.value?.serial_number]?.value?.target_temperature_low) === false) {
-          value = Number(rawData['shared.' + sourceValue.value.serial_number].value.target_temperature_low);
+        if (targetType === 'COOL') {
+          if (isNaN(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_high) === false) {
+            value = Number(rawData['shared.' + raw.value.serial_number].value.target_temperature_high);
+          }
         }
-      }
 
-      if (targetType === 'RANGE') {
-        if (
-          isNaN(rawData?.['shared.' + sourceValue?.value?.serial_number]?.value?.target_temperature_low) === false &&
-          isNaN(rawData?.['shared.' + sourceValue?.value?.serial_number]?.value?.target_temperature_high) === false
-        ) {
-          value =
-            (Number(rawData['shared.' + sourceValue.value.serial_number].value.target_temperature_low) +
-              Number(rawData['shared.' + sourceValue.value.serial_number].value.target_temperature_high)) *
-            0.5;
+        if (targetType === 'HEAT') {
+          if (isNaN(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_low) === false) {
+            value = Number(rawData['shared.' + raw.value.serial_number].value.target_temperature_low);
+          }
         }
-      }
 
-      if (
-        sourceValue?.value?.eco?.mode?.toUpperCase?.() === 'AUTO-ECO' ||
-        sourceValue?.value?.eco?.mode?.toUpperCase?.() === 'MANUAL-ECO'
-      ) {
-        if (
-          sourceValue?.value?.away_temperature_low_enabled === true &&
-          sourceValue?.value?.away_temperature_high_enabled === false &&
-          isNaN(sourceValue?.value?.away_temperature_low) === false
-        ) {
-          value = Number(sourceValue.value.away_temperature_low);
+        if (targetType === 'RANGE') {
+          if (
+            isNaN(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_low) === false &&
+            isNaN(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_high) === false
+          ) {
+            value =
+              (Number(rawData['shared.' + raw.value.serial_number].value.target_temperature_low) +
+                Number(rawData['shared.' + raw.value.serial_number].value.target_temperature_high)) *
+              0.5;
+          }
         }
-        if (
-          sourceValue?.value?.away_temperature_high_enabled === true &&
-          sourceValue?.value?.away_temperature_low_enabled === false &&
-          isNaN(sourceValue?.value?.away_temperature_high) === false
-        ) {
-          value = Number(sourceValue.value.away_temperature_high);
-        }
-        if (
-          sourceValue?.value?.away_temperature_high_enabled === true &&
-          sourceValue?.value?.away_temperature_low_enabled === true &&
-          isNaN(sourceValue?.value?.away_temperature_low) === false &&
-          isNaN(sourceValue?.value?.away_temperature_high) === false
-        ) {
-          value = (Number(sourceValue.value.away_temperature_low) + Number(sourceValue.value.away_temperature_high)) * 0.5;
-        }
-      }
 
-      return value !== undefined ? adjustTemperature(value, 'C', 'C', true) : undefined;
+        if (raw?.value?.eco?.mode?.toUpperCase?.() === 'AUTO-ECO' || raw?.value?.eco?.mode?.toUpperCase?.() === 'MANUAL-ECO') {
+          if (
+            raw?.value?.away_temperature_low_enabled === true &&
+            raw?.value?.away_temperature_high_enabled === false &&
+            isNaN(raw?.value?.away_temperature_low) === false
+          ) {
+            value = Number(raw.value.away_temperature_low);
+          }
+          if (
+            raw?.value?.away_temperature_high_enabled === true &&
+            raw?.value?.away_temperature_low_enabled === false &&
+            isNaN(raw?.value?.away_temperature_high) === false
+          ) {
+            value = Number(raw.value.away_temperature_high);
+          }
+          if (
+            raw?.value?.away_temperature_high_enabled === true &&
+            raw?.value?.away_temperature_low_enabled === true &&
+            isNaN(raw?.value?.away_temperature_low) === false &&
+            isNaN(raw?.value?.away_temperature_high) === false
+          ) {
+            value = (Number(raw.value.away_temperature_low) + Number(raw.value.away_temperature_high)) * 0.5;
+          }
+        }
+
+        return value !== undefined ? adjustTemperature(value, 'C', 'C', true) : undefined;
+      },
     },
   },
 
   hvac_state: {
-    google: ({ sourceValue }) => {
-      let state = 'off';
+    google: {
+      fields: ['hvac_control'],
+      translate: ({ raw }) => {
+        let state = 'off';
 
-      if (
-        sourceValue?.value?.hvac_control?.hvacState?.coolStage1Active === true ||
-        sourceValue?.value?.hvac_control?.hvacState?.coolStage2Active === true ||
-        sourceValue?.value?.hvac_control?.hvacState?.coolStage3Active === true
-      ) {
-        state = 'cooling';
-      }
-      if (
-        sourceValue?.value?.hvac_control?.hvacState?.heatStage1Active === true ||
-        sourceValue?.value?.hvac_control?.hvacState?.heatStage2Active === true ||
-        sourceValue?.value?.hvac_control?.hvacState?.heatStage3Active === true ||
-        sourceValue?.value?.hvac_control?.hvacState?.alternateHeatStage1Active === true ||
-        sourceValue?.value?.hvac_control?.hvacState?.alternateHeatStage2Active === true ||
-        sourceValue?.value?.hvac_control?.hvacState?.auxiliaryHeatActive === true ||
-        sourceValue?.value?.hvac_control?.hvacState?.emergencyHeatActive === true
-      ) {
-        state = 'heating';
-      }
+        if (
+          raw?.value?.hvac_control?.hvacState?.coolStage1Active === true ||
+          raw?.value?.hvac_control?.hvacState?.coolStage2Active === true ||
+          raw?.value?.hvac_control?.hvacState?.coolStage3Active === true
+        ) {
+          state = 'cooling';
+        }
+        if (
+          raw?.value?.hvac_control?.hvacState?.heatStage1Active === true ||
+          raw?.value?.hvac_control?.hvacState?.heatStage2Active === true ||
+          raw?.value?.hvac_control?.hvacState?.heatStage3Active === true ||
+          raw?.value?.hvac_control?.hvacState?.alternateHeatStage1Active === true ||
+          raw?.value?.hvac_control?.hvacState?.alternateHeatStage2Active === true ||
+          raw?.value?.hvac_control?.hvacState?.auxiliaryHeatActive === true ||
+          raw?.value?.hvac_control?.hvacState?.emergencyHeatActive === true
+        ) {
+          state = 'heating';
+        }
 
-      return state;
+        return state;
+      },
     },
+    nest: {
+      fields: ['serial_number'],
+      related: [
+        'hvac_heater_state',
+        'hvac_heat_x2_state',
+        'hvac_heat_x3_state',
+        'hvac_aux_heater_state',
+        'hvac_alt_heat_x2_state',
+        'hvac_emer_heat_state',
+        'hvac_alt_heat_state',
+        'hvac_ac_state',
+        'hvac_cool_x2_state',
+        'hvac_cool_x3_state',
+      ],
+      translate: ({ rawData, raw }) => {
+        let state = 'off';
+        let shared = rawData?.['shared.' + raw?.value?.serial_number]?.value;
 
-    nest: ({ rawData, sourceValue }) => {
-      let state = 'off';
-      let shared = rawData?.['shared.' + sourceValue?.value?.serial_number]?.value;
+        if (
+          shared?.hvac_heater_state === true ||
+          shared?.hvac_heat_x2_state === true ||
+          shared?.hvac_heat_x3_state === true ||
+          shared?.hvac_aux_heater_state === true ||
+          shared?.hvac_alt_heat_x2_state === true ||
+          shared?.hvac_emer_heat_state === true ||
+          shared?.hvac_alt_heat_state === true
+        ) {
+          state = 'heating';
+        }
+        if (shared?.hvac_ac_state === true || shared?.hvac_cool_x2_state === true || shared?.hvac_cool_x3_state === true) {
+          state = 'cooling';
+        }
 
-      if (
-        shared?.hvac_heater_state === true ||
-        shared?.hvac_heat_x2_state === true ||
-        shared?.hvac_heat_x3_state === true ||
-        shared?.hvac_aux_heater_state === true ||
-        shared?.hvac_alt_heat_x2_state === true ||
-        shared?.hvac_emer_heat_state === true ||
-        shared?.hvac_alt_heat_state === true
-      ) {
-        state = 'heating';
-      }
-      if (shared?.hvac_ac_state === true || shared?.hvac_cool_x2_state === true || shared?.hvac_cool_x3_state === true) {
-        state = 'cooling';
-      }
-
-      return state;
+        return state;
+      },
     },
   },
 
   // RCS / remote comfort sensor fields
   active_rcs_sensor: {
-    google: ({ sourceValue }) =>
-      sourceValue?.value?.remote_comfort_sensing_settings?.activeRcsSelection?.activeRcsSensor !== undefined
-        ? sourceValue.value.remote_comfort_sensing_settings.activeRcsSelection.activeRcsSensor.resourceId
-        : undefined,
-    nest: ({ rawData, sourceValue }) => {
-      let activeSensor;
+    google: {
+      fields: ['remote_comfort_sensing_settings'],
+      translate: ({ raw }) =>
+        raw?.value?.remote_comfort_sensing_settings?.activeRcsSelection?.activeRcsSensor !== undefined
+          ? raw.value.remote_comfort_sensing_settings.activeRcsSelection.activeRcsSensor.resourceId
+          : undefined,
+    },
+    nest: {
+      fields: ['serial_number'],
+      related: ['associated_rcs_sensors', 'active_rcs_sensors'],
+      translate: ({ rawData, raw }) => {
+        let activeSensor;
 
-      if (rawData?.['rcs_settings.' + sourceValue?.value?.serial_number]?.value?.associated_rcs_sensors !== undefined) {
-        rawData['rcs_settings.' + sourceValue.value.serial_number].value.associated_rcs_sensors.forEach((sensor) => {
-          if (
-            typeof rawData?.[sensor]?.value === 'object' &&
-            rawData?.['rcs_settings.' + sourceValue.value.serial_number]?.value?.active_rcs_sensors?.includes?.(sensor) === true
-          ) {
-            activeSensor = rawData[sensor].value.serial_number.toUpperCase();
-          }
-        });
-      }
+        if (rawData?.['rcs_settings.' + raw?.value?.serial_number]?.value?.associated_rcs_sensors !== undefined) {
+          rawData['rcs_settings.' + raw.value.serial_number].value.associated_rcs_sensors.forEach((sensor) => {
+            if (
+              typeof rawData?.[sensor]?.value === 'object' &&
+              rawData?.['rcs_settings.' + raw.value.serial_number]?.value?.active_rcs_sensors?.includes?.(sensor) === true
+            ) {
+              activeSensor = rawData[sensor].value.serial_number.toUpperCase();
+            }
+          });
+        }
 
-      return activeSensor;
+        return activeSensor;
+      },
     },
   },
 
   linked_rcs_sensors: {
-    google: ({ sourceValue }) => {
-      let sensors = [];
+    google: {
+      fields: ['remote_comfort_sensing_settings'],
+      translate: ({ raw }) => {
+        let sensors = [];
 
-      if (Array.isArray(sourceValue?.value?.remote_comfort_sensing_settings?.associatedRcsSensors) === true) {
-        sourceValue.value.remote_comfort_sensing_settings.associatedRcsSensors.forEach((sensor) => {
-          sensors.push(sensor.deviceId.resourceId);
-        });
-      }
+        if (Array.isArray(raw?.value?.remote_comfort_sensing_settings?.associatedRcsSensors) === true) {
+          raw.value.remote_comfort_sensing_settings.associatedRcsSensors.forEach((sensor) => {
+            sensors.push(sensor.deviceId.resourceId);
+          });
+        }
 
-      return sensors;
+        return sensors;
+      },
+    },
+    nest: {
+      fields: ['serial_number'],
+      related: ['associated_rcs_sensors'],
+      translate: ({ rawData, raw }) => {
+        let sensors = [];
+
+        if (rawData?.['rcs_settings.' + raw?.value?.serial_number]?.value?.associated_rcs_sensors !== undefined) {
+          rawData['rcs_settings.' + raw.value.serial_number].value.associated_rcs_sensors.forEach((sensor) => {
+            if (typeof rawData?.[sensor]?.value === 'object') {
+              sensors.push(rawData[sensor].value.serial_number.toUpperCase());
+            }
+          });
+        }
+
+        return sensors;
+      },
+    },
+  },
+
+  active_rcs_sensor_temperature: {
+    google: {
+      fields: ['remote_comfort_sensing_settings'],
+      translate: ({ value, rawData }) => {
+        let activeSensor = value?.remote_comfort_sensing_settings?.activeRcsSelection?.activeRcsSensor?.resourceId;
+
+        if (typeof activeSensor === 'string' && activeSensor !== '') {
+          let sensor = rawData?.[activeSensor];
+
+          if (typeof sensor?.value === 'object' && isNaN(sensor?.value?.currentTemperature?.value) === false) {
+            return adjustTemperature(Number(sensor.value.currentTemperature.value), 'C', 'C', true);
+          }
+        }
+
+        return undefined;
+      },
     },
 
-    nest: ({ rawData, sourceValue }) => {
-      let sensors = [];
+    nest: {
+      fields: ['rcs_settings'],
+      translate: ({ value, rawData }) => {
+        let rcs = rawData?.['rcs_settings.' + value?.serial_number]?.value;
 
-      if (rawData?.['rcs_settings.' + sourceValue?.value?.serial_number]?.value?.associated_rcs_sensors !== undefined) {
-        rawData['rcs_settings.' + sourceValue.value.serial_number].value.associated_rcs_sensors.forEach((sensor) => {
-          if (typeof rawData?.[sensor]?.value === 'object') {
-            sensors.push(rawData[sensor].value.serial_number.toUpperCase());
+        if (Array.isArray(rcs?.associated_rcs_sensors) === true) {
+          for (let sensor of rcs.associated_rcs_sensors) {
+            if (
+              rcs?.active_rcs_sensors?.includes?.(sensor) === true &&
+              typeof rawData?.[sensor]?.value === 'object' &&
+              isNaN(rawData[sensor].value.current_temperature) === false
+            ) {
+              return adjustTemperature(Number(rawData[sensor].value.current_temperature), 'C', 'C', true);
+            }
           }
-        });
-      }
+        }
 
-      return sensors;
+        return undefined;
+      },
     },
   },
 
   // Schedule fields
   schedule_mode: {
-    google: ({ sourceValue }) =>
-      typeof sourceValue?.value?.target_temperature_settings?.targetTemperature?.setpointType === 'string' &&
-      sourceValue.value.target_temperature_settings.targetTemperature.setpointType.split('SET_POINT_TYPE_')[1].toLowerCase() !== 'off'
-        ? sourceValue.value.target_temperature_settings.targetTemperature.setpointType.split('SET_POINT_TYPE_')[1].toLowerCase()
-        : '',
-    nest: ({ rawData, sourceValue }) => rawData?.['schedule.' + sourceValue?.value?.serial_number]?.value?.schedule_mode ?? '',
+    google: {
+      fields: ['target_temperature_settings'],
+      translate: ({ raw }) =>
+        typeof raw?.value?.target_temperature_settings?.targetTemperature?.setpointType === 'string' &&
+        raw.value.target_temperature_settings.targetTemperature.setpointType.split('SET_POINT_TYPE_')[1].toLowerCase() !== 'off'
+          ? raw.value.target_temperature_settings.targetTemperature.setpointType.split('SET_POINT_TYPE_')[1].toLowerCase()
+          : '',
+    },
+    nest: {
+      fields: ['serial_number'],
+      related: ['schedule_mode'],
+      translate: ({ rawData, raw }) => rawData?.['schedule.' + raw?.value?.serial_number]?.value?.schedule_mode ?? '',
+    },
   },
 
   schedules: {
-    google: ({ sourceValue }) => {
-      let schedules = {};
-      let scheduleMode =
-        typeof sourceValue?.value?.target_temperature_settings?.targetTemperature?.setpointType === 'string' &&
-        sourceValue.value.target_temperature_settings.targetTemperature.setpointType.split('SET_POINT_TYPE_')[1].toLowerCase() !== 'off'
-          ? sourceValue.value.target_temperature_settings.targetTemperature.setpointType.split('SET_POINT_TYPE_')[1].toLowerCase()
-          : '';
+    google: {
+      fields: ['target_temperature_settings', 'heat_schedule_settings', 'cool_schedule_settings', 'range_schedule_settings'],
+      translate: ({ raw }) => {
+        let schedules = {};
+        let scheduleMode =
+          typeof raw?.value?.target_temperature_settings?.targetTemperature?.setpointType === 'string' &&
+          raw.value.target_temperature_settings.targetTemperature.setpointType.split('SET_POINT_TYPE_')[1].toLowerCase() !== 'off'
+            ? raw.value.target_temperature_settings.targetTemperature.setpointType.split('SET_POINT_TYPE_')[1].toLowerCase()
+            : '';
 
-      if (
-        sourceValue?.value?.[scheduleMode + '_schedule_settings']?.setpoints !== undefined &&
-        sourceValue?.value?.[scheduleMode + '_schedule_settings']?.type === 'SET_POINT_SCHEDULE_TYPE_' + scheduleMode.toUpperCase()
-      ) {
-        Object.values(sourceValue.value[scheduleMode + '_schedule_settings'].setpoints).forEach((schedule) => {
-          if (schedule?.dayOfWeek !== undefined) {
-            let dayofWeekIndex = DAYS_OF_WEEK_FULL.indexOf(schedule.dayOfWeek.split('DAY_OF_WEEK_')[1]);
+        if (
+          raw?.value?.[scheduleMode + '_schedule_settings']?.setpoints !== undefined &&
+          raw?.value?.[scheduleMode + '_schedule_settings']?.type === 'SET_POINT_SCHEDULE_TYPE_' + scheduleMode.toUpperCase()
+        ) {
+          Object.values(raw.value[scheduleMode + '_schedule_settings'].setpoints).forEach((schedule) => {
+            if (schedule?.dayOfWeek !== undefined) {
+              let dayofWeekIndex = DAYS_OF_WEEK_FULL.indexOf(schedule.dayOfWeek.split('DAY_OF_WEEK_')[1]);
 
-            if (schedules?.[dayofWeekIndex] === undefined) {
-              schedules[dayofWeekIndex] = {};
+              if (schedules?.[dayofWeekIndex] === undefined) {
+                schedules[dayofWeekIndex] = {};
+              }
+
+              schedules[dayofWeekIndex][Object.entries(schedules[dayofWeekIndex]).length] = {
+                'temp-min': adjustTemperature(schedule.heatingTarget.value, 'C', 'C', true),
+                'temp-max': adjustTemperature(schedule.coolingTarget.value, 'C', 'C', true),
+                time: isNaN(schedule?.secondsInDay) === false ? Number(schedule.secondsInDay) : 0,
+                type: scheduleMode.toUpperCase(),
+                entry_type: 'setpoint',
+              };
             }
+          });
+        }
 
-            schedules[dayofWeekIndex][Object.entries(schedules[dayofWeekIndex]).length] = {
-              'temp-min': adjustTemperature(schedule.heatingTarget.value, 'C', 'C', true),
-              'temp-max': adjustTemperature(schedule.coolingTarget.value, 'C', 'C', true),
-              time: isNaN(schedule?.secondsInDay) === false ? Number(schedule.secondsInDay) : 0,
-              type: scheduleMode.toUpperCase(),
-              entry_type: 'setpoint',
-            };
-          }
-        });
-      }
-
-      return schedules;
+        return schedules;
+      },
     },
+    nest: {
+      fields: ['serial_number'],
+      related: ['days'],
+      translate: ({ rawData, raw }) => {
+        if (rawData?.['schedule.' + raw?.value?.serial_number] === undefined) {
+          return {};
+        }
 
-    nest: ({ rawData, sourceValue }) => {
-      if (rawData?.['schedule.' + sourceValue?.value?.serial_number] === undefined) {
-        return {};
-      }
-
-      Object.values(rawData['schedule.' + sourceValue.value.serial_number].value.days).forEach((daySchedules) => {
-        Object.values(daySchedules).forEach((schedule) => {
-          if (isNaN(schedule['temp']) === false) {
-            schedule.temp = adjustTemperature(Number(schedule.temp), 'C', 'C', true);
-          }
-          if (isNaN(schedule['temp-min']) === false) {
-            schedule['temp-min'] = adjustTemperature(Number(schedule['temp-min']), 'C', 'C', true);
-          }
-          if (isNaN(schedule['temp-max']) === false) {
-            schedule['temp-max'] = adjustTemperature(Number(schedule['temp-max']), 'C', 'C', true);
-          }
+        Object.values(rawData['schedule.' + raw.value.serial_number].value.days).forEach((daySchedules) => {
+          Object.values(daySchedules).forEach((schedule) => {
+            if (isNaN(schedule['temp']) === false) {
+              schedule.temp = adjustTemperature(Number(schedule.temp), 'C', 'C', true);
+            }
+            if (isNaN(schedule['temp-min']) === false) {
+              schedule['temp-min'] = adjustTemperature(Number(schedule['temp-min']), 'C', 'C', true);
+            }
+            if (isNaN(schedule['temp-max']) === false) {
+              schedule['temp-max'] = adjustTemperature(Number(schedule['temp-max']), 'C', 'C', true);
+            }
+          });
         });
-      });
 
-      return rawData['schedule.' + sourceValue.value.serial_number].value.days;
+        return rawData['schedule.' + raw.value.serial_number].value.days;
+      },
     },
   },
 };
 
-// Function to process our RAW Nest or Google for this device type
-export function processRawData(log, rawData, config, deviceType = undefined) {
+// Function to process our RAW Nest or Google data for thermostat devices
+export function processRawData(log, rawData, config, deviceType = undefined, changedData = undefined) {
   if (
     rawData === null ||
     typeof rawData !== 'object' ||
@@ -2278,145 +2603,144 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
     return;
   }
 
+  // Process data for any thermostat(s) we have in the raw data
   let devices = {};
 
-  // Process data for any thermostat(s) we have in the raw data
   Object.entries(rawData)
     .filter(
       ([key, value]) =>
         key.startsWith('device.') === true ||
-        (key.startsWith('DEVICE_') === true && PROTOBUF_RESOURCES.THERMOSTAT.includes(value.value?.device_info?.typeName) === true),
+        (key.startsWith('DEVICE_') === true && PROTOBUF_RESOURCES.THERMOSTAT.includes(value?.value?.device_info?.typeName) === true),
     )
     .forEach(([object_key, value]) => {
-      let tempDevice = {};
-
       try {
+        // Only process valid Google or Nest thermostat resources
         if (
-          value?.source === DATA_SOURCE.GOOGLE &&
-          value.value?.configuration_done?.deviceReady === true &&
-          rawData?.[value.value?.device_info?.pairerId?.resourceId] !== undefined
+          (value?.source !== DATA_SOURCE.GOOGLE && value?.source !== DATA_SOURCE.NEST) ||
+          (value?.source === DATA_SOURCE.GOOGLE &&
+            (value?.value?.configuration_done?.deviceReady !== true ||
+              rawData?.[value?.value?.device_info?.pairerId?.resourceId] === undefined)) ||
+          (value?.source === DATA_SOURCE.NEST &&
+            (typeof rawData?.['track.' + value?.value?.serial_number] !== 'object' ||
+              (rawData?.['link.' + value?.value?.serial_number]?.value?.structure?.trim?.() ?? '') === '' ||
+              typeof rawData?.['shared.' + value?.value?.serial_number] !== 'object' ||
+              typeof rawData?.['where.' + rawData?.['link.' + value?.value?.serial_number]?.value?.structure?.split?.('.')[1]] !==
+                'object'))
         ) {
-          let mappedData = buildMappedObject(THERMOSTAT_FIELD_MAP, createMappingContext(rawData, object_key, undefined, value));
-
-          if (
-            mappedData.serialNumber !== undefined &&
-            mappedData.nest_google_device_uuid !== undefined &&
-            mappedData.nest_google_home_uuid !== undefined &&
-            mappedData.model !== undefined &&
-            mappedData.softwareVersion !== undefined &&
-            (mappedData.description !== undefined || mappedData.location !== undefined)
-          ) {
-            // Process any temperature sensors associated with this thermostat
-            if (Array.isArray(value.value?.remote_comfort_sensing_settings?.associatedRcsSensors) === true) {
-              value.value.remote_comfort_sensing_settings.associatedRcsSensors.forEach((sensor) => {
-                if (typeof rawData?.[sensor?.deviceId?.resourceId]?.value === 'object') {
-                  rawData[sensor.deviceId.resourceId].value.associated_thermostat = object_key;
-                }
-              });
-            }
-
-            if (mappedData.has_hot_water_control === true) {
-              mappedData.model = mappedData.model.replace(/\bgen\)/, 'gen, EU)');
-            }
-
-            tempDevice = processCommonData(
-              mappedData.nest_google_device_uuid,
-              mappedData.nest_google_home_uuid,
-              {
-                type: DEVICE_TYPE.THERMOSTAT,
-                ...mappedData,
-              },
-              config,
-            );
-          }
+          return;
         }
 
-        // Nest fallback if Google not used or data not available from Google for this device
-        if (
-          Object.entries(tempDevice).length === 0 &&
-          value?.source === DATA_SOURCE.NEST &&
-          typeof rawData?.['track.' + value.value?.serial_number] === 'object' &&
-          (rawData?.['link.' + value.value?.serial_number]?.value?.structure?.trim() ?? '') !== '' &&
-          typeof rawData?.['shared.' + value.value?.serial_number] === 'object' &&
-          typeof rawData?.['where.' + rawData['link.' + value.value.serial_number].value.structure.split?.('.')[1]] === 'object'
-        ) {
-          let mappedData = buildMappedObject(THERMOSTAT_FIELD_MAP, createMappingContext(rawData, object_key, value, undefined));
+        // Map raw device data into our normalised thermostat schema
+        let mappedResult = buildMappedObject(
+          THERMOSTAT_FIELD_MAP,
+          createMappingContext(rawData, object_key, {
+            nest: value?.source === DATA_SOURCE.NEST ? value : undefined,
+            google: value?.source === DATA_SOURCE.GOOGLE ? value : undefined,
+          }),
+          changedData instanceof Map ? changedData.get(object_key)?.fields : undefined,
+        );
+
+        // Apply thermostat-specific post-map adjustments
+        if (typeof mappedResult?.data === 'object' && mappedResult.data?.constructor === Object) {
+          // If an active remote temperature sensor is selected, use its temperature as the thermostat current temperature
+          if (isNaN(mappedResult.data.active_rcs_sensor_temperature) === false) {
+            mappedResult.data.current_temperature = mappedResult.data.active_rcs_sensor_temperature;
+          }
 
           // Nest-only humidifier target
-          mappedData.target_humidity = isNaN(value.value?.target_humidity) === false ? Number(value.value.target_humidity) : 0.0;
-
-          // Process any temperature sensors associated with this thermostat
-          if (rawData?.['rcs_settings.' + value.value.serial_number]?.value?.associated_rcs_sensors !== undefined) {
-            rawData['rcs_settings.' + value.value.serial_number].value.associated_rcs_sensors.forEach((sensor) => {
-              if (typeof rawData?.[sensor]?.value === 'object') {
-                rawData[sensor].value.associated_thermostat = object_key;
-
-                if (rawData?.['rcs_settings.' + value.value.serial_number]?.value?.active_rcs_sensors?.includes?.(sensor) === true) {
-                  mappedData.current_temperature = adjustTemperature(rawData[sensor].value.current_temperature, 'C', 'C', true);
-                }
-              }
-            });
-          }
-
-          if (
-            mappedData.serialNumber !== undefined &&
-            mappedData.nest_google_device_uuid !== undefined &&
-            mappedData.nest_google_home_uuid !== undefined &&
-            mappedData.model !== undefined &&
-            mappedData.softwareVersion !== undefined &&
-            (mappedData.description !== undefined || mappedData.location !== undefined)
-          ) {
-            if (mappedData.has_hot_water_control === true) {
-              mappedData.model = mappedData.model.replace(/\bgen\)/, 'gen, EU)');
-            }
-
-            tempDevice = processCommonData(
-              mappedData.nest_google_device_uuid,
-              mappedData.nest_google_home_uuid,
-              {
-                type: DEVICE_TYPE.THERMOSTAT,
-                ...mappedData,
-              },
-              config,
-            );
+          if (value?.source === DATA_SOURCE.NEST) {
+            mappedResult.data.target_humidity = isNaN(value?.value?.target_humidity) === false ? Number(value.value.target_humidity) : 0.0;
           }
         }
-        // eslint-disable-next-line no-unused-vars
+
+        let serialNumber = mappedResult?.data?.serialNumber;
+        let existingDevice = devices[serialNumber];
+
+        // If we have all required fields, build the full thermostat device data object
+        if (mappedResult?.hasRequired === true) {
+          let tempDevice = {
+            type: DEVICE_TYPE.THERMOSTAT,
+            manufacturer: 'Nest',
+            ...mappedResult.data,
+          };
+
+          // EU thermostat variants with hot water control
+          if (tempDevice.has_hot_water_control === true) {
+            tempDevice.model = tempDevice.model?.replace?.(/\bgen\)/, 'gen, EU)');
+          }
+
+          // Respect requested device type if specified
+          if (deviceType !== undefined && (typeof deviceType !== 'string' || deviceType === '' || tempDevice.type !== deviceType)) {
+            return;
+          }
+
+          // Check for any device or home configuration options that match this device
+          // We'll use the serial number to match against device options, and the home uuid to match against home options
+          let deviceOptions = config?.devices?.find(
+            (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+          );
+          let homeOptions = config?.homes?.find(
+            (home) =>
+              home?.nest_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
+              home?.google_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
+          );
+
+          // Insert any extra options we've read in from configuration file for this device
+          tempDevice.eveHistory =
+            deviceOptions?.eveHistory !== undefined ? deviceOptions.eveHistory === true : config?.options?.eveHistory === true;
+          tempDevice.humiditySensor = deviceOptions?.humiditySensor === true;
+
+          // Process fan running duration. We only allow values matching the app
+          tempDevice.fan_duration = parseDurationToSeconds(deviceOptions?.fanDuration, {
+            defaultValue: tempDevice.fan_duration,
+            min: 900,
+            max: 604800,
+          });
+
+          tempDevice.fan_duration = FAN_DURATION_TIMES.reduce((a, b) =>
+            Math.abs(tempDevice.fan_duration - a) < Math.abs(tempDevice.fan_duration - b) ? a : b,
+          );
+
+          // Do we have an external code module for thermostat functions
+          tempDevice.external =
+            typeof deviceOptions?.external === 'string' && deviceOptions.external !== '' ? deviceOptions.external : undefined;
+
+          // Process additional exclusion details
+          tempDevice.excluded =
+            deviceOptions?.exclude === true ||
+            (deviceOptions?.exclude !== false &&
+              (homeOptions?.exclude === true || (homeOptions?.exclude !== false && config?.options?.exclude === true)));
+
+          // Store full device
+          // Full always overrides partial if present
+          if (existingDevice?.full !== true) {
+            devices[tempDevice.serialNumber] = {
+              full: true,
+              data: tempDevice,
+            };
+          }
+        }
+
+        // Refresh existing device reference after potential full insert
+        existingDevice = devices[serialNumber];
+
+        // Only store partial data if nothing has already been stored for this serial in this pass.
+        // A later full payload will replace an earlier partial payload.
+        if (
+          mappedResult?.hasRequired === false &&
+          serialNumber !== undefined &&
+          typeof mappedResult?.data === 'object' &&
+          mappedResult.data?.constructor === Object &&
+          Object.keys(mappedResult.data).length !== 0 &&
+          existingDevice === undefined
+        ) {
+          devices[serialNumber] = {
+            full: false,
+            data: mappedResult.data,
+          };
+        }
       } catch (error) {
-        log?.debug?.('Error processing thermostat data for "%s"', object_key);
-      }
-
-      if (
-        Object.entries(tempDevice).length !== 0 &&
-        typeof devices[tempDevice.serialNumber] === 'undefined' &&
-        (deviceType === undefined || (typeof deviceType === 'string' && deviceType !== '' && tempDevice.type === deviceType))
-      ) {
-        let deviceOptions = config?.devices?.find(
-          (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
-        );
-
-        // Insert any extra options we've read in from configuration file for this device
-        tempDevice.eveHistory =
-          deviceOptions?.eveHistory !== undefined ? deviceOptions.eveHistory === true : config.options?.eveHistory === true;
-
-        tempDevice.humiditySensor = deviceOptions?.humiditySensor === true;
-
-        // Process fan running duration.. we only allow values matching app
-        tempDevice.fan_duration = parseDurationToSeconds(deviceOptions?.fanDuration, {
-          defaultValue: tempDevice.fan_duration,
-          min: 900,
-          max: 604800,
-        });
-
-        tempDevice.fan_duration = FAN_DURATION_TIMES.reduce((a, b) =>
-          Math.abs(tempDevice.fan_duration - a) < Math.abs(tempDevice.fan_duration - b) ? a : b,
-        );
-
-        // Do we have "external" code module for some thermostat functions
-        tempDevice.external =
-          typeof deviceOptions?.external === 'string' && deviceOptions.external !== '' ? deviceOptions.external : undefined;
-
-        devices[tempDevice.serialNumber] = tempDevice;
+        log?.error?.('Error processing thermostat data for "%s": %s', object_key, String(error));
       }
     });
 

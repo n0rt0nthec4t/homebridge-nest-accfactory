@@ -39,15 +39,14 @@
 'use strict';
 
 // Define external module requirements
-import NestCamera, { processRawData } from './camera.js';
-export { processRawData };
+import NestCamera, { processRawData as processCameraRawData } from './camera.js';
 
 // Define constants
 import { TIMERS } from '../consts.js';
 
 export default class NestDoorbell extends NestCamera {
   static TYPE = 'Doorbell';
-  static VERSION = '2026.04.01'; // Code version
+  static VERSION = '2026.04.16'; // Code version
 
   switchService = undefined; // HomeKit switch for enabling/disabling chime
 
@@ -91,7 +90,9 @@ export default class NestDoorbell extends NestCamera {
   }
 
   onRemove() {
-    this.accessory.removeService(this.switchService);
+    if (this.switchService !== undefined) {
+      this.accessory.removeService(this.switchService);
+    }
     this.switchService = undefined;
   }
 
@@ -110,7 +111,7 @@ export default class NestDoorbell extends NestCamera {
       this?.log?.info?.('Indoor chime on "%s" turned %s', deviceData.description, deviceData.indoor_chime_enabled === true ? 'on' : 'off');
     }
 
-    deviceData.events.forEach((event) => {
+    for (const event of deviceData.events || []) {
       // Handle doorbell event, should always be handled first
       if (event.types.includes('doorbell') === true && this.#doorbellCooldownActive === false) {
         // Cooldown for doorbell button being pressed (filters out constant pressing for time period)
@@ -135,7 +136,7 @@ export default class NestDoorbell extends NestCamera {
         this.history(this.controller.doorbellService, { status: 1 }, { timegap: 2, force: true });
         this.history(this.controller.doorbellService, { status: 0 }, { timegap: 2, force: true });
       }
-    });
+    }
   }
 
   async onTimer(message) {
@@ -149,4 +150,42 @@ export default class NestDoorbell extends NestCamera {
       this.#doorbellCooldownActive = false;
     }
   }
+}
+
+// Doorbell extra field translation map
+// Maps raw source data -> normalised doorbell-specific fields
+// - fields: top-level raw fields this mapping depends on (for delta updates)
+// - related: top-level raw fields on related objects this mapping depends on
+// - translate: converts raw -> final normalised value
+// - required: extends base camera required fields
+const EXTRA_FIELD_MAP = {
+  has_indoor_chime: {
+    required: true,
+    google: {
+      fields: ['doorbell_indoor_chime_settings'],
+      translate: ({ raw }) =>
+        raw?.value?.doorbell_indoor_chime_settings?.chimeType === 'CHIME_TYPE_MECHANICAL' ||
+        raw?.value?.doorbell_indoor_chime_settings?.chimeType === 'CHIME_TYPE_ELECTRONIC',
+    },
+    nest: {
+      fields: ['capabilities'],
+      translate: ({ raw }) => raw?.value?.capabilities?.includes?.('indoor_chime') === true,
+    },
+  },
+
+  indoor_chime_enabled: {
+    required: true,
+    google: {
+      fields: ['doorbell_indoor_chime_settings'],
+      translate: ({ raw }) => raw?.value?.doorbell_indoor_chime_settings?.chimeEnabled === true,
+    },
+    nest: {
+      fields: ['properties'],
+      translate: ({ raw }) => raw?.value?.properties?.['doorbell.indoor_chime.enabled'] === true,
+    },
+  },
+};
+
+export function processRawData(log, rawData, config, deviceType = undefined, changedData = undefined) {
+  return processCameraRawData(log, rawData, config, deviceType, changedData, EXTRA_FIELD_MAP);
 }

@@ -21,24 +21,19 @@
 //   - timeout handling
 //   - structured error reporting
 // - Flexible duration parsing (e.g. "1w3d2h15m30s")
-// - Common device data normalisation and config merging
 //
 // Notes:
 // - Used by all device and system modules
-// - processCommonData() standardises device metadata before HomeKit exposure
 // - fetchWrapper() is the primary HTTP client abstraction for the plugin
 // - Functions are designed to fail safely and return undefined where appropriate
 //
-// Code version 2026.03.25
+// Code version 2026.04.15
 // Mark Hulskamp
 'use strict';
 
 // Define nodejs module requirements
 import { Buffer } from 'node:buffer';
 import { setTimeout } from 'node:timers';
-
-// Define our modules
-import HomeKitDevice from './HomeKitDevice.js';
 
 function adjustTemperature(temperature, currentTemperatureUnit, targetTemperatureUnit, round) {
   currentTemperatureUnit = currentTemperatureUnit?.toUpperCase?.();
@@ -282,97 +277,40 @@ function parseDurationToSeconds(inputDuration, { defaultValue = null, min = 0, m
   return normalisedSeconds;
 }
 
-function processCommonData(deviceUUID, homeUUID, data, config) {
-  if (
-    typeof deviceUUID !== 'string' ||
-    deviceUUID === '' ||
-    typeof homeUUID !== 'string' ||
-    homeUUID === '' ||
-    data === null ||
-    typeof data !== 'object' ||
-    data?.constructor !== Object ||
-    typeof config !== 'object' ||
-    config?.constructor !== Object
-  ) {
-    return;
-  }
-  // Process common data for all devices
+// Process software version strings and return as x.x.x
+// handles things like:
+// 1.0a17 -> 1.0.17
+// 3.6rc8 -> 3.6.8
+// rquartz-user 1 OPENMASTER 507800056 test-keys stable-channel stable-channel -> 507800056
+// nq-user 1.73 OPENMASTER 422270 release-keys stable-channel stable-channel -> 422270
+function processSoftwareVersion(versionString) {
+  let version = '0.0.0';
+  if (typeof versionString === 'string') {
+    let normalised = versionString.replace(/[-_]/g, '.');
+    let tokens = normalised.split(/\s+/);
+    let candidate = tokens[3] || normalised;
+    let match = candidate.match(/\d+(?:\.\d+)*[a-zA-Z]*\d*/) || normalised.match(/\d+(?:\.\d+)*[a-zA-Z]*\d*/);
 
-  // Process software version strings and return as x.x.x
-  // handles things like:
-  // 1.0a17 -> 1.0.17
-  // 3.6rc8 -> 3.6.8
-  // rquartz-user 1 OPENMASTER 507800056 test-keys stable-channel stable-channel -> 507800056
-  // nq-user 1.73 OPENMASTER 422270 release-keys stable-channel stable-channel -> 422270
-  const process_software_version = (versionString) => {
-    let version = '0.0.0';
-    if (typeof versionString === 'string') {
-      let normalised = versionString.replace(/[-_]/g, '.');
-      let tokens = normalised.split(/\s+/);
-      let candidate = tokens[3] || normalised;
-      let match = candidate.match(/\d+(?:\.\d+)*[a-zA-Z]*\d*/) || normalised.match(/\d+(?:\.\d+)*[a-zA-Z]*\d*/);
-
-      if (Array.isArray(match) === true) {
-        let raw = match[0];
-        if (raw.includes('.') === false) {
-          return raw; // Return single-number version like "422270" as-is
-        }
-
-        let parts = raw.split('.').flatMap((part) => {
-          let [, n1, , n2] = part.match(/^(\d+)([a-zA-Z]+)?(\d+)?$/) || [];
-          return [n1, n2].filter(Boolean).map(Number);
-        });
-
-        while (parts.length < 3) {
-          parts.push(0);
-        }
-        version = parts.slice(0, 3).join('.');
+    if (Array.isArray(match) === true) {
+      let raw = match[0];
+      if (raw.includes('.') === false) {
+        return raw; // Return single-number version like "422270" as-is
       }
+
+      let parts = raw.split('.').flatMap((part) => {
+        let [, n1, , n2] = part.match(/^(\d+)([a-zA-Z]+)?(\d+)?$/) || [];
+        return [n1, n2].filter(Boolean).map(Number);
+      });
+
+      while (parts.length < 3) {
+        parts.push(0);
+      }
+      version = parts.slice(0, 3).join('.');
     }
-
-    return version;
-  };
-
-  let processed = {};
-  try {
-    // Fix up data we need to
-
-    // Device and home-level configurations if present
-    let deviceOptions = config?.devices?.find((device) => device?.serialNumber?.toUpperCase?.() === data?.serialNumber?.toUpperCase?.());
-    let homeOptions = config?.homes?.find(
-      (home) =>
-        home?.nest_home_uuid?.toUpperCase?.() === homeUUID?.toUpperCase?.() ||
-        home?.google_home_uuid?.toUpperCase?.() === homeUUID?.toUpperCase?.(),
-    );
-
-    data.nest_google_device_uuid = deviceUUID;
-    data.nest_google_home_uuid = homeUUID;
-    data.serialNumber = data.serialNumber.toUpperCase(); // ensure serial numbers are in upper case
-    data.excluded =
-      deviceOptions?.exclude === true ||
-      (homeOptions?.exclude === true && deviceOptions?.exclude !== false) ||
-      (config?.options?.exclude === true && deviceOptions?.exclude !== false && homeOptions?.exclude !== false);
-    data.manufacturer = typeof data?.manufacturer === 'string' && data.manufacturer !== '' ? data.manufacturer : 'Nest';
-    data.softwareVersion = process_software_version(data.softwareVersion);
-    let description = typeof data?.description === 'string' ? data.description : '';
-    let location = typeof data?.location === 'string' ? data.location : '';
-    if (description === '' && location !== '') {
-      description = location;
-      location = '';
-    }
-    if (description === '' && location === '') {
-      description = 'unknown description';
-    }
-    data.description = HomeKitDevice.makeValidHKName(location === '' ? description : description + ' - ' + location);
-    delete data.location;
-
-    processed = data;
-    // eslint-disable-next-line no-unused-vars
-  } catch (error) {
-    // Empty
   }
-  return processed;
+
+  return version;
 }
 
 // Define exports
-export { processCommonData, adjustTemperature, crc24, scaleValue, fetchWrapper, parseDurationToSeconds };
+export { processSoftwareVersion, adjustTemperature, crc24, scaleValue, fetchWrapper, parseDurationToSeconds };

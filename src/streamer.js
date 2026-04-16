@@ -86,7 +86,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2026.04.13
+// Code version 2026.04.16
 // Mark Hulskamp
 'use strict';
 
@@ -106,7 +106,6 @@ import { TIMERS, RESOURCE_FRAMES, RESOURCE_PATH, LOG_LEVELS, __dirname } from '.
 const MAX_BUFFERED_ITEMS_PER_OUTPUT_PER_TICK = 20; // Prevent one output starving others
 const STREAM_FRAME_INTERVAL = 1000 / 30; // 30fps approx
 const OUTPUT_LOOP_INTERVAL = 10; // Shared output scheduler interval
-const LIVE_START_MAX_KEYFRAME_AGE = 250; // Max age (ms) for reusing a retained keyframe when attaching live viewers
 const OUTPUT_BUDGET_LOG_INTERVAL = 30000; // Throttle per-streamer over-budget debug logs
 
 // Default capacity for generic RingBuffer usage.
@@ -2000,11 +1999,6 @@ export default class Streamer {
     let hasSPS = false;
     let hasPPS = false;
     let shouldCatchUp = false;
-    let bootstrapOffset = 0;
-    let bootstrapItem = undefined;
-    let latestVideoOffset = 0;
-    let latestVideoItem = undefined;
-    let liveStartKeyframeAgeMs = 0;
     let budgetDeadline = 0;
     let outputCursor = 0;
     let outputSeenKeyFrame = false;
@@ -2051,81 +2045,14 @@ export default class Streamer {
       dueTolerance = 10;
     }
 
-    // Resolve startup cursor for a new live output against the current retained buffer.
-    // For live H264, attach from the newest retained safe point rather than replaying
-    // buffered history, so live view starts as close to real time as possible.
+    // Resolve startup cursor for a new output against the current retained buffer.
+    // For live H264 troubleshooting, behave more like the older streamer and begin
+    // draining from the retained buffer head instead of waiting for a keyframe bootstrap.
     if (typeof output.cursor !== 'number') {
-      if (isLive === true && isH264Output === true) {
-        bootstrapOffset = itemsLength - 1;
-
-        while (bootstrapOffset >= 0) {
-          bootstrapItem = buffer.getByOffset(bootstrapOffset);
-
-          if (
-            typeof bootstrapItem === 'object' &&
-            bootstrapItem !== null &&
-            bootstrapItem.type === Streamer.MEDIA_TYPE.VIDEO &&
-            bootstrapItem.codec === Streamer.CODEC_TYPE.H264 &&
-            bootstrapItem.keyFrame === true &&
-            typeof bootstrapItem.index === 'number'
-          ) {
-            liveStartKeyframeAgeMs =
-              typeof latestItemTime === 'number' && typeof bootstrapItem.time === 'number' ? latestItemTime - bootstrapItem.time : 0;
-
-            // Only use the retained keyframe if it is still close enough to live
-            if (liveStartKeyframeAgeMs <= LIVE_START_MAX_KEYFRAME_AGE) {
-              output.cursor = bootstrapItem.index;
-              output.catchingUp = false;
-              output.sourceBaseTime = bootstrapItem.time;
-              output.wallclockBaseTime = dateNow;
-            }
-
-            break;
-          }
-
-          bootstrapOffset--;
-        }
-
-        // No recent safe keyframe found, so attach at the live edge and wait for
-        // the next fresh keyframe naturally rather than replaying stale buffered video
-        if (typeof output.cursor !== 'number') {
-          // Prefer the newest retained video item as the live-edge anchor so
-          // "live edge" means latest video edge rather than latest packet edge.
-          latestVideoOffset = itemsLength - 1;
-
-          while (latestVideoOffset >= 0) {
-            latestVideoItem = buffer.getByOffset(latestVideoOffset);
-            if (latestVideoItem?.type === Streamer.MEDIA_TYPE.VIDEO && typeof latestVideoItem?.index === 'number') {
-              break;
-            }
-            latestVideoOffset--;
-          }
-
-          if (latestVideoOffset >= 0) {
-            bootstrapItem = buffer.getByOffset(latestVideoOffset);
-          } else {
-            bootstrapItem = buffer.getByOffset(itemsLength - 1);
-          }
-
-          if (typeof bootstrapItem?.index === 'number') {
-            output.cursor = bootstrapItem.index;
-            output.catchingUp = false;
-            output.sourceBaseTime = typeof bootstrapItem.time === 'number' ? bootstrapItem.time : undefined;
-            output.wallclockBaseTime = dateNow;
-          }
-
-          if (typeof output.cursor !== 'number') {
-            output.cursor = startIndex;
-            output.catchingUp = false;
-            output.sourceBaseTime = undefined;
-            output.wallclockBaseTime = undefined;
-          }
-        }
-      }
-
-      if (isLive !== true || isH264Output !== true) {
-        output.cursor = startIndex;
-      }
+      output.cursor = startIndex;
+      output.catchingUp = false;
+      output.sourceBaseTime = undefined;
+      output.wallclockBaseTime = undefined;
     }
 
     // Clamp cursor so it can never point before the currently retained window
@@ -2175,9 +2102,9 @@ export default class Streamer {
 
       if (item.type === Streamer.MEDIA_TYPE.VIDEO) {
         if (item.codec === Streamer.CODEC_TYPE.H264) {
-          // Never feed non-keyframe H264 to a fresh output before the first keyframe.
-          // Decoder must start from a safe point.
-          if (outputSeenKeyFrame !== true && item.keyFrame !== true) {
+          // Keep recording startup strict, but allow live H264 to begin outputting
+          // immediately for troubleshooting older Nest camera startup behaviour.
+          if (outputSeenKeyFrame !== true && item.keyFrame !== true && isLive !== true) {
             this.#statsDrop(output, Streamer.MEDIA_TYPE.VIDEO);
             outputCursor = nextCursor;
             offset = outputCursor - startIndex;
@@ -2237,9 +2164,9 @@ export default class Streamer {
           continue;
         }
 
-        // Suppress audio until the output has seen its first video keyframe.
-        // This keeps startup A/V aligned and avoids audio-only lead-in.
-        if (isH264Output === true && outputSeenKeyFrame !== true) {
+        // Keep recording startup strict, but allow live audio to flow immediately
+        // for troubleshooting startup timing on older Nest cameras.
+        if (isH264Output === true && outputSeenKeyFrame !== true && isLive !== true) {
           this.#statsDrop(output, Streamer.MEDIA_TYPE.AUDIO);
           outputCursor = nextCursor;
           offset = outputCursor - startIndex;

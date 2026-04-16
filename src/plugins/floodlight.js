@@ -38,12 +38,12 @@
 'use strict';
 
 // Define external module requirements
-import NestCamera, { processRawData } from './camera.js';
-export { processRawData };
+import NestCamera, { processRawData as processCameraRawData } from './camera.js';
+import { scaleValue } from '../utils.js';
 
 export default class NestFloodlight extends NestCamera {
   static TYPE = 'FloodlightCamera';
-  static VERSION = '2026.04.01'; // Code version
+  static VERSION = '2026.04.15'; // Code version
 
   lightService = undefined; // HomeKit light
 
@@ -69,7 +69,7 @@ export default class NestFloodlight extends NestCamera {
       this.addHKCharacteristic(this.lightService, this.hap.Characteristic.On, {
         onSet: (value) => {
           if (value !== this.deviceData.light_enabled) {
-            this.message(NestFloodlight.SET, { uuid: this.deviceData.nest_google_device_uuid, light_enabled: value });
+            this.set({ uuid: this.deviceData.nest_google_device_uuid, light_enabled: value });
 
             this?.log?.info?.('Floodlight on "%s" was turned %s', this.deviceData.description, value === true ? 'on' : 'off');
           }
@@ -93,7 +93,9 @@ export default class NestFloodlight extends NestCamera {
   }
 
   onRemove() {
-    this.accessory.removeService(this.lightService);
+    if (this.lightService !== undefined) {
+      this.accessory.removeService(this.lightService);
+    }
     this.lightService = undefined;
   }
 
@@ -113,4 +115,43 @@ export default class NestFloodlight extends NestCamera {
       }
     }
   }
+}
+
+// Floodlight extra field translation map
+// Maps raw source data -> normalised floodlight-specific fields
+// - fields: top-level raw fields this mapping depends on (for delta updates)
+// - related: top-level raw fields on related objects this mapping depends on
+// - translate: converts raw -> final normalised value
+// - required: extends base camera required fields
+const EXTRA_FIELD_MAP = {
+  has_light: {
+    required: true,
+    google: {
+      fields: ['floodlight_settings', 'floodlight_state'],
+      translate: ({ raw }) => typeof raw?.value?.floodlight_settings === 'object' && typeof raw?.value?.floodlight_state === 'object',
+    },
+  },
+
+  light_enabled: {
+    required: true,
+    google: {
+      fields: ['floodlight_state'],
+      translate: ({ raw }) => raw?.value?.floodlight_state?.currentState === 'LIGHT_STATE_ON',
+    },
+  },
+
+  light_brightness: {
+    required: true,
+    google: {
+      fields: ['floodlight_settings'],
+      translate: ({ raw }) =>
+        isNaN(raw?.value?.floodlight_settings?.brightness) === false
+          ? scaleValue(Number(raw.value.floodlight_settings.brightness), 0, 10, 0, 100)
+          : undefined,
+    },
+  },
+};
+
+export function processRawData(log, rawData, config, deviceType = undefined, changedData = undefined) {
+  return processCameraRawData(log, rawData, config, deviceType, changedData, EXTRA_FIELD_MAP);
 }

@@ -42,7 +42,7 @@
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
-import { processCommonData, adjustTemperature, crc24 } from '../utils.js';
+import { adjustTemperature, crc24 } from '../utils.js';
 import { buildMappedObject, createMappingContext } from '../translator.js';
 
 // Define constants
@@ -50,7 +50,7 @@ import { DATA_SOURCE, DEVICE_TYPE, MAX_ELEVATION, MIN_ELEVATION, NESTLABS_MAC_PR
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = 'Weather';
-  static VERSION = '2026.04.01'; // Code version
+  static VERSION = '2026.04.15'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -227,129 +227,201 @@ export default class NestWeather extends HomeKitDevice {
   }
 }
 
-// Data translation functions for weather station data.
-// We use this to translate RAW Nest and Google data into the format we want for our
-// weather station device(s) using the field map below.
-//
-// This keeps all translation logic in one place and makes it easier to maintain as
-// Nest and Google sources evolve over time.
-//
-// Field map conventions:
-// - Return undefined for missing values rather than placeholder defaults
-// - Let processRawData() decide if there is enough data to build the device
-// - Let downstream code decide how to handle optional fields
-//
 // Weather field translation map
+// Maps raw source data -> normalised weather device fields
+// - fields: top-level raw fields this mapping depends on (for delta updates)
+// - translate: converts raw -> candidate value
+// - merge: combines source values into the final normalised value
 const WEATHER_FIELD_MAP = {
   // Identity fields
   serialNumber: {
-    google: ({ sourceValue }) =>
-      typeof sourceValue?.value?.structure_info?.rtsStructureId === 'string' &&
-      sourceValue.value.structure_info.rtsStructureId.trim() !== ''
-        ? NESTLABS_MAC_PREFIX + crc24(sourceValue.value.structure_info.rtsStructureId.trim().toUpperCase()).toUpperCase()
-        : undefined,
-    nest: ({ objectKey }) => NESTLABS_MAC_PREFIX + crc24(objectKey.toUpperCase()).toUpperCase(),
+    required: true,
+    google: {
+      fields: ['structure_info'],
+      translate: ({ raw }) =>
+        typeof raw?.value?.structure_info?.rtsStructureId === 'string' && raw.value.structure_info.rtsStructureId.trim() !== ''
+          ? NESTLABS_MAC_PREFIX + crc24(raw.value.structure_info.rtsStructureId.trim().toUpperCase()).toUpperCase()
+          : undefined,
+    },
+    nest: {
+      fields: [],
+      translate: ({ objectKey }) => NESTLABS_MAC_PREFIX + crc24(objectKey.toUpperCase()).toUpperCase(),
+    },
   },
 
   nest_google_device_uuid: {
-    google: ({ objectKey }) => objectKey,
-    nest: ({ objectKey }) => objectKey,
+    required: true,
+    google: {
+      fields: [],
+      translate: ({ objectKey }) => objectKey,
+    },
+    nest: {
+      fields: [],
+      translate: ({ objectKey }) => objectKey,
+    },
   },
 
   nest_google_home_uuid: {
-    google: ({ objectKey }) => objectKey,
-    nest: ({ objectKey }) => objectKey,
+    required: true,
+    google: {
+      fields: [],
+      translate: ({ objectKey }) => objectKey,
+    },
+    nest: {
+      fields: [],
+      translate: ({ objectKey }) => objectKey,
+    },
   },
 
   // Naming / descriptive fields
   description: {
-    google: ({ sourceValue }) =>
-      (sourceValue?.value?.structure_location?.city?.value?.trim() ?? '') !== '' &&
-      (sourceValue?.value?.structure_location?.state?.value?.trim() ?? '') !== ''
-        ? sourceValue.value.structure_location.city.value.trim() + ' - ' + sourceValue.value.structure_location.state.value.trim()
-        : (sourceValue?.value?.structure_info?.name?.trim() ?? '') !== ''
-            ? sourceValue.value.structure_info.name.trim()
-            : undefined,
-    nest: ({ sourceValue }) =>
-      (sourceValue?.value?.city?.trim() ?? '') !== '' && (sourceValue?.value?.state?.trim() ?? '') !== ''
-        ? sourceValue.value.city.trim() + ' - ' + sourceValue.value.state.trim()
-        : (sourceValue?.value?.name?.trim() ?? '') !== ''
-            ? sourceValue.value.name.trim()
-            : undefined,
+    required: true,
+    merge: ({ values }) =>
+      HomeKitDevice.makeValidHKName(
+        typeof values?.google === 'string' && values.google.trim() !== ''
+          ? values.google.trim()
+          : typeof values?.nest === 'string' && values.nest.trim() !== ''
+            ? values.nest.trim()
+            : 'unknown description',
+      ),
+    google: {
+      fields: ['structure_location', 'structure_info'],
+      translate: ({ raw }) =>
+        (raw?.value?.structure_location?.city?.value?.trim() ?? '') !== '' &&
+        (raw?.value?.structure_location?.state?.value?.trim() ?? '') !== ''
+          ? raw.value.structure_location.city.value.trim() + ' - ' + raw.value.structure_location.state.value.trim()
+          : (raw?.value?.structure_info?.name?.trim() ?? '') !== ''
+              ? raw.value.structure_info.name.trim()
+              : undefined,
+    },
+    nest: {
+      fields: ['city', 'state', 'name'],
+      translate: ({ raw }) =>
+        (raw?.value?.city?.trim() ?? '') !== '' && (raw?.value?.state?.trim() ?? '') !== ''
+          ? raw.value.city.trim() + ' - ' + raw.value.state.trim()
+          : (raw?.value?.name?.trim() ?? '') !== ''
+              ? raw.value.name.trim()
+              : undefined,
+    },
   },
 
   // Core required weather fields
   current_temperature: {
-    google: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.weather?.current_temperature) === false
-        ? adjustTemperature(Number(sourceValue.value.weather.current_temperature), 'C', 'C', true)
-        : undefined,
-    nest: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.weather?.current_temperature) === false
-        ? adjustTemperature(Number(sourceValue.value.weather.current_temperature), 'C', 'C', true)
-        : undefined,
+    required: true,
+    google: {
+      fields: ['weather'],
+      translate: ({ raw }) =>
+        isNaN(raw?.value?.weather?.current_temperature) === false
+          ? adjustTemperature(Number(raw.value.weather.current_temperature), 'C', 'C', true)
+          : undefined,
+    },
+    nest: {
+      fields: ['weather'],
+      translate: ({ raw }) =>
+        isNaN(raw?.value?.weather?.current_temperature) === false
+          ? adjustTemperature(Number(raw.value.weather.current_temperature), 'C', 'C', true)
+          : undefined,
+    },
   },
 
   current_humidity: {
-    google: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.weather?.current_humidity) === false ? Number(sourceValue.value.weather.current_humidity) : undefined,
-    nest: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.weather?.current_humidity) === false ? Number(sourceValue.value.weather.current_humidity) : undefined,
+    required: true,
+    google: {
+      fields: ['weather'],
+      translate: ({ raw }) =>
+        isNaN(raw?.value?.weather?.current_humidity) === false ? Number(raw.value.weather.current_humidity) : undefined,
+    },
+    nest: {
+      fields: ['weather'],
+      translate: ({ raw }) =>
+        isNaN(raw?.value?.weather?.current_humidity) === false ? Number(raw.value.weather.current_humidity) : undefined,
+    },
   },
 
   // Optional weather detail fields
   condition: {
-    google: ({ sourceValue }) =>
-      (sourceValue?.value?.weather?.condition?.trim() ?? '') !== '' ? sourceValue.value.weather.condition.trim() : undefined,
-    nest: ({ sourceValue }) =>
-      (sourceValue?.value?.weather?.condition?.trim() ?? '') !== '' ? sourceValue.value.weather.condition.trim() : undefined,
+    google: {
+      fields: ['weather'],
+      translate: ({ raw }) => ((raw?.value?.weather?.condition?.trim() ?? '') !== '' ? raw.value.weather.condition.trim() : undefined),
+    },
+    nest: {
+      fields: ['weather'],
+      translate: ({ raw }) => ((raw?.value?.weather?.condition?.trim() ?? '') !== '' ? raw.value.weather.condition.trim() : undefined),
+    },
   },
 
   wind_direction: {
-    google: ({ sourceValue }) =>
-      (sourceValue?.value?.weather?.wind_direction?.trim() ?? '') !== '' ? sourceValue.value.weather.wind_direction.trim() : undefined,
-    nest: ({ sourceValue }) =>
-      (sourceValue?.value?.weather?.wind_direction?.trim() ?? '') !== '' ? sourceValue.value.weather.wind_direction.trim() : undefined,
+    google: {
+      fields: ['weather'],
+      translate: ({ raw }) =>
+        (raw?.value?.weather?.wind_direction?.trim() ?? '') !== '' ? raw.value.weather.wind_direction.trim() : undefined,
+    },
+    nest: {
+      fields: ['weather'],
+      translate: ({ raw }) =>
+        (raw?.value?.weather?.wind_direction?.trim() ?? '') !== '' ? raw.value.weather.wind_direction.trim() : undefined,
+    },
   },
 
   wind_speed: {
-    google: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.weather?.wind_speed) === false ? Number(sourceValue.value.weather.wind_speed) : undefined,
-    nest: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.weather?.wind_speed) === false ? Number(sourceValue.value.weather.wind_speed) : undefined,
+    google: {
+      fields: ['weather'],
+      translate: ({ raw }) => (isNaN(raw?.value?.weather?.wind_speed) === false ? Number(raw.value.weather.wind_speed) : undefined),
+    },
+    nest: {
+      fields: ['weather'],
+      translate: ({ raw }) => (isNaN(raw?.value?.weather?.wind_speed) === false ? Number(raw.value.weather.wind_speed) : undefined),
+    },
   },
 
   sunrise: {
-    google: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.weather?.sunrise) === false ? Number(sourceValue.value.weather.sunrise) : undefined,
-    nest: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.weather?.sunrise) === false ? Number(sourceValue.value.weather.sunrise) : undefined,
+    google: {
+      fields: ['weather'],
+      translate: ({ raw }) => (isNaN(raw?.value?.weather?.sunrise) === false ? Number(raw.value.weather.sunrise) : undefined),
+    },
+    nest: {
+      fields: ['weather'],
+      translate: ({ raw }) => (isNaN(raw?.value?.weather?.sunrise) === false ? Number(raw.value.weather.sunrise) : undefined),
+    },
   },
 
   sunset: {
-    google: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.weather?.sunset) === false ? Number(sourceValue.value.weather.sunset) : undefined,
-    nest: ({ sourceValue }) =>
-      isNaN(sourceValue?.value?.weather?.sunset) === false ? Number(sourceValue.value.weather.sunset) : undefined,
+    google: {
+      fields: ['weather'],
+      translate: ({ raw }) => (isNaN(raw?.value?.weather?.sunset) === false ? Number(raw.value.weather.sunset) : undefined),
+    },
+    nest: {
+      fields: ['weather'],
+      translate: ({ raw }) => (isNaN(raw?.value?.weather?.sunset) === false ? Number(raw.value.weather.sunset) : undefined),
+    },
   },
 
   station: {
-    google: ({ sourceValue }) =>
-      (sourceValue?.value?.weather?.station?.trim() ?? '') !== '' ? sourceValue.value.weather.station.trim() : undefined,
-    nest: ({ sourceValue }) =>
-      (sourceValue?.value?.weather?.station?.trim() ?? '') !== '' ? sourceValue.value.weather.station.trim() : undefined,
+    google: {
+      fields: ['weather'],
+      translate: ({ raw }) => ((raw?.value?.weather?.station?.trim() ?? '') !== '' ? raw.value.weather.station.trim() : undefined),
+    },
+    nest: {
+      fields: ['weather'],
+      translate: ({ raw }) => ((raw?.value?.weather?.station?.trim() ?? '') !== '' ? raw.value.weather.station.trim() : undefined),
+    },
   },
 
   forecast: {
-    google: ({ sourceValue }) =>
-      (sourceValue?.value?.weather?.forecast?.trim() ?? '') !== '' ? sourceValue.value.weather.forecast.trim() : undefined,
-    nest: ({ sourceValue }) =>
-      (sourceValue?.value?.weather?.forecast?.trim() ?? '') !== '' ? sourceValue.value.weather.forecast.trim() : undefined,
+    google: {
+      fields: ['weather'],
+      translate: ({ raw }) => ((raw?.value?.weather?.forecast?.trim() ?? '') !== '' ? raw.value.weather.forecast.trim() : undefined),
+    },
+    nest: {
+      fields: ['weather'],
+      translate: ({ raw }) => ((raw?.value?.weather?.forecast?.trim() ?? '') !== '' ? raw.value.weather.forecast.trim() : undefined),
+    },
   },
 };
 
-// Function to process our RAW Nest or Google for this device type
-export function processRawData(log, rawData, config, deviceType = undefined) {
+// Function to process our RAW source data for this device type
+// eslint-disable-next-line no-unused-vars
+export function processRawData(log, rawData, config, deviceType = undefined, changedData = undefined) {
   if (
     rawData === null ||
     typeof rawData !== 'object' ||
@@ -360,83 +432,101 @@ export function processRawData(log, rawData, config, deviceType = undefined) {
     return;
   }
 
-  // Process data for any structure(s) for both Nest and Protobuf API data
-  // We use this to create virtual weather station(s) for each structure that has location and weather data
+  // Only store partial data if nothing has already been stored for this serial in this pass.
+  // A later full payload will replace an earlier partial payload.
   let devices = {};
 
   Object.entries(rawData)
     .filter(([key]) => key.startsWith('structure.') === true || key.startsWith('STRUCTURE_') === true)
     .forEach(([object_key, value]) => {
-      let tempDevice = {};
-
       try {
-        let mappedData = buildMappedObject(
+        // Map raw structure data into our normalised weather schema
+        let mappedResult = buildMappedObject(
           WEATHER_FIELD_MAP,
-          createMappingContext(
-            rawData,
-            object_key,
-            value?.source === DATA_SOURCE.NEST ? value : undefined,
-            value?.source === DATA_SOURCE.GOOGLE ? value : undefined,
-          ),
+          createMappingContext(rawData, object_key, {
+            nest: value?.source === DATA_SOURCE.NEST ? value : undefined,
+            google: value?.source === DATA_SOURCE.GOOGLE ? value : undefined,
+          }),
+          changedData instanceof Map ? changedData.get(object_key)?.fields : undefined,
         );
 
-        if (
-          mappedData.serialNumber !== undefined &&
-          mappedData.nest_google_device_uuid !== undefined &&
-          mappedData.nest_google_home_uuid !== undefined &&
-          mappedData.description !== undefined &&
-          mappedData.current_temperature !== undefined &&
-          mappedData.current_humidity !== undefined
-        ) {
-          tempDevice = processCommonData(
-            mappedData.nest_google_device_uuid,
-            mappedData.nest_google_home_uuid,
-            {
-              type: DEVICE_TYPE.WEATHER,
-              model: 'Weather',
-              softwareVersion: NestWeather.VERSION, // We'll use our class version here now
-              ...mappedData,
-            },
-            config,
+        let serialNumber = mappedResult?.data?.serialNumber;
+        let existingDevice = devices[serialNumber];
+
+        // If we have all required fields, build a full weather device
+        if (mappedResult?.hasRequired === true) {
+          let tempDevice = {
+            type: DEVICE_TYPE.WEATHER,
+            model: 'Weather',
+            manufacturer: 'Nest',
+            softwareVersion: NestWeather.VERSION, // Use class version for consistency
+            ...mappedResult.data,
+          };
+
+          // Lookup device-specific and home-level configuration
+          let deviceOptions = config?.devices?.find(
+            (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
           );
+
+          let homeOptions = config?.homes?.find(
+            (home) =>
+              home?.nest_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
+              home?.google_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
+          );
+
+          // Apply Eve history setting (device overrides global)
+          tempDevice.eveHistory =
+            deviceOptions?.eveHistory !== undefined ? deviceOptions.eveHistory === true : config?.options?.eveHistory === true;
+
+          // Apply elevation (validated, fallback to minimum if invalid)
+          tempDevice.elevation =
+            isNaN(homeOptions?.elevation) === false &&
+            Number(homeOptions.elevation) >= MIN_ELEVATION &&
+            Number(homeOptions.elevation) <= MAX_ELEVATION
+              ? Number(homeOptions.elevation)
+              : MIN_ELEVATION;
+
+          // Determine exclusion state
+          // Priority:
+          // 1. Weather disabled at home level (hard exclude)
+          // 2. Device explicitly excluded
+          // 3. Device not explicitly included AND (home excluded OR global excluded)
+          tempDevice.excluded =
+            homeOptions?.weather !== true ||
+            deviceOptions?.exclude === true ||
+            (deviceOptions?.exclude !== false &&
+              (homeOptions?.exclude === true || (homeOptions?.exclude !== false && config?.options?.exclude === true)));
+
+          // Store full device
+          // Full always overrides partial if present
+          if (existingDevice?.full !== true) {
+            devices[tempDevice.serialNumber] = {
+              full: true,
+              data: tempDevice,
+            };
+          }
         }
 
-        // eslint-disable-next-line no-unused-vars
+        // Refresh existing device reference after potential full insert
+        existingDevice = devices[serialNumber];
+
+        // If we only have partial data (no required fields yet), store partial
+        // Only if we don't already have a full or partial device
+        if (
+          mappedResult?.hasRequired === false &&
+          serialNumber !== undefined &&
+          typeof mappedResult?.data === 'object' &&
+          mappedResult.data?.constructor === Object &&
+          Object.keys(mappedResult.data).length !== 0 &&
+          existingDevice === undefined
+        ) {
+          devices[serialNumber] = {
+            full: false,
+            data: mappedResult.data,
+          };
+        }
       } catch (error) {
-        log?.debug?.('Error processing weather data for "%s"', object_key);
-      }
-
-      if (
-        Object.entries(tempDevice).length !== 0 &&
-        typeof devices[tempDevice.serialNumber] === 'undefined' &&
-        (deviceType === undefined || (typeof deviceType === 'string' && deviceType !== '' && tempDevice.type === deviceType))
-      ) {
-        let deviceOptions = config?.devices?.find(
-          (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
-        );
-        let homeOptions = config?.homes?.find(
-          (home) =>
-            home?.nest_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
-            home?.google_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
-        );
-
-        // Insert any extra options we've read in from configuration file for this device or its associated home
-        tempDevice.eveHistory =
-          deviceOptions?.eveHistory !== undefined ? deviceOptions.eveHistory === true : config.options.eveHistory === true;
-
-        tempDevice.elevation =
-          isNaN(homeOptions?.elevation) === false &&
-          Number(homeOptions.elevation) >= MIN_ELEVATION &&
-          Number(homeOptions.elevation) <= MAX_ELEVATION
-            ? Number(homeOptions.elevation)
-            : MIN_ELEVATION; // Default to minimum elevation if not set or invalid
-
-        // Process additional exclusion details based on weather station setting
-        tempDevice.excluded = tempDevice.excluded === true;
-
-        if (tempDevice.excluded !== true && homeOptions?.weather === true) {
-          devices[tempDevice.serialNumber] = tempDevice; // Store processed device
-        }
+        log?.error?.('Error processing weather data for object "%s": %s', object_key, String(error));
       }
     });
 

@@ -22,7 +22,7 @@
 //   - endpoint + auth identity, when uuid is not supplied
 // - Different logical connections must not accidentally share the same session
 //
-// Code version 2026.04.13
+// Code version 2026.04.14
 // Mark Hulskamp
 'use strict';
 
@@ -51,6 +51,26 @@ export default class GrpcTransport {
   //   endpointHost: string
   // }
   static #sessionPool = new Map();
+
+  static STATUS = {
+    OK: 0,
+    CANCELLED: 1,
+    UNKNOWN: 2,
+    INVALID_ARGUMENT: 3,
+    DEADLINE_EXCEEDED: 4,
+    NOT_FOUND: 5,
+    ALREADY_EXISTS: 6,
+    PERMISSION_DENIED: 7,
+    RESOURCE_EXHAUSTED: 8,
+    FAILED_PRECONDITION: 9,
+    ABORTED: 10,
+    OUT_OF_RANGE: 11,
+    UNIMPLEMENTED: 12,
+    INTERNAL: 13,
+    UNAVAILABLE: 14,
+    DATA_LOSS: 15,
+    UNAUTHENTICATED: 16,
+  };
 
   log = undefined;
 
@@ -297,7 +317,6 @@ export default class GrpcTransport {
       });
 
       pool.set(sessionKey, entry);
-      this.log?.debug?.('Connection started to gRPC endpoint "%s"', entry.endpointHost);
     }
 
     // Attach this transport instance to the pooled session once.
@@ -342,6 +361,14 @@ export default class GrpcTransport {
     let authHeader = this.#getAuthHeader?.();
     let request = undefined;
     let requestTimeout = undefined;
+    let isObserveStream = timeout === 0;
+    let terminalStatusLogged = false;
+    let expectedObserveEnd = false;
+    let errorCode = undefined;
+    let errorName = '';
+    let grpcStatus = undefined;
+    let grpcMessage = '';
+    let grpcMessageLower = '';
 
     // Validate request parameters before doing any transport work.
     if (
@@ -354,19 +381,19 @@ export default class GrpcTransport {
       typeof values !== 'object' ||
       values === null
     ) {
-      result.status = 400;
+      result.status = GrpcTransport.STATUS.INVALID_ARGUMENT;
       result.message = 'Invalid gRPC request parameters';
       return result;
     }
 
     if (this.#protobufRoot === undefined) {
-      result.status = 500;
+      result.status = GrpcTransport.STATUS.INTERNAL;
       result.message = 'gRPC protobuf support is unavailable';
       return result;
     }
 
     if (typeof authHeader !== 'string' || authHeader.trim() === '') {
-      result.status = 401;
+      result.status = GrpcTransport.STATUS.UNAUTHENTICATED;
       result.message = 'Authorization header is unavailable';
       return result;
     }
@@ -383,14 +410,14 @@ export default class GrpcTransport {
       RequestType = this.#protobufRoot.lookup(messagePrefix + command + 'Request');
       ResponseType = this.#protobufRoot.lookup(messagePrefix + command + 'Response');
     } catch (error) {
-      result.status = 500;
+      result.status = GrpcTransport.STATUS.INTERNAL;
       result.message = 'Failed to lookup gRPC protobuf types';
       this.log?.debug?.('gRPC protobuf lookup failed for "%s/%s": %s', service, command, String(error));
       return result;
     }
 
     if (RequestType === null || RequestType === undefined || ResponseType === null || ResponseType === undefined) {
-      result.status = 500;
+      result.status = GrpcTransport.STATUS.INTERNAL;
       result.message = 'gRPC protobuf types are unavailable';
       return result;
     }
@@ -399,7 +426,7 @@ export default class GrpcTransport {
       this.#ensureSession();
 
       // Create one HTTP/2 request stream for the requested gRPC method.
-      // Path format: /<service>/<command>
+      // Path format: /<messagePrefix><service>/<command>
       //
       // grpc-timeout header is only added for unary requests.
       // Observe streams are intentionally long-lived and omit it.
@@ -430,7 +457,7 @@ export default class GrpcTransport {
           (isNaN(httpStatus) === true || httpStatus !== 200 || httpContentType.toLowerCase().includes('application/grpc') !== true)
         ) {
           isTerminal = true;
-          result.status = isNaN(httpStatus) === false ? httpStatus : 500;
+          result.status = GrpcTransport.STATUS.UNAVAILABLE;
           result.message = 'Non-gRPC HTTP response: status=' + String(httpStatus) + ' content-type=' + httpContentType;
 
           try {
@@ -457,7 +484,7 @@ export default class GrpcTransport {
 
         // Hard cap memory growth for malformed or unexpectedly large responses.
         if (bufferOffset + data.length > this.#bufferMax) {
-          result.status = 413;
+          result.status = GrpcTransport.STATUS.RESOURCE_EXHAUSTED;
           result.message = 'gRPC response exceeds maximum buffer size';
           isTerminal = true;
 
@@ -474,7 +501,7 @@ export default class GrpcTransport {
           newSize = Math.min(buffer.length * 2, this.#bufferMax);
 
           if (newSize < bufferOffset + data.length) {
-            result.status = 413;
+            result.status = GrpcTransport.STATUS.RESOURCE_EXHAUSTED;
             result.message = 'gRPC response exceeds maximum buffer size';
             isTerminal = true;
 
@@ -510,7 +537,7 @@ export default class GrpcTransport {
 
           // Only uncompressed gRPC frames are supported by this transport.
           if (compressed !== 0) {
-            result.status = 415;
+            result.status = GrpcTransport.STATUS.UNIMPLEMENTED;
             result.message = 'Unsupported gRPC compressed response';
             isTerminal = true;
 
@@ -523,7 +550,7 @@ export default class GrpcTransport {
           }
 
           if (dataSize > this.#bufferMax) {
-            result.status = 413;
+            result.status = GrpcTransport.STATUS.RESOURCE_EXHAUSTED;
             result.message = 'gRPC response exceeds maximum buffer size';
             isTerminal = true;
 
@@ -546,7 +573,7 @@ export default class GrpcTransport {
             // Decode failure means the current response stream can no longer be trusted.
             // Abort this request, but do not tear down the pooled HTTP/2 session unless
             // the underlying transport itself later fails.
-            result.status = 500;
+            result.status = GrpcTransport.STATUS.INTERNAL;
             result.message = 'Failed decoding gRPC response';
             isTerminal = true;
 
@@ -569,7 +596,7 @@ export default class GrpcTransport {
             // Response handler failure means the current request stream can no longer be trusted.
             // Abort this request, but do not tear down the pooled HTTP/2 session unless
             // the underlying transport itself later fails.
-            result.status = 500;
+            result.status = GrpcTransport.STATUS.INTERNAL;
             result.message = 'gRPC response handler failed';
             isTerminal = true;
 
@@ -608,15 +635,29 @@ export default class GrpcTransport {
         }
 
         if (isNaN(Number(headers?.['grpc-status'])) === false) {
-          result.status = Number(headers['grpc-status']);
+          grpcStatus = Number(headers['grpc-status']);
+          result.status = grpcStatus;
         }
 
         if (typeof headers?.['grpc-message'] === 'string') {
-          result.message = headers['grpc-message'];
+          grpcMessage = headers['grpc-message'];
+          result.message = grpcMessage;
         }
 
-        if (result.status !== undefined && result.status !== 0) {
-          this.log?.debug?.('gRPC server error for "%s/%s": status=%s message="%s"', service, command, result.status, result.message);
+        grpcMessageLower = grpcMessage.toLowerCase();
+
+        expectedObserveEnd =
+          isObserveStream === true &&
+          (grpcStatus === GrpcTransport.STATUS.OK ||
+            grpcStatus === GrpcTransport.STATUS.CANCELLED ||
+            (grpcStatus === GrpcTransport.STATUS.DEADLINE_EXCEEDED &&
+              (grpcMessageLower.includes('context timed out') === true ||
+                grpcMessageLower.includes('deadline') === true ||
+                grpcMessageLower.includes('timeout') === true)));
+
+        if (grpcStatus !== undefined && grpcStatus !== GrpcTransport.STATUS.OK && expectedObserveEnd !== true) {
+          this.log?.debug?.('gRPC server error for "%s/%s": status=%s message="%s"', service, command, grpcStatus, grpcMessage);
+          terminalStatusLogged = true;
         }
       });
 
@@ -627,7 +668,20 @@ export default class GrpcTransport {
         }
 
         isTerminal = true;
-        result.status = typeof error?.code === 'number' ? error.code : 500;
+        errorCode = error?.code ?? error?.cause?.code;
+        errorName = error?.name ?? error?.cause?.name ?? '';
+
+        if (
+          errorName === 'AbortError' ||
+          errorName === 'TimeoutError' ||
+          errorCode === 'UND_ERR_HEADERS_TIMEOUT' ||
+          errorCode === 'UND_ERR_CONNECT_TIMEOUT'
+        ) {
+          result.status = GrpcTransport.STATUS.DEADLINE_EXCEEDED;
+        } else {
+          result.status = GrpcTransport.STATUS.UNAVAILABLE;
+        }
+
         result.message = String(error?.message || error);
       });
 
@@ -657,7 +711,7 @@ export default class GrpcTransport {
             return;
           }
 
-          result.status = 408;
+          result.status = GrpcTransport.STATUS.DEADLINE_EXCEEDED;
           result.message = 'gRPC request timed out';
           isTerminal = true;
 
@@ -670,10 +724,26 @@ export default class GrpcTransport {
       }
 
       request.on('close', () => {
+        let messageLower = typeof result.message === 'string' ? result.message.toLowerCase() : '';
+
         clearTimeout(requestTimeout);
         requestTimeout = undefined;
 
-        if (result.status !== 0 && result.status !== undefined) {
+        expectedObserveEnd =
+          isObserveStream === true &&
+          (result.status === GrpcTransport.STATUS.OK ||
+            result.status === GrpcTransport.STATUS.CANCELLED ||
+            (result.status === GrpcTransport.STATUS.DEADLINE_EXCEEDED &&
+              (messageLower.includes('context timed out') === true ||
+                messageLower.includes('deadline') === true ||
+                messageLower.includes('timeout') === true)));
+
+        if (
+          terminalStatusLogged === false &&
+          result.status !== undefined &&
+          result.status !== GrpcTransport.STATUS.OK &&
+          expectedObserveEnd !== true
+        ) {
           this.log?.debug?.(
             'gRPC stream closed for "%s/%s" with status=%s message="%s" frames=%d',
             service,
@@ -696,25 +766,72 @@ export default class GrpcTransport {
     } catch (error) {
       // Catch unexpected higher-level failures.
       // The pooled session remains available unless the underlying HTTP/2 session itself fails.
-      result.status = typeof error?.code === 'number' ? error.code : 500;
+      errorCode = error?.code ?? error?.cause?.code;
+      errorName = error?.name ?? error?.cause?.name ?? '';
+
+      if (
+        errorName === 'AbortError' ||
+        errorName === 'TimeoutError' ||
+        errorCode === 'UND_ERR_HEADERS_TIMEOUT' ||
+        errorCode === 'UND_ERR_CONNECT_TIMEOUT'
+      ) {
+        result.status = GrpcTransport.STATUS.DEADLINE_EXCEEDED;
+      } else {
+        result.status = GrpcTransport.STATUS.UNAVAILABLE;
+      }
+
       result.message = String(error?.message || error);
 
       this.log?.debug?.('gRPC request failed: %s', result.message);
     }
 
+    // Normalise expected observe shutdowns so callers do not treat them as hard errors.
+    if (
+      isObserveStream === true &&
+      (result.status === GrpcTransport.STATUS.OK ||
+        result.status === GrpcTransport.STATUS.CANCELLED ||
+        (result.status === GrpcTransport.STATUS.DEADLINE_EXCEEDED &&
+          typeof result.message === 'string' &&
+          (result.message.toLowerCase().includes('context timed out') === true ||
+            result.message.toLowerCase().includes('deadline') === true ||
+            result.message.toLowerCase().includes('timeout') === true)))
+    ) {
+      result.status = GrpcTransport.STATUS.OK;
+      result.message = '';
+    }
+
     // Ensure callers always receive an explicit status.
     if (typeof result.status !== 'number') {
-      result.status = 500;
+      result.status = GrpcTransport.STATUS.UNKNOWN;
     }
 
     return result;
   }
 
-  async command(messagePrefix, service, command, values) {
+  async command(messagePrefix, service, command, values, options = {}) {
     // Unary gRPC request.
     // Collects all response frames and returns { status, message, data }.
+    let retry = Number.isFinite(Number(options.retry)) && Number(options.retry) > 0 ? Number(options.retry) : 1;
+    let retryCount = Number.isFinite(Number(options._retryCount)) ? Number(options._retryCount) : 0;
     let data = [];
     let result = await this.#executeStream(messagePrefix, service, command, values, (message) => data.push(message), this.#requestTimeout);
+
+    if (
+      retry > 1 &&
+      (result?.status === GrpcTransport.STATUS.DEADLINE_EXCEEDED ||
+        result?.status === GrpcTransport.STATUS.RESOURCE_EXHAUSTED ||
+        result?.status === GrpcTransport.STATUS.INTERNAL ||
+        result?.status === GrpcTransport.STATUS.UNAVAILABLE)
+    ) {
+      let delay = 500 * Math.pow(2, retryCount);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+
+      return this.command(messagePrefix, service, command, values, {
+        ...options,
+        retry: retry - 1,
+        _retryCount: retryCount + 1,
+      });
+    }
 
     return {
       ...result,
@@ -722,12 +839,14 @@ export default class GrpcTransport {
     };
   }
 
-  async observe(messagePrefix, service, command, values, onMessage) {
+  async observe(messagePrefix, service, command, values, onMessage, options = {}) {
     // Server-streaming gRPC request.
     // Calls onMessage(decoded) once per response frame.
     //
     // Message callbacks are serialised so callers do not need to handle
     // concurrent onMessage execution.
+    let retry = Number.isFinite(Number(options.retry)) && Number(options.retry) > 0 ? Number(options.retry) : 1;
+    let retryCount = Number.isFinite(Number(options._retryCount)) ? Number(options._retryCount) : 0;
     let messageChain = Promise.resolve();
     let result = await this.#executeStream(messagePrefix, service, command, values, (message) => {
       messageChain = messageChain
@@ -737,8 +856,25 @@ export default class GrpcTransport {
         });
     });
 
-    // Drain any queued callbacks before resolving.
     await messageChain;
+
+    if (
+      retry > 1 &&
+      (result?.status === GrpcTransport.STATUS.DEADLINE_EXCEEDED ||
+        result?.status === GrpcTransport.STATUS.RESOURCE_EXHAUSTED ||
+        result?.status === GrpcTransport.STATUS.INTERNAL ||
+        result?.status === GrpcTransport.STATUS.UNAVAILABLE)
+    ) {
+      let delay = 500 * Math.pow(2, retryCount);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+
+      return this.observe(messagePrefix, service, command, values, onMessage, {
+        ...options,
+        retry: retry - 1,
+        _retryCount: retryCount + 1,
+      });
+    }
+
     return result;
   }
 }
