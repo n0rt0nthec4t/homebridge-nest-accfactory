@@ -4,6 +4,12 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.0-alpha.24 (2026/04/18)
+
+- Fixed re-authorisation issues in `nexustalk.js`
+- Implemented a playout smoothing buffer in `streamer.js`
+- Fixed notification for authorisation token changes to camera devices
+
 ## v0.4.0-alpha.23 (2026/04/16)
 
 - Refactored thermostat, temperature sensor, lock, camera, and protect data processing to use a unified field mapping structure

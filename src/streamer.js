@@ -86,7 +86,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2026.04.16
+// Code version 2026.04.18
 // Mark Hulskamp
 'use strict';
 
@@ -107,6 +107,35 @@ const MAX_BUFFERED_ITEMS_PER_OUTPUT_PER_TICK = 20; // Prevent one output starvin
 const STREAM_FRAME_INTERVAL = 1000 / 30; // 30fps approx
 const OUTPUT_LOOP_INTERVAL = 10; // Shared output scheduler interval
 const OUTPUT_BUDGET_LOG_INTERVAL = 30000; // Throttle per-streamer over-budget debug logs
+const OUTPUT_PLAYOUT_POLICY = {
+  live: {
+    playoutDelayMs: 500,
+    maxLagBehindLiveMs: 750,
+    dueTolerance: 10,
+    dueSlack: 10,
+    catchupExitThresholdMs: 250,
+    catchupAudioBurstLimit: 2,
+    allowStartWithoutKeyframe: true,
+  },
+  record: {
+    playoutDelayMs: 0,
+    maxLagBehindLiveMs: 0,
+    dueTolerance: 2,
+    dueSlack: 10,
+    catchupExitThresholdMs: 250,
+    catchupAudioBurstLimit: 4,
+    allowStartWithoutKeyframe: false,
+  },
+  buffer: {
+    playoutDelayMs: 0,
+    maxLagBehindLiveMs: 0,
+    dueTolerance: 2,
+    dueSlack: 10,
+    catchupExitThresholdMs: 250,
+    catchupAudioBurstLimit: 2,
+    allowStartWithoutKeyframe: false,
+  },
+};
 
 // Default capacity for generic RingBuffer usage.
 // This should remain a sensible general-purpose default and not be tied to
@@ -1267,21 +1296,76 @@ export default class Streamer {
     }
 
     // Create output state
+    // Each output (LIVE / RECORD / BUFFER) consumes from the shared ring buffer
+    // using its own cursor and playout timing model.
+    //
+    // Key concepts:
+    // - cursor: current read position in the shared buffer (absolute index)
+    // - catchingUp: used when starting behind live edge (mainly RECORD) to fast-drain
+    // - sourceBaseTime / wallclockBaseTime:
+    //     map source timestamps -> real time for paced playback
+    // - policy: defines how this output consumes media (latency vs continuity tradeoff)
+    //
+    // IMPORTANT:
+    // - All smoothing / pacing happens in Streamer (not in NexusTalk/WebRTC)
+    // - Each output has its own independent timing model
+    // - Policies MUST be tuned per output type (do not unify blindly)
+
     output = {
       sessionID: sessionID,
       type: type,
+
+      // Writable streams (ffmpeg pipes etc)
       video: video,
       audio: audio,
       talkback: talkback,
       talkbackTimeout: undefined,
+
+      // Whether audio should be written for this output
       includeAudio: includeAudio,
+
+      // Read cursor into shared ring buffer
+      // RECORD starts from a defined cursor (historical), LIVE is resolved at runtime
       cursor: type === Streamer.STREAM_TYPE.RECORD ? startCursor : undefined,
+
+      // Catch-up mode:
+      // - RECORD starts in catch-up to drain historical buffer
+      // - LIVE starts aligned near tail (no catch-up)
       catchingUp: type === Streamer.STREAM_TYPE.RECORD,
-      sentCodecConfig: false,
-      seenKeyFrame: false,
+
+      // Codec / decoder state tracking
+      sentCodecConfig: false, // SPS/PPS sent
+      seenKeyFrame: false, // first keyframe seen
+
+      // Last time a video frame was written (used for fallback timing)
       lastVideoWriteTime: 0,
+
+      // Time mapping for paced playback:
+      // wallclockTime = wallclockBaseTime + (item.time - sourceBaseTime)
       sourceBaseTime: undefined,
       wallclockBaseTime: undefined,
+
+      // Playout policy:
+      // Defines how aggressively we stay near live edge vs preserve continuity
+      //
+      // LIVE:
+      // - small delay (~100ms)
+      // - prefers low latency
+      //
+      // RECORD:
+      // - no delay
+      // - drains buffer in order
+      //
+      // BUFFER:
+      // - passive (retention only)
+      policy:
+        type === Streamer.STREAM_TYPE.RECORD
+          ? { ...OUTPUT_PLAYOUT_POLICY.record }
+          : type === Streamer.STREAM_TYPE.LIVE
+            ? { ...OUTPUT_PLAYOUT_POLICY.live }
+            : { ...OUTPUT_PLAYOUT_POLICY.buffer },
+
+      // Debug / instrumentation stats (used for tuning pacing behaviour)
       stats: {
         startedAt: Date.now(),
         firstWriteAt: undefined,
@@ -1463,12 +1547,12 @@ export default class Streamer {
     return this.#sourceState === Streamer.MESSAGE_TYPE.SOURCE_READY;
   }
 
-  setSourceState(type, reason) {
+  async setSourceState(type, reason) {
     if (typeof type !== 'string' || type === '') {
       return;
     }
 
-    HomeKitDevice.message(this.#HomeKitDeviceUUID, Streamer.MESSAGE, type, { reason: reason });
+    await this.onMessage(type, { reason: reason });
   }
 
   async requestSourceConnect(options = undefined) {
@@ -1987,8 +2071,11 @@ export default class Streamer {
     let catchupExitedThisTick = false;
     let dueTolerance = 2;
     let dueSlack = 10;
+    let playoutDelayMs = 0;
+    let maxLagBehindLiveMs = 0;
     let catchupExitThresholdMs = 250;
-    let catchupAudioBurstLimit = streamType === Streamer.STREAM_TYPE.RECORD ? 4 : 2;
+    let catchupAudioBurstLimit = 2;
+    let allowStartWithoutKeyframe = false;
     let outputVideo = undefined;
     let outputAudio = undefined;
     let isH264Output = false;
@@ -2007,18 +2094,34 @@ export default class Streamer {
     let outputSourceBaseTime = undefined;
     let outputWallclockBaseTime = undefined;
     let outputLastVideoWriteTime = 0;
+    let policy = undefined;
+    let liveLagMs = 0;
+    let latestVideoOffset = -1;
+    let latestVideoItem = undefined;
+    let targetLiveTime = 0;
+    let searchOffset = 0;
+    let bootstrapOffset = -1;
+    let bootstrapItem = undefined;
+    let resyncOffset = -1;
+    let resyncItem = undefined;
 
-    if (
-      typeof output !== 'object' ||
-      output === null ||
-      typeof dateNow !== 'number' ||
-      typeof streamType !== 'string' ||
-      buffer instanceof RingBuffer !== true
-    ) {
+    if (typeof output !== 'object' || output === null || typeof dateNow !== 'number' || buffer instanceof RingBuffer !== true) {
       return;
     }
 
-    // Pull commonly used references/flags into locals for this scheduler tick
+    // Resolve playout policy for this output.
+    // This controls startup lag, pacing, drift correction, and how aggressively
+    // an output is allowed to start before a decoder-safe keyframe arrives.
+    policy = typeof output.policy === 'object' && output.policy !== null ? output.policy : {};
+    dueTolerance = typeof policy.dueTolerance === 'number' ? policy.dueTolerance : dueTolerance;
+    dueSlack = typeof policy.dueSlack === 'number' ? policy.dueSlack : dueSlack;
+    playoutDelayMs = typeof policy.playoutDelayMs === 'number' ? Math.max(0, policy.playoutDelayMs) : playoutDelayMs;
+    maxLagBehindLiveMs = typeof policy.maxLagBehindLiveMs === 'number' ? Math.max(0, policy.maxLagBehindLiveMs) : maxLagBehindLiveMs;
+    catchupExitThresholdMs = typeof policy.catchupExitThresholdMs === 'number' ? policy.catchupExitThresholdMs : catchupExitThresholdMs;
+    catchupAudioBurstLimit = typeof policy.catchupAudioBurstLimit === 'number' ? policy.catchupAudioBurstLimit : catchupAudioBurstLimit;
+    allowStartWithoutKeyframe = policy.allowStartWithoutKeyframe === true;
+
+    // Pull commonly used references/flags into locals for this scheduler tick.
     startIndex = buffer.startIndex;
     itemsLength = buffer.size;
     outputVideo = output.video;
@@ -2038,24 +2141,86 @@ export default class Streamer {
       return;
     }
 
-    if (isLive === true && isH264Output === true) {
-      // Live H264 is more sensitive to timer jitter than record output.
-      // Give it a slightly wider due window so packets that are effectively due now
-      // are not delayed by tiny scheduler timing variations.
-      dueTolerance = 10;
-    }
-
     // Resolve startup cursor for a new output against the current retained buffer.
-    // For live H264 troubleshooting, behave more like the older streamer and begin
-    // draining from the retained buffer head instead of waiting for a keyframe bootstrap.
+    // Live outputs attach behind the live edge by playoutDelayMs so bursty delivery
+    // still leaves a small cushion to smooth startup.
     if (typeof output.cursor !== 'number') {
-      output.cursor = startIndex;
-      output.catchingUp = false;
-      output.sourceBaseTime = undefined;
-      output.wallclockBaseTime = undefined;
+      if (isLive === true) {
+        searchOffset = itemsLength - 1;
+
+        while (searchOffset >= 0) {
+          item = buffer.getByOffset(searchOffset);
+
+          if (item?.type === Streamer.MEDIA_TYPE.VIDEO && typeof item?.time === 'number' && typeof item?.index === 'number') {
+            latestVideoOffset = searchOffset;
+            latestVideoItem = item;
+            break;
+          }
+
+          searchOffset--;
+        }
+
+        targetLiveTime =
+          typeof latestVideoItem?.time === 'number'
+            ? latestVideoItem.time - playoutDelayMs
+            : typeof latestItemTime === 'number'
+              ? latestItemTime - playoutDelayMs
+              : undefined;
+
+        if (latestVideoOffset >= 0) {
+          bootstrapOffset = latestVideoOffset;
+
+          if (typeof targetLiveTime === 'number') {
+            searchOffset = latestVideoOffset;
+
+            while (searchOffset >= 0) {
+              item = buffer.getByOffset(searchOffset);
+
+              if (
+                item?.type === Streamer.MEDIA_TYPE.VIDEO &&
+                typeof item?.time === 'number' &&
+                typeof item?.index === 'number' &&
+                item.time <= targetLiveTime
+              ) {
+                bootstrapOffset = searchOffset;
+                break;
+              }
+
+              searchOffset--;
+            }
+          }
+
+          bootstrapItem = buffer.getByOffset(bootstrapOffset);
+        }
+
+        if (bootstrapItem === undefined && itemsLength !== 0) {
+          bootstrapItem = buffer.getByOffset(itemsLength - 1);
+        }
+
+        if (typeof bootstrapItem?.index === 'number') {
+          output.cursor = bootstrapItem.index;
+          output.catchingUp = false;
+          output.sourceBaseTime = typeof bootstrapItem.time === 'number' ? bootstrapItem.time : undefined;
+          output.wallclockBaseTime = dateNow;
+        }
+
+        if (typeof output.cursor !== 'number') {
+          output.cursor = startIndex;
+          output.catchingUp = false;
+          output.sourceBaseTime = undefined;
+          output.wallclockBaseTime = undefined;
+        }
+      }
+
+      if (isLive !== true) {
+        output.cursor = startIndex;
+        output.catchingUp = false;
+        output.sourceBaseTime = undefined;
+        output.wallclockBaseTime = undefined;
+      }
     }
 
-    // Clamp cursor so it can never point before the currently retained window
+    // Clamp cursor so it can never point before the currently retained window.
     if (typeof output.cursor !== 'number' || output.cursor < startIndex) {
       output.cursor = startIndex;
     }
@@ -2068,6 +2233,69 @@ export default class Streamer {
     outputWallclockBaseTime = output.wallclockBaseTime;
     outputLastVideoWriteTime = typeof output.lastVideoWriteTime === 'number' ? output.lastVideoWriteTime : 0;
     offset = outputCursor - startIndex;
+
+    // For live playout, do not let an output drift too far behind the delayed live edge.
+    // Only search for the newest retained video item when we actually need to evaluate
+    // whether a live output has fallen too far behind.
+    if (isLive === true && maxLagBehindLiveMs > 0 && offset >= 0 && offset < itemsLength) {
+      item = buffer.getByOffset(offset);
+
+      if (typeof item?.time === 'number' && typeof latestItemTime === 'number') {
+        liveLagMs = latestItemTime - item.time;
+
+        if (liveLagMs > maxLagBehindLiveMs) {
+          searchOffset = itemsLength - 1;
+
+          while (searchOffset >= 0) {
+            latestVideoItem = buffer.getByOffset(searchOffset);
+
+            if (
+              latestVideoItem?.type === Streamer.MEDIA_TYPE.VIDEO &&
+              typeof latestVideoItem?.time === 'number' &&
+              typeof latestVideoItem?.index === 'number'
+            ) {
+              latestVideoOffset = searchOffset;
+              break;
+            }
+
+            searchOffset--;
+          }
+
+          if (latestVideoOffset >= 0) {
+            targetLiveTime = latestVideoItem.time - playoutDelayMs;
+            resyncOffset = latestVideoOffset;
+            searchOffset = latestVideoOffset;
+
+            while (searchOffset >= 0) {
+              item = buffer.getByOffset(searchOffset);
+
+              if (
+                item?.type === Streamer.MEDIA_TYPE.VIDEO &&
+                typeof item?.time === 'number' &&
+                typeof item?.index === 'number' &&
+                item.time <= targetLiveTime
+              ) {
+                resyncOffset = searchOffset;
+                break;
+              }
+
+              searchOffset--;
+            }
+
+            resyncItem = buffer.getByOffset(resyncOffset);
+
+            if (typeof resyncItem?.index === 'number') {
+              outputCursor = resyncItem.index;
+              outputSourceBaseTime = typeof resyncItem.time === 'number' ? resyncItem.time : undefined;
+              outputWallclockBaseTime = dateNow;
+              outputCatchingUp = false;
+              catchupExitedThisTick = true;
+              offset = outputCursor - startIndex;
+            }
+          }
+        }
+      }
+    }
 
     while (offset < itemsLength && processed < MAX_BUFFERED_ITEMS_PER_OUTPUT_PER_TICK) {
       if (budgetDeadline !== 0 && (processed & 0x03) === 0 && Date.now() >= budgetDeadline) {
@@ -2102,9 +2330,9 @@ export default class Streamer {
 
       if (item.type === Streamer.MEDIA_TYPE.VIDEO) {
         if (item.codec === Streamer.CODEC_TYPE.H264) {
-          // Keep recording startup strict, but allow live H264 to begin outputting
-          // immediately for troubleshooting older Nest camera startup behaviour.
-          if (outputSeenKeyFrame !== true && item.keyFrame !== true && isLive !== true) {
+          // Some outputs may require startup to remain decoder-safe until a keyframe
+          // has been seen. Others may allow immediate startup even before the first keyframe.
+          if (outputSeenKeyFrame !== true && item.keyFrame !== true && allowStartWithoutKeyframe !== true) {
             this.#statsDrop(output, Streamer.MEDIA_TYPE.VIDEO);
             outputCursor = nextCursor;
             offset = outputCursor - startIndex;
@@ -2164,9 +2392,8 @@ export default class Streamer {
           continue;
         }
 
-        // Keep recording startup strict, but allow live audio to flow immediately
-        // for troubleshooting startup timing on older Nest cameras.
-        if (isH264Output === true && outputSeenKeyFrame !== true && isLive !== true) {
+        // Keep audio aligned with the same startup policy as video for H264 outputs.
+        if (isH264Output === true && outputSeenKeyFrame !== true && allowStartWithoutKeyframe !== true) {
           this.#statsDrop(output, Streamer.MEDIA_TYPE.AUDIO);
           outputCursor = nextCursor;
           offset = outputCursor - startIndex;
@@ -2340,7 +2567,7 @@ export default class Streamer {
     }
 
     for (output of this.#outputs.values()) {
-      this.#processBufferedOutput(output, dateNow, output.type, budgetMs);
+      this.#processBufferedOutput(output, dateNow, budgetMs);
     }
   }
 

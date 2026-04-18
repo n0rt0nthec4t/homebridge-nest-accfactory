@@ -26,17 +26,13 @@
 // - Two-way audio (talkback) support via Speex
 //
 // Notes:
-// - Video is delivered as H264 NAL units and grouped into complete access units
+// - Video is delivered as H264 NAL units and assembled into complete access units
 //   before being injected into Streamer
-// - Audio is delivered as AAC frames
-// - Media is assembled into complete AAC frames and H264 access units
-// - Completed media is held briefly before being passed into Streamer
-//   to smooth bursty NexusTalk delivery
-// - Inbound packet framing uses length-prefixed messages over TLS
+// - Audio is delivered as AAC frames and passed directly into Streamer
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.04.14
+// Code version 2026.04.18
 // Mark Hulskamp
 'use strict';
 
@@ -64,11 +60,6 @@ const MAX_PENDING_MESSAGES = 256; // Hard cap for queued outbound control messag
 const INITIAL_PACKET_BUFFER_SIZE = 256 * 1024;
 const MAX_PACKET_BUFFER_SIZE = 10 * 1024 * 1024;
 const MAX_PACKET_PAYLOAD_SIZE = 5 * 1024 * 1024;
-const PLAYOUT_INTERVAL = 10; // Timer interval for draining completed media toward Streamer
-const PLAYOUT_BUFFER_CAPACITY = 256; // Initial slot count for completed NexusTalk media holdback buffer
-const PLAYOUT_BUFFER_MAX_ITEMS = 512; // Hard cap on queued completed media items before oldest items are dropped
-const PLAYOUT_DELAY = 120; // Hold completed media for this long to smooth bursty NexusTalk delivery
-const PLAYOUT_MAX_LATENCY = 750; // Hard cap to stop the holdback queue growing without bound
 
 const MEDIA_TYPE = {
   PING: 1,
@@ -173,12 +164,6 @@ export default class NexusTalk extends Streamer {
     sampleRate: 16000,
     channels: 1,
     lastPacketTime: undefined,
-  };
-
-  #playout = {
-    buffer: new RingBuffer(0, PLAYOUT_BUFFER_CAPACITY),
-    timer: undefined,
-    latestTimestamp: undefined,
   };
 
   // Codecs being used for video, audio and talking
@@ -316,8 +301,6 @@ export default class NexusTalk extends Streamer {
               return;
             }
 
-            this?.log?.debug?.('Connection closed to "%s"', options.host);
-
             clearInterval(this.#pingTimer);
             this.#stopStalledMonitor();
             this.#pingTimer = undefined;
@@ -340,14 +323,18 @@ export default class NexusTalk extends Streamer {
               this.#reconnectReason = undefined;
 
               this?.log?.debug?.(
-                'Connection closed, %s to "%s"',
+                'Connection closed to "%s", %s to "%s"',
+                options.host,
                 reconnectReason === 'redirect' ? 'redirecting' : 'attempting reconnection',
                 reconnectHost,
               );
-              this.requestSourceConnect({ host: reconnectHost }); // Attempt reconnect to new host
+
+              this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSED, 'socket-close');
+              this.requestSourceConnect({ host: reconnectHost });
               return;
             }
 
+            this?.log?.debug?.('Connection closed to "%s"', options.host);
             this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSED, 'socket-close');
           });
         });
@@ -359,9 +346,12 @@ export default class NexusTalk extends Streamer {
   }
 
   async close(stopStreamFirst = true) {
-    // Mark source as closing immediately so any in-flight playback callbacks
-    // stop accepting new packets while teardown is happening.
-    this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSING);
+    // Mark source as closing only for a normal/manual shutdown path.
+    // During reconnect/redirect we already emitted SOURCE_RECONNECTING,
+    // so SOURCE_CLOSING just adds noise to the state flow.
+    if (this.#reconnectPending !== true) {
+      this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSING);
+    }
 
     // Close an authenticated socket stream gracefully
     // Clear any running timers before closing socket to prevent race conditions
@@ -387,7 +377,6 @@ export default class NexusTalk extends Streamer {
     // This prevents the last access unit from being lost when the stream closes
     // without another video timestamp arriving to trigger a normal flush.
     this.#flushPendingVideo(this.#channels.video);
-    this.#processPlayoutBuffer('flush');
 
     // Reset current playback channel timing/state on close since we'll need to renegotiate this on the next stream
     this.#resetChannelDetails();
@@ -415,10 +404,6 @@ export default class NexusTalk extends Streamer {
         );
       }
       this.token = deviceData.apiAccess.token;
-
-      if (this.#socket !== undefined) {
-        this.#Authenticate(true); // Update authorisation only if connected
-      }
     }
 
     if (deviceData?.nexustalk_host !== undefined && this.nexustalk_host !== deviceData.nexustalk_host) {
@@ -611,14 +596,20 @@ export default class NexusTalk extends Streamer {
   }
 
   #sendMessage(type, data) {
-    let requiresAuthorisation = type !== MEDIA_TYPE.HELLO;
-
     if (Buffer.isBuffer(data) !== true) {
       return;
     }
 
-    if (this.#canWrite() !== true || (requiresAuthorisation === true && this.#authorised === false)) {
-      // Not connected/authorised yet, so queue for later flush.
+    // Bootstrap/auth messages must be allowed before authorisation exists
+    if (type === MEDIA_TYPE.HELLO || type === MEDIA_TYPE.AUTHORIZE_REQUEST) {
+      if (this.#canWrite() === true) {
+        this.#sendNow(type, data);
+      }
+      return;
+    }
+
+    // Normal messages require an authorised writable socket
+    if (this.#canWrite(true) !== true) {
       this.#queueMessage(type, data);
       return;
     }
@@ -631,23 +622,25 @@ export default class NexusTalk extends Streamer {
 
     let authoriseRequest = null;
     let AuthoriseRequest = this.#protobufTypes.AuthoriseRequest;
-    if (AuthoriseRequest !== undefined && AuthoriseRequest !== null) {
-      try {
-        authoriseRequest = AuthoriseRequest.encode(
-          AuthoriseRequest.fromObject(this.useGoogleAuth === true ? { oliveToken: this.token } : { sessionToken: this.token }),
-        ).finish();
-      } catch (error) {
-        this?.log?.debug?.('AuthoriseRequest encode failed for uuid "%s": %s', this.nest_google_device_uuid, String(error));
-        return;
-      }
+
+    if (AuthoriseRequest === undefined || AuthoriseRequest === null) {
+      return;
     }
 
-    if (authoriseRequest === null) {
+    try {
+      authoriseRequest = AuthoriseRequest.encode(
+        AuthoriseRequest.fromObject(this.useGoogleAuth === true ? { oliveToken: this.token } : { sessionToken: this.token }),
+      ).finish();
+    } catch (error) {
+      this?.log?.debug?.('AuthoriseRequest encode failed for uuid "%s": %s', this.nest_google_device_uuid, String(error));
       return;
     }
 
     if (reauthorise === true) {
-      // Request to re-authorise only
+      if (this.#canWrite() !== true) {
+        return;
+      }
+
       this?.log?.debug?.('Re-authentication requested to "%s"', this.#host);
       this.#sendMessage(MEDIA_TYPE.AUTHORIZE_REQUEST, authoriseRequest);
       return;
@@ -916,7 +909,7 @@ export default class NexusTalk extends Streamer {
         return;
       }
 
-      this.#queueMedia({
+      this.addMedia({
         type: Streamer.MEDIA_TYPE.AUDIO,
         codec: this.codecs.audio,
         profile: typeof audio?.profile === 'string' ? audio.profile : undefined,
@@ -945,7 +938,6 @@ export default class NexusTalk extends Streamer {
       // NexusTalk frames are emitted when the timestamp changes, so the final frame
       // would otherwise be lost if the stream ends without a newer timestamp arriving.
       this.#flushPendingVideo(this.#channels.video);
-      this.#processPlayoutBuffer('flush');
 
       if (this.#sessionId !== undefined && decodedMessage.reason === 'USER_ENDED_SESSION') {
         // Normal playback ended ie: when we stopped playback
@@ -977,7 +969,7 @@ export default class NexusTalk extends Streamer {
         return;
       }
 
-      if (decodedMessage.code === 3) {
+      if (decodedMessage.code === 'ERROR_AUTHORIZATION_FAILED') {
         // NexusStreamer Updating authentication
         this.#Authenticate(true); // Update authorisation only
       } else {
@@ -1425,10 +1417,7 @@ export default class NexusTalk extends Streamer {
       return;
     }
 
-    // Queue the completed NexusTalk access unit into our small pre-Streamer holdback
-    // buffer rather than passing it straight into Streamer. This helps smooth slow /
-    // bursty delivery paths before Streamer applies its own shared-buffer pacing.
-    this.#queueMedia({
+    this.addMedia({
       type: Streamer.MEDIA_TYPE.VIDEO,
       codec: this.codecs.video,
       profile: typeof video?.profile === 'string' ? video.profile : undefined,
@@ -1477,148 +1466,5 @@ export default class NexusTalk extends Streamer {
     // Reset talkback state as well since this can also change on each stream
     this.#talkback.active = false;
     this.#talkback.lastPacketTime = undefined;
-
-    this.#processPlayoutBuffer('reset');
-  }
-
-  #queueMedia(media) {
-    let queue = this.#playout?.buffer;
-
-    // Queue already-completed media items here before passing them into Streamer.
-    // This gives NexusTalk a small holdback window to smooth bursty / late arrival
-    // from slower camera/backend paths without pushing transport jitter logic into Streamer.
-    if (
-      typeof media !== 'object' ||
-      media === null ||
-      typeof media.type !== 'string' ||
-      typeof media.timestamp !== 'number' ||
-      Buffer.isBuffer(media.data) !== true ||
-      media.data.length === 0
-    ) {
-      return;
-    }
-
-    if (queue instanceof RingBuffer !== true) {
-      this.#playout.buffer = new RingBuffer(0, PLAYOUT_BUFFER_CAPACITY);
-      queue = this.#playout.buffer;
-    }
-
-    if (typeof this.#playout.latestTimestamp !== 'number' || media.timestamp > this.#playout.latestTimestamp) {
-      this.#playout.latestTimestamp = media.timestamp;
-    }
-
-    queue.push(media);
-
-    while (queue.size > PLAYOUT_BUFFER_MAX_ITEMS) {
-      queue.shift(1);
-      this?.log?.warn?.('Dropped oldest queued NexusTalk media for uuid "%s" as playout queue is full', this.nest_google_device_uuid);
-    }
-
-    this.#processPlayoutBuffer('trim');
-    this.#processPlayoutBuffer('start');
-  }
-
-  #processPlayoutBuffer(action = 'drain') {
-    let queue = this.#playout?.buffer;
-    let item = undefined;
-    let oldest = undefined;
-    let cutoffTimestamp = 0;
-    let releaseBefore = undefined;
-
-    if (queue instanceof RingBuffer !== true) {
-      this.#playout.buffer = new RingBuffer(0, PLAYOUT_BUFFER_CAPACITY);
-      queue = this.#playout.buffer;
-    }
-
-    if (action === 'start') {
-      if (this.#playout.timer !== undefined) {
-        return;
-      }
-
-      // Drain completed NexusTalk media toward Streamer on a short interval.
-      // This is only a small timestamp holdback for burst smoothing, not a full
-      // transport reorder/jitter implementation like WebRTC needs.
-      this.#playout.timer = setInterval(() => {
-        this.#processPlayoutBuffer();
-      }, PLAYOUT_INTERVAL);
-
-      return;
-    }
-
-    if (action === 'reset') {
-      clearInterval(this.#playout.timer);
-      this.#playout.timer = undefined;
-      queue.clear(0);
-      this.#playout.latestTimestamp = undefined;
-      return;
-    }
-
-    if (action === 'flush') {
-      clearInterval(this.#playout.timer);
-      this.#playout.timer = undefined;
-
-      while (queue.size > 0) {
-        item = queue.getByOffset(0);
-
-        if (typeof item === 'object' && item !== null) {
-          this.addMedia(item);
-        }
-
-        queue.shift(1);
-      }
-
-      this.#playout.latestTimestamp = undefined;
-      return;
-    }
-
-    if (action === 'trim') {
-      if (typeof this.#playout.latestTimestamp !== 'number') {
-        return;
-      }
-
-      cutoffTimestamp = this.#playout.latestTimestamp - PLAYOUT_MAX_LATENCY;
-
-      while (queue.size > 0) {
-        oldest = queue.getByOffset(0);
-
-        if (typeof oldest?.timestamp !== 'number' || oldest.timestamp >= cutoffTimestamp) {
-          break;
-        }
-
-        queue.shift(1);
-
-        this?.log?.debug?.(
-          'Dropped stale queued NexusTalk %s item for uuid "%s" (%sms behind queue head)',
-          oldest?.type,
-          this.nest_google_device_uuid,
-          Math.round(this.#playout.latestTimestamp - oldest.timestamp),
-        );
-      }
-
-      return;
-    }
-
-    // Default action: drain items old enough to release toward Streamer.
-    if (queue.size === 0 || typeof this.#playout.latestTimestamp !== 'number') {
-      return;
-    }
-
-    releaseBefore = this.#playout.latestTimestamp - PLAYOUT_DELAY;
-
-    while (queue.size > 0) {
-      item = queue.getByOffset(0);
-
-      if (typeof item?.timestamp !== 'number') {
-        queue.shift(1);
-        continue;
-      }
-
-      if (item.timestamp > releaseBefore) {
-        break;
-      }
-
-      this.addMedia(item);
-      queue.shift(1);
-    }
   }
 }

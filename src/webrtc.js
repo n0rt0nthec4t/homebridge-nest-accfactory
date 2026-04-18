@@ -31,7 +31,7 @@
 // - ICE "connected" indicates transport readiness, not media availability
 // - Startup delays may occur due to upstream (Google) keyframe delivery behaviour
 //
-// Code version 2026.04.14
+// Code version 2026.04.18
 // Mark Hulskamp
 'use strict';
 
@@ -66,17 +66,17 @@ const RTP_H264_VIDEO_RTX_PAYLOAD_TYPE = 99; // H.264 RTX payload type for retran
 const RTP_OPUS_AUDIO_PAYLOAD_TYPE = 111; // Opus audio payload type
 const GOOGLE_HOME_FOYER_PREFIX = 'google.internal.home.foyer.v1.';
 const TIMESTAMP_MAX_VIDEO_DELTA = 2300; // Track observed ~2.2s IDR assembly windows without forcing aggressive timestamp compression
-const TIMESTAMP_MAX_KEYFRAME_DELTA = 450; // Cap keyframe playout step more aggressively
-const TIMESTAMP_VIDEO_MAX_BEHIND = 500; // Keep emitted timestamps from lagging too far behind wall clock
-const TIMESTAMP_VIDEO_MAX_AHEAD = 450; // Allow variable-FPS bursts without compressing frame emission too aggressively
-const TIMESTAMP_MAX_AUDIO_DELTA = 120;
-const TIMESTAMP_AUDIO_RESYNC_BEHIND = 180; // Only hard-resync audio when callback delay has grown materially large
+const TIMESTAMP_MAX_KEYFRAME_DELTA = 600; // Cap keyframe playout step more aggressively
+const TIMESTAMP_VIDEO_MAX_BEHIND = 700; // Keep emitted timestamps from lagging too far behind wall clock
+const TIMESTAMP_VIDEO_MAX_AHEAD = 700; // Allow variable-FPS bursts without compressing frame emission too aggressively
+const TIMESTAMP_MAX_AUDIO_DELTA = 160;
+const TIMESTAMP_AUDIO_RESYNC_BEHIND = 240; // Only hard-resync audio when callback delay has grown materially large
 const KEYFRAME_MAX_ASSEMBLY_MS = 2500; // Drop pathological keyframes assembled too slowly
-const KEYFRAME_MAX_BYTES = 120000; // Drop oversized keyframes that cause visible playback shock
+const KEYFRAME_MAX_BYTES = 140000; // Drop oversized keyframes that cause visible playback shock
 const HEALTH_BAD_WINDOW_MS = 3000; // Rolling window for stream-health bad events
 const HEALTH_UNSTABLE_BAD_THRESHOLD = 4; // Enter UNSTABLE when recent bad event score reaches this
 const HEALTH_RECOVERING_CLEAN_TARGET = 6; // Exit RECOVERING after this weighted clean score
-const DELTA_FU_SWITCH_GRACE_MS = 70; // Tiny grace before abandoning a young non-keyframe FU-A on timestamp switch
+const DELTA_FU_SWITCH_GRACE_MS = 180; // Tiny grace before abandoning a young non-keyframe FU-A on timestamp switch
 const STALLED_TIMEOUT = 10000; // Time with no playback packets before we consider stream stalled and attempt restart
 const PCM_S16LE_48000_STEREO_BLANK = Buffer.alloc(960 * 2 * 2); // Default blank audio frame (20ms) in PCM S16LE, stereo @ 48kHz
 
@@ -1329,7 +1329,7 @@ export default class WebRTC extends Streamer {
         fuAgeMs,
       );
 
-      if (h264.fuNalType === Streamer.H264NALUS.TYPES.IDR || (Number.isFinite(fuAgeMs) === true && fuAgeMs >= 300)) {
+      if (h264.fuNalType === Streamer.H264NALUS.TYPES.IDR || (Number.isFinite(fuAgeMs) === true && fuAgeMs >= 600)) {
         this.#sendVideoPLI('fu-incomplete');
         this.#recordVideoHealthEvent('fu-incomplete');
       }

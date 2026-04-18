@@ -35,7 +35,7 @@
 // - Maintains connection state, protobuf definitions, raw data cache, snapshot waiters, and tracked devices
 // - Creates and updates HomeKitDevice-based instances for supported device types
 //
-// Code version 2026.04.15
+// Code version 2026.04.18
 // Mark Hulskamp
 'use strict';
 
@@ -279,6 +279,27 @@ export default class NestAccfactory {
         grpcTransport: createGrpcTransport(),
         snapshotWaiters: new Map(), // Keyed by resource Id for protobuf snapshot waiters
       });
+
+
+      // Notify any camera related devices (camera/doorbell/floodlight) of updated auth details
+      for (let [, trackedDevice] of this.#trackedDevices) {
+        if (typeof trackedDevice !== 'object' || trackedDevice === null) {
+          continue;
+        }
+
+        if (
+          trackedDevice.type !== DEVICE_TYPE.CAMERA &&
+          trackedDevice.type !== DEVICE_TYPE.DOORBELL &&
+          trackedDevice.type !== DEVICE_TYPE.FLOODLIGHT
+        ) {
+          continue;
+        }
+
+        // Message device with updated cameraAPI details
+        HomeKitDevice.message(trackedDevice.uuid, HomeKitDevice.UPDATE, {
+          apiAccess: this.#connections[uuid].cameraAPI,
+        });
+      }
 
       // Schedule token refresh before expiry
       clearTimeout(this.#connections[uuid].timer);
@@ -671,7 +692,10 @@ export default class NestAccfactory {
                     let trackedDevice = this.#trackedDevices.get(serialNumber);
 
                     if (trackedDevice !== undefined) {
+                      // Send removed notice onto HomeKit device for it to process
                       HomeKitDevice.message(trackedDevice.uuid, HomeKitDevice.REMOVE, {});
+
+                      // Finally, remove from tracked devices
                       this.#trackedDevices.delete(serialNumber);
                     }
                   }
@@ -1072,6 +1096,7 @@ export default class NestAccfactory {
               this.#trackedDevices.set(serialNumber, {
                 uuid: HomeKitDevice.generateUUID(HomeKitDevice.PLUGIN_NAME, this.api, serialNumber),
                 nest_google_device_uuid: deviceData.nest_google_device_uuid,
+                type: deviceModule.class.TYPE,  // Store type of device
                 source: undefined, // gets filled out later
                 timers: undefined,
                 exclude: true,
@@ -1126,6 +1151,7 @@ export default class NestAccfactory {
                 this.#trackedDevices.set(serialNumber, {
                   uuid: tempDevice.uuid,
                   nest_google_device_uuid: deviceData.nest_google_device_uuid,
+                  type: deviceModule.class.TYPE,  // Store type of device
                   source: undefined, // gets filled out later
                   timers: {},
                   exclude: false,
@@ -1175,7 +1201,7 @@ export default class NestAccfactory {
               }
 
               // For any camera type devices, inject camera API call access credentials for that device
-              // from its associated connection here
+              // from its associated connection
               if (
                 deviceModule.class.TYPE === DEVICE_TYPE.CAMERA ||
                 deviceModule.class.TYPE === DEVICE_TYPE.DOORBELL ||

@@ -86,7 +86,7 @@ const PREBUFFER_LENGTH = 4000;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = 'Camera';
-  static VERSION = '2026.04.16'; // Code version
+  static VERSION = '2026.04.18'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -200,6 +200,10 @@ export default class NestCamera extends HomeKitDevice {
               });
               this?.log?.info?.('Recording status LED on "%s" was turned %s', this.deviceData.description, value === true ? 'on' : 'off');
             }
+            this.controller.recordingManagement.operatingModeService.updateCharacteristic(
+              this.hap.Characteristic.CameraOperatingModeIndicator,
+              value,
+            );
           },
           onGet: () => {
             return this.deviceData.statusled_brightness !== 1;
@@ -220,6 +224,7 @@ export default class NestCamera extends HomeKitDevice {
 
             this?.log?.info?.('Night vision on "%s" was turned %s', this.deviceData.description, value === true ? 'on' : 'off');
           }
+          this.controller.recordingManagement.operatingModeService.updateCharacteristic(this.hap.Characteristic.NightVision, value);
         },
         onGet: () => {
           return this.deviceData.irled_enabled;
@@ -245,6 +250,7 @@ export default class NestCamera extends HomeKitDevice {
               value === this.hap.Characteristic.HomeKitCameraActive.ON ? 'on' : 'off',
             );
           }
+          this.controller.recordingManagement.operatingModeService.updateCharacteristic(this.hap.Characteristic.HomeKitCameraActive, value);
         },
       });
     }
@@ -277,6 +283,10 @@ export default class NestCamera extends HomeKitDevice {
                 value === this.hap.Characteristic.RecordingAudioActive.ENABLE ? 'on' : 'off',
               );
             }
+            this.controller.recordingManagement.operatingModeService.updateCharacteristic(
+              this.hap.Characteristic.RecordingAudioActive,
+              value,
+            );
           },
           onGet: () => {
             return this.deviceData.audio_enabled === true
