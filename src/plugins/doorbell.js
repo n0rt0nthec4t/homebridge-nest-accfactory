@@ -42,11 +42,11 @@
 import NestCamera, { processRawData as processCameraRawData } from './camera.js';
 
 // Define constants
-import { TIMERS } from '../consts.js';
+import { DEVICE_TYPE, TIMERS } from '../consts.js';
 
 export default class NestDoorbell extends NestCamera {
-  static TYPE = 'Doorbell';
-  static VERSION = '2026.04.16'; // Code version
+  static TYPE = DEVICE_TYPE.DOORBELL;
+  static VERSION = '2026.04.21'; // Code version
 
   switchService = undefined; // HomeKit switch for enabling/disabling chime
 

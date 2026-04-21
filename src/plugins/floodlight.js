@@ -40,10 +40,11 @@
 // Define external module requirements
 import NestCamera, { processRawData as processCameraRawData } from './camera.js';
 import { scaleValue } from '../utils.js';
+import { DEVICE_TYPE } from '../consts.js';
 
 export default class NestFloodlight extends NestCamera {
-  static TYPE = 'FloodlightCamera';
-  static VERSION = '2026.04.15'; // Code version
+  static TYPE = DEVICE_TYPE.FLOODLIGHT;
+  static VERSION = '2026.04.21'; // Code version
 
   lightService = undefined; // HomeKit light
 

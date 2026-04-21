@@ -49,8 +49,8 @@ import { buildMappedObject, createMappingContext } from '../translator.js';
 import { DATA_SOURCE, DEVICE_TYPE, MAX_ELEVATION, MIN_ELEVATION, NESTLABS_MAC_PREFIX, TIMERS } from '../consts.js';
 
 export default class NestWeather extends HomeKitDevice {
-  static TYPE = 'Weather';
-  static VERSION = '2026.04.15'; // Code version
+  static TYPE = DEVICE_TYPE.WEATHER;
+  static VERSION = '2026.04.21'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -240,12 +240,14 @@ const WEATHER_FIELD_MAP = {
       fields: ['structure_info'],
       translate: ({ raw }) =>
         typeof raw?.value?.structure_info?.rtsStructureId === 'string' && raw.value.structure_info.rtsStructureId.trim() !== ''
-          ? NESTLABS_MAC_PREFIX + crc24(raw.value.structure_info.rtsStructureId.trim().toUpperCase()).toUpperCase()
+          ? NESTLABS_MAC_PREFIX +
+            crc24(DEVICE_TYPE.WEATHER.toUpperCase() + ':' + raw.value.structure_info.rtsStructureId.trim().toUpperCase()).toUpperCase()
           : undefined,
     },
     nest: {
       fields: [],
-      translate: ({ objectKey }) => NESTLABS_MAC_PREFIX + crc24(objectKey.toUpperCase()).toUpperCase(),
+      translate: ({ objectKey }) =>
+        NESTLABS_MAC_PREFIX + crc24(DEVICE_TYPE.WEATHER.toUpperCase() + ':' + objectKey.toUpperCase()).toUpperCase(),
     },
   },
 

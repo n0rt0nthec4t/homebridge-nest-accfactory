@@ -2,7 +2,7 @@
 // Part of homebridge-nest-accfactory
 //
 // HomeKit accessory implementation for Nest Thermostat devices.
-// Provides thermostat control, occupancy detection, fan control,
+// Provides thermostat control, fan control,
 // optional humidity services, and Eve Home integration using
 // translated Nest and Google API data.
 //
@@ -17,7 +17,6 @@
 // Services:
 // - Thermostat (primary service)
 // - Fanv2 (optional, when fan support is available)
-// - OccupancySensor
 // - Battery (hidden, for battery-powered models)
 // - HumiditySensor (optional, when separately exposed)
 // - HumidifierDehumidifier (optional, when supported)
@@ -28,7 +27,6 @@
 // - Target temperature and threshold control with 0.5° increments
 // - Fan control with optional variable speed and duration-based runtime
 // - Humidifier and dehumidifier support when available
-// - Occupancy and away/home state reporting
 // - Battery monitoring and filter replacement reporting
 // - Linked remote temperature sensor support
 // - Eve Home history and schedule payload integration
@@ -73,12 +71,11 @@ import {
 } from '../consts.js';
 
 export default class NestThermostat extends HomeKitDevice {
-  static TYPE = 'Thermostat';
-  static VERSION = '2026.04.16'; // Code version
+  static TYPE = DEVICE_TYPE.THERMOSTAT;
+  static VERSION = '2026.04.21'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
-  occupancyService = undefined;
   humidityService = undefined;
   fanService = undefined; // Fan control
   humidifierDehumidifierService = undefined; // humidifier & dehumidifier control
@@ -86,6 +83,15 @@ export default class NestThermostat extends HomeKitDevice {
 
   // Class functions
   async onAdd() {
+    // Pre-0.4.0 cleanup
+    // Remove legacy occupancy sensor from Thermostat accessory
+    this.accessory.services
+      .filter((service) => service.UUID === this.hap.Service.OccupancySensor.UUID)
+      .forEach((service) => {
+        this.accessory.removeService(service);
+      });
+    // End of pre-0.4.0 cleanup
+
     // Setup the thermostat service if not already present on the accessory, and link it to the Eve app if configured to do so
     this.thermostatService = this.addHKService(this.hap.Service.Thermostat, '', 1, { messages: this.message.bind(this) });
     this.thermostatService.setPrimaryService();
@@ -236,10 +242,6 @@ export default class NestThermostat extends HomeKitDevice {
       this.thermostatService.removeCharacteristic(this.hap.Characteristic.FilterChangeIndication);
     }
 
-    // Setup occupancy service if not already present on the accessory
-    this.occupancyService = this.addHKService(this.hap.Service.OccupancySensor, '', 1);
-    this.thermostatService.addLinkedService(this.occupancyService);
-
     // Setup battery service if not already present on the accessory
     this.batteryService = this.addHKService(this.hap.Service.Battery, '', 1);
     this.batteryService.setHiddenService(true);
@@ -316,13 +318,11 @@ export default class NestThermostat extends HomeKitDevice {
   onRemove() {
     this.accessory.removeService(this.thermostatService);
     this.accessory.removeService(this.batteryService);
-    this.accessory.removeService(this.occupancyService);
     this.accessory.removeService(this.humidityService);
     this.accessory.removeService(this.fanService);
     this.accessory.removeService(this.humidifierDehumidifierService);
     this.thermostatService = undefined;
     this.batteryService = undefined;
-    this.occupancyService = undefined;
     this.humidityService = undefined;
     this.fanService = undefined;
     this.humidifierDehumidifierService = undefined;
@@ -334,8 +334,7 @@ export default class NestThermostat extends HomeKitDevice {
       typeof deviceData !== 'object' ||
       deviceData?.constructor !== Object ||
       this.thermostatService === undefined ||
-      this.batteryService === undefined ||
-      this.occupancyService === undefined
+      this.batteryService === undefined
     ) {
       return;
     }
@@ -404,14 +403,6 @@ export default class NestThermostat extends HomeKitDevice {
           : this.hap.Characteristic.ChargingState.NOT_CHARGING,
       );
     }
-
-    // Update for away/home status. Away = no occupancy detected, Home = Occupancy Detected
-    this.occupancyService.updateCharacteristic(
-      this.hap.Characteristic.OccupancyDetected,
-      deviceData.occupancy === true
-        ? this.hap.Characteristic.OccupancyDetected.OCCUPANCY_DETECTED
-        : this.hap.Characteristic.OccupancyDetected.OCCUPANCY_NOT_DETECTED,
-    );
 
     // Update separate humidity sensor if configured to do so
     if (this.humidityService !== undefined && deviceData.current_humidity !== undefined) {
@@ -1858,18 +1849,6 @@ const THERMOSTAT_FIELD_MAP = {
       fields: ['serial_number'],
       related: ['away'],
       translate: ({ rawData, raw }) => rawData?.[rawData?.['link.' + raw?.value?.serial_number]?.value?.structure]?.value?.away === true,
-    },
-  },
-
-  occupancy: {
-    google: {
-      fields: ['structure_mode'],
-      translate: ({ raw }) => raw?.value?.structure_mode?.structureMode === 'STRUCTURE_MODE_HOME',
-    },
-    nest: {
-      fields: ['serial_number'],
-      related: ['away'],
-      translate: ({ rawData, raw }) => rawData?.[rawData?.['link.' + raw?.value?.serial_number]?.value?.structure]?.value?.away === false,
     },
   },
 

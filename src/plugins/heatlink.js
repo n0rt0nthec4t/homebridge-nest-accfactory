@@ -55,8 +55,8 @@ import {
 } from '../consts.js';
 
 export default class NestHeatlink extends HomeKitDevice {
-  static TYPE = 'Heatlink';
-  static VERSION = '2026.04.16'; // Code version
+  static TYPE = DEVICE_TYPE.HEATLINK;
+  static VERSION = '2026.04.21'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control

@@ -85,8 +85,8 @@ const STREAMERS = {
 const PREBUFFER_LENGTH = 4000;
 
 export default class NestCamera extends HomeKitDevice {
-  static TYPE = 'Camera';
-  static VERSION = '2026.04.18'; // Code version
+  static TYPE = DEVICE_TYPE.CAMERA;
+  static VERSION = '2026.04.21'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -283,7 +283,7 @@ export default class NestCamera extends HomeKitDevice {
                 value === this.hap.Characteristic.RecordingAudioActive.ENABLE ? 'on' : 'off',
               );
             }
-            this.controller.recordingManagement.operatingModeService.updateCharacteristic(
+            this.controller.recordingManagement.recordingManagementService.updateCharacteristic(
               this.hap.Characteristic.RecordingAudioActive,
               value,
             );
@@ -460,8 +460,6 @@ export default class NestCamera extends HomeKitDevice {
 
     // Handle online status changes for motion sensor
     if (this.motionService !== undefined) {
-      this.motionService.updateCharacteristic(this.hap.Characteristic.StatusActive, deviceData.online === true);
-
       if (deviceData.online === false && this.motionService.getCharacteristic(this.hap.Characteristic.MotionDetected).value === true) {
         this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
         this.#motionCooldownActive = false;

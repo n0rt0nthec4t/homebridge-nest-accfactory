@@ -31,7 +31,7 @@
 // - ICE "connected" indicates transport readiness, not media availability
 // - Startup delays may occur due to upstream (Google) keyframe delivery behaviour
 //
-// Code version 2026.04.18
+// Code version 2026.04.20
 // Mark Hulskamp
 'use strict';
 
@@ -98,7 +98,6 @@ export default class WebRTC extends Streamer {
   #stalledTimer = undefined; // Interval object for no received data checks
   #lastPacketAt = undefined; // Last playback packet receipt time in ms
   #closeInProgress = false; // True while close() teardown is running to avoid re-entrant shutdown races
-  #connectToken = 0; // Monotonic token to invalidate stale async connect/close paths
   #reconnectPending = false; // Reconnect requested once socket closes
   #reconnectReason = undefined; // Reason for reconnect
   #tracks = { audio: {}, video: {}, talkback: {} }; // Track state for audio and video
@@ -194,11 +193,21 @@ export default class WebRTC extends Streamer {
   // Class functions
   // eslint-disable-next-line no-unused-vars
   async connect(options = {}) {
-    let connectToken = ++this.#connectToken;
-
-    if (connectToken !== this.#connectToken) {
+    if (
+      this.sourceState === Streamer.MESSAGE_TYPE.SOURCE_CONNECTING ||
+      this.sourceState === Streamer.MESSAGE_TYPE.SOURCE_CLOSING ||
+      (this.#peerConnection !== undefined && this.sourceState !== Streamer.MESSAGE_TYPE.SOURCE_CLOSED)
+    ) {
       return;
     }
+
+    if (this.online !== true || this.videoEnabled !== true) {
+      return;
+    }
+
+    // Tell the Streamer base that we are beginning source setup.
+    // This is transport/control readiness only and does not mean media is flowing yet.
+    this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CONNECTING);
 
     // Reset any previous session timers/state before attempting a new connection.
     // This ensures a reconnect starts from a clean baseline rather than reusing
@@ -213,36 +222,19 @@ export default class WebRTC extends Streamer {
     this.#reconnectReason = undefined;
     this.#tracks = { audio: {}, video: {}, talkback: {} };
 
-    if (this.online !== true || this.videoEnabled !== true) {
-      return;
-    }
-
-    if (connectToken !== this.#connectToken) {
-      return;
-    }
-
     if (typeof this.#googleHomeDeviceUUID !== 'string' && this.#googleHomeDeviceUUIDPromise instanceof Promise) {
       await this.#googleHomeDeviceUUIDPromise;
+    }
 
-      if (connectToken !== this.#connectToken) {
-        return;
-      }
+    if (this.sourceState !== Streamer.MESSAGE_TYPE.SOURCE_CONNECTING || this.#peerConnection !== undefined) {
+      return;
     }
 
     if (typeof this.#googleHomeDeviceUUID !== 'string' || this.#googleHomeDeviceUUID === '') {
-      this.log.debug('Google Home device UUID not resolved for uuid "%s"', this.nest_google_device_uuid);
+      this?.log?.debug?.('Google Home device UUID not resolved for uuid "%s"', this.nest_google_device_uuid);
       this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSED, 'google-device-id-missing');
       return;
     }
-
-    if (this.#googleHomeDeviceUUID === undefined) {
-      this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSED, 'google-device-id-missing');
-      return;
-    }
-
-    // Tell the Streamer base that we are beginning source setup.
-    // This is transport/control readiness only and does not mean media is flowing yet.
-    this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CONNECTING);
 
     let homeFoyerResponse = await this.#grpcTransport.command(GOOGLE_HOME_FOYER_PREFIX, 'CameraService', 'SendCameraViewIntent', {
       request: {
@@ -253,7 +245,7 @@ export default class WebRTC extends Streamer {
       },
     });
 
-    if (connectToken !== this.#connectToken) {
+    if (this.sourceState !== Streamer.MESSAGE_TYPE.SOURCE_CONNECTING || this.#peerConnection !== undefined) {
       return;
     }
 
@@ -328,7 +320,7 @@ export default class WebRTC extends Streamer {
       sdp: webRTCOffer.sdp,
     });
 
-    if (connectToken !== this.#connectToken) {
+    if (this.#peerConnection !== peerConnection) {
       try {
         await peerConnection?.close?.();
       } catch {
@@ -350,6 +342,7 @@ export default class WebRTC extends Streamer {
         this.nest_google_device_uuid,
         homeFoyerResponse,
       );
+
       this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSED, 'offer-rejected');
       return;
     }
@@ -441,7 +434,8 @@ export default class WebRTC extends Streamer {
       if (
         (state === 'failed' || state === 'disconnected' || (state === 'closed' && this.hasActiveStreams() === true)) &&
         this.sourceState !== Streamer.MESSAGE_TYPE.SOURCE_CLOSING &&
-        this.sourceState !== Streamer.MESSAGE_TYPE.SOURCE_CLOSED
+        this.sourceState !== Streamer.MESSAGE_TYPE.SOURCE_CLOSED &&
+        this.sourceState !== Streamer.MESSAGE_TYPE.SOURCE_RECONNECTING
       ) {
         this?.log?.debug?.('WebRTC ICE state "%s" for uuid "%s", requesting reconnect', state, this.nest_google_device_uuid);
         this.#requestReconnect('ice-' + state);
@@ -479,119 +473,24 @@ export default class WebRTC extends Streamer {
   }
 
   async close() {
-    let closeToken = this.#connectToken;
-    let closingPeerConnection = this.#peerConnection;
-    let closingStreamId = this.#streamId;
-    let reconnectReason = this.#reconnectReason;
-    let talkbackActive = this.#tracks?.talkback?.active === true;
-
-    // Mark source as closing immediately so any in-flight playback callbacks
-    // stop accepting new packets while teardown is happening.
-    this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSING);
-
-    // Stop timers first so we stop producing any new work immediately.
-    clearInterval(this.#extendTimer);
-    clearInterval(this.#stalledTimer);
-    this.#extendTimer = undefined;
-    this.#stalledTimer = undefined;
-    this.#lastPacketAt = undefined;
-
-    // Flush any pending video access unit before tearing state down.
-    // Video is emitted frame-by-frame, so the last completed frame would otherwise
-    // be lost if close occurs before another packet triggers a normal flush.
-    this.#flushPendingVideoFrame();
-
-    // Clear transceiver/local track state before closing remote transport.
-    // This lets any in-flight callbacks naturally no-op while shutdown continues.
-    this.#videoTransceiver = undefined;
-    this.#audioTransceiver = undefined;
-    this.#tracks = { audio: {}, video: {}, talkback: {} };
-
-    if (closingStreamId !== undefined && talkbackActive === true) {
-      await this.#grpcTransport.command(GOOGLE_HOME_FOYER_PREFIX, 'CameraService', 'SendTalkback', {
-        googleDeviceId: {
-          value: this.#googleHomeDeviceUUID,
-        },
-        streamId: closingStreamId,
-        command: 'COMMAND_STOP',
-      });
-    }
-
-    if (closingStreamId !== undefined) {
-      this?.log?.debug?.('Notifying remote about closing connection for uuid "%s"', this.nest_google_device_uuid);
-
-      // Tell remote to end the stream session
-      await this.#grpcTransport.command(GOOGLE_HOME_FOYER_PREFIX, 'CameraService', 'JoinStream', {
-        command: 'end',
-        deviceId: this.nest_google_device_uuid,
-        streamId: closingStreamId,
-        endStreamReason: 'REASON_USER_EXITED_SESSION',
-      });
-    }
-
-    try {
-      await closingPeerConnection?.close?.();
-    } catch {
-      // Empty
-    }
-
-    // NOTE: Do NOT release the gRPC client here. It should be reused across WebRTC reconnects
-    // and only released during final shutdown in onShutdown(). Releasing it during
-    // temporary disconnects causes in-flight requests to be canceled with "pending stream has been canceled".
-    if (this.#streamId === closingStreamId) {
-      this.#streamId = undefined;
-    }
-
-    if (this.#peerConnection === closingPeerConnection) {
-      this.#peerConnection = undefined;
-    }
-
-    if (this.#reconnectPending === true) {
-      // We have a reconnect pending, so reset the flag and attempt to reconnect.
-      // We do this only after the current session has really closed to avoid racing
-      // a new stream setup against a half-torn-down old connection.
-      this.#reconnectPending = false;
-      this.#reconnectReason = undefined;
-
-      this?.log?.debug?.(
-        'Connection closed to WebRTC for uuid "%s", attempting reconnect%s',
-        this.nest_google_device_uuid,
-        typeof reconnectReason === 'string' && reconnectReason !== '' ? ' (' + reconnectReason + ')' : '',
-      );
-
-      if (this.hasActiveStreams() === true) {
-        this.requestSourceConnect().catch((error) => {
-          this?.log?.debug?.('Error reconnecting WebRTC for uuid "%s": %s', this.nest_google_device_uuid, String(error));
-        });
-        return;
-      }
-    }
-
-    if (
-      closeToken === this.#connectToken &&
-      this.hasActiveStreams() !== true &&
-      this.sourceState === Streamer.MESSAGE_TYPE.SOURCE_CLOSING
-    ) {
-      this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSED);
-    }
-  }
-
-  async close() {
     if (this.#closeInProgress === true) {
       return;
     }
 
     this.#closeInProgress = true;
-    let closeToken = this.#connectToken;
     let closingPeerConnection = this.#peerConnection;
     let closingStreamId = this.#streamId;
     let reconnectReason = this.#reconnectReason;
     let talkbackActive = this.#tracks?.talkback?.active === true;
 
     try {
-      // Mark source as closing immediately so any in-flight playback callbacks
-      // stop accepting new packets while teardown is happening.
-      this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSING);
+      // Mark source as closing for a normal teardown so any in-flight playback
+      // callbacks stop accepting new packets while shutdown is happening.
+      // During reconnect we keep SOURCE_RECONNECTING so the lifecycle state
+      // does not bounce backwards during transport teardown.
+      if (this.#reconnectPending !== true) {
+        this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSING);
+      }
 
       // Stop timers first so we stop producing any new work immediately.
       clearInterval(this.#extendTimer);
@@ -605,10 +504,8 @@ export default class WebRTC extends Streamer {
       // be lost if close occurs before another packet triggers a normal flush.
       this.#flushPendingVideoFrame();
 
-      // Clear transceiver/local track state before closing remote transport.
+      // Clear media/talkback track state before closing remote transport.
       // This lets any in-flight callbacks naturally no-op while shutdown continues.
-      this.#videoTransceiver = undefined;
-      this.#audioTransceiver = undefined;
       this.#tracks = { audio: {}, video: {}, talkback: {} };
 
       if (closingStreamId !== undefined && talkbackActive === true) {
@@ -648,6 +545,8 @@ export default class WebRTC extends Streamer {
 
       if (this.#peerConnection === closingPeerConnection) {
         this.#peerConnection = undefined;
+        this.#videoTransceiver = undefined;
+        this.#audioTransceiver = undefined;
       }
 
       if (this.#reconnectPending === true) {
@@ -671,11 +570,7 @@ export default class WebRTC extends Streamer {
         }
       }
 
-      if (
-        closeToken === this.#connectToken &&
-        this.hasActiveStreams() !== true &&
-        this.sourceState === Streamer.MESSAGE_TYPE.SOURCE_CLOSING
-      ) {
+      if (this.hasActiveStreams() !== true && this.#reconnectPending !== true) {
         this.setSourceState(Streamer.MESSAGE_TYPE.SOURCE_CLOSED);
       }
     } finally {
@@ -2002,7 +1897,7 @@ export default class WebRTC extends Streamer {
 
         this.#lastPacketAt = undefined;
         this.#requestReconnect('stall');
-        this.close();
+        this.requestSourceClose();
       },
       Math.max(1000, Math.round(STALLED_TIMEOUT / 2)),
     );

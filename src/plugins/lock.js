@@ -47,8 +47,8 @@ import { buildMappedObject, createMappingContext } from '../translator.js';
 import { DATA_SOURCE, DEVICE_TYPE, PROTOBUF_RESOURCES, LOW_BATTERY_LEVEL } from '../consts.js';
 
 export default class NestLock extends HomeKitDevice {
-  static TYPE = 'Lock';
-  static VERSION = '2026.04.13'; // Code version
+  static TYPE = DEVICE_TYPE.LOCK;
+  static VERSION = '2026.04.21'; // Code version
 
   // Define lock bolt states
   static STATE = {

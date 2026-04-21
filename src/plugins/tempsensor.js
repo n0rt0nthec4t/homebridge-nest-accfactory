@@ -47,8 +47,8 @@ import { buildMappedObject, createMappingContext } from '../translator.js';
 import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from '../consts.js';
 
 export default class NestTemperatureSensor extends HomeKitDevice {
-  static TYPE = 'TemperatureSensor';
-  static VERSION = '2026.04.16'; // Code version
+  static TYPE = DEVICE_TYPE.TEMPSENSOR;
+  static VERSION = '2026.04.21'; // Code version
 
   batteryService = undefined;
   temperatureService = undefined;
@@ -120,12 +120,38 @@ export default class NestTemperatureSensor extends HomeKitDevice {
   }
 }
 
-// Weather field translation map
-// Maps raw source data -> normalised weather device fields
+// Temperature sensor field translation map
+// Maps raw source data -> normalised device fields
 // - fields: top-level raw fields this mapping depends on (for delta updates)
 // - translate: converts raw -> candidate value
 // - merge: combines source values into the final normalised value
+// IMPORTANT:
+// `raw` in this map represents the temperature sensor resource itself.
+// Thermostat relationship details are passed separately via mapping context.
 const TEMPSENSOR_FIELD_MAP = {
+  // Identity fields
+  serialNumber: {
+    required: true,
+    google: {
+      fields: [],
+      translate: ({ raw }) => {
+        let value = raw?.value;
+
+        return typeof value?.device_identity?.serialNumber === 'string' && value.device_identity.serialNumber !== ''
+          ? value.device_identity.serialNumber
+          : undefined;
+      },
+    },
+    nest: {
+      fields: [],
+      translate: ({ raw }) => {
+        let value = raw?.value;
+
+        return typeof value?.serial_number === 'string' && value.serial_number !== '' ? value.serial_number : undefined;
+      },
+    },
+  },
+
   nest_google_device_uuid: {
     required: true,
     google: {
@@ -149,36 +175,58 @@ const TEMPSENSOR_FIELD_MAP = {
     },
   },
 
-  serialNumber: {
+  // Naming / descriptive fields
+  model: {
     required: true,
     google: {
-      fields: [],
-      translate: ({ sensorData }) =>
-        typeof sensorData?.device_identity?.serialNumber === 'string' && sensorData.device_identity.serialNumber !== ''
-          ? sensorData.device_identity.serialNumber
-          : undefined,
+      fields: ['device_info', 'device_identity'],
+      translate: ({ raw }) => {
+        let value = raw?.value;
+        let typeName = value?.device_info?.typeName ?? '';
+        let productId = value?.device_identity?.productIdDescription?.literal ?? '';
+
+        return typeName === 'nest.resource.NestKryptoniteResource' && productId === 'KRX'
+          ? 'Temperature Sensor (2nd gen)'
+          : typeName === 'nest.resource.NestKryptoniteResource' && productId === 'KR1'
+            ? 'Temperature Sensor (1st gen)'
+            : 'Temperature Sensor (unknown)';
+      },
     },
     nest: {
-      fields: [],
-      translate: ({ sensorData }) =>
-        typeof sensorData?.serial_number === 'string' && sensorData.serial_number !== '' ? sensorData.serial_number : undefined,
+      fields: ['model'],
+      translate: ({ raw }) => {
+        let value = raw?.value;
+
+        return value?.model === 'KRX'
+          ? 'Temperature Sensor (2nd gen)'
+          : value?.model === 'KR1'
+            ? 'Temperature Sensor (1st gen)'
+            : 'Temperature Sensor (unknown)';
+      },
     },
   },
 
   description: {
+    required: true,
     google: {
       fields: ['label', 'device_info', 'device_located_settings'],
       related: ['located_annotations'],
-      translate: ({ rawData, sensorData, pairerUUID }) => {
-        let description = String(sensorData?.label?.label ?? '').trim();
+      translate: ({ rawData, raw }) => {
+        let value = raw?.value;
+        let description = String(value?.label?.label ?? '').trim();
+        let location = '';
 
-        let location = String(
-          [
-            ...Object.values(rawData?.[pairerUUID]?.value?.located_annotations?.predefinedWheres || {}),
-            ...Object.values(rawData?.[pairerUUID]?.value?.located_annotations?.customWheres || {}),
-          ].find((where) => where?.whereId?.resourceId === sensorData?.device_located_settings?.whereAnnotationRid?.resourceId)?.label
-            ?.literal ?? '',
-        ).trim();
+        let pairerId = value?.device_info?.pairerId?.resourceId;
+        let whereId = value?.device_located_settings?.whereAnnotationRid?.resourceId;
+
+        if (typeof pairerId === 'string' && pairerId !== '' && typeof whereId === 'string' && whereId !== '') {
+          let wheres = [
+            ...Object.values(rawData?.[pairerId]?.value?.located_annotations?.predefinedWheres || {}),
+            ...Object.values(rawData?.[pairerId]?.value?.located_annotations?.customWheres || {}),
+          ];
+
+          location = String(wheres.find((where) => where?.whereId?.resourceId === whereId)?.label?.literal ?? '').trim();
+        }
 
         if (description === '' && location !== '') {
           description = location;
@@ -192,17 +240,22 @@ const TEMPSENSOR_FIELD_MAP = {
         return HomeKitDevice.makeValidHKName(location === '' ? description : description + ' - ' + location);
       },
     },
-
     nest: {
       fields: ['description', 'structure_id', 'where_id'],
       related: ['wheres'],
-      translate: ({ rawData, sensorData }) => {
-        let description = String(sensorData?.description ?? '').trim();
+      translate: ({ rawData, raw }) => {
+        let value = raw?.value;
+        let description = String(value?.description ?? '').trim();
+        let location = '';
 
-        let location = String(
-          rawData?.['where.' + sensorData?.structure_id]?.value?.wheres?.find((where) => where?.where_id === sensorData?.where_id)?.name ??
-            '',
-        ).trim();
+        let structureId = value?.structure_id;
+        let whereId = value?.where_id;
+
+        if (typeof structureId === 'string' && structureId !== '' && typeof whereId === 'string' && whereId !== '') {
+          location = String(
+            rawData?.['where.' + structureId]?.value?.wheres?.find((where) => where?.where_id === whereId)?.name ?? '',
+          ).trim();
+        }
 
         if (description === '' && location !== '') {
           description = location;
@@ -222,15 +275,21 @@ const TEMPSENSOR_FIELD_MAP = {
     required: true,
     google: {
       fields: ['battery'],
-      translate: ({ sensorData }) =>
-        isNaN(sensorData?.battery?.assessedVoltage?.value) === false
-          ? Math.round(scaleValue(Number(sensorData.battery.assessedVoltage.value), 2.5, 3.2, 0, 100))
-          : undefined,
+      translate: ({ raw }) => {
+        let value = raw?.value;
+
+        return isNaN(value?.battery?.assessedVoltage?.value) === false
+          ? Math.round(scaleValue(Number(value.battery.assessedVoltage.value), 2.5, 3.2, 0, 100))
+          : undefined;
+      },
     },
     nest: {
       fields: ['battery_level'],
-      translate: ({ sensorData }) =>
-        isNaN(sensorData?.battery_level) === false ? Math.round(scaleValue(Number(sensorData.battery_level), 0, 100, 0, 100)) : undefined,
+      translate: ({ raw }) => {
+        let value = raw?.value;
+
+        return isNaN(value?.battery_level) === false ? Math.round(scaleValue(Number(value.battery_level), 0, 100, 0, 100)) : undefined;
+      },
     },
   },
 
@@ -238,17 +297,23 @@ const TEMPSENSOR_FIELD_MAP = {
     required: true,
     google: {
       fields: ['current_temperature'],
-      translate: ({ sensorData }) =>
-        isNaN(sensorData?.current_temperature?.temperatureValue?.temperature?.value) === false
-          ? adjustTemperature(Number(sensorData.current_temperature.temperatureValue.temperature.value), 'C', 'C', true)
-          : undefined,
+      translate: ({ raw }) => {
+        let value = raw?.value;
+
+        return isNaN(value?.current_temperature?.temperatureValue?.temperature?.value) === false
+          ? adjustTemperature(Number(value.current_temperature.temperatureValue.temperature.value), 'C', 'C', true)
+          : undefined;
+      },
     },
     nest: {
       fields: ['current_temperature'],
-      translate: ({ sensorData }) =>
-        isNaN(sensorData?.current_temperature) === false
-          ? adjustTemperature(Number(sensorData.current_temperature), 'C', 'C', true)
-          : undefined,
+      translate: ({ raw }) => {
+        let value = raw?.value;
+
+        return isNaN(value?.current_temperature) === false
+          ? adjustTemperature(Number(value.current_temperature), 'C', 'C', true)
+          : undefined;
+      },
     },
   },
 
@@ -256,14 +321,22 @@ const TEMPSENSOR_FIELD_MAP = {
     required: true,
     google: {
       fields: ['last_updated_beacon'],
-      translate: ({ sensorData }) =>
-        isNaN(sensorData?.last_updated_beacon?.lastBeaconTime?.seconds) === false &&
-        Math.floor(Date.now() / 1000) - Number(sensorData.last_updated_beacon.lastBeaconTime.seconds) < 3600 * 4,
+      translate: ({ raw }) => {
+        let value = raw?.value;
+
+        return (
+          isNaN(value?.last_updated_beacon?.lastBeaconTime?.seconds) === false &&
+          Math.floor(Date.now() / 1000) - Number(value.last_updated_beacon.lastBeaconTime.seconds) < 3600 * 4
+        );
+      },
     },
     nest: {
       fields: ['last_updated_at'],
-      translate: ({ sensorData }) =>
-        isNaN(sensorData?.last_updated_at) === false && Math.floor(Date.now() / 1000) - Number(sensorData.last_updated_at) < 3600 * 4,
+      translate: ({ raw }) => {
+        let value = raw?.value;
+
+        return isNaN(value?.last_updated_at) === false && Math.floor(Date.now() / 1000) - Number(value.last_updated_at) < 3600 * 4;
+      },
     },
   },
 
@@ -328,7 +401,6 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
 
     candidates[serialNumber] = {
       type: DEVICE_TYPE.TEMPSENSOR,
-      model: 'Temperature Sensor',
       softwareVersion: NestTemperatureSensor.VERSION,
       manufacturer: 'Nest',
       associated_thermostat: associatedThermostat,
@@ -344,91 +416,123 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
     )
     .forEach(([object_key, value]) => {
       try {
-        // Process Google thermostat-linked temperature sensors
+        // Source type for this thermostat (Google or Nest)
+        let source = undefined;
+
+        // Normalised list of sensors for this thermostat
+        // Each entry contains sensor UUID and whether it is the active RCS sensor
+        let sensors = [];
+
+        // Google uses pairerId as the home identifier
+        let homeUUID = undefined;
+
+        // Nest stores RCS data in a separate resource
+        let rcsSettings = undefined;
+
+        // Extract temperature sensors linked to a Google thermostat
         if (
           value?.source === DATA_SOURCE.GOOGLE &&
           value?.value?.configuration_done?.deviceReady === true &&
           rawData?.[value?.value?.device_info?.pairerId?.resourceId] !== undefined &&
           Array.isArray(value?.value?.remote_comfort_sensing_settings?.associatedRcsSensors) === true
         ) {
-          value.value.remote_comfort_sensing_settings.associatedRcsSensors.forEach((sensor) => {
-            let sensorUUID = sensor?.deviceId?.resourceId;
-            let sensorData = rawData?.[sensorUUID]?.value;
+          source = DATA_SOURCE.GOOGLE;
 
-            if (typeof sensorData !== 'object' || sensorData?.constructor !== Object) {
-              return;
-            }
+          // Home UUID used for grouping and config matching
+          homeUUID = value.value.device_info.pairerId.resourceId;
 
-            storeCandidate(
-              buildMappedObject(
-                TEMPSENSOR_FIELD_MAP,
-                createMappingContext(
-                  rawData,
-                  sensorUUID,
-                  {
-                    google: value,
-                  },
-                  {
-                    sensorUUID: sensorUUID,
-                    homeUUID: value.value.device_info.pairerId.resourceId,
-                    parentUUID: object_key,
-                    pairerUUID: sensorData?.device_info?.pairerId?.resourceId,
-                    sensorData: sensorData,
-                    active_sensor:
-                      value?.value?.remote_comfort_sensing_settings?.activeRcsSelection?.activeRcsSensor?.resourceId === sensorUUID,
-                  },
-                ),
-                changedData instanceof Map ? changedData.get(sensorUUID)?.fields : undefined,
-              ),
-              DATA_SOURCE.GOOGLE,
-              object_key,
-            );
-          });
+          // Build normalised sensor list from Google RCS configuration
+          sensors = value.value.remote_comfort_sensing_settings.associatedRcsSensors.map((sensor) => ({
+            sensorUUID: sensor?.deviceId?.resourceId,
+
+            // Active sensor is defined by the thermostat's current RCS selection
+            active_sensor:
+              value?.value?.remote_comfort_sensing_settings?.activeRcsSelection?.activeRcsSensor?.resourceId ===
+              sensor?.deviceId?.resourceId,
+          }));
         }
 
-        // Process Nest thermostat-linked temperature sensors
+        // Extract temperature sensors linked to a Nest thermostat
         if (
           value?.source === DATA_SOURCE.NEST &&
           Array.isArray(rawData?.['rcs_settings.' + value?.value?.serial_number]?.value?.associated_rcs_sensors) === true
         ) {
-          rawData['rcs_settings.' + value.value.serial_number].value.associated_rcs_sensors.forEach((sensorUUID) => {
-            let sensorData = rawData?.[sensorUUID]?.value;
+          source = DATA_SOURCE.NEST;
 
-            if (
-              typeof sensorData !== 'object' ||
-              sensorData?.constructor !== Object ||
-              (sensorData?.structure_id?.trim?.() ?? '') === '' ||
-              typeof rawData?.['where.' + sensorData.structure_id] !== 'object'
-            ) {
-              return;
-            }
+          // Full RCS settings object for this thermostat
+          rcsSettings = rawData['rcs_settings.' + value.value.serial_number]?.value;
 
-            storeCandidate(
-              buildMappedObject(
-                TEMPSENSOR_FIELD_MAP,
-                createMappingContext(
-                  rawData,
-                  sensorUUID,
-                  {
-                    nest: value,
-                  },
-                  {
-                    sensorUUID: sensorUUID,
-                    homeUUID: 'structure.' + sensorData.structure_id,
-                    parentUUID: object_key,
-                    pairerUUID: undefined,
-                    sensorData: sensorData,
-                    active_sensor:
-                      rawData?.['rcs_settings.' + value.value.serial_number]?.value?.active_rcs_sensors?.includes?.(sensorUUID) === true,
-                  },
-                ),
-                changedData instanceof Map ? changedData.get(sensorUUID)?.fields : undefined,
-              ),
-              DATA_SOURCE.NEST,
-              object_key,
-            );
-          });
+          // Build normalised sensor list from Nest RCS configuration
+          sensors = rcsSettings.associated_rcs_sensors.map((sensorUUID) => ({
+            sensorUUID: sensorUUID,
+
+            // Active sensor is defined by active_rcs_sensors list
+            active_sensor: rcsSettings?.active_rcs_sensors?.includes?.(sensorUUID) === true,
+          }));
         }
+
+        // Process each discovered sensor using the same mapping pipeline
+        sensors.forEach((sensor) => {
+          let sensorUUID = sensor?.sensorUUID;
+
+          // Raw sensor resource, passed as `raw` into the translator
+          let sensorRaw = rawData?.[sensorUUID];
+
+          // Convenience reference to sensor payload
+          let sensorValue = sensorRaw?.value;
+
+          // Validate sensor resource exists and is well-formed
+          if (
+            typeof sensorUUID !== 'string' ||
+            sensorUUID === '' ||
+            typeof sensorRaw !== 'object' ||
+            sensorRaw?.constructor !== Object ||
+            typeof sensorValue !== 'object' ||
+            sensorValue?.constructor !== Object
+          ) {
+            return;
+          }
+
+          // Google sensors must have a valid home UUID
+          if (source === DATA_SOURCE.GOOGLE && typeof homeUUID !== 'string') {
+            return;
+          }
+
+          // Nest sensors must have valid structure and where mapping for description resolution
+          if (
+            source === DATA_SOURCE.NEST &&
+            ((sensorValue?.structure_id?.trim?.() ?? '') === '' || typeof rawData?.['where.' + sensorValue.structure_id] !== 'object')
+          ) {
+            return;
+          }
+
+          // Build mapped sensor object
+          // `raw` represents the sensor resource inside TEMPSENSOR_FIELD_MAP
+          storeCandidate(
+            buildMappedObject(
+              TEMPSENSOR_FIELD_MAP,
+              createMappingContext(rawData, sensorUUID, source === DATA_SOURCE.GOOGLE ? { google: sensorRaw } : { nest: sensorRaw }, {
+                // Unique sensor identifier
+                sensorUUID: sensorUUID,
+
+                // Home identifier differs between Google and Nest
+                homeUUID: source === DATA_SOURCE.GOOGLE ? homeUUID : 'structure.' + sensorValue.structure_id,
+
+                // Thermostat this sensor is associated with
+                parentUUID: object_key,
+
+                // Pairer UUID (only present for Google devices)
+                pairerUUID: source === DATA_SOURCE.GOOGLE ? sensorValue?.device_info?.pairerId?.resourceId : undefined,
+
+                // Whether this sensor is currently active for RCS
+                active_sensor: sensor.active_sensor === true,
+              }),
+              changedData instanceof Map ? changedData.get(sensorUUID)?.fields : undefined,
+            ),
+            source,
+            object_key,
+          );
+        });
       } catch (error) {
         log?.error?.('Error processing temperature sensor data for "%s": %s', object_key, String(error));
       }
@@ -438,6 +542,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
     if (deviceType !== undefined && (typeof deviceType !== 'string' || deviceType === '' || candidate.type !== deviceType)) {
       return;
     }
+
     // Check for any device or home configuration options that match this device
     // We'll use the serial number to match against device options, and the home uuid to match against home options
     let deviceOptions = config?.devices?.find(

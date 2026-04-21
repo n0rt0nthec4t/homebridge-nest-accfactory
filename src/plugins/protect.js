@@ -46,8 +46,8 @@ import { buildMappedObject, createMappingContext } from '../translator.js';
 import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from '../consts.js';
 
 export default class NestProtect extends HomeKitDevice {
-  static TYPE = 'Protect';
-  static VERSION = '2026.04.16'; // Code version
+  static TYPE = DEVICE_TYPE.PROTECT;
+  static VERSION = '2026.04.21'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;

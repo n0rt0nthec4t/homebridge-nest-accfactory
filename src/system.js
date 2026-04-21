@@ -280,7 +280,6 @@ export default class NestAccfactory {
         snapshotWaiters: new Map(), // Keyed by resource Id for protobuf snapshot waiters
       });
 
-
       // Notify any camera related devices (camera/doorbell/floodlight) of updated auth details
       for (let [, trackedDevice] of this.#trackedDevices) {
         if (typeof trackedDevice !== 'object' || trackedDevice === null) {
@@ -1096,7 +1095,7 @@ export default class NestAccfactory {
               this.#trackedDevices.set(serialNumber, {
                 uuid: HomeKitDevice.generateUUID(HomeKitDevice.PLUGIN_NAME, this.api, serialNumber),
                 nest_google_device_uuid: deviceData.nest_google_device_uuid,
-                type: deviceModule.class.TYPE,  // Store type of device
+                type: deviceModule.class.TYPE, // Store type of device
                 source: undefined, // gets filled out later
                 timers: undefined,
                 exclude: true,
@@ -1151,7 +1150,7 @@ export default class NestAccfactory {
                 this.#trackedDevices.set(serialNumber, {
                   uuid: tempDevice.uuid,
                   nest_google_device_uuid: deviceData.nest_google_device_uuid,
-                  type: deviceModule.class.TYPE,  // Store type of device
+                  type: deviceModule.class.TYPE, // Store type of device
                   source: undefined, // gets filled out later
                   timers: {},
                   exclude: false,
@@ -2365,7 +2364,7 @@ export default class NestAccfactory {
         return events; // Return events from Google API
       } else {
         this?.log?.debug?.(
-          'Google API had error retrieving camera/doorbell activity notifications for device "%s". Error was "%s"',
+          'Google API had error retrieving camera/doorbell activity notifications for device "%s"',
           nest_google_device_uuid,
         );
         return [];

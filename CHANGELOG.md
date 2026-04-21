@@ -46,6 +46,9 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - Added `logMotionEvents` option (global and per-device, enabled by default)  
   - Controls logging of motion events for cameras, doorbells, and Nest Protect devices  
 - Added support for Nest Hub Max (1st gen, wired)  
+- Added new **Home/Away accessory** per structure  
+  - Exposes Nest home/away state as a HomeKit **OccupancySensor**  
+  - Replaces occupancy reporting previously exposed on thermostat devices  
 
 ### ⚙️ Configuration & GUI
 

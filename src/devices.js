@@ -26,7 +26,7 @@
 // - Additional named exports are attached to the module entry when present
 // - Used by the main system module to create and manage device instances
 //
-// Code version 2026.03.15
+// Code version 2026.04.21
 // Mark Hulskamp
 'use strict';
 
@@ -112,7 +112,7 @@ function getDeviceHKCategory(type) {
     category = 9; // Categories.THERMOSTAT
   }
 
-  if (type === DEVICE_TYPE.TEMPSENSOR || type === DEVICE_TYPE.PROTECT || type === DEVICE_TYPE.WEATHER) {
+  if (type === DEVICE_TYPE.TEMPSENSOR || type === DEVICE_TYPE.PROTECT || (type === DEVICE_TYPE.WEATHER) | (type === DEVICE_TYPE.HOMEAWAY)) {
     category = 10; // Categories.SENSOR
   }
 

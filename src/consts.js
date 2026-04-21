@@ -27,7 +27,7 @@
 // - Imported throughout the codebase for consistency and reuse
 // - Changes here may affect multiple subsystems (devices, streaming, APIs)
 //
-// Code version 2026.04.07
+// Code version 2026.04.21
 // Mark Hulskamp
 'use strict';
 
@@ -145,6 +145,7 @@ export const DEVICE_TYPE = {
   HEATLINK: 'Heatlink',
   LOCK: 'Lock',
   ALARM: 'Alarm',
+  HOMEAWAY: 'HomeAway',
 };
 
 export const FFMPEG_VERSION = '6.0.0';
