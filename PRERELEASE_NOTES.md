@@ -4,6 +4,20 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.0-beta.14 (2026/04/22)
+
+Perhaps 13 is an unlucky number? I broke some things :-( Thanks to [@marving11](https://github.com/marving11) for catching these.
+
+- `webrtc.js`
+  - Fixed WebRTC connection gating issues causing premature connect aborts
+  - Removed dependency on `SOURCE_CONNECTING` for async flow control
+
+- `plugins/camera.js`
+  - Fixed streaming protocol detection for non-migrated devices
+  - Updated migration logic to use `migrating !== true` instead of strict `false`
+  - Improved handling of Nest <-> Google migration states
+  - Minor translation logic refinements
+
 ## v0.4.0-beta.13 (2026/04/21)
 
 - Added generation values to temperature sensors [@mtcislak-max](https://github.com/mtcislak-max)
@@ -11,7 +25,7 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 - Fixed reconnect race condition between `nexustalk.js` and `streamer.js`
 - Prevented stale video frames from previous sessions affecting new stream state on reconnect
 - Removed OccupancySensor service from thermostat devices `thermostat.js`
-- Added new Home/Away accessory exposing structure occupancy as an OccupancySensor `plugins\homeaway.js`
+- Added new Home/Away accessory exposing structure occupancy as an OccupancySensor `plugins/homeaway.js`
 - Minor code fixes in `system.js`
 - Refinements to playout buffer in `streamer.js`
 

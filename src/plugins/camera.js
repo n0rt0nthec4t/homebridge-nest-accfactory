@@ -86,7 +86,7 @@ const PREBUFFER_LENGTH = 4000;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.04.21'; // Code version
+  static VERSION = '2026.04.22'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -380,27 +380,31 @@ export default class NestCamera extends HomeKitDevice {
       );
     }
 
-    if (this.deviceData.migrating === false && deviceData.migrating === true) {
+    if (this.deviceData.migrating !== true && deviceData.migrating === true) {
       // Migration happening between Nest <-> Google Home apps. We'll stop any active streams, close the current streaming object
       this?.log?.warn?.('Migration between Nest <-> Google Home apps has started for "%s"', deviceData.description);
       this.streamer?.stopEverything?.();
       this.streamer = undefined;
     }
 
-    if (this.deviceData.migrating === true && deviceData.migrating === false) {
+    if (this.deviceData.migrating === true && deviceData.migrating !== true) {
       // Migration has completed between Nest <-> Google Home apps
       this?.log?.success?.('Migration between Nest <-> Google Home apps has completed for "%s"', deviceData.description);
     }
 
     // Handle case of changes in streaming protocols OR just finished migration between Nest <-> Google Home apps
-    if (this.streamer === undefined && deviceData.migrating === false) {
-      if (JSON.stringify(deviceData.streaming_protocols) !== JSON.stringify(this.deviceData.streaming_protocols)) {
-        this?.log?.warn?.('Available streaming protocols have changed for "%s"', deviceData.description);
-        this.streamer?.stopEverything?.();
-        this.streamer = undefined;
-      }
+    if (
+      this.streamer !== undefined &&
+      JSON.stringify(deviceData.streaming_protocols) !== JSON.stringify(this.deviceData.streaming_protocols)
+    ) {
+      this?.log?.warn?.('Available streaming protocols have changed for "%s"', deviceData.description);
+      this.streamer.stopEverything();
+      this.streamer = undefined;
+    }
+
+    if (this.streamer === undefined && deviceData.migrating !== true) {
       if (deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.WEBRTC) === true && WebRTC !== undefined) {
-        if (this.deviceData.migrating === true && deviceData.migrating === false) {
+        if (this.deviceData.migrating === true && deviceData.migrating !== true) {
           this?.log?.debug?.('Using WebRTC streamer for "%s" after migration', deviceData.description);
         }
 
@@ -412,7 +416,7 @@ export default class NestCamera extends HomeKitDevice {
       }
 
       if (deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.NEXUSTALK) === true && NexusTalk !== undefined) {
-        if (this.deviceData.migrating === true && deviceData.migrating === false) {
+        if (this.deviceData.migrating === true && deviceData.migrating !== true) {
           this?.log?.debug?.('Using NexusTalk streamer for "%s" after migration', deviceData.description);
         }
 
@@ -938,7 +942,7 @@ export default class NestCamera extends HomeKitDevice {
     // Get current image from camera/doorbell
     let imageBuffer = undefined;
 
-    if (this.deviceData.migrating === false && this.deviceData.streaming_enabled === true && this.deviceData.online === true) {
+    if (this.deviceData.migrating !== true && this.deviceData.streaming_enabled === true && this.deviceData.online === true) {
       // Request a snapshot image from upstream.
       // Snapshot freshness, caching, and fallback handling are managed centrally in system.js
       let response = await this.get({ uuid: this.deviceData.nest_google_device_uuid, camera_snapshot: Buffer.alloc(0) });
@@ -953,7 +957,7 @@ export default class NestCamera extends HomeKitDevice {
     }
 
     if (
-      this.deviceData.migrating === false &&
+      this.deviceData.migrating !== true &&
       this.deviceData.streaming_enabled === false &&
       this.deviceData.online === true &&
       this.#cameraImages?.off !== undefined
@@ -962,7 +966,7 @@ export default class NestCamera extends HomeKitDevice {
       imageBuffer = this.#cameraImages.off;
     }
 
-    if (this.deviceData.migrating === false && this.deviceData.online === false && this.#cameraImages?.offline !== undefined) {
+    if (this.deviceData.migrating !== true && this.deviceData.online === false && this.#cameraImages?.offline !== undefined) {
       // Return 'camera offline' jpg to image buffer
       imageBuffer = this.#cameraImages.offline;
     }
@@ -2019,7 +2023,6 @@ const CAMERA_FIELD_MAP = {
   },
 
   migrating: {
-    required: true,
     google: {
       fields: ['camera_migration_status'],
       translate: ({ raw }) =>

@@ -31,7 +31,7 @@
 // - ICE "connected" indicates transport readiness, not media availability
 // - Startup delays may occur due to upstream (Google) keyframe delivery behaviour
 //
-// Code version 2026.04.20
+// Code version 2026.04.21
 // Mark Hulskamp
 'use strict';
 
@@ -226,7 +226,7 @@ export default class WebRTC extends Streamer {
       await this.#googleHomeDeviceUUIDPromise;
     }
 
-    if (this.sourceState !== Streamer.MESSAGE_TYPE.SOURCE_CONNECTING || this.#peerConnection !== undefined) {
+    if (this.#closeInProgress === true || this.#peerConnection !== undefined) {
       return;
     }
 
@@ -245,7 +245,7 @@ export default class WebRTC extends Streamer {
       },
     });
 
-    if (this.sourceState !== Streamer.MESSAGE_TYPE.SOURCE_CONNECTING || this.#peerConnection !== undefined) {
+    if (this.#closeInProgress === true || this.#peerConnection !== undefined) {
       return;
     }
 
