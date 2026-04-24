@@ -56,7 +56,7 @@ import {
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.HEATLINK;
-  static VERSION = '2026.04.21'; // Code version
+  static VERSION = '2026.04.22'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
@@ -256,7 +256,7 @@ export default class NestHeatlink extends HomeKitDevice {
   #logHotwaterBoostTime(time) {
     let output = '';
 
-    if (isNaN(time) === false) {
+    if (Number.isFinite(Number(time)) === true) {
       output =
         (time >= 3600 ? Math.floor(time / 3600) + ' hr' + (Math.floor(time / 3600) > 1 ? 's ' : ' ') : '') +
         Math.floor((time % 3600) / 60) +
@@ -439,12 +439,13 @@ const HEATLINK_FIELD_MAP = {
     google: {
       fields: ['hot_water_settings'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.hot_water_settings?.boostTimerEnd?.seconds) === false &&
+        Number.isFinite(Number(raw?.value?.hot_water_settings?.boostTimerEnd?.seconds)) === true &&
         Number(raw.value.hot_water_settings.boostTimerEnd.seconds) > 0,
     },
     nest: {
       fields: ['hot_water_boost_time_to_end'],
-      translate: ({ raw }) => isNaN(raw?.value?.hot_water_boost_time_to_end) === false && Number(raw.value.hot_water_boost_time_to_end) > 0,
+      translate: ({ raw }) =>
+        Number.isFinite(Number(raw?.value?.hot_water_boost_time_to_end)) === true && Number(raw.value.hot_water_boost_time_to_end) > 0,
     },
   },
 
@@ -464,14 +465,14 @@ const HEATLINK_FIELD_MAP = {
     google: {
       fields: ['hot_water_trait'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.hot_water_trait?.temperature?.value) === false
+        Number.isFinite(Number(raw?.value?.hot_water_trait?.temperature?.value)) === true
           ? adjustTemperature(Number(raw.value.hot_water_trait.temperature.value), 'C', 'C', true)
           : undefined,
     },
     nest: {
       fields: ['current_water_temperature'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.current_water_temperature) === false
+        Number.isFinite(Number(raw?.value?.current_water_temperature)) === true
           ? adjustTemperature(Number(raw.value.current_water_temperature), 'C', 'C', true)
           : undefined,
     },
@@ -481,14 +482,14 @@ const HEATLINK_FIELD_MAP = {
     google: {
       fields: ['hot_water_settings'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.hot_water_settings?.temperature?.value) === false
+        Number.isFinite(Number(raw?.value?.hot_water_settings?.temperature?.value)) === true
           ? adjustTemperature(Number(raw.value.hot_water_settings.temperature.value), 'C', 'C', true)
           : undefined,
     },
     nest: {
       fields: ['hot_water_temperature'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.hot_water_temperature) === false
+        Number.isFinite(Number(raw?.value?.hot_water_temperature)) === true
           ? adjustTemperature(Number(raw.value.hot_water_temperature), 'C', 'C', true)
           : undefined,
     },
@@ -644,12 +645,12 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
 
           // Configurable temperature bounds
           tempDevice.hotwaterMinTemp =
-            isNaN(deviceOptions?.hotwaterMinTemp) === false
+            Number.isFinite(Number(deviceOptions?.hotwaterMinTemp)) === true
               ? adjustTemperature(deviceOptions.hotwaterMinTemp, 'C', 'C', true)
               : HOTWATER_MIN_TEMPERATURE;
 
           tempDevice.hotwaterMaxTemp =
-            isNaN(deviceOptions?.hotwaterMaxTemp) === false
+            Number.isFinite(Number(deviceOptions?.hotwaterMaxTemp)) === true
               ? adjustTemperature(deviceOptions.hotwaterMaxTemp, 'C', 'C', true)
               : HOTWATER_MAX_TEMPERATURE;
 

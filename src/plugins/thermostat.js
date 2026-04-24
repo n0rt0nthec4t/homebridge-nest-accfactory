@@ -72,7 +72,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.THERMOSTAT;
-  static VERSION = '2026.04.21'; // Code version
+  static VERSION = '2026.04.23'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -113,7 +113,7 @@ export default class NestThermostat extends HomeKitDevice {
     this.hap.Characteristic.CoolingThresholdTemperature.prototype.getDefaultValue = () => {
       return THERMOSTAT_MAX_TEMPERATURE; // start at maximum cooling threshold
     };
-    if (this.deviceData?.hasHumidifier === true || this.deviceData?.hasDehumidifier === true) {
+    if (this.deviceData?.has_humidifier === true || this.deviceData?.has_dehumidifier === true) {
       // Set default value for TargetHumidifierDehumidifierState based on capabilities
       this.hap.Characteristic.TargetHumidifierDehumidifierState.prototype.getDefaultValue = () => {
         if (this.deviceData?.has_humidifier === true && this.deviceData?.has_dehumidifier === true) {
@@ -145,7 +145,7 @@ export default class NestThermostat extends HomeKitDevice {
 
     this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.CurrentRelativeHumidity, {
       onGet: () => {
-        return this.deviceData.current_humidity;
+        return Number.isFinite(Number(this.deviceData.current_humidity)) === true ? Number(this.deviceData.current_humidity) : null;
       },
     });
 
@@ -163,7 +163,7 @@ export default class NestThermostat extends HomeKitDevice {
     this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.CurrentTemperature, {
       props: { minStep: 0.5 },
       onGet: () => {
-        return isNaN(this.deviceData.current_temperature) === false ? this.deviceData.current_temperature : null;
+        return Number.isFinite(Number(this.deviceData.current_temperature)) === true ? Number(this.deviceData.current_temperature) : null;
       },
     });
 
@@ -280,7 +280,7 @@ export default class NestThermostat extends HomeKitDevice {
 
       this.addHKCharacteristic(this.humidityService, this.hap.Characteristic.CurrentRelativeHumidity, {
         onGet: () => {
-          return this.deviceData.current_humidity;
+          return Number.isFinite(Number(this.deviceData.current_humidity)) === true ? Number(this.deviceData.current_humidity) : null;
         },
       });
     }
@@ -427,7 +427,7 @@ export default class NestThermostat extends HomeKitDevice {
       }
 
       this?.log?.info?.(
-        'Fan setup on thermostat "%s" has changed. Fan was',
+        'Fan setup on thermostat "%s" has changed. Fan was %s',
         deviceData.description,
         this.fanService === undefined ? 'removed' : 'added',
       );
@@ -810,7 +810,10 @@ export default class NestThermostat extends HomeKitDevice {
 
           let program = {
             id: parseInt(day),
-            days: isNaN(day) === false && DAYS_OF_WEEK_SHORT?.[day] !== undefined ? DAYS_OF_WEEK_SHORT[day].toLowerCase() : 'mon',
+            days:
+              Number.isFinite(Number(day)) === true && DAYS_OF_WEEK_SHORT?.[day] !== undefined
+                ? DAYS_OF_WEEK_SHORT[day].toLowerCase()
+                : 'mon',
             schedule: [],
           };
 
@@ -1103,7 +1106,7 @@ export default class NestThermostat extends HomeKitDevice {
     }[characteristic.UUID];
 
     // HomeKit requires a finite numeric value or null
-    if (isNaN(currentTemperature) === true) {
+    if (Number.isFinite(Number(currentTemperature)) === false) {
       return null;
     }
 
@@ -1215,7 +1218,7 @@ export default class NestThermostat extends HomeKitDevice {
       typeof characteristic !== 'function' ||
       typeof characteristic?.UUID !== 'string' ||
       this.humidifierDehumidifierService === undefined ||
-      isNaN(value) === true
+      Number.isFinite(Number(value)) === false
     ) {
       return;
     }
@@ -1344,7 +1347,9 @@ export default class NestThermostat extends HomeKitDevice {
           this.setHumidifierDehumidifierThreshold(this.hap.Characteristic.RelativeHumidityHumidifierThreshold, value);
         },
         onGet: () => {
-          return this.deviceData.target_humidity_humidifier;
+          return Number.isFinite(Number(this.deviceData.target_humidity_humidifier)) === true
+            ? Number(this.deviceData.target_humidity_humidifier)
+            : null;
         },
       });
     }
@@ -1355,14 +1360,16 @@ export default class NestThermostat extends HomeKitDevice {
           this.setHumidifierDehumidifierThreshold(this.hap.Characteristic.RelativeHumidityDehumidifierThreshold, value);
         },
         onGet: () => {
-          return this.deviceData.target_humidity_dehumidifier;
+          return Number.isFinite(Number(this.deviceData.target_humidity_dehumidifier)) === true
+            ? Number(this.deviceData.target_humidity_dehumidifier)
+            : null;
         },
       });
     }
 
     this.addHKCharacteristic(this.humidifierDehumidifierService, this.hap.Characteristic.CurrentRelativeHumidity, {
       onGet: () => {
-        return this.deviceData.current_humidity;
+        return Number.isFinite(Number(this.deviceData.current_humidity)) === true ? Number(this.deviceData.current_humidity) : null;
       },
     });
   }
@@ -1432,9 +1439,11 @@ export default class NestThermostat extends HomeKitDevice {
   }
 
   #logTemperatureChange(source, modeLabel, temperature, isEco, scale) {
-    if (typeof temperature !== 'number') {
+    if (Number.isFinite(Number(temperature)) !== true) {
       return;
     }
+
+    temperature = Number(temperature);
 
     let unitScale = typeof scale === 'string' ? scale.toUpperCase() : this.deviceData.temperature_scale?.toUpperCase?.();
     let isFahrenheit = unitScale === 'F';
@@ -1669,13 +1678,14 @@ const THERMOSTAT_FIELD_MAP = {
     google: {
       fields: ['current_humidity'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.current_humidity?.humidityValue?.humidity?.value) === false
+        Number.isFinite(Number(raw?.value?.current_humidity?.humidityValue?.humidity?.value)) === true
           ? Number(raw.value.current_humidity.humidityValue.humidity.value)
           : undefined,
     },
     nest: {
       fields: ['current_humidity'],
-      translate: ({ raw }) => (isNaN(raw?.value?.current_humidity) === false ? Number(raw.value.current_humidity) : undefined),
+      translate: ({ raw }) =>
+        Number.isFinite(Number(raw?.value?.current_humidity)) === true ? Number(raw.value.current_humidity) : undefined,
     },
   },
 
@@ -1707,14 +1717,14 @@ const THERMOSTAT_FIELD_MAP = {
     google: {
       fields: ['backplate_temperature'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.backplate_temperature?.temperatureValue?.temperature?.value) === false
+        Number.isFinite(Number(raw?.value?.backplate_temperature?.temperatureValue?.temperature?.value)) === true
           ? adjustTemperature(Number(raw.value.backplate_temperature.temperatureValue.temperature.value), 'C', 'C', true)
           : undefined,
     },
     nest: {
       fields: ['backplate_temperature'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.backplate_temperature) === false
+        Number.isFinite(Number(raw?.value?.backplate_temperature)) === true
           ? adjustTemperature(Number(raw.value.backplate_temperature), 'C', 'C', true)
           : undefined,
     },
@@ -1724,14 +1734,14 @@ const THERMOSTAT_FIELD_MAP = {
     google: {
       fields: ['current_temperature'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.current_temperature?.temperatureValue?.temperature?.value) === false
+        Number.isFinite(Number(raw?.value?.current_temperature?.temperatureValue?.temperature?.value)) === true
           ? adjustTemperature(Number(raw.value.current_temperature.temperatureValue.temperature.value), 'C', 'C', true)
           : undefined,
     },
     nest: {
       fields: ['backplate_temperature'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.backplate_temperature) === false
+        Number.isFinite(Number(raw?.value?.backplate_temperature)) === true
           ? adjustTemperature(Number(raw.value.backplate_temperature), 'C', 'C', true)
           : undefined,
     },
@@ -1742,7 +1752,7 @@ const THERMOSTAT_FIELD_MAP = {
       fields: ['battery_voltage', 'device_info'],
       translate: ({ raw }) => {
         let voltage =
-          isNaN(raw?.value?.battery_voltage?.batteryValue?.batteryVoltage?.value) === false
+          Number.isFinite(Number(raw?.value?.battery_voltage?.batteryValue?.batteryVoltage?.value)) === true
             ? Number(raw.value.battery_voltage.batteryValue.batteryVoltage.value)
             : undefined;
 
@@ -1760,7 +1770,9 @@ const THERMOSTAT_FIELD_MAP = {
     nest: {
       fields: ['battery_level'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.battery_level) === false ? Math.round(scaleValue(Number(raw.value.battery_level), 3.6, 4.0, 0, 100)) : undefined,
+        Number.isFinite(Number(raw?.value?.battery_level)) === true
+          ? Math.round(scaleValue(Number(raw.value.battery_level), 3.6, 4.0, 0, 100))
+          : undefined,
     },
   },
 
@@ -1904,11 +1916,12 @@ const THERMOSTAT_FIELD_MAP = {
     google: {
       fields: ['fan_control_settings'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.fan_control_settings?.timerEnd?.seconds) === false && Number(raw.value.fan_control_settings.timerEnd.seconds) > 0,
+        Number.isFinite(Number(raw?.value?.fan_control_settings?.timerEnd?.seconds)) === true &&
+        Number(raw.value.fan_control_settings.timerEnd.seconds) > 0,
     },
     nest: {
       fields: ['fan_timer_timeout'],
-      translate: ({ raw }) => isNaN(raw?.value?.fan_timer_timeout) === false && Number(raw.value.fan_timer_timeout) > 0,
+      translate: ({ raw }) => Number.isFinite(Number(raw?.value?.fan_timer_timeout)) === true && Number(raw.value.fan_timer_timeout) > 0,
     },
   },
 
@@ -1917,14 +1930,15 @@ const THERMOSTAT_FIELD_MAP = {
       fields: ['fan_control_settings'],
       translate: ({ raw }) =>
         raw?.value?.fan_control_settings?.timerSpeed?.includes?.('FAN_SPEED_SETTING_STAGE') === true &&
-        isNaN(raw.value.fan_control_settings.timerSpeed.split('FAN_SPEED_SETTING_STAGE')[1]) === false
+        Number.isFinite(Number(raw.value.fan_control_settings.timerSpeed.split('FAN_SPEED_SETTING_STAGE')[1])) === true
           ? Number(raw.value.fan_control_settings.timerSpeed.split('FAN_SPEED_SETTING_STAGE')[1])
           : undefined,
     },
     nest: {
       fields: ['fan_timer_speed'],
       translate: ({ raw }) =>
-        raw?.value?.fan_timer_speed?.includes?.('stage') === true && isNaN(raw.value.fan_timer_speed.split('stage')[1]) === false
+        raw?.value?.fan_timer_speed?.includes?.('stage') === true &&
+        Number.isFinite(Number(raw.value.fan_timer_speed.split('stage')[1])) === true
           ? Number(raw.value.fan_timer_speed.split('stage')[1])
           : undefined,
     },
@@ -1935,14 +1949,15 @@ const THERMOSTAT_FIELD_MAP = {
       fields: ['fan_control_capabilities'],
       translate: ({ raw }) =>
         raw?.value?.fan_control_capabilities?.maxAvailableSpeed?.includes?.('FAN_SPEED_SETTING_STAGE') === true &&
-        isNaN(raw.value.fan_control_capabilities.maxAvailableSpeed.split('FAN_SPEED_SETTING_STAGE')[1]) === false
+        Number.isFinite(Number(raw.value.fan_control_capabilities.maxAvailableSpeed.split('FAN_SPEED_SETTING_STAGE')[1])) === true
           ? Number(raw.value.fan_control_capabilities.maxAvailableSpeed.split('FAN_SPEED_SETTING_STAGE')[1])
           : undefined,
     },
     nest: {
       fields: ['fan_capabilities'],
       translate: ({ raw }) =>
-        raw?.value?.fan_capabilities?.includes?.('stage') === true && isNaN(raw.value.fan_capabilities.split('stage')[1]) === false
+        raw?.value?.fan_capabilities?.includes?.('stage') === true &&
+        Number.isFinite(Number(raw.value.fan_capabilities.split('stage')[1])) === true
           ? Number(raw.value.fan_capabilities.split('stage')[1])
           : undefined,
     },
@@ -1952,13 +1967,13 @@ const THERMOSTAT_FIELD_MAP = {
     google: {
       fields: ['fan_control_settings'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.fan_control_settings?.timerDuration?.seconds) === false
+        Number.isFinite(Number(raw?.value?.fan_control_settings?.timerDuration?.seconds)) === true
           ? Number(raw.value.fan_control_settings.timerDuration.seconds)
           : undefined,
     },
     nest: {
       fields: ['fan_duration'],
-      translate: ({ raw }) => (isNaN(raw?.value?.fan_duration) === false ? Number(raw.value.fan_duration) : undefined),
+      translate: ({ raw }) => (Number.isFinite(Number(raw?.value?.fan_duration)) === true ? Number(raw.value.fan_duration) : undefined),
     },
   },
 
@@ -1966,7 +1981,7 @@ const THERMOSTAT_FIELD_MAP = {
     google: {
       fields: ['humidity_control_settings'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.humidity_control_settings?.humidifierTargetHumidity?.value) === false
+        Number.isFinite(Number(raw?.value?.humidity_control_settings?.humidifierTargetHumidity?.value)) === true
           ? Number(raw.value.humidity_control_settings.humidifierTargetHumidity.value)
           : undefined,
     },
@@ -1980,7 +1995,7 @@ const THERMOSTAT_FIELD_MAP = {
     google: {
       fields: ['humidity_control_settings'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.humidity_control_settings?.dehumidifierTargetHumidity?.value) === false
+        Number.isFinite(Number(raw?.value?.humidity_control_settings?.dehumidifierTargetHumidity?.value)) === true
           ? Number(raw.value.humidity_control_settings.dehumidifierTargetHumidity.value)
           : undefined,
     },
@@ -1993,7 +2008,8 @@ const THERMOSTAT_FIELD_MAP = {
   target_humidity: {
     nest: {
       fields: ['target_humidity'],
-      translate: ({ raw }) => (isNaN(raw?.value?.target_humidity) === false ? Number(raw.value.target_humidity) : undefined),
+      translate: ({ raw }) =>
+        Number.isFinite(Number(raw?.value?.target_humidity)) === true ? Number(raw.value.target_humidity) : undefined,
     },
   },
 
@@ -2108,12 +2124,12 @@ const THERMOSTAT_FIELD_MAP = {
       translate: ({ raw }) => {
         let value;
 
-        if (isNaN(raw?.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value) === false) {
+        if (Number.isFinite(Number(raw?.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value)) === true) {
           value = Number(raw.value.target_temperature_settings.targetTemperature.heatingTarget.value);
         }
 
         if (raw?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE') {
-          if (isNaN(raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.value?.value) === false) {
+          if (Number.isFinite(Number(raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.value?.value)) === true) {
             value = Number(raw.value.eco_mode_settings.ecoTemperatureHeat.value.value);
           }
         }
@@ -2127,12 +2143,12 @@ const THERMOSTAT_FIELD_MAP = {
       translate: ({ rawData, raw }) => {
         let value;
 
-        if (isNaN(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_low) === false) {
+        if (Number.isFinite(Number(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_low)) === true) {
           value = Number(rawData['shared.' + raw.value.serial_number].value.target_temperature_low);
         }
 
         if (raw?.value?.eco?.mode?.toUpperCase?.() === 'AUTO-ECO' || raw?.value?.eco?.mode?.toUpperCase?.() === 'MANUAL-ECO') {
-          if (isNaN(raw?.value?.away_temperature_low) === false) {
+          if (Number.isFinite(Number(raw?.value?.away_temperature_low)) === true) {
             value = Number(raw.value.away_temperature_low);
           }
         }
@@ -2148,12 +2164,12 @@ const THERMOSTAT_FIELD_MAP = {
       translate: ({ raw }) => {
         let value;
 
-        if (isNaN(raw?.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value) === false) {
+        if (Number.isFinite(Number(raw?.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value)) === true) {
           value = Number(raw.value.target_temperature_settings.targetTemperature.coolingTarget.value);
         }
 
         if (raw?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE') {
-          if (isNaN(raw?.value?.eco_mode_settings?.ecoTemperatureCool?.value?.value) === false) {
+          if (Number.isFinite(Number(raw?.value?.eco_mode_settings?.ecoTemperatureCool?.value?.value)) === true) {
             value = Number(raw.value.eco_mode_settings.ecoTemperatureCool.value.value);
           }
         }
@@ -2167,12 +2183,12 @@ const THERMOSTAT_FIELD_MAP = {
       translate: ({ rawData, raw }) => {
         let value;
 
-        if (isNaN(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_high) === false) {
+        if (Number.isFinite(Number(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_high)) === true) {
           value = Number(rawData['shared.' + raw.value.serial_number].value.target_temperature_high);
         }
 
         if (raw?.value?.eco?.mode?.toUpperCase?.() === 'AUTO-ECO' || raw?.value?.eco?.mode?.toUpperCase?.() === 'MANUAL-ECO') {
-          if (isNaN(raw?.value?.away_temperature_high) === false) {
+          if (Number.isFinite(Number(raw?.value?.away_temperature_high)) === true) {
             value = Number(raw.value.away_temperature_high);
           }
         }
@@ -2191,22 +2207,22 @@ const THERMOSTAT_FIELD_MAP = {
 
         if (
           setpointType === 'SET_POINT_TYPE_COOL' &&
-          isNaN(raw?.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value) === false
+          Number.isFinite(Number(raw?.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value)) === true
         ) {
           value = Number(raw.value.target_temperature_settings.targetTemperature.coolingTarget.value);
         }
 
         if (
           setpointType === 'SET_POINT_TYPE_HEAT' &&
-          isNaN(raw?.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value) === false
+          Number.isFinite(Number(raw?.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value)) === true
         ) {
           value = Number(raw.value.target_temperature_settings.targetTemperature.heatingTarget.value);
         }
 
         if (
           setpointType === 'SET_POINT_TYPE_RANGE' &&
-          isNaN(raw?.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value) === false &&
-          isNaN(raw?.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value) === false
+          Number.isFinite(Number(raw?.value?.target_temperature_settings?.targetTemperature?.coolingTarget?.value)) === true &&
+          Number.isFinite(Number(raw?.value?.target_temperature_settings?.targetTemperature?.heatingTarget?.value)) === true
         ) {
           value =
             (Number(raw.value.target_temperature_settings.targetTemperature.coolingTarget.value) +
@@ -2218,22 +2234,22 @@ const THERMOSTAT_FIELD_MAP = {
           if (
             raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled === true &&
             raw?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled !== true &&
-            isNaN(raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.value?.value) === false
+            Number.isFinite(Number(raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.value?.value)) === true
           ) {
             value = Number(raw.value.eco_mode_settings.ecoTemperatureHeat.value.value);
           }
           if (
             raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled !== true &&
             raw?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled === true &&
-            isNaN(raw?.value?.eco_mode_settings?.ecoTemperatureCool?.value?.value) === false
+            Number.isFinite(Number(raw?.value?.eco_mode_settings?.ecoTemperatureCool?.value?.value)) === true
           ) {
             value = Number(raw.value.eco_mode_settings.ecoTemperatureCool.value.value);
           }
           if (
             raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled === true &&
             raw?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled === true &&
-            isNaN(raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.value?.value) === false &&
-            isNaN(raw?.value?.eco_mode_settings?.ecoTemperatureCool?.value?.value) === false
+            Number.isFinite(Number(raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.value?.value)) === true &&
+            Number.isFinite(Number(raw?.value?.eco_mode_settings?.ecoTemperatureCool?.value?.value)) === true
           ) {
             value =
               (Number(raw.value.eco_mode_settings.ecoTemperatureCool.value.value) +
@@ -2259,26 +2275,26 @@ const THERMOSTAT_FIELD_MAP = {
         let targetType = rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_type?.toUpperCase?.() ?? 'OFF';
         let value;
 
-        if (isNaN(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature) === false) {
+        if (Number.isFinite(Number(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature)) === true) {
           value = Number(rawData['shared.' + raw.value.serial_number].value.target_temperature);
         }
 
         if (targetType === 'COOL') {
-          if (isNaN(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_high) === false) {
+          if (Number.isFinite(Number(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_high)) === true) {
             value = Number(rawData['shared.' + raw.value.serial_number].value.target_temperature_high);
           }
         }
 
         if (targetType === 'HEAT') {
-          if (isNaN(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_low) === false) {
+          if (Number.isFinite(Number(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_low)) === true) {
             value = Number(rawData['shared.' + raw.value.serial_number].value.target_temperature_low);
           }
         }
 
         if (targetType === 'RANGE') {
           if (
-            isNaN(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_low) === false &&
-            isNaN(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_high) === false
+            Number.isFinite(Number(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_low)) === true &&
+            Number.isFinite(Number(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_high)) === true
           ) {
             value =
               (Number(rawData['shared.' + raw.value.serial_number].value.target_temperature_low) +
@@ -2291,22 +2307,23 @@ const THERMOSTAT_FIELD_MAP = {
           if (
             raw?.value?.away_temperature_low_enabled === true &&
             raw?.value?.away_temperature_high_enabled === false &&
-            isNaN(raw?.value?.away_temperature_low) === false
+            Number.isFinite(Number(raw?.value?.away_temperature_low)) === true
           ) {
             value = Number(raw.value.away_temperature_low);
           }
           if (
             raw?.value?.away_temperature_high_enabled === true &&
             raw?.value?.away_temperature_low_enabled === false &&
-            isNaN(raw?.value?.away_temperature_high) === false
+            Number.isFinite(Number(raw?.value?.away_temperature_high)) === true
           ) {
             value = Number(raw.value.away_temperature_high);
           }
           if (
             raw?.value?.away_temperature_high_enabled === true &&
             raw?.value?.away_temperature_low_enabled === true &&
-            isNaN(raw?.value?.away_temperature_low) === false &&
-            isNaN(raw?.value?.away_temperature_high) === false
+            raw?.value?.away_temperature_low_enabled === true &&
+            Number.isFinite(Number(raw?.value?.away_temperature_low)) === true &&
+            Number.isFinite(Number(raw?.value?.away_temperature_high)) === true
           ) {
             value = (Number(raw.value.away_temperature_low) + Number(raw.value.away_temperature_high)) * 0.5;
           }
@@ -2457,7 +2474,7 @@ const THERMOSTAT_FIELD_MAP = {
         if (typeof activeSensor === 'string' && activeSensor !== '') {
           let sensor = rawData?.[activeSensor];
 
-          if (typeof sensor?.value === 'object' && isNaN(sensor?.value?.currentTemperature?.value) === false) {
+          if (typeof sensor?.value === 'object' && Number.isFinite(Number(sensor?.value?.currentTemperature?.value)) === true) {
             return adjustTemperature(Number(sensor.value.currentTemperature.value), 'C', 'C', true);
           }
         }
@@ -2476,7 +2493,7 @@ const THERMOSTAT_FIELD_MAP = {
             if (
               rcs?.active_rcs_sensors?.includes?.(sensor) === true &&
               typeof rawData?.[sensor]?.value === 'object' &&
-              isNaN(rawData[sensor].value.current_temperature) === false
+              Number.isFinite(Number(rawData[sensor].value.current_temperature)) === true
             ) {
               return adjustTemperature(Number(rawData[sensor].value.current_temperature), 'C', 'C', true);
             }
@@ -2531,7 +2548,7 @@ const THERMOSTAT_FIELD_MAP = {
               schedules[dayofWeekIndex][Object.entries(schedules[dayofWeekIndex]).length] = {
                 'temp-min': adjustTemperature(schedule.heatingTarget.value, 'C', 'C', true),
                 'temp-max': adjustTemperature(schedule.coolingTarget.value, 'C', 'C', true),
-                time: isNaN(schedule?.secondsInDay) === false ? Number(schedule.secondsInDay) : 0,
+                time: Number.isFinite(Number(schedule?.secondsInDay)) === true ? Number(schedule.secondsInDay) : 0,
                 type: scheduleMode.toUpperCase(),
                 entry_type: 'setpoint',
               };
@@ -2552,13 +2569,13 @@ const THERMOSTAT_FIELD_MAP = {
 
         Object.values(rawData['schedule.' + raw.value.serial_number].value.days).forEach((daySchedules) => {
           Object.values(daySchedules).forEach((schedule) => {
-            if (isNaN(schedule['temp']) === false) {
+            if (Number.isFinite(Number(schedule['temp'])) === true) {
               schedule.temp = adjustTemperature(Number(schedule.temp), 'C', 'C', true);
             }
-            if (isNaN(schedule['temp-min']) === false) {
+            if (Number.isFinite(Number(schedule['temp-min'])) === true) {
               schedule['temp-min'] = adjustTemperature(Number(schedule['temp-min']), 'C', 'C', true);
             }
-            if (isNaN(schedule['temp-max']) === false) {
+            if (Number.isFinite(Number(schedule['temp-max'])) === true) {
               schedule['temp-max'] = adjustTemperature(Number(schedule['temp-max']), 'C', 'C', true);
             }
           });
@@ -2622,13 +2639,14 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
         // Apply thermostat-specific post-map adjustments
         if (typeof mappedResult?.data === 'object' && mappedResult.data?.constructor === Object) {
           // If an active remote temperature sensor is selected, use its temperature as the thermostat current temperature
-          if (isNaN(mappedResult.data.active_rcs_sensor_temperature) === false) {
+          if (Number.isFinite(Number(mappedResult.data.active_rcs_sensor_temperature)) === true) {
             mappedResult.data.current_temperature = mappedResult.data.active_rcs_sensor_temperature;
           }
 
           // Nest-only humidifier target
           if (value?.source === DATA_SOURCE.NEST) {
-            mappedResult.data.target_humidity = isNaN(value?.value?.target_humidity) === false ? Number(value.value.target_humidity) : 0.0;
+            mappedResult.data.target_humidity =
+              Number.isFinite(Number(value?.value?.target_humidity)) === true ? Number(value.value.target_humidity) : 0.0;
           }
         }
 

@@ -86,7 +86,7 @@ const PREBUFFER_LENGTH = 4000;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.04.22'; // Code version
+  static VERSION = '2026.04.24'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -157,8 +157,11 @@ export default class NestCamera extends HomeKitDevice {
     // End of pre-0.4.0 cleanup
 
     // Setup the motion service if not already present on the accessory, and link it to the Eve app if configured to do so
+    // We also need to add the active characteristic to the motion service for it to work with HKSV
     // This needs to be done before we setup the HomeKit camera controller
     this.motionService = this.addHKService(this.hap.Service.MotionSensor, '', 1, {});
+    this.addHKCharacteristic(this.motionService, this.hap.Characteristic.Active, {}); // Required for HKSV
+    this.motionService.updateCharacteristic(this.hap.Characteristic.Active, true); // Required for HKSV
     this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
 
     // Setup HomeKit camera controller
@@ -176,7 +179,7 @@ export default class NestCamera extends HomeKitDevice {
     }
 
     // Setup battery service if required and not already present on the accessory
-    if (this.deviceData.model.includes('battery') === true && isNaN(this.deviceData?.battery_level) === false) {
+    if (this.deviceData.model.includes('battery') === true && Number.isFinite(Number(this.deviceData?.battery_level)) === true) {
       this.batteryService = this.addHKService(this.hap.Service.Battery, '', 1);
       this.batteryService.setHiddenService(true);
     }
@@ -318,7 +321,9 @@ export default class NestCamera extends HomeKitDevice {
 
     this.postSetupDetail(
       'HomeKit Secure Video support' +
-        (this.deviceData.model.includes('battery') === true && isNaN(this.deviceData?.battery_level) === false ? ' (on battery)' : ''),
+        (this.deviceData.model.includes('battery') === true && Number.isFinite(Number(this.deviceData?.battery_level)) === true
+          ? ' (on battery)'
+          : ''),
     );
     this.deviceData.ffmpeg.hwaccel === true && this.postSetupDetail('Hardware video acceleration');
     this.deviceData.ffmpeg.transcode === true && this.postSetupDetail('Video transcoding');
@@ -462,16 +467,6 @@ export default class NestCamera extends HomeKitDevice {
       }
     }
 
-    // Handle online status changes for motion sensor
-    if (this.motionService !== undefined) {
-      if (deviceData.online === false && this.motionService.getCharacteristic(this.hap.Characteristic.MotionDetected).value === true) {
-        this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
-        this.#motionCooldownActive = false;
-        this.removeTimer(TIMERS.MOTION_COOLDOWN.name);
-        this.history(this.motionService, { status: 0 });
-      }
-    }
-
     if (this.controller?.recordingManagement?.operatingModeService !== undefined) {
       // Update camera off/on status
       this.controller.recordingManagement.operatingModeService.updateCharacteristic(
@@ -528,7 +523,7 @@ export default class NestCamera extends HomeKitDevice {
     }
     if (this.controller?.speakerService !== undefined) {
       // Update speaker volume if specified
-      if (deviceData.audio_enabled === true && isNaN(deviceData.speaker_volume) === false) {
+      if (deviceData.audio_enabled === true && Number.isFinite(Number(deviceData.speaker_volume)) === true) {
         this.controller.speakerService.updateCharacteristic(this.hap.Characteristic.Volume, deviceData.speaker_volume);
       }
 
@@ -621,6 +616,54 @@ export default class NestCamera extends HomeKitDevice {
         this.history(this.motionService, { status: 0 });
       }
       this.#motionCooldownActive = false;
+    }
+  }
+
+  async onMessage(type, message) {
+    if (typeof type !== 'string' || type === '' || typeof message !== 'object') {
+      return;
+    }
+
+    if (type === HomeKitDevice.ONLINE) {
+      // Notified that camera is back online
+
+      if (this.motionService !== undefined) {
+        // Re-enable motion service in HomeKit now camera is reachable again
+        this.motionService.updateCharacteristic(this.hap.Characteristic.StatusActive, true);
+      }
+
+      // If HKSV recording is enabled, ensure prebuffering is running again.
+      // This allows us to capture footage leading up to any motion event.
+      if (
+        this?.streamer?.isBuffering?.() === false &&
+        this?.controller?.recordingManagement?.recordingManagementService !== undefined &&
+        this.controller.recordingManagement.recordingManagementService.getCharacteristic(this.hap.Characteristic.Active).value ===
+          this.hap.Characteristic.Active.ACTIVE
+      ) {
+        // Restart buffer pipeline so camera is ready for motion-triggered recording
+        await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_BUFFER, {
+          options: {},
+        });
+      }
+
+      return;
+    }
+
+    if (type === HomeKitDevice.OFFLINE) {
+      // Notified that camera is offline
+      if (this.motionService !== undefined) {
+        // Clear any existing motion status in HomeKit since camera is now offline
+        // This will also naturally stop any inflight motion-triggered recording
+        this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
+        this.motionService.updateCharacteristic(this.hap.Characteristic.StatusActive, false);
+        this.#motionCooldownActive = false;
+        this.removeTimer(TIMERS.MOTION_COOLDOWN.name);
+        this.history(this.motionService, { status: 0 });
+      }
+
+      // Stop any prebuffering/record buffering
+      this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_BUFFER, {});
+      return;
     }
   }
 
@@ -1882,7 +1925,7 @@ const CAMERA_FIELD_MAP = {
     nest: {
       fields: ['properties'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.properties?.['statusled.brightness']) === false
+        Number.isFinite(Number(raw?.value?.properties?.['statusled.brightness'])) === true
           ? Number(raw.value.properties['statusled.brightness'])
           : undefined,
     },
@@ -1927,7 +1970,8 @@ const CAMERA_FIELD_MAP = {
   speaker_volume: {
     google: {
       fields: ['speaker_volume'],
-      translate: ({ raw }) => (isNaN(raw?.value?.speaker_volume?.volume) === false ? Number(raw.value.speaker_volume.volume) : undefined),
+      translate: ({ raw }) =>
+        Number.isFinite(Number(raw?.value?.speaker_volume?.volume)) === true ? Number(raw.value.speaker_volume.volume) : undefined,
     },
   },
 
@@ -1952,7 +1996,7 @@ const CAMERA_FIELD_MAP = {
     google: {
       fields: ['quiet_time_settings'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.quiet_time_settings?.quietTimeEnds?.seconds) === false &&
+        Number.isFinite(Number(raw?.value?.quiet_time_settings?.quietTimeEnds?.seconds)) === true &&
         Number(raw.value.quiet_time_settings.quietTimeEnds.seconds) !== 0 &&
         Math.floor(Date.now() / 1000) < Number(raw.value.quiet_time_settings.quietTimeEnds.seconds),
     },
@@ -2042,14 +2086,14 @@ const CAMERA_FIELD_MAP = {
     google: {
       fields: ['battery_power_source'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.battery_power_source?.remaining?.remainingPercent?.value) === false
+        Number.isFinite(Number(raw?.value?.battery_power_source?.remaining?.remainingPercent?.value)) === true
           ? Math.round(scaleValue(Number(raw.value.battery_power_source.remaining.remainingPercent.value), 0, 1, 0, 100))
           : undefined,
     },
     nest: {
       fields: ['properties'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.properties?.['rq_battery_battery_volt']) === false
+        Number.isFinite(Number(raw?.value?.properties?.['rq_battery_battery_volt'])) === true
           ? Math.round(scaleValue(Number(raw.value.properties['rq_battery_battery_volt']), 6.2, 8.4, 0, 100))
           : undefined,
     },

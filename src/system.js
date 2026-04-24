@@ -35,7 +35,7 @@
 // - Maintains connection state, protobuf definitions, raw data cache, snapshot waiters, and tracked devices
 // - Creates and updates HomeKitDevice-based instances for supported device types
 //
-// Code version 2026.04.18
+// Code version 2026.04.22
 // Mark Hulskamp
 'use strict';
 
@@ -204,7 +204,24 @@ export default class NestAccfactory {
     // This gets called from Homebridge each time it restores an accessory from its cache
     this?.log?.info?.('Loading accessory from cache:', accessory.displayName);
 
-    // add the restored accessory to the accessories cache, so we can track if it has already been registered
+    let informationService = accessory?.getService?.(this.api.hap.Service.AccessoryInformation);
+    if (informationService === undefined) {
+      // Accessory is missing the required AccessoryInformation service
+      // means it's not going to work and is likely a stale entry in the cache. Remove it and log an error.
+      this?.log?.warn?.('Cached accessory "%s" is missing AccessoryInformation service. Removing from cache', accessory.displayName);
+
+      try {
+        this.api.unregisterPlatformAccessories(HomeKitDevice.PLUGIN_NAME, HomeKitDevice.PLATFORM_NAME, [accessory]);
+        // eslint-disable-next-line no-unused-vars
+      } catch (error) {
+        // Empty
+      }
+
+      return;
+    }
+
+    // Accessory has the required AccessoryInformation service, so we can add the restored accessory to the accessories cache
+    // This allows us to track if it has already been registered
     this.cachedAccessories.push(accessory);
   }
 
@@ -674,11 +691,9 @@ export default class NestAccfactory {
                 }
               });
 
-              let oldBucketsSet = new Set(existingValue.buckets);
-
               // Detect removed objects and clean up local state
-              incomingValue.buckets.forEach((childObjectKey) => {
-                if (oldBucketsSet.has(childObjectKey) === false) {
+              existingValue.buckets.forEach((childObjectKey) => {
+                if (newBucketsSet.has(childObjectKey) === false) {
                   // Object existed previously but is no longer referenced, so treat as removed
                   if (
                     childObjectKey.startsWith('structure.') === true ||
@@ -704,7 +719,6 @@ export default class NestAccfactory {
               });
             }
           }
-
           // Only record this object if at least one field changed
           if (changedFields.size !== 0) {
             changedData.set(objectKey, { fields: changedFields });
@@ -1298,7 +1312,7 @@ export default class NestAccfactory {
             (key === 'hvac_mode' && ['OFF', 'COOL', 'HEAT', 'RANGE'].includes(value?.toUpperCase?.())) ||
             (['target_temperature', 'target_temperature_low', 'target_temperature_high'].includes(key) === true &&
               this.#rawData?.[nest_google_device_uuid]?.value?.eco_mode_state?.ecoMode === 'ECO_MODE_INACTIVE' &&
-              isNaN(value) === false)
+              Number.isFinite(Number(value)) === true)
           ) {
             // Set either the 'mode' and/or non-eco temperatures on the target thermostat
             setUpdateTrait('target_temperature_settings', 'type.nestlabs.com/nest.trait.hvac.TargetTemperatureSettingsTrait');
@@ -1309,7 +1323,7 @@ export default class NestAccfactory {
                 updateElement.state.value.targetTemperature.setpointType === 'SET_POINT_TYPE_RANGE')
             ) {
               // Changing heating target temperature
-              updateElement.state.value.targetTemperature.heatingTarget = { value: value };
+              updateElement.state.value.targetTemperature.heatingTarget = { value: Number(value) };
             }
             if (
               (key === 'target_temperature_high' || key === 'target_temperature') &&
@@ -1317,7 +1331,7 @@ export default class NestAccfactory {
                 updateElement.state.value.targetTemperature.setpointType === 'SET_POINT_TYPE_RANGE')
             ) {
               // Changing cooling target temperature
-              updateElement.state.value.targetTemperature.coolingTarget = { value: value };
+              updateElement.state.value.targetTemperature.coolingTarget = { value: Number(value) };
             }
 
             if (key === 'hvac_mode' && value.toUpperCase() !== 'OFF') {
@@ -1340,7 +1354,7 @@ export default class NestAccfactory {
           if (
             ['target_temperature', 'target_temperature_low', 'target_temperature_high'].includes(key) === true &&
             this.#rawData?.[nest_google_device_uuid]?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE' &&
-            isNaN(value) === false
+            Number.isFinite(Number(value)) === true
           ) {
             // Set eco mode temperatures on the target thermostat
             setUpdateTrait('eco_mode_settings', 'type.nestlabs.com/nest.trait.hvac.EcoModeSettingsTrait');
@@ -1348,24 +1362,24 @@ export default class NestAccfactory {
             updateElement.state.value.ecoTemperatureHeat.value.value =
               updateElement.state.value.ecoTemperatureHeat.enabled === true &&
               updateElement.state.value.ecoTemperatureCool.enabled === false
-                ? value
+                ? Number(value)
                 : updateElement.state.value.ecoTemperatureHeat.value.value;
             updateElement.state.value.ecoTemperatureCool.value.value =
               updateElement.state.value.ecoTemperatureHeat.enabled === false &&
               updateElement.state.value.ecoTemperatureCool.enabled === true
-                ? value
+                ? Number(value)
                 : updateElement.state.value.ecoTemperatureCool.value.value;
             updateElement.state.value.ecoTemperatureHeat.value.value =
               updateElement.state.value.ecoTemperatureHeat.enabled === true &&
               updateElement.state.value.ecoTemperatureCool.enabled === true &&
               key === 'target_temperature_low'
-                ? value
+                ? Number(value)
                 : updateElement.state.value.ecoTemperatureHeat.value.value;
             updateElement.state.value.ecoTemperatureCool.value.value =
               updateElement.state.value.ecoTemperatureHeat.enabled === true &&
               updateElement.state.value.ecoTemperatureCool.enabled === true &&
               key === 'target_temperature_high'
-                ? value
+                ? Number(value)
                 : updateElement.state.value.ecoTemperatureCool.value.value;
           }
 
@@ -1383,7 +1397,7 @@ export default class NestAccfactory {
             });
           }
 
-          if (key === 'fan_state' && typeof value === 'boolean' && isNaN(values?.fan_duration) === false) {
+          if (key === 'fan_state' && typeof value === 'boolean' && Number.isFinite(Number(values?.fan_duration)) === true) {
             // Set fan mode on the target thermostat, including runtime if turning on
             setUpdateTrait('fan_control_settings', 'type.nestlabs.com/nest.trait.hvac.FanControlSettingsTrait');
             updateElement.state.value.timerEnd =
@@ -1402,7 +1416,7 @@ export default class NestAccfactory {
             }
           }
 
-          if (key === 'fan_timer_speed' && isNaN(value) === false && values?.fan_state === undefined) {
+          if (key === 'fan_timer_speed' && Number.isFinite(Number(value)) === true && values?.fan_state === undefined) {
             // Set fan speed on the target thermostat only if we're not changing fan on/off state also
             setUpdateTrait('fan_control_settings', 'type.nestlabs.com/nest.trait.hvac.FanControlSettingsTrait');
             updateElement.state.value.timerSpeed =
@@ -1411,7 +1425,7 @@ export default class NestAccfactory {
                 : this.#rawData[nest_google_device_uuid].value.fan_control_settings.timerSpeed;
           }
 
-          if (key === 'statusled_brightness' && isNaN(value) === false) {
+          if (key === 'statusled_brightness' && Number.isFinite(Number(value)) === true) {
             // 0
             // 1
           }
@@ -1466,7 +1480,7 @@ export default class NestAccfactory {
             }
           }
 
-          if (key === 'light_brightness' && isNaN(value) === false) {
+          if (key === 'light_brightness' && Number.isFinite(Number(value)) === true) {
             // Set light brightness on supported camera devices. Needs to be scaled to 0-10 for the API
             setUpdateTrait('floodlight_settings', 'type.nestlabs.com/google.trait.product.camera.FloodlightSettingsTrait', undefined, {
               brightness: scaleValue(Number(value), 0, 100, 0, 10),
@@ -1499,20 +1513,22 @@ export default class NestAccfactory {
           ) {
             // Turn hotwater boost heating on/off
             setUpdateTrait('hot_water_settings', 'type.nestlabs.com/nest.trait.hvac.HotWaterSettingsTrait');
+
+            let boostTime = Number.isFinite(Number(value?.time)) === true ? Number(value.time) : 30 * 60;
+            let boostEnd = Math.floor(Date.now() / 1000) + boostTime;
+
             updateElement.state.value.boostTimerEnd =
               value?.state === true
                 ? {
-                    seconds: Number(Math.floor(Date.now() / 1000) + Number(isNaN(value?.time) === false ? value?.time : 30 * 60)),
-                    nanos: Number(
-                      (Math.floor(Date.now() / 1000) + (Number(isNaN(value?.time) === false ? value?.time : 30 * 60) % 1000)) * 1e6,
-                    ),
+                    seconds: boostEnd,
+                    nanos: (boostEnd % 1000) * 1e6,
                   }
                 : { seconds: 0, nanos: 0 };
           }
 
           if (
             key === 'hot_water_temperature' &&
-            isNaN(value) === false &&
+            Number.isFinite(Number(value)) === true &&
             this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasHotWaterTemperature === true
           ) {
             // Set hotwater boiler temperature
@@ -1535,12 +1551,12 @@ export default class NestAccfactory {
             });
           }
 
-          if (key === 'auto_relock_duration' && isNaN(value) === false) {
+          if (key === 'auto_relock_duration' && Number.isFinite(Number(value)) === true) {
             // Set lock auto-relock duration
             setUpdateTrait('bolt_lock_settings', 'type.nestlabs.com/weave.trait.security.BoltLockSettingsTrait');
             updateElement.state.value.autoRelockDuration = {
               ...(updateElement.state.value.autoRelockDuration ?? {}),
-              seconds: value,
+              seconds: Number(value),
             };
           }
 
@@ -1579,7 +1595,7 @@ export default class NestAccfactory {
 
           if (
             key === 'target_humidity_dehumidifier' &&
-            isNaN(value) === false &&
+            Number.isFinite(Number(value)) === true &&
             this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasDehumidifier === true
           ) {
             // Set dehumidifier target humidity on the target thermostat
@@ -1605,7 +1621,7 @@ export default class NestAccfactory {
 
           if (
             key === 'target_humidity_humidifier' &&
-            isNaN(value) === false &&
+            Number.isFinite(Number(value)) === true &&
             this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasHumidifier === true
           ) {
             // Set humidifier target humidity on the target thermostat
@@ -1720,14 +1736,14 @@ export default class NestAccfactory {
 
             if (
               ['target_temperature', 'target_temperature_low', 'target_temperature_high'].includes(key) === true &&
-              isNaN(value) === false &&
+              Number.isFinite(Number(value)) === true &&
               nest_google_device_uuid.startsWith('device.') === true
             ) {
               // Set temperatures on thermostat
               subscribeJSONData.objects.push({
                 object_key: 'shared.' + nest_google_device_uuid.trim().split('.')[1],
                 op: 'MERGE',
-                value: { target_change_pending: true, [key]: value },
+                value: { target_change_pending: true, [key]: Number(value) },
               });
             }
 
@@ -1747,7 +1763,7 @@ export default class NestAccfactory {
             if (
               key === 'fan_state' &&
               typeof value === 'boolean' &&
-              isNaN(values?.fan_duration) === false &&
+              Number.isFinite(Number(values?.fan_duration)) === true &&
               nest_google_device_uuid.startsWith('device.') === true
             ) {
               // Set fan on/off on thermostat
@@ -1757,12 +1773,16 @@ export default class NestAccfactory {
                 op: 'MERGE',
                 value: {
                   fan_state: value,
-                  fan_timer_timeout: value === true ? values.fan_duration + Math.floor(Date.now() / 1000) : 0,
+                  fan_timer_timeout: value === true ? Number(values.fan_duration) + Math.floor(Date.now() / 1000) : 0,
                 },
               });
             }
 
-            if (key === 'fan_timer_speed' && isNaN(value) === false && nest_google_device_uuid.startsWith('device.') === true) {
+            if (
+              key === 'fan_timer_speed' &&
+              Number.isFinite(Number(value)) === true &&
+              nest_google_device_uuid.startsWith('device.') === true
+            ) {
               // Set fan speed on thermostat
               subscribeJSONData.objects.push({
                 object_key: nest_google_device_uuid,
@@ -1774,7 +1794,7 @@ export default class NestAccfactory {
             if (
               key === 'hot_water_boost_active' &&
               typeof value?.state === 'boolean' &&
-              isNaN(value?.time) === false &&
+              Number.isFinite(Number(value?.time)) === true &&
               nest_google_device_uuid.startsWith('device.') === true &&
               this.#rawData?.[nest_google_device_uuid]?.value?.has_hot_water_control === true
             ) {
@@ -1783,14 +1803,14 @@ export default class NestAccfactory {
                 object_key: nest_google_device_uuid,
                 op: 'MERGE',
                 value: {
-                  hot_water_boost_time_to_end: value.state === true ? value.time + Math.floor(Date.now() / 1000) : 0,
+                  hot_water_boost_time_to_end: value.state === true ? Number(value.time) + Math.floor(Date.now() / 1000) : 0,
                 },
               });
             }
 
             if (
               key === 'hot_water_temperature' &&
-              isNaN(value) === false &&
+              Number.isFinite(Number(value)) === true &&
               nest_google_device_uuid.startsWith('device.') === true &&
               this.#rawData?.[nest_google_device_uuid]?.value?.has_hot_water_temperature === true
             ) {
@@ -1799,7 +1819,7 @@ export default class NestAccfactory {
                 object_key: nest_google_device_uuid,
                 op: 'MERGE',
                 value: {
-                  hot_water_temperature: value,
+                  hot_water_temperature: Number(value),
                 },
               });
             }
@@ -1825,7 +1845,7 @@ export default class NestAccfactory {
             if (
               key === 'dehumidifier_state' &&
               typeof value === 'boolean' &&
-              isNaN(values?.target_humidity) === false &&
+              Number.isFinite(Number(values?.target_humidity)) === true &&
               nest_google_device_uuid.startsWith('device.') === true &&
               this.#rawData?.[nest_google_device_uuid]?.value?.has_dehumidifier === true
             ) {
@@ -1840,7 +1860,7 @@ export default class NestAccfactory {
             if (
               key === 'humidifier_state' &&
               typeof value === 'boolean' &&
-              isNaN(values?.target_humidity) === false &&
+              Number.isFinite(Number(values?.target_humidity)) === true &&
               nest_google_device_uuid.startsWith('device.') === true &&
               this.#rawData?.[nest_google_device_uuid]?.value?.has_humidifier === true
             ) {

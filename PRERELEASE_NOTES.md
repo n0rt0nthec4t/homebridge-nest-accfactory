@@ -4,6 +4,19 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.0-beta.15 (2026/04/24)
+
+- Replaced `isNaN(...)` checks with `Number.isFinite(Number(...))` across the code base for stricter numeric validation
+
+- `system.js`
+  - Added validation of restored cached accessories during startup
+  - Invalid or incomplete accessories are now removed from cache to prevent stale state issues
+
+- `plugins/camera.js`
+  - Added back missing `Active` characteristic back to motion sensor, as got dropped during recoding (required for HKSV recording)
+  - Fixes recordings not triggering after plugin restart
+  - Refined camera online/offline transitions to ensure correct buffering and recording behaviour
+
 ## v0.4.0-beta.14 (2026/04/22)
 
 Perhaps 13 is an unlucky number? I broke some things :-( Thanks to [@marving11](https://github.com/marving11) for catching these.
@@ -20,14 +33,25 @@ Perhaps 13 is an unlucky number? I broke some things :-( Thanks to [@marving11](
 
 ## v0.4.0-beta.13 (2026/04/21)
 
-- Added generation values to temperature sensors [@mtcislak-max](https://github.com/mtcislak-max)
-- Fixed re-authorisation handling in `nexustalk.js` (use reconnect flow instead of inline reauth)
-- Fixed reconnect race condition between `nexustalk.js` and `streamer.js`
-- Prevented stale video frames from previous sessions affecting new stream state on reconnect
-- Removed OccupancySensor service from thermostat devices `thermostat.js`
-- Added new Home/Away accessory exposing structure occupancy as an OccupancySensor `plugins/homeaway.js`
-- Minor code fixes in `system.js`
-- Refinements to playout buffer in `streamer.js`
+- `nexustalk.js`
+  - Fixed re-authorisation handling (use reconnect flow instead of inline reauth)
+  - Fixed reconnect race condition with `streamer.js`
+
+- `streamer.js`
+  - Refinements to playout buffer
+  - Prevented stale video frames from previous sessions affecting new stream state on reconnect
+
+- `thermostat.js`
+  - Removed OccupancySensor service from thermostat devices
+
+- `plugins/homeaway.js`
+  - Added Home/Away accessory exposing structure occupancy as an OccupancySensor
+
+- `system.js`
+  - Minor code fixes
+
+- `plugins/tempsensor.js`
+  - Added generation values to temperature sensors [@mtcislak-max](https://github.com/mtcislak-max)
 
 ## v0.4.0-alpha.24 (2026/04/18)
 

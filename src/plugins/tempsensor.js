@@ -48,7 +48,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestTemperatureSensor extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.TEMPSENSOR;
-  static VERSION = '2026.04.21'; // Code version
+  static VERSION = '2026.04.22'; // Code version
 
   batteryService = undefined;
   temperatureService = undefined;
@@ -278,7 +278,7 @@ const TEMPSENSOR_FIELD_MAP = {
       translate: ({ raw }) => {
         let value = raw?.value;
 
-        return isNaN(value?.battery?.assessedVoltage?.value) === false
+        return Number.isFinite(Number(value?.battery?.assessedVoltage?.value)) === true
           ? Math.round(scaleValue(Number(value.battery.assessedVoltage.value), 2.5, 3.2, 0, 100))
           : undefined;
       },
@@ -288,7 +288,9 @@ const TEMPSENSOR_FIELD_MAP = {
       translate: ({ raw }) => {
         let value = raw?.value;
 
-        return isNaN(value?.battery_level) === false ? Math.round(scaleValue(Number(value.battery_level), 0, 100, 0, 100)) : undefined;
+        return Number.isFinite(Number(value?.battery_level)) === true
+          ? Math.round(scaleValue(Number(value.battery_level), 0, 100, 0, 100))
+          : undefined;
       },
     },
   },
@@ -300,7 +302,7 @@ const TEMPSENSOR_FIELD_MAP = {
       translate: ({ raw }) => {
         let value = raw?.value;
 
-        return isNaN(value?.current_temperature?.temperatureValue?.temperature?.value) === false
+        return Number.isFinite(Number(value?.current_temperature?.temperatureValue?.temperature?.value)) === true
           ? adjustTemperature(Number(value.current_temperature.temperatureValue.temperature.value), 'C', 'C', true)
           : undefined;
       },
@@ -310,7 +312,7 @@ const TEMPSENSOR_FIELD_MAP = {
       translate: ({ raw }) => {
         let value = raw?.value;
 
-        return isNaN(value?.current_temperature) === false
+        return Number.isFinite(Number(value?.current_temperature)) === true
           ? adjustTemperature(Number(value.current_temperature), 'C', 'C', true)
           : undefined;
       },
@@ -325,7 +327,7 @@ const TEMPSENSOR_FIELD_MAP = {
         let value = raw?.value;
 
         return (
-          isNaN(value?.last_updated_beacon?.lastBeaconTime?.seconds) === false &&
+          Number.isFinite(Number(value?.last_updated_beacon?.lastBeaconTime?.seconds)) === true &&
           Math.floor(Date.now() / 1000) - Number(value.last_updated_beacon.lastBeaconTime.seconds) < 3600 * 4
         );
       },
@@ -335,7 +337,10 @@ const TEMPSENSOR_FIELD_MAP = {
       translate: ({ raw }) => {
         let value = raw?.value;
 
-        return isNaN(value?.last_updated_at) === false && Math.floor(Date.now() / 1000) - Number(value.last_updated_at) < 3600 * 4;
+        return (
+          Number.isFinite(Number(value?.last_updated_at)) === true &&
+          Math.floor(Date.now() / 1000) - Number(value.last_updated_at) < 3600 * 4
+        );
       },
     },
   },

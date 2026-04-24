@@ -47,7 +47,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.PROTECT;
-  static VERSION = '2026.04.21'; // Code version
+  static VERSION = '2026.04.22'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -435,33 +435,33 @@ const PROTECT_FIELD_MAP = {
       fields: ['battery_voltage_bank0', 'battery_voltage_bank1'],
       translate: ({ raw }) => {
         let bank0 =
-          isNaN(raw?.value?.battery_voltage_bank0?.batteryValue?.batteryVoltage?.value) === false &&
+          Number.isFinite(Number(raw?.value?.battery_voltage_bank0?.batteryValue?.batteryVoltage?.value)) === true &&
           Number(raw.value.battery_voltage_bank0.batteryValue.batteryVoltage.value) > 0
             ? Number(raw.value.battery_voltage_bank0.batteryValue.batteryVoltage.value)
             : undefined;
 
         let bank1 =
-          isNaN(raw?.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value) === false &&
+          Number.isFinite(Number(raw?.value?.battery_voltage_bank1?.batteryValue?.batteryVoltage?.value)) === true &&
           Number(raw.value.battery_voltage_bank1.batteryValue.batteryVoltage.value) > 0
             ? Number(raw.value.battery_voltage_bank1.batteryValue.batteryVoltage.value)
             : undefined;
 
         let voltage =
-          isNaN(bank0) === false && isNaN(bank1) === false
+          Number.isFinite(bank0) === true && Number.isFinite(bank1) === true
             ? Math.min(bank0, bank1)
-            : isNaN(bank0) === false
+            : Number.isFinite(bank0) === true
               ? bank0
-              : isNaN(bank1) === false
+              : Number.isFinite(bank1) === true
                 ? bank1
                 : undefined;
 
-        return isNaN(voltage) === false ? Math.round(scaleValue(voltage, 4.5, 5.4, 0, 100)) : undefined;
+        return Number.isFinite(voltage) === true ? Math.round(scaleValue(voltage, 4.5, 5.4, 0, 100)) : undefined;
       },
     },
     nest: {
       fields: ['battery_level'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.battery_level) === false && Number(raw.value.battery_level) > 0
+        Number.isFinite(Number(raw?.value?.battery_level)) === true && Number(raw.value.battery_level) > 0
           ? Math.round(scaleValue(Number(raw.value.battery_level), 4500, 5400, 0, 100))
           : undefined,
     },
@@ -583,12 +583,16 @@ const PROTECT_FIELD_MAP = {
     google: {
       fields: ['self_test'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.self_test?.lastMstEnd?.seconds) === false ? Number(raw.value.self_test.lastMstEnd.seconds) : undefined,
+        Number.isFinite(Number(raw?.value?.self_test?.lastMstEnd?.seconds)) === true
+          ? Number(raw.value.self_test.lastMstEnd.seconds)
+          : undefined,
     },
     nest: {
       fields: ['latest_manual_test_end_utc_secs'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.latest_manual_test_end_utc_secs) === false ? Number(raw.value.latest_manual_test_end_utc_secs) : undefined,
+        Number.isFinite(Number(raw?.value?.latest_manual_test_end_utc_secs)) === true
+          ? Number(raw.value.latest_manual_test_end_utc_secs)
+          : undefined,
     },
   },
 
@@ -610,14 +614,14 @@ const PROTECT_FIELD_MAP = {
     google: {
       fields: ['legacy_protect_device_settings'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.legacy_protect_device_settings?.replaceByDate?.seconds) === false
+        Number.isFinite(Number(raw?.value?.legacy_protect_device_settings?.replaceByDate?.seconds)) === true
           ? Number(raw.value.legacy_protect_device_settings.replaceByDate.seconds)
           : undefined,
     },
     nest: {
       fields: ['replace_by_date_utc_secs'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.replace_by_date_utc_secs) === false ? Number(raw.value.replace_by_date_utc_secs) : undefined,
+        Number.isFinite(Number(raw?.value?.replace_by_date_utc_secs)) === true ? Number(raw.value.replace_by_date_utc_secs) : undefined,
     },
   },
 

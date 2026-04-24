@@ -27,7 +27,7 @@
 // - fetchWrapper() is the primary HTTP client abstraction for the plugin
 // - Functions are designed to fail safely and return undefined where appropriate
 //
-// Code version 2026.04.15
+// Code version 2026.04.22
 // Mark Hulskamp
 'use strict';
 
@@ -262,14 +262,14 @@ function parseDurationToSeconds(inputDuration, { defaultValue = null, min = 0, m
       }
     }
 
-    if (normalisedSeconds === null || isNaN(normalisedSeconds) === true) {
+    if (normalisedSeconds === null || Number.isFinite(normalisedSeconds) !== true) {
       normalisedSeconds = defaultValue;
     }
 
-    if (isNaN(min) === false && normalisedSeconds < min) {
+    if (Number.isFinite(min) === true && normalisedSeconds < min) {
       normalisedSeconds = min;
     }
-    if (isNaN(max) === false && normalisedSeconds > max) {
+    if (Number.isFinite(max) === true && normalisedSeconds > max) {
       normalisedSeconds = max;
     }
   }

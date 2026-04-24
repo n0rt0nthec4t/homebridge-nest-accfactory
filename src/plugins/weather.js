@@ -50,7 +50,7 @@ import { DATA_SOURCE, DEVICE_TYPE, MAX_ELEVATION, MIN_ELEVATION, NESTLABS_MAC_PR
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.WEATHER;
-  static VERSION = '2026.04.21'; // Code version
+  static VERSION = '2026.04.22'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -313,14 +313,14 @@ const WEATHER_FIELD_MAP = {
     google: {
       fields: ['weather'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.weather?.current_temperature) === false
+        Number.isFinite(Number(raw?.value?.weather?.current_temperature)) === true
           ? adjustTemperature(Number(raw.value.weather.current_temperature), 'C', 'C', true)
           : undefined,
     },
     nest: {
       fields: ['weather'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.weather?.current_temperature) === false
+        Number.isFinite(Number(raw?.value?.weather?.current_temperature)) === true
           ? adjustTemperature(Number(raw.value.weather.current_temperature), 'C', 'C', true)
           : undefined,
     },
@@ -331,12 +331,12 @@ const WEATHER_FIELD_MAP = {
     google: {
       fields: ['weather'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.weather?.current_humidity) === false ? Number(raw.value.weather.current_humidity) : undefined,
+        Number.isFinite(Number(raw?.value?.weather?.current_humidity)) === true ? Number(raw.value.weather.current_humidity) : undefined,
     },
     nest: {
       fields: ['weather'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.weather?.current_humidity) === false ? Number(raw.value.weather.current_humidity) : undefined,
+        Number.isFinite(Number(raw?.value?.weather?.current_humidity)) === true ? Number(raw.value.weather.current_humidity) : undefined,
     },
   },
 
@@ -368,33 +368,39 @@ const WEATHER_FIELD_MAP = {
   wind_speed: {
     google: {
       fields: ['weather'],
-      translate: ({ raw }) => (isNaN(raw?.value?.weather?.wind_speed) === false ? Number(raw.value.weather.wind_speed) : undefined),
+      translate: ({ raw }) =>
+        Number.isFinite(Number(raw?.value?.weather?.wind_speed)) === true ? Number(raw.value.weather.wind_speed) : undefined,
     },
     nest: {
       fields: ['weather'],
-      translate: ({ raw }) => (isNaN(raw?.value?.weather?.wind_speed) === false ? Number(raw.value.weather.wind_speed) : undefined),
+      translate: ({ raw }) =>
+        Number.isFinite(Number(raw?.value?.weather?.wind_speed)) === true ? Number(raw.value.weather.wind_speed) : undefined,
     },
   },
 
   sunrise: {
     google: {
       fields: ['weather'],
-      translate: ({ raw }) => (isNaN(raw?.value?.weather?.sunrise) === false ? Number(raw.value.weather.sunrise) : undefined),
+      translate: ({ raw }) =>
+        Number.isFinite(Number(raw?.value?.weather?.sunrise)) === true ? Number(raw.value.weather.sunrise) : undefined,
     },
     nest: {
       fields: ['weather'],
-      translate: ({ raw }) => (isNaN(raw?.value?.weather?.sunrise) === false ? Number(raw.value.weather.sunrise) : undefined),
+      translate: ({ raw }) =>
+        Number.isFinite(Number(raw?.value?.weather?.sunrise)) === true ? Number(raw.value.weather.sunrise) : undefined,
     },
   },
 
   sunset: {
     google: {
       fields: ['weather'],
-      translate: ({ raw }) => (isNaN(raw?.value?.weather?.sunset) === false ? Number(raw.value.weather.sunset) : undefined),
+      translate: ({ raw }) =>
+        Number.isFinite(Number(raw?.value?.weather?.sunset)) === true ? Number(raw.value.weather.sunset) : undefined,
     },
     nest: {
       fields: ['weather'],
-      translate: ({ raw }) => (isNaN(raw?.value?.weather?.sunset) === false ? Number(raw.value.weather.sunset) : undefined),
+      translate: ({ raw }) =>
+        Number.isFinite(Number(raw?.value?.weather?.sunset)) === true ? Number(raw.value.weather.sunset) : undefined,
     },
   },
 
@@ -482,7 +488,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
 
           // Apply elevation (validated, fallback to minimum if invalid)
           tempDevice.elevation =
-            isNaN(homeOptions?.elevation) === false &&
+            Number.isFinite(Number(homeOptions?.elevation)) === true &&
             Number(homeOptions.elevation) >= MIN_ELEVATION &&
             Number(homeOptions.elevation) <= MAX_ELEVATION
               ? Number(homeOptions.elevation)

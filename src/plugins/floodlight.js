@@ -44,7 +44,7 @@ import { DEVICE_TYPE } from '../consts.js';
 
 export default class NestFloodlight extends NestCamera {
   static TYPE = DEVICE_TYPE.FLOODLIGHT;
-  static VERSION = '2026.04.21'; // Code version
+  static VERSION = '2026.04.22'; // Code version
 
   lightService = undefined; // HomeKit light
 
@@ -146,7 +146,7 @@ const EXTRA_FIELD_MAP = {
     google: {
       fields: ['floodlight_settings'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.floodlight_settings?.brightness) === false
+        Number.isFinite(Number(raw?.value?.floodlight_settings?.brightness)) === true
           ? scaleValue(Number(raw.value.floodlight_settings.brightness), 0, 10, 0, 100)
           : undefined,
     },

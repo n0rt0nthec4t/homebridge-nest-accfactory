@@ -29,7 +29,7 @@
 // - FFmpeg validation determines availability of camera streaming and HKSV recording
 // - Used during plugin startup before any device initialisation
 //
-// Code version 2026.04.13
+// Code version 2026.04.22
 // Mark Hulskamp
 'use strict';
 
@@ -121,7 +121,9 @@ function processConfig(config, log, api) {
 
   // Get configuration for max number of concurrent 'live view' streams.
   options.maxStreams =
-    isNaN(config.options?.maxStreams) === false && Number(config.options.maxStreams) > 1 && Number(config.options.maxStreams) <= 4
+    Number.isFinite(Number(config.options?.maxStreams)) === true &&
+    Number(config.options.maxStreams) > 1 &&
+    Number(config.options.maxStreams) <= 4
       ? Number(config.options.maxStreams)
       : 2;
 

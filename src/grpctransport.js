@@ -22,7 +22,7 @@
 //   - endpoint + auth identity, when uuid is not supplied
 // - Different logical connections must not accidentally share the same session
 //
-// Code version 2026.04.14
+// Code version 2026.04.22
 // Mark Hulskamp
 'use strict';
 
@@ -454,7 +454,9 @@ export default class GrpcTransport {
         // This commonly catches endpoint/proxy mismatches before we try to parse frames.
         if (
           isTerminal === false &&
-          (isNaN(httpStatus) === true || httpStatus !== 200 || httpContentType.toLowerCase().includes('application/grpc') !== true)
+          (Number.isFinite(httpStatus) !== true ||
+            httpStatus !== 200 ||
+            httpContentType.toLowerCase().includes('application/grpc') !== true)
         ) {
           isTerminal = true;
           result.status = GrpcTransport.STATUS.UNAVAILABLE;
@@ -634,7 +636,7 @@ export default class GrpcTransport {
           return;
         }
 
-        if (isNaN(Number(headers?.['grpc-status'])) === false) {
+        if (Number.isFinite(Number(headers?.['grpc-status'])) === true) {
           grpcStatus = Number(headers['grpc-status']);
           result.status = grpcStatus;
         }

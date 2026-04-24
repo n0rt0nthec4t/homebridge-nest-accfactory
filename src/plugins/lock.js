@@ -48,7 +48,7 @@ import { DATA_SOURCE, DEVICE_TYPE, PROTOBUF_RESOURCES, LOW_BATTERY_LEVEL } from 
 
 export default class NestLock extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.LOCK;
-  static VERSION = '2026.04.21'; // Code version
+  static VERSION = '2026.04.22'; // Code version
 
   // Define lock bolt states
   static STATE = {
@@ -388,7 +388,7 @@ const LOCK_FIELD_MAP = {
       fields: ['battery_power_source'],
       translate: ({ raw }) =>
         // Google API reports lock battery remaining as fractional percentage (0–1)
-        isNaN(raw?.value?.battery_power_source?.remaining?.remainingPercent?.value) === false
+        Number.isFinite(Number(raw?.value?.battery_power_source?.remaining?.remainingPercent?.value)) === true
           ? Math.round(scaleValue(Number(raw.value.battery_power_source.remaining.remainingPercent.value), 0, 1, 0, 100))
           : undefined,
     },
@@ -400,7 +400,7 @@ const LOCK_FIELD_MAP = {
     google: {
       fields: ['bolt_lock_settings'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.bolt_lock_settings?.autoRelockDuration?.seconds) === false
+        Number.isFinite(Number(raw?.value?.bolt_lock_settings?.autoRelockDuration?.seconds)) === true
           ? Number(raw.value.bolt_lock_settings.autoRelockDuration.seconds)
           : undefined,
     },
@@ -411,7 +411,7 @@ const LOCK_FIELD_MAP = {
     google: {
       fields: ['bolt_lock_capabilities'],
       translate: ({ raw }) =>
-        isNaN(raw?.value?.bolt_lock_capabilities?.maxAutoRelockDuration?.seconds) === false
+        Number.isFinite(Number(raw?.value?.bolt_lock_capabilities?.maxAutoRelockDuration?.seconds)) === true
           ? Number(raw.value.bolt_lock_capabilities.maxAutoRelockDuration.seconds)
           : undefined,
     },
