@@ -14,8 +14,6 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ## v0.4.0 (2026/04/30)
 
-> ⚠️ This is a beta pre-release. While considered stable, it may still contain bugs. Feedback is welcome before final release.
-
 ### ⚠️ Breaking Changes
 
 - Dropped support for Node.js 20
