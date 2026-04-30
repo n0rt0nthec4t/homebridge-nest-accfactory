@@ -22,7 +22,7 @@
 //   - endpoint + auth identity, when uuid is not supplied
 // - Different logical connections must not accidentally share the same session
 //
-// Code version 2026.04.22
+// Code version 2026.04.26
 // Mark Hulskamp
 'use strict';
 
@@ -138,14 +138,20 @@ export default class GrpcTransport {
     // Load protobuf schema once. Session creation is lazy and happens on first request.
     let protoPath = typeof options?.protoPath === 'string' ? options.protoPath : '';
 
-    if (protoPath !== '' && fs.existsSync(protoPath) === true) {
-      protobuf.util.Long = null;
-      protobuf.configure();
-      this.#protobufRoot = protobuf.loadSync(protoPath);
+    if (protoPath === '' || fs.existsSync(protoPath) !== true) {
+      this.#protobufRoot = undefined;
+      this.log?.warn?.('gRPC proto file not found: %s', protoPath);
       return;
     }
 
-    this.log?.debug?.('gRPC proto file not found: %s', protoPath);
+    try {
+      protobuf.util.Long = null;
+      protobuf.configure();
+      this.#protobufRoot = protobuf.loadSync(protoPath);
+    } catch (error) {
+      this.#protobufRoot = undefined;
+      this.log?.error?.('Failed to load gRPC proto file: %s\n%s', protoPath, error?.stack || error);
+    }
   }
 
   release() {
@@ -353,7 +359,7 @@ export default class GrpcTransport {
     let buffer = Buffer.allocUnsafe(this.#bufferInitial);
     let bufferOffset = 0;
     let readOffset = 0;
-    let result = { status: undefined, message: '' };
+    let result = { status: undefined, message: '', code: undefined, error: undefined };
     let isTerminal = false;
     let frameCount = 0;
     let httpStatus = undefined;
@@ -383,18 +389,21 @@ export default class GrpcTransport {
     ) {
       result.status = GrpcTransport.STATUS.INVALID_ARGUMENT;
       result.message = 'Invalid gRPC request parameters';
+      result.code = 'INVALID_ARGUMENT';
       return result;
     }
 
     if (this.#protobufRoot === undefined) {
       result.status = GrpcTransport.STATUS.INTERNAL;
       result.message = 'gRPC protobuf support is unavailable';
+      result.code = 'PROTOBUF_UNAVAILABLE';
       return result;
     }
 
     if (typeof authHeader !== 'string' || authHeader.trim() === '') {
       result.status = GrpcTransport.STATUS.UNAUTHENTICATED;
       result.message = 'Authorization header is unavailable';
+      result.code = 'AUTH_UNAVAILABLE';
       return result;
     }
 
@@ -412,13 +421,15 @@ export default class GrpcTransport {
     } catch (error) {
       result.status = GrpcTransport.STATUS.INTERNAL;
       result.message = 'Failed to lookup gRPC protobuf types';
-      this.log?.debug?.('gRPC protobuf lookup failed for "%s/%s": %s', service, command, String(error));
+      result.code = 'PROTO_LOOKUP_FAILED';
+      result.error = String(error?.message || error);
       return result;
     }
 
     if (RequestType === null || RequestType === undefined || ResponseType === null || ResponseType === undefined) {
       result.status = GrpcTransport.STATUS.INTERNAL;
       result.message = 'gRPC protobuf types are unavailable';
+      result.code = 'PROTO_TYPE_UNAVAILABLE';
       return result;
     }
 
@@ -460,7 +471,9 @@ export default class GrpcTransport {
         ) {
           isTerminal = true;
           result.status = GrpcTransport.STATUS.UNAVAILABLE;
-          result.message = 'Non-gRPC HTTP response: status=' + String(httpStatus) + ' content-type=' + httpContentType;
+          result.message = 'Non-gRPC HTTP response';
+          result.code = 'HTTP_RESPONSE_INVALID';
+          result.error = 'status=' + String(httpStatus) + ' content-type=' + httpContentType;
 
           try {
             request.close();
@@ -488,6 +501,7 @@ export default class GrpcTransport {
         if (bufferOffset + data.length > this.#bufferMax) {
           result.status = GrpcTransport.STATUS.RESOURCE_EXHAUSTED;
           result.message = 'gRPC response exceeds maximum buffer size';
+          result.code = 'BUFFER_LIMIT_EXCEEDED';
           isTerminal = true;
 
           try {
@@ -505,6 +519,7 @@ export default class GrpcTransport {
           if (newSize < bufferOffset + data.length) {
             result.status = GrpcTransport.STATUS.RESOURCE_EXHAUSTED;
             result.message = 'gRPC response exceeds maximum buffer size';
+            result.code = 'BUFFER_LIMIT_EXCEEDED';
             isTerminal = true;
 
             try {
@@ -541,6 +556,7 @@ export default class GrpcTransport {
           if (compressed !== 0) {
             result.status = GrpcTransport.STATUS.UNIMPLEMENTED;
             result.message = 'Unsupported gRPC compressed response';
+            result.code = 'GRPC_COMPRESSED_RESPONSE';
             isTerminal = true;
 
             try {
@@ -554,6 +570,7 @@ export default class GrpcTransport {
           if (dataSize > this.#bufferMax) {
             result.status = GrpcTransport.STATUS.RESOURCE_EXHAUSTED;
             result.message = 'gRPC response exceeds maximum buffer size';
+            result.code = 'BUFFER_LIMIT_EXCEEDED';
             isTerminal = true;
 
             try {
@@ -577,9 +594,9 @@ export default class GrpcTransport {
             // the underlying transport itself later fails.
             result.status = GrpcTransport.STATUS.INTERNAL;
             result.message = 'Failed decoding gRPC response';
+            result.code = 'GRPC_DECODE_FAILED';
+            result.error = String(error?.message || error);
             isTerminal = true;
-
-            this.log?.debug?.('gRPC decode failed for "%s/%s": %s', service, command, String(error));
 
             try {
               request.close();
@@ -600,9 +617,9 @@ export default class GrpcTransport {
             // the underlying transport itself later fails.
             result.status = GrpcTransport.STATUS.INTERNAL;
             result.message = 'gRPC response handler failed';
+            result.code = 'GRPC_HANDLER_FAILED';
+            result.error = String(error?.message || error);
             isTerminal = true;
-
-            this.log?.debug?.('gRPC frame handler failed for "%s/%s": %s', service, command, String(error));
 
             try {
               request.close();
@@ -648,6 +665,10 @@ export default class GrpcTransport {
 
         grpcMessageLower = grpcMessage.toLowerCase();
 
+        if (grpcStatus !== undefined && grpcStatus !== GrpcTransport.STATUS.OK) {
+          result.code = 'GRPC_STATUS_' + String(grpcStatus);
+        }
+
         expectedObserveEnd =
           isObserveStream === true &&
           (grpcStatus === GrpcTransport.STATUS.OK ||
@@ -656,20 +677,15 @@ export default class GrpcTransport {
               (grpcMessageLower.includes('context timed out') === true ||
                 grpcMessageLower.includes('deadline') === true ||
                 grpcMessageLower.includes('timeout') === true)));
-
-        if (grpcStatus !== undefined && grpcStatus !== GrpcTransport.STATUS.OK && expectedObserveEnd !== true) {
-          this.log?.debug?.('gRPC server error for "%s/%s": status=%s message="%s"', service, command, grpcStatus, grpcMessage);
-          terminalStatusLogged = true;
-        }
       });
 
       request.on('error', (error) => {
-        // Request or stream-level terminal failure.
         if (isTerminal === true) {
           return;
         }
 
         isTerminal = true;
+
         errorCode = error?.code ?? error?.cause?.code;
         errorName = error?.name ?? error?.cause?.name ?? '';
 
@@ -680,11 +696,15 @@ export default class GrpcTransport {
           errorCode === 'UND_ERR_CONNECT_TIMEOUT'
         ) {
           result.status = GrpcTransport.STATUS.DEADLINE_EXCEEDED;
+          result.message = 'gRPC request timed out';
+          result.code = typeof errorCode === 'string' && errorCode !== '' ? errorCode : 'REQUEST_TIMEOUT';
         } else {
           result.status = GrpcTransport.STATUS.UNAVAILABLE;
+          result.message = 'gRPC transport error';
+          result.code = typeof errorCode === 'string' && errorCode !== '' ? errorCode : 'TRANSPORT_ERROR';
         }
 
-        result.message = String(error?.message || error);
+        result.error = String(error?.message || error);
       });
 
       // Encode protobuf request and wrap it in one gRPC frame.
@@ -715,6 +735,7 @@ export default class GrpcTransport {
 
           result.status = GrpcTransport.STATUS.DEADLINE_EXCEEDED;
           result.message = 'gRPC request timed out';
+          result.code = 'REQUEST_TIMEOUT';
           isTerminal = true;
 
           try {
@@ -747,11 +768,13 @@ export default class GrpcTransport {
           expectedObserveEnd !== true
         ) {
           this.log?.debug?.(
-            'gRPC stream closed for "%s/%s" with status=%s message="%s" frames=%d',
+            'gRPC stream closed for "%s/%s" with status=%s code="%s" message="%s" error="%s" frames=%d',
             service,
             command,
             result.status,
+            result.code,
             result.message,
+            result.error,
             frameCount,
           );
         }
@@ -778,13 +801,15 @@ export default class GrpcTransport {
         errorCode === 'UND_ERR_CONNECT_TIMEOUT'
       ) {
         result.status = GrpcTransport.STATUS.DEADLINE_EXCEEDED;
+        result.message = 'gRPC request timed out';
+        result.code = typeof errorCode === 'string' && errorCode !== '' ? errorCode : 'REQUEST_TIMEOUT';
       } else {
         result.status = GrpcTransport.STATUS.UNAVAILABLE;
+        result.message = 'gRPC transport error';
+        result.code = typeof errorCode === 'string' && errorCode !== '' ? errorCode : 'TRANSPORT_ERROR';
       }
 
-      result.message = String(error?.message || error);
-
-      this.log?.debug?.('gRPC request failed: %s', result.message);
+      result.error = String(error?.message || error);
     }
 
     // Normalise expected observe shutdowns so callers do not treat them as hard errors.
@@ -800,11 +825,15 @@ export default class GrpcTransport {
     ) {
       result.status = GrpcTransport.STATUS.OK;
       result.message = '';
+      result.code = undefined;
+      result.error = undefined;
     }
 
     // Ensure callers always receive an explicit status.
     if (typeof result.status !== 'number') {
       result.status = GrpcTransport.STATUS.UNKNOWN;
+      result.message = result.message || 'Unknown gRPC result';
+      result.code = result.code || 'UNKNOWN';
     }
 
     return result;

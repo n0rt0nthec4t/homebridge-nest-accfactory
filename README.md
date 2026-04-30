@@ -5,7 +5,6 @@
 
 # Nest Accfactory
 
-
 ![npm](https://img.shields.io/npm/v/homebridge-nest-accfactory/latest?label=npm%40latest&color=%234CAF50)
 ![npm](https://img.shields.io/npm/v/homebridge-nest-accfactory/beta?label=npm%40beta&color=%23FF9800)
 ![npm](https://img.shields.io/npm/v/homebridge-nest-accfactory/alpha?label=npm%40alpha&color=%239E9E9E)

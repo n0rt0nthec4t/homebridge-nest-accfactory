@@ -50,7 +50,7 @@ import { DATA_SOURCE, DEVICE_TYPE, MAX_ELEVATION, MIN_ELEVATION, NESTLABS_MAC_PR
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.WEATHER;
-  static VERSION = '2026.04.22'; // Code version
+  static VERSION = '2026.04.26'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -289,21 +289,21 @@ const WEATHER_FIELD_MAP = {
     google: {
       fields: ['structure_location', 'structure_info'],
       translate: ({ raw }) =>
-        (raw?.value?.structure_location?.city?.value?.trim() ?? '') !== '' &&
-        (raw?.value?.structure_location?.state?.value?.trim() ?? '') !== ''
-          ? raw.value.structure_location.city.value.trim() + ' - ' + raw.value.structure_location.state.value.trim()
-          : (raw?.value?.structure_info?.name?.trim() ?? '') !== ''
-              ? raw.value.structure_info.name.trim()
-              : undefined,
+        String(raw?.value?.structure_location?.city?.value ?? '').trim() !== '' &&
+        String(raw?.value?.structure_location?.state?.value ?? '').trim() !== ''
+          ? String(raw.value.structure_location.city.value).trim() + ' - ' + String(raw.value.structure_location.state.value).trim()
+          : String(raw?.value?.structure_info?.name ?? '').trim() !== ''
+            ? String(raw.value.structure_info.name).trim()
+            : undefined,
     },
     nest: {
       fields: ['city', 'state', 'name'],
       translate: ({ raw }) =>
-        (raw?.value?.city?.trim() ?? '') !== '' && (raw?.value?.state?.trim() ?? '') !== ''
-          ? raw.value.city.trim() + ' - ' + raw.value.state.trim()
-          : (raw?.value?.name?.trim() ?? '') !== ''
-              ? raw.value.name.trim()
-              : undefined,
+        String(raw?.value?.city ?? '').trim() !== '' && String(raw?.value?.state ?? '').trim() !== ''
+          ? String(raw.value.city).trim() + ' - ' + String(raw.value.state).trim()
+          : String(raw?.value?.name ?? '').trim() !== ''
+            ? String(raw.value.name).trim()
+            : undefined,
     },
   },
 

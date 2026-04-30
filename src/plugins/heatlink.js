@@ -56,7 +56,7 @@ import {
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.HEATLINK;
-  static VERSION = '2026.04.22'; // Code version
+  static VERSION = '2026.04.26'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
@@ -503,13 +503,23 @@ const HEATLINK_FIELD_MAP = {
       related: ['located_annotations'],
       translate: ({ rawData, raw }) => {
         let description = String(raw?.value?.label?.label ?? '').trim();
-        let location = String(
-          [
-            ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {}),
-            ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {}),
-          ].find((where) => where?.whereId?.resourceId === raw?.value?.device_located_settings?.whereAnnotationRid?.resourceId)?.label
-            ?.literal ?? '',
-        ).trim();
+        let location = String(raw?.value?.device_located_settings?.whereLabel?.literal ?? '').trim();
+
+        if (location === '') {
+          location = String(
+            [
+              ...Object.values(
+                rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {},
+              ),
+              ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {}),
+            ].find((where) => where?.whereId?.resourceId === raw?.value?.device_located_settings?.whereAnnotationRid?.resourceId)?.label
+              ?.literal ?? '',
+          ).trim();
+        }
+
+        if (description.toUpperCase() === location.toUpperCase()) {
+          location = '';
+        }
 
         if (description === '' && location !== '') {
           description = location;
@@ -534,6 +544,10 @@ const HEATLINK_FIELD_MAP = {
             (where) => where?.where_id === raw?.value?.where_id,
           )?.name ?? '',
         ).trim();
+
+        if (description.toUpperCase() === location.toUpperCase()) {
+          location = '';
+        }
 
         if (description === '' && location !== '') {
           description = location;

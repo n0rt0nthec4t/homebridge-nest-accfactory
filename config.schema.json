@@ -228,12 +228,14 @@
       "title": "Accounts",
       "description": "One or more accounts to connect to Google/Nest services. See plugin documentation for details on obtaining required credentials for each account type.",
       "expandable": true,
-       "expanded": true,
+      "expanded": true,
       "items": [
         {
           "type": "array",
           "key": "accounts",
           "title": " ",
+          "buttonText": "Add Account",
+          "orderable": false,
           "arrayItemTitle": "{{value.name || 'Account'}}",
           "items": [
             { 
@@ -298,6 +300,8 @@
           "title": "Homes",
           "key": "homes",
           "description": "Each entry applies to a home. The name must match the home name in the Nest or Google Home apps.",
+          "buttonText": "Add Home",
+          "orderable": false,
           "items": [
             {
               "key": "homes[].name",
@@ -343,6 +347,9 @@
           "title": "Device Overrides",
           "key": "devices",
           "description": "Override settings for specific devices using their serial number. Additional advanced options are available via manual configuration.",
+          "buttonText": "Add Device Override",
+          "orderable": false,
+          "arrayItemTitle": "{{value.name || value.serialNumber || 'Device'}}",
           "items": [
             {
               "key": "devices[].serialNumber",

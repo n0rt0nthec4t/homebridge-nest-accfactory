@@ -86,7 +86,7 @@ const PREBUFFER_LENGTH = 4000;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.04.24'; // Code version
+  static VERSION = '2026.04.26'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -1805,13 +1805,34 @@ const CAMERA_FIELD_MAP = {
       related: ['located_annotations'],
       translate: ({ rawData, raw }) => {
         let description = String(raw?.value?.label?.label ?? '').trim();
-        let location = String(
-          [
-            ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {}),
-            ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {}),
-          ].find((where) => where?.whereId?.resourceId === raw?.value?.device_located_settings?.whereAnnotationRid?.resourceId)?.label
-            ?.literal ?? '',
-        ).trim();
+        let wheres = [
+          ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {}),
+          ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {}),
+        ];
+
+        let location = String(raw?.value?.device_located_settings?.whereLabel?.literal ?? '').trim();
+
+        if (location === '') {
+          location = String(
+            wheres.find((where) => where?.whereId?.resourceId === raw?.value?.device_located_settings?.whereAnnotationRid?.resourceId)
+              ?.label?.literal ?? '',
+          ).trim();
+        }
+
+        if (location === '') {
+          location = String(raw?.value?.device_located_settings?.fixtureNameLabel?.literal ?? '').trim();
+        }
+
+        if (location === '') {
+          location = String(
+            wheres.find((where) => where?.whereId?.resourceId === raw?.value?.device_located_settings?.fixtureAnnotationRid?.resourceId)
+              ?.label?.literal ?? '',
+          ).trim();
+        }
+
+        if (description.toUpperCase() === location.toUpperCase()) {
+          location = '';
+        }
 
         if (description === '' && location !== '') {
           description = location;
@@ -1834,6 +1855,10 @@ const CAMERA_FIELD_MAP = {
           rawData?.['where.' + raw?.value?.structure_id]?.value?.wheres?.find((where) => where?.where_id === raw?.value?.where_id)?.name ??
             '',
         ).trim();
+
+        if (description.toUpperCase() === location.toUpperCase()) {
+          location = '';
+        }
 
         if (description === '' && location !== '') {
           description = location;

@@ -48,7 +48,7 @@ import { DATA_SOURCE, DEVICE_TYPE, PROTOBUF_RESOURCES, LOW_BATTERY_LEVEL } from 
 
 export default class NestLock extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.LOCK;
-  static VERSION = '2026.04.22'; // Code version
+  static VERSION = '2026.04.26'; // Code version
 
   // Define lock bolt states
   static STATE = {
@@ -291,33 +291,51 @@ const LOCK_FIELD_MAP = {
     },
   },
 
-  description: {
-    required: true,
-    google: {
-      fields: ['label', 'device_info', 'device_located_settings'],
-      related: ['located_annotations'],
-      translate: ({ rawData, raw }) => {
-        let description = String(raw?.value?.label?.label ?? '').trim();
-        let location = String(
-          [
-            ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {}),
-            ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {}),
-          ].find((where) => where?.whereId?.resourceId === raw?.value?.device_located_settings?.whereAnnotationRid?.resourceId)?.label
-            ?.literal ?? '',
-        ).trim();
+  translate: ({ rawData, raw }) => {
+    let description = String(raw?.value?.label?.label ?? '').trim();
+    let wheres = [
+      ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {}),
+      ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {}),
+    ];
 
-        if (description === '' && location !== '') {
-          description = location;
-          location = '';
-        }
+    let findWhere = (id) => String(wheres.find((where) => where?.whereId?.resourceId === id)?.label?.literal ?? '').trim();
 
-        if (description === '' && location === '') {
-          description = 'unknown description';
-        }
+    let whereLocation = String(raw?.value?.device_located_settings?.whereLabel?.literal ?? '').trim();
 
-        return HomeKitDevice.makeValidHKName(location === '' ? description : description + ' - ' + location);
-      },
-    },
+    if (whereLocation === '') {
+      whereLocation = findWhere(raw?.value?.device_located_settings?.whereAnnotationRid?.resourceId);
+    }
+
+    let fixtureLocation = String(raw?.value?.device_located_settings?.fixtureNameLabel?.literal ?? '').trim();
+
+    if (fixtureLocation === '') {
+      fixtureLocation = findWhere(raw?.value?.device_located_settings?.fixtureAnnotationRid?.resourceId);
+    }
+
+    // Prefer fixture (door) as primary location
+    let location = fixtureLocation !== '' ? fixtureLocation : whereLocation;
+
+    // Avoid duplication
+    if (description.toUpperCase() === location.toUpperCase()) {
+      location = '';
+    }
+
+    // If description missing, use best location
+    if (description === '' && location !== '') {
+      description = location;
+      location = '';
+    }
+
+    if (description === '' && location === '') {
+      description = 'unknown description';
+    }
+
+    // If both exist and different -> include both (door + room)
+    if (location !== '' && whereLocation !== '' && fixtureLocation !== '' && fixtureLocation !== whereLocation) {
+      return HomeKitDevice.makeValidHKName(description + ' - ' + fixtureLocation + ' (' + whereLocation + ')');
+    }
+
+    return HomeKitDevice.makeValidHKName(location === '' ? description : description + ' - ' + location);
   },
 
   // Core operational fields

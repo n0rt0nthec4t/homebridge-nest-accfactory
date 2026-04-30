@@ -12,7 +12,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - Motion sensing on wired Nest Protect devices may report incorrect states due to recent firmware changes
 - Video from Google Home-hosted streams be slow to start up
 
-## v0.4.0 (xxxx/xx/xx)
+## v0.4.0 (2026/04/30)
 
 > ⚠️ This is a beta pre-release. While considered stable, it may still contain bugs. Feedback is welcome before final release.
 

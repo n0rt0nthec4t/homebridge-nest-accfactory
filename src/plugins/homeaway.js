@@ -46,7 +46,7 @@ import { DATA_SOURCE, DEVICE_TYPE, NESTLABS_MAC_PREFIX } from '../consts.js';
 
 export default class NestHomeAway extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.HOMEAWAY;
-  static VERSION = '2026.04.21'; // Code version
+  static VERSION = '2026.04.26'; // Code version
 
   occupancyService = undefined;
 
@@ -138,21 +138,21 @@ const HOMEAWAY_FIELD_MAP = {
     google: {
       fields: ['structure_location', 'structure_info'],
       translate: ({ raw }) =>
-        (raw?.value?.structure_location?.city?.value?.trim() ?? '') !== '' &&
-        (raw?.value?.structure_location?.state?.value?.trim() ?? '') !== ''
-          ? raw.value.structure_location.city.value.trim() + ' - ' + raw.value.structure_location.state.value.trim()
-          : (raw?.value?.structure_info?.name?.trim() ?? '') !== ''
-              ? raw.value.structure_info.name.trim()
-              : undefined,
+        String(raw?.value?.structure_location?.city?.value ?? '').trim() !== '' &&
+        String(raw?.value?.structure_location?.state?.value ?? '').trim() !== ''
+          ? String(raw.value.structure_location.city.value).trim() + ' - ' + String(raw.value.structure_location.state.value).trim()
+          : String(raw?.value?.structure_info?.name ?? '').trim() !== ''
+            ? String(raw.value.structure_info.name).trim()
+            : undefined,
     },
     nest: {
       fields: ['city', 'state', 'name'],
       translate: ({ raw }) =>
-        (raw?.value?.city?.trim() ?? '') !== '' && (raw?.value?.state?.trim() ?? '') !== ''
-          ? raw.value.city.trim() + ' - ' + raw.value.state.trim()
-          : (raw?.value?.name?.trim() ?? '') !== ''
-              ? raw.value.name.trim()
-              : undefined,
+        String(raw?.value?.city ?? '').trim() !== '' && String(raw?.value?.state ?? '').trim() !== ''
+          ? String(raw.value.city).trim() + ' - ' + String(raw.value.state).trim()
+          : String(raw?.value?.name ?? '').trim() !== ''
+            ? String(raw.value.name).trim()
+            : undefined,
     },
   },
 

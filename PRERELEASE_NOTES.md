@@ -4,6 +4,27 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.0-beta.16 (2026/04/26)
+
+- Standardised device description and location handling across all device types for improved HomeKit naming consistency, resulting in cleaner and more user-friendly accessory names
+
+- `plugins/*`
+  - Added support for `whereLabel.literal` in Google protobuf data as primary location source
+  - Improved fallback handling to use `whereAnnotationRid` when literal labels are not present
+  - Added case-insensitive de-duplication between description and location to prevent duplicate names (e.g. "Front Door - Front Door")
+  - Refined device-specific location handling:
+    - Thermostat, Protect, Heat Link, Temperature Sensors: use room (`where`) only
+    - Camera/Doorbell: prefer room (`where`) with optional fixture fallback
+    - Locks: prefer fixture (door) naming with room as secondary context where applicable
+  - Ensured consistent string handling using safe `String(...).trim()` patterns across description translators
+
+- `grpctransport.js`
+  - Introduced structured gRPC result handling with `status`, `message`, `code`, and `error` fields
+  - Improved transport error classification and timeout detection
+  - Normalised gRPC trailer handling to expose server status codes via `code`
+  - Added consistent error propagation for decode, handler, and transport failures
+  - Improved debug logging to include status, code, message, and frame counts for easier troubleshooting
+
 ## v0.4.0-beta.15 (2026/04/24)
 
 - Replaced `isNaN(...)` checks with `Number.isFinite(Number(...))` across the code base for stricter numeric validation
