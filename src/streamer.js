@@ -40,15 +40,13 @@
 // Buffering Model:
 // - A shared RingBuffer stores recent media frames/items
 // - Appends and trimming are O(1); no front-splice copying occurs
-// - Buffer capacity grows only when required; normal operation does not re-pack items
+// - Buffer capacity grows only when required; re-packing only occurs during growth
 // - Live and recording sessions read from the buffer using independent cursors
 // - Items are referenced using logical indexes; physical storage may wrap
 //
 // Live Streaming Behaviour:
-// - Live outputs prefer starting at the most recent safe decoder point (IDR keyframe)
-// - If a sufficiently recent keyframe is retained, it is used to bootstrap playback
-// - If no recent keyframe is available, the stream attaches near the live edge
-// - In this case, video is suppressed until the next keyframe arrives naturally
+// - Live outputs attach at the current live edge
+// - Video is suppressed until the next keyframe arrives when decoder-safe startup is required
 // - This avoids replaying stale buffered media and keeps latency low
 //
 // Recording Behaviour:
@@ -75,7 +73,7 @@
 // - SPS/PPS are tracked and injected as needed for decoder startup
 //
 // Synchronisation:
-// - Audio output is suppressed until a video keyframe (IDR) is seen for a session
+// - Audio output may be suppressed until a video keyframe (IDR) is seen when required by the output policy
 // - This ensures correct A/V alignment for HomeKit consumers
 //
 // Extending classes are expected to implement or override, as needed:
@@ -98,7 +96,7 @@
 //
 // blankAudio - Buffer containing a blank audio segment for the type of audio being used
 //
-// Code version 2026.04.21
+// Code version 2026.05.06
 // Mark Hulskamp
 'use strict';
 
@@ -152,6 +150,16 @@ const OUTPUT_PLAYOUT_POLICY = {
 // any specific streaming or media retention behaviour.
 const RINGBUFFER_DEFAULT_CAPACITY = 1024;
 
+// Maximum number of items the RingBuffer is allowed to allocate.
+//
+// RingBuffer capacity is measured in item slots, not bytes.
+// This prevents unbounded memory growth if producers outpace consumers
+// or if trimming/output flow stalls unexpectedly.
+//
+// The buffer grows dynamically up to this limit using doubling growth.
+// Once reached, additional growth attempts are rejected.
+const RINGBUFFER_MAX_CAPACITY = 8192;
+
 // Initial capacity used by Streamer for its shared media buffer.
 // This may diverge from the generic RingBuffer default as buffering strategy,
 // retention window, or media characteristics evolve.
@@ -159,9 +167,9 @@ const STREAMER_INITIAL_BUFFER_CAPACITY = 1024;
 
 // RingBuffer
 //
-// Fixed-capacity circular buffer with logical indexing.
+// Dynamically-sized circular buffer with logical indexing.
 // - O(1) push and shift (no array reallocation or front-splice)
-// - Grows by doubling when capacity is exceeded
+// - Grows by doubling when capacity is exceeded, up to RINGBUFFER_MAX_CAPACITY
 // - Maintains a monotonically increasing logical startIndex
 //   so external consumers can track absolute positions even as data is trimmed
 //
@@ -181,7 +189,9 @@ export class RingBuffer {
 
   constructor(startIndex = 0, capacity = RINGBUFFER_DEFAULT_CAPACITY) {
     // capacity = physical storage size (number of slots in the circular array)
-    this.capacity = Number.isInteger(capacity) === true && capacity > 0 ? capacity : RINGBUFFER_DEFAULT_CAPACITY;
+    // Clamp to RINGBUFFER_MAX_CAPACITY so callers cannot bypass the growth limit
+    this.capacity =
+      Number.isInteger(capacity) === true && capacity > 0 ? Math.min(capacity, RINGBUFFER_MAX_CAPACITY) : RINGBUFFER_DEFAULT_CAPACITY;
 
     // Preallocate backing array to avoid resizing on every push
     this.items = new Array(this.capacity);
@@ -218,8 +228,15 @@ export class RingBuffer {
   }
 
   grow() {
+    // Prevent unbounded buffer growth
+    // If the maximum capacity has already been reached, reject expansion
+    if (this.capacity >= RINGBUFFER_MAX_CAPACITY) {
+      return false;
+    }
+
     // Double capacity to amortize growth cost (O(n), but infrequent)
-    let newCapacity = this.capacity * 2;
+    // Clamp growth to the configured maximum capacity
+    let newCapacity = Math.min(this.capacity * 2, RINGBUFFER_MAX_CAPACITY);
     let newItems = new Array(newCapacity);
     let index = 0;
 
@@ -235,6 +252,8 @@ export class RingBuffer {
 
     // After re-pack, logical offset 0 is now at physical index 0
     this.head = 0;
+
+    return true;
   }
 
   push(item) {
@@ -242,18 +261,23 @@ export class RingBuffer {
 
     // Grow if buffer is full (no overwriting policy here)
     if (this.size >= this.capacity) {
-      this.grow();
+      // Reject push if the buffer can no longer expand
+      if (this.grow() !== true) {
+        return false;
+      }
     }
 
     // Tail = logical position "size"
     tailOffset = this.physicalOffset(this.size);
     if (tailOffset < 0) {
-      return;
+      return false;
     }
 
     // Insert at tail and increase size
     this.items[tailOffset] = item;
     this.size++;
+
+    return true;
   }
 
   shift(count, resetStartIndex = undefined) {
@@ -263,7 +287,7 @@ export class RingBuffer {
 
     // Remove N items from the head (logical front of buffer)
     if (Number.isInteger(count) !== true || count <= 0) {
-      return;
+      return false;
     }
 
     removeCount = Math.min(count, this.size);
@@ -277,27 +301,19 @@ export class RingBuffer {
       index++;
     }
 
-    // Advance head forward (wrap if needed)
     this.head = (this.head + removeCount) % this.capacity;
-
-    // Shrink logical size
     this.size -= removeCount;
-
-    // Advance logical index base
     this.startIndex += removeCount;
 
-    // If buffer is now empty, normalize state
     if (this.size === 0) {
-      // Reset physical head to 0 so future pushes are contiguous
       this.head = 0;
 
-      // Optionally reset logical index baseline.
-      // Default behaviour keeps startIndex monotonic unless an explicit
-      // resetStartIndex is supplied by the caller.
       if (Number.isInteger(resetStartIndex) === true && resetStartIndex >= 0) {
         this.startIndex = resetStartIndex;
       }
     }
+
+    return true;
   }
 
   clear(resetStartIndex = 0) {
@@ -318,6 +334,8 @@ export class RingBuffer {
     if (Number.isInteger(resetStartIndex) === true && resetStartIndex >= 0) {
       this.startIndex = resetStartIndex;
     }
+
+    return true;
   }
 }
 
@@ -955,8 +973,8 @@ export default class Streamer {
     }
 
     // Push final packet into shared buffer
-    this.#buffer.push({
-      index: this.#itemIndex++,
+    let pushed = this.#buffer.push({
+      index: this.#itemIndex,
       type: mediaType,
       codec: codec,
       time: mediaTime,
@@ -965,6 +983,11 @@ export default class Streamer {
       keyFrame: keyFrame === true,
       data: data,
     });
+
+    if (pushed === true) {
+      // Increment buffer index if push was successful
+      this.#itemIndex++;
+    }
   }
 
   #processH264VideoMedia(data, sourceTimestamp, keyFrame, now) {
@@ -1512,15 +1535,24 @@ export default class Streamer {
   }
 
   #queueLifecycle(task) {
+    // Chain lifecycle operations sequentially so connect/close/reconnect
+    // actions cannot overlap or race each other.
     let run = this.#lifecycleQueue.then(async () => {
       return await task();
     });
 
-    // Keep queue alive even if one task fails, and avoid unhandled rejection noise.
-    this.#lifecycleQueue = run.catch(() => {
-      // Empty
+    // Keep the internal queue alive even if a lifecycle task fails.
+    // This prevents a rejected promise from permanently breaking the queue
+    // and suppresses unhandled rejection warnings for internal sequencing.
+    this.#lifecycleQueue = run.catch((error) => {
+      this?.log?.debug?.(
+        'Streamer lifecycle queue task failed for device uuid "%s": %s',
+        this.nest_google_device_uuid,
+        error?.message || String(error),
+      );
     });
 
+    // Return the original task promise so callers still receive failures.
     return run;
   }
 

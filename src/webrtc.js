@@ -8,7 +8,7 @@
 //
 // Responsibilities:
 // - Establish and manage RTCPeerConnection using the werift library
-// - Use a pooled Google gRPC transport/client for Foyer signaling and stream control
+// - Use Google Home Foyer gRPC transport for signaling and stream control
 // - Handle ICE negotiation and connection state lifecycle
 // - Receive and process RTP packets (H264 video, Opus audio)
 // - Apply jitter buffering and packet reordering for RTP streams
@@ -31,7 +31,7 @@
 // - ICE "connected" indicates transport readiness, not media availability
 // - Startup delays may occur due to upstream (Google) keyframe delivery behaviour
 //
-// Code version 2026.04.21
+// Code version 2026.05.07
 // Mark Hulskamp
 'use strict';
 

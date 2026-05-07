@@ -26,7 +26,7 @@
 // - Additional named exports are attached to the module entry when present
 // - Used by the main system module to create and manage device instances
 //
-// Code version 2026.04.21
+// Code version 2026.05.06
 // Mark Hulskamp
 'use strict';
 
@@ -39,7 +39,7 @@ import url from 'node:url';
 import HomeKitDevice from './HomeKitDevice.js';
 
 // Define constants
-import { __dirname, DEVICE_TYPE } from './consts.js';
+import { __dirname, DEVICE_CATEGORY_MAP } from './consts.js';
 
 async function loadDeviceModules(log, pluginDir = '') {
   let baseDir = path.join(__dirname, pluginDir);
@@ -98,37 +98,7 @@ async function loadDeviceModules(log, pluginDir = '') {
 }
 
 function getDeviceHKCategory(type) {
-  let category = 1; // Categories.OTHER
-
-  if (type === DEVICE_TYPE.LOCK) {
-    category = 6; // Categories.DOOR_LOCK
-  }
-
-  if (type === DEVICE_TYPE.HEATLINK) {
-    category = 8; // Categories.SWITCH
-  }
-
-  if (type === DEVICE_TYPE.THERMOSTAT) {
-    category = 9; // Categories.THERMOSTAT
-  }
-
-  if (type === DEVICE_TYPE.TEMPSENSOR || type === DEVICE_TYPE.PROTECT || (type === DEVICE_TYPE.WEATHER) | (type === DEVICE_TYPE.HOMEAWAY)) {
-    category = 10; // Categories.SENSOR
-  }
-
-  if (type === DEVICE_TYPE.ALARM) {
-    category = 11; // Categories.SECURITY_SYSTEM
-  }
-
-  if (type === DEVICE_TYPE.CAMERA || type === DEVICE_TYPE.FLOODLIGHT) {
-    category = 17; // Categories.IP_CAMERA
-  }
-
-  if (type === DEVICE_TYPE.DOORBELL) {
-    category = 18; // Categories.VIDEO_DOORBELL
-  }
-
-  return category;
+  return DEVICE_CATEGORY_MAP[type] ?? 1; // Categories.OTHER
 }
 
 // Define exports

@@ -22,20 +22,19 @@
 //   - endpoint + auth identity, when uuid is not supplied
 // - Different logical connections must not accidentally share the same session
 //
-// Code version 2026.04.26
+// Code version 2026.05.06
 // Mark Hulskamp
 'use strict';
-
-// Define external module requirements
-import protobuf from 'protobufjs';
 
 // Define nodejs module requirements
 import EventEmitter from 'node:events';
 import http2 from 'node:http2';
 import { Buffer } from 'node:buffer';
 import { setInterval, clearInterval, setTimeout, clearTimeout } from 'node:timers';
-import fs from 'node:fs';
 import crypto from 'node:crypto';
+
+// Define our modules
+import { getProtoRoot } from './protobuf.js';
 
 // GrpcTransport class definition
 export default class GrpcTransport {
@@ -135,23 +134,9 @@ export default class GrpcTransport {
     // For auth-based pooling this may be refreshed before each request.
     this.#sessionKey = this.#buildSessionKey();
 
-    // Load protobuf schema once. Session creation is lazy and happens on first request.
-    let protoPath = typeof options?.protoPath === 'string' ? options.protoPath : '';
-
-    if (protoPath === '' || fs.existsSync(protoPath) !== true) {
-      this.#protobufRoot = undefined;
-      this.log?.warn?.('gRPC proto file not found: %s', protoPath);
-      return;
-    }
-
-    try {
-      protobuf.util.Long = null;
-      protobuf.configure();
-      this.#protobufRoot = protobuf.loadSync(protoPath);
-    } catch (error) {
-      this.#protobufRoot = undefined;
-      this.log?.error?.('Failed to load gRPC proto file: %s\n%s', protoPath, error?.stack || error);
-    }
+    // Load protobuf schema once via the shared protobuf helper.
+    // Session creation is lazy and happens on first request.
+    this.#protobufRoot = getProtoRoot(options?.protoPath, this.log);
   }
 
   release() {
@@ -164,9 +149,9 @@ export default class GrpcTransport {
       return;
     }
 
-    // Release this instance's reference to the pooled session.
-    // The underlying session stays alive until the final transport releases it.
-    if (entry !== undefined) {
+    // Only decrement if this instance still points at the
+    // currently pooled session for this key.
+    if (entry !== undefined && entry.session === this.#session) {
       entry.refCount--;
 
       if (entry.refCount <= 0) {
@@ -326,7 +311,9 @@ export default class GrpcTransport {
     }
 
     // Attach this transport instance to the pooled session once.
-    if (this.#attachedSessionKey !== sessionKey) {
+    // If the same key now points to a different pooled session,
+    // treat it as a fresh attach.
+    if (this.#attachedSessionKey !== sessionKey || this.#session !== entry.session) {
       if (this.#attachedSessionKey !== '') {
         this.release();
       }
@@ -879,15 +866,33 @@ export default class GrpcTransport {
     let retry = Number.isFinite(Number(options.retry)) && Number(options.retry) > 0 ? Number(options.retry) : 1;
     let retryCount = Number.isFinite(Number(options._retryCount)) ? Number(options._retryCount) : 0;
     let messageChain = Promise.resolve();
-    let result = await this.#executeStream(messagePrefix, service, command, values, (message) => {
-      messageChain = messageChain
-        .then(() => onMessage?.(message))
-        .catch((error) => {
+    let handlerError = undefined;
+
+    const queueMessage = (message) => {
+      messageChain = messageChain.then(async () => {
+        try {
+          await onMessage?.(message);
+        } catch (error) {
+          // Do not abort the active observe stream here.
+          // Handler failures are reported when the stream exits naturally.
+          handlerError = error;
           this.log?.debug?.('gRPC observe callback error for "%s/%s": %s', service, command, String(error));
-        });
-    });
+        }
+      });
+    };
+
+    let result = await this.#executeStream(messagePrefix, service, command, values, queueMessage);
 
     await messageChain;
+
+    if (handlerError !== undefined) {
+      return {
+        status: GrpcTransport.STATUS.INTERNAL,
+        message: 'gRPC observe callback failed',
+        code: 'GRPC_HANDLER_FAILED',
+        error: String(handlerError?.message || handlerError),
+      };
+    }
 
     if (
       retry > 1 &&

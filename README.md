@@ -146,7 +146,7 @@ The following options are available in the `config.json` `"options"` object. The
 | exclude            | Exclude all device(s)                                                                        | false          |
 | ffmpegDebug        | Enable additional debugging output when ffmpeg is invoked                                    | false          |
 | ffmpegHWaccel      | Enable video hardware acceleration for camera(s) and doorbell(s) where supported             | false          |
-| ffmpegPath         | Path to an ffmpeg binary (defaults to `ffmpeg` in system path)                               | /usr/local/bin |
+| ffmpegPath         | Path to the ffmpeg binary, directory containing ffmpeg, or command name available in system PATH | ffmpeg |
 | ffmpegTranscode    | Enable video transcoding for camera(s) and doorbell(s) (higher CPU usage)                    | false          |
 | logMotionEvents    | Enable logging of motion events for camera(s), doorbell(s) and Nest Protect device(s)        | true           |
 | maxStreams         | Maximum simultaneous live view streams per camera                                            | 2              |
@@ -199,17 +199,38 @@ Homes are identified using the `"name"` field, which must match the Home name sh
 
 ## ffmpeg
 
-To support streaming and recording from cameras, an ffmpeg binary needs to be present. We have specific requirements, which are:
-- version 6.0 or later
-- compiled with:
-  - libx264
-  - libfdk-aac
-  - libspeex
-  - libopus
+To support camera live streaming, HomeKit Secure Video (HKSV), and two-way audio, an ffmpeg binary must be installed and accessible to the plugin.
 
-By default, we look in /usr/local/bin for an ffmpeg binary, however, you can specify a specific ffmpeg binary to use via the configuration option 'ffmpegPath'
+Minimum requirements:
+- FFmpeg version **6.1** or later
+- Compiled with support for:
+  - `libx264`
+  - `libfdk_aac`
+  - `libspeex`
+  - `libopus`
 
-A pre-compiled ffmpeg binary that meets these requirements is available from the **ffmpeg-for-homebridge** project and may be used as an alternative to building ffmpeg yourself.
+The plugin automatically searches common ffmpeg install locations on supported platforms and will also fall back to `ffmpeg` available in the system PATH.
+
+The `ffmpegPath` configuration option may be used to specify:
+- A full path to the ffmpeg binary
+- A directory containing the ffmpeg binary
+- A command name available in the system PATH
+
+Examples:
+
+```json
+"ffmpegPath": "/usr/local/bin/ffmpeg"
+```
+
+```json
+"ffmpegPath": "/opt/homebrew/bin"
+```
+
+```json
+"ffmpegPath": "ffmpeg"
+```
+
+A precompiled ffmpeg binary that meets these requirements is available from the **ffmpeg-for-homebridge** project and may be used as an alternative to building ffmpeg yourself.
 
 ## HomeKit Secure Video (HKSV)
 

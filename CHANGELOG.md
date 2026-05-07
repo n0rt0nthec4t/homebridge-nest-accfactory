@@ -10,7 +10,54 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - Some newer Nest/Google cameras may use different video sizes or aspect ratios, causing the video to appear slightly cropped or not fill the screen correctly
 - Enabling HomeKit Secure Video (HKSV) on battery-powered cameras will significantly reduce battery life
 - Motion sensing on wired Nest Protect devices may report incorrect states due to recent firmware changes
-- Video from Google Home-hosted streams be slow to start up
+- Video from Google Home-hosted streams may be slow to start up
+
+## v0.4.1 (2026/05/07)
+
+### ⚠️ Compatibility Changes
+
+- Minimum supported Homebridge 2.x version is now **2.0.2**
+  - Includes Homebridge-side fixes required for reliable HomeKit Secure Video behaviour
+  - Earlier Homebridge 2.x releases are no longer officially supported
+- Minimum supported FFmpeg version is now **6.1**
+  - Older FFmpeg 6.0 builds are no longer officially supported
+
+### ✅ Homebridge 2.x
+
+- Removed the beta tag from Homebridge 2.x support
+- Homebridge 2.x is now considered stable and fully supported when running **Homebridge 2.0.2 or newer**
+
+### 🛠️ Fixes
+
+- Fixed handling of Nest Heat Link hot water temperature data
+  - Prevents HomeKit warnings when hot water temperature is unavailable
+  - Hot water temperature controls are now hidden when unsupported by the connected system
+
+- Improved FFmpeg detection and compatibility
+  - Better support for macOS Homebrew installations, including Apple Silicon systems
+  - Improved automatic FFmpeg discovery across supported platforms
+  - Improved handling of custom FFmpeg paths and startup failures
+
+- Improved camera streaming stability and cleanup
+  - Fixed ffmpeg process exit handling for live streams, recordings, and two-way audio
+  - Helps prevent stale HomeKit camera sessions after unexpected ffmpeg exits
+  - Improved cleanup of reconnect, observe, and streaming timers during shutdown and reconnect cycles
+
+- Improved protobuf and gRPC handling
+  - Added shared protobuf schema caching to reduce repeated protobuf loading across camera and transport modules
+  - Improved stability of long-running Google observe and streaming connections
+
+- Improved HTTP retry handling
+  - Retry logic now avoids retrying authentication and client-side failures such as `401`, `403`, and `404`
+  - Reduces unnecessary API requests and improves overall reliability
+
+- Improved internal logging and diagnostics
+  - Improved handling of failed background API and gRPC requests to avoid unexpected plugin instability
+
+### 📦 Dependency Updates
+
+- Updated `protobufjs` from `8.0.1` to `8.0.3`
+- Updated `werift` from `0.22.9` to `0.23.0`
 
 ## v0.4.0 (2026/04/30)
 

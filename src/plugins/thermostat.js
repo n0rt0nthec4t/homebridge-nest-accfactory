@@ -72,7 +72,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.THERMOSTAT;
-  static VERSION = '2026.04.26'; // Code version
+  static VERSION = '2026.05.05'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -779,7 +779,11 @@ export default class NestThermostat extends HomeKitDevice {
   }
 
   onMessage(type, message) {
-    if (typeof type !== 'string' || type === '' || message === null || typeof message !== 'object' || message?.constructor !== Object) {
+    if (
+      typeof type !== 'string' ||
+      type === '' ||
+      (message !== undefined && (message === null || typeof message !== 'object' || message.constructor !== Object))
+    ) {
       return;
     }
 

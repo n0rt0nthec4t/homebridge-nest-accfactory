@@ -55,7 +55,34 @@
 // - resolveMappedField() applies preference, merge logic, and fallbacks
 // - mergeMappedObjects() combines mapped results when required
 //
-// Code version 2026.04.15
+// Basic usage:
+// - Define a FIELD_MAP in a device module:
+//     const FIELD_MAP = {
+//       online: {
+//         required: true,
+//         google: {
+//           fields: ['liveness'],
+//           translate: ({ raw }) => raw?.value === 'LIVENESS_DEVICE_STATUS_ONLINE',
+//         },
+//         nest: 'online',
+//         prefer: 'google',
+//         defaultValue: false,
+//       },
+//     };
+//
+// - Build a source-aware context:
+//     let context = createMappingContext(rawData, objectKey, {
+//       google: googleRawObject,
+//       nest: nestRawObject,
+//     });
+//
+// - Build a mapped object:
+//     let result = buildMappedObject(FIELD_MAP, context, new Set(['liveness']));
+//
+// - Use result.data for device updates and result.hasRequired to determine
+//   whether the mapped result is complete enough to create a new device.
+//
+// Code version 2026.05.06
 // Mark Hulskamp
 
 // Safely read a dot-separated path from an object

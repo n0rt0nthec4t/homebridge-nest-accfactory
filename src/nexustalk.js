@@ -19,36 +19,43 @@
 //
 // Features:
 // - TLS-encrypted connection management with Nexus backend
+// - Shared protobuf schema/type caching via protobuf.js helper module
 // - Protobuf message serialization for proprietary NexusTalk protocol
 // - Multiplexed media and control messages over a single connection
 // - Buffered outbound control-message queue using RingBuffer
 // - Direct media injection into Streamer with minimal processing overhead
 // - Two-way audio (talkback) support via Speex
+// - Buffered packet parsing with bounded memory protection
 //
 // Notes:
 // - Video is delivered as H264 NAL units and assembled into complete access units
 //   before being injected into Streamer
 // - Audio is delivered as AAC frames and passed directly into Streamer
+// - Protobuf schemas and message types are shared/cached globally to avoid
+//   repeated protobufjs parsing across multiple camera instances
+//
+// Architecture:
+// - Extends Streamer and injects media using addMedia()
+// - Uses protobuf-based message framing over TLS
+// - Maintains per-stream playback timing/channel state
+// - Supports reconnect-driven lifecycle handling for redirects and stalls
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.04.21
+// Code version 2026.05.07
 // Mark Hulskamp
 'use strict';
-
-// Define external library requirements
-import protobuf from 'protobufjs';
 
 // Define nodejs module requirements
 import { Buffer } from 'node:buffer';
 import { setInterval, clearInterval } from 'node:timers';
-import fs from 'node:fs';
 import path from 'node:path';
 import tls from 'tls';
 import crypto from 'crypto';
 
 // Define our modules
 import Streamer, { RingBuffer } from './streamer.js';
+import { getProtoType } from './protobuf.js';
 
 // Define constants
 import { USER_AGENT, __dirname } from './consts.js';
@@ -104,7 +111,6 @@ export default class NexusTalk extends Streamer {
   blankAudio = AAC_MONO_48000_BLANK;
 
   // Internal data only for this class
-  #protobufNexusTalk = undefined; // Protobuf for NexusTalk
   #protobufTypes = {
     AudioPayload: undefined,
     StartPlayback: undefined,
@@ -188,35 +194,21 @@ export default class NexusTalk extends Streamer {
   constructor(uuid, deviceData, options) {
     super(uuid, deviceData, options);
 
-    if (fs.existsSync(path.join(__dirname, 'protobuf/nest/nexustalk.proto')) === true) {
-      // Load NexusTalk protobuf schema once for this streamer instance.
-      // protobufjs is configured here so decoded/encoded message handling
-      // stays consistent with the generated Nest protocol structures.
-      protobuf.util.Long = null;
-      protobuf.configure();
-      this.#protobufNexusTalk = protobuf.loadSync(path.resolve(__dirname + '/protobuf/nest/nexustalk.proto'));
+    let protoPath = path.join(__dirname, 'protobuf/nest/nexustalk.proto');
 
-      // Cache protobuf message types up front so we avoid repeated lookup()
-      // calls during connect, control messaging, and packet handling paths.
-      let lookup = (typeName) => {
-        try {
-          return this.#protobufNexusTalk.lookup(typeName);
-        } catch {
-          return undefined;
-        }
-      };
-
-      this.#protobufTypes.AudioPayload = lookup('nest.nexustalk.v1.AudioPayload');
-      this.#protobufTypes.StartPlayback = lookup('nest.nexustalk.v1.StartPlayback');
-      this.#protobufTypes.StopPlayback = lookup('nest.nexustalk.v1.StopPlayback');
-      this.#protobufTypes.AuthoriseRequest = lookup('nest.nexustalk.v1.AuthoriseRequest');
-      this.#protobufTypes.Hello = lookup('nest.nexustalk.v1.Hello');
-      this.#protobufTypes.Redirect = lookup('nest.nexustalk.v1.Redirect');
-      this.#protobufTypes.PlaybackBegin = lookup('nest.nexustalk.v1.PlaybackBegin');
-      this.#protobufTypes.PlaybackPacket = lookup('nest.nexustalk.v1.PlaybackPacket');
-      this.#protobufTypes.PlaybackEnd = lookup('nest.nexustalk.v1.PlaybackEnd');
-      this.#protobufTypes.Error = lookup('nest.nexustalk.v1.Error');
-    }
+    // Cache protobuf message types up front so we avoid repeated lookup()
+    // calls during connect, control messaging, and packet handling paths.
+    // Types are shared globally via protobuf.js helper caching.
+    this.#protobufTypes.AudioPayload = getProtoType(protoPath, 'nest.nexustalk.v1.AudioPayload', this.log);
+    this.#protobufTypes.StartPlayback = getProtoType(protoPath, 'nest.nexustalk.v1.StartPlayback', this.log);
+    this.#protobufTypes.StopPlayback = getProtoType(protoPath, 'nest.nexustalk.v1.StopPlayback', this.log);
+    this.#protobufTypes.AuthoriseRequest = getProtoType(protoPath, 'nest.nexustalk.v1.AuthoriseRequest', this.log);
+    this.#protobufTypes.Hello = getProtoType(protoPath, 'nest.nexustalk.v1.Hello', this.log);
+    this.#protobufTypes.Redirect = getProtoType(protoPath, 'nest.nexustalk.v1.Redirect', this.log);
+    this.#protobufTypes.PlaybackBegin = getProtoType(protoPath, 'nest.nexustalk.v1.PlaybackBegin', this.log);
+    this.#protobufTypes.PlaybackPacket = getProtoType(protoPath, 'nest.nexustalk.v1.PlaybackPacket', this.log);
+    this.#protobufTypes.PlaybackEnd = getProtoType(protoPath, 'nest.nexustalk.v1.PlaybackEnd', this.log);
+    this.#protobufTypes.Error = getProtoType(protoPath, 'nest.nexustalk.v1.Error', this.log);
 
     // Store data we need from the device data passed in
     this.token = deviceData?.apiAccess?.token;

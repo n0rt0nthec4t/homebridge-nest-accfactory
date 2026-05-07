@@ -27,7 +27,7 @@
 // - Imported throughout the codebase for consistency and reuse
 // - Changes here may affect multiple subsystems (devices, streaming, APIs)
 //
-// Code version 2026.04.21
+// Code version 2026.05.06
 // Mark Hulskamp
 'use strict';
 
@@ -148,7 +148,21 @@ export const DEVICE_TYPE = {
   HOMEAWAY: 'HomeAway',
 };
 
-export const FFMPEG_VERSION = '6.0.0';
+export const DEVICE_CATEGORY_MAP = {
+  [DEVICE_TYPE.LOCK]: 6,
+  [DEVICE_TYPE.HEATLINK]: 8,
+  [DEVICE_TYPE.THERMOSTAT]: 9,
+  [DEVICE_TYPE.TEMPSENSOR]: 10,
+  [DEVICE_TYPE.PROTECT]: 10,
+  [DEVICE_TYPE.WEATHER]: 10,
+  [DEVICE_TYPE.HOMEAWAY]: 10,
+  [DEVICE_TYPE.ALARM]: 11,
+  [DEVICE_TYPE.CAMERA]: 17,
+  [DEVICE_TYPE.FLOODLIGHT]: 17,
+  [DEVICE_TYPE.DOORBELL]: 18,
+};
+
+export const FFMPEG_VERSION = '6.1.0';
 
 export const ACCOUNT_TYPE = {
   NEST: 'Nest',

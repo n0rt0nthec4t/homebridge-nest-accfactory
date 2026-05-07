@@ -56,7 +56,7 @@ import {
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.HEATLINK;
-  static VERSION = '2026.04.26'; // Code version
+  static VERSION = '2026.05.06'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
@@ -72,12 +72,18 @@ export default class NestHeatlink extends HomeKitDevice {
 
     // If the heatlink supports hotwater temperature control
     // Setup the thermostat service if not already present on the accessory, and link it to the Eve app if configured to do so
-    if (this.deviceData?.has_hot_water_temperature === true) {
+    if (
+      this.deviceData?.has_hot_water_temperature === true &&
+      Number.isFinite(Number(this.deviceData?.current_water_temperature)) === true
+    ) {
       this.#setupHotwaterTemperature();
     }
 
-    if (this.deviceData?.has_hot_water_temperature === false) {
-      // No longer have hotwater temperature control configured and service present, so removed it
+    if (
+      this.deviceData?.has_hot_water_temperature === false ||
+      Number.isFinite(Number(this.deviceData?.current_water_temperature)) === false
+    ) {
+      // No longer have usable hot water temperature control, so remove any existing thermostat service
       this.thermostatService = this.accessory.getService(this.hap.Service.Thermostat);
       if (this.thermostatService !== undefined) {
         this.accessory.removeService(this.thermostatService);
@@ -157,7 +163,11 @@ export default class NestHeatlink extends HomeKitDevice {
   }
 
   onMessage(type, message) {
-    if (typeof type !== 'string' || type === '' || message === null || typeof message !== 'object' || message?.constructor !== Object) {
+    if (
+      typeof type !== 'string' ||
+      type === '' ||
+      (message !== undefined && (message === null || typeof message !== 'object' || message.constructor !== Object))
+    ) {
       return;
     }
 

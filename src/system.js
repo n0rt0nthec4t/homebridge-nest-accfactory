@@ -2,24 +2,27 @@
 // Part of homebridge-nest-accfactory
 //
 // Core platform manager for communication with Nest and Google APIs.
-// Handles account authorisation, connection lifecycle, device discovery,
-// raw data aggregation, snapshot coordination, and routing of updates
-// and commands between cloud APIs and HomeKit device modules.
+// Handles account authorisation, API connection lifecycle, device discovery,
+// raw data aggregation, snapshot coordination, protobuf-backed observe/subscribe
+// handling, and routing of updates and commands between cloud APIs and
+// HomeKit device modules.
 //
 // Responsibilities:
 // - Authorise and maintain connections to Nest and Google accounts
-// - Manage Nest REST API and Google protobuf API communication
+// - Manage Nest REST API and Google protobuf/gRPC API communication
 // - Observe and subscribe to cloud updates in near real-time
 // - Aggregate and maintain raw device data from multiple API sources
 // - Coordinate protobuf-backed camera snapshot requests and responses
 // - Discover, create, update, and remove supported device instances
 // - Route HomeKit get/set requests to the correct upstream API
 // - Load and coordinate device support modules
+// - Build and manage protobuf-backed observe trait subscriptions
 //
 // Features:
 // - Multi-account support (multiple Google and/or Nest accounts simultaneously)
 // - Automatic reconnect and token/session refresh handling
 // - Nest REST API subscribe loop and Google protobuf observe loop
+// - Shared protobuf schema/type caching via protobuf.js helpers
 // - Raw data merging across Nest and Google sources
 // - Promise-based snapshot waiter handling for upload_live_image updates
 // - Support dump generation for troubleshooting when enabled
@@ -27,25 +30,23 @@
 //
 // Notes:
 // - HomeKit characteristic and service management is handled by individual device modules
-// - This module is responsible for platform orchestration, API communication, snapshot coordination, and device lifecycle
+// - This module is responsible for platform orchestration, API communication,
+//   snapshot coordination, protobuf observe handling, and device lifecycle
 // - Camera, thermostat, sensor, and lock behaviour is implemented in device-specific modules
 //
 // Architecture:
 // - Exports the main NestAccfactory platform class
-// - Maintains connection state, protobuf definitions, raw data cache, snapshot waiters, and tracked devices
+// - Maintains connection state, raw data cache, snapshot waiters, and tracked devices
+// - Uses shared protobuf helpers for protobuf schema/type loading and traversal
 // - Creates and updates HomeKitDevice-based instances for supported device types
 //
-// Code version 2026.04.22
+// Code version 2026.05.07
 // Mark Hulskamp
 'use strict';
-
-// Define external module requirements
-import protobuf from 'protobufjs';
 
 // Define nodejs module requirements
 import { Buffer } from 'node:buffer';
 import { setTimeout, clearTimeout } from 'node:timers';
-import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import process from 'node:process';
@@ -58,6 +59,7 @@ import HomeKitDevice from './HomeKitDevice.js';
 import { loadDeviceModules, getDeviceHKCategory } from './devices.js';
 import { processConfig, buildConnections } from './config.js';
 import { adjustTemperature, scaleValue, fetchWrapper } from './utils.js';
+import { getProtoTypes } from './protobuf.js';
 
 // Define constants
 import {
@@ -83,7 +85,6 @@ export default class NestAccfactory {
   // Internal data only for this class
   #connections = undefined; // Object of confirmed connections
   #rawData = {}; // Cached copy of data from both Nest and Google APIs
-  #protobufRoot = null; // Protobuf loaded protos
   #trackedDevices = new Map(); // Devices we've created, keyed by serial number
   #deviceModules = undefined; // No loaded device support modules to start
 
@@ -131,9 +132,6 @@ export default class NestAccfactory {
       // Load device support modules from the plugins folder if not already done
       this.#deviceModules = await loadDeviceModules(this.log, 'plugins');
 
-      // Load protobuf files for Google API
-      this.#loadProtobufRoot();
-
       // Start reconnect loop per connection with backoff for failed tries
       // This also initiates both Nest API subscribes and Google API observes
       for (const uuid of Object.keys(this.#connections)) {
@@ -156,7 +154,10 @@ export default class NestAccfactory {
             reconnectDelay = 15000;
           }
 
-          setTimeout(reconnectLoop, reconnectDelay);
+          if (this.#connections?.[uuid] === connection) {
+            clearTimeout(connection.reconnectTimer);
+            connection.reconnectTimer = setTimeout(reconnectLoop, reconnectDelay);
+          }
         };
 
         if (connection?.exclude !== true) {
@@ -173,6 +174,9 @@ export default class NestAccfactory {
       for (let uuid of Object.keys(this.#connections ?? {})) {
         // Cleanup any active timers or transports for this connection
         clearTimeout(this.#connections?.[uuid]?.timer);
+        clearTimeout(this.#connections?.[uuid]?.reconnectTimer);
+        clearTimeout(this.#connections?.[uuid]?.subscribeTimer);
+        clearTimeout(this.#connections?.[uuid]?.observeTimer);
 
         // If we have an active gRPC transport for this connection, release it to clean up resources and connections
         this.#connections?.[uuid]?.grpcTransport?.release?.();
@@ -193,7 +197,6 @@ export default class NestAccfactory {
       // Cleanup internal data
       this.#trackedDevices.clear();
       this.#rawData = {};
-      this.#protobufRoot = null;
       this.#connections = undefined;
       this.#deviceModules?.clear?.();
       this.cachedAccessories = [];
@@ -776,15 +779,14 @@ export default class NestAccfactory {
       .finally(() => {
         // Only continue the subscription loop if the connection is still authorised
         if (this.#connections?.[uuid]?.authorised === true) {
-          setTimeout(() => this.#subscribeNestAPI(uuid, false, fullRead), 1000);
+          clearTimeout(this.#connections[uuid].subscribeTimer);
+          this.#connections[uuid].subscribeTimer = setTimeout(() => this.#subscribeNestAPI(uuid, false, fullRead), 1000);
         }
       });
   }
 
   async #observeGoogleAPI(uuid) {
     if (
-      this.#protobufRoot === undefined ||
-      this.#protobufRoot === null ||
       typeof this.#connections?.[uuid] !== 'object' ||
       this.#connections?.[uuid]?.authorised !== true ||
       this.#connections?.[uuid]?.grpcTransport === undefined ||
@@ -794,37 +796,38 @@ export default class NestAccfactory {
       return;
     }
 
-    const traverseTypes = (trait, callback) => {
-      if (trait instanceof protobuf.Type) {
-        callback(trait);
-      }
-
-      let nestedItems = trait?.nestedArray ?? [];
-      for (let nested of nestedItems) {
-        traverseTypes(nested, callback);
-      }
-    };
-
-    // Dynamically build the 'observe' post body data
-    let observeTraitsList = [];
-    traverseTypes(this.#protobufRoot, (type) => {
-      if (
-        (this.#connections[uuid].type === ACCOUNT_TYPE.NEST &&
-          type.fullName.startsWith('.nest.trait.product.camera') === false &&
-          type.fullName.startsWith('.nest.trait.product.doorbell') === false &&
-          (type.fullName.startsWith('.nest.trait') === true || type.fullName.startsWith('.weave.') === true)) ||
-        (this.#connections[uuid].type === ACCOUNT_TYPE.GOOGLE &&
-          (type.fullName.startsWith('.nest.trait') === true ||
-            type.fullName.startsWith('.weave.') === true ||
-            type.fullName.startsWith('.google.trait.product.camera') === true))
-      ) {
-        observeTraitsList.push({ traitType: type.fullName.replace(/^\.*|\.*$/g, '') });
-      }
-    });
+    // Dynamically build the 'observe' post body data from cached protobuf message types
+    let observeTraitsList = getProtoTypes(path.join(__dirname, 'protobuf/root.proto'), this.log)
+      .filter((type) => {
+        return (
+          (this.#connections[uuid].type === ACCOUNT_TYPE.NEST &&
+            type.fullName.startsWith('.nest.trait.product.camera') === false &&
+            type.fullName.startsWith('.nest.trait.product.doorbell') === false &&
+            (type.fullName.startsWith('.nest.trait') === true || type.fullName.startsWith('.weave.') === true)) ||
+          (this.#connections[uuid].type === ACCOUNT_TYPE.GOOGLE &&
+            (type.fullName.startsWith('.nest.trait') === true ||
+              type.fullName.startsWith('.weave.') === true ||
+              type.fullName.startsWith('.google.trait.product.camera') === true))
+        );
+      })
+      .map((type) => ({
+        traitType: type.fullName.replace(/^\.*|\.*$/g, ''),
+      }));
 
     // Dedupe the observe traits list since there can be some overlap in the traits
     // due to the dynamic nature of the protobuf loading and trait type matching
     observeTraitsList = [...new Map(observeTraitsList.map((entry) => [entry.traitType, entry])).values()];
+
+    // If protobuf support is unavailable or no observable traits were found,
+    // do not start the observe loop. Retrying every second would only create
+    // noise until the underlying protobuf load problem is fixed.
+    if (observeTraitsList.length === 0) {
+      this?.log?.warn?.(
+        'Google API observe cannot start for connection "%s" because no observable protobuf traits were loaded',
+        this.#connections[uuid].name,
+      );
+      return;
+    }
 
     this.#connections[uuid].grpcTransport
       .observe(
@@ -968,7 +971,8 @@ export default class NestAccfactory {
       .finally(() => {
         // Only continue the observe loop if the connection is still authorised
         if (this.#connections?.[uuid]?.authorised === true) {
-          setTimeout(() => this.#observeGoogleAPI(uuid), 1000);
+          clearTimeout(this.#connections[uuid].observeTimer);
+          this.#connections[uuid].observeTimer = setTimeout(() => this.#observeGoogleAPI(uuid), 1000);
         }
       });
   }
@@ -2456,35 +2460,5 @@ export default class NestAccfactory {
     }
 
     return [];
-  }
-
-  #loadProtobufRoot() {
-    if (this.#protobufRoot !== undefined && this.#protobufRoot !== null) {
-      return;
-    }
-
-    if (fs.existsSync(path.join(__dirname, 'protobuf/root.proto')) === true) {
-      try {
-        protobuf.util.Long = null;
-        protobuf.configure();
-        this.#protobufRoot = protobuf.loadSync(path.join(__dirname, 'protobuf/root.proto'));
-
-        if (this.#protobufRoot !== null) {
-          this?.log?.debug?.('Loaded protobuf support files for Google API');
-        }
-      } catch (error) {
-        this.#protobufRoot = null;
-        this?.log?.warn?.(
-          'Failed to load protobuf support files for Google API. Error was "%s"',
-          typeof error?.message === 'string' ? error.message : String(error),
-        );
-      }
-    }
-
-    if (this.#protobufRoot === null) {
-      this?.log?.warn?.(
-        'Failed to load protobuf support files for Google API. This will cause certain Nest/Google devices to be unsupported',
-      );
-    }
   }
 }

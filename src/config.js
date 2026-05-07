@@ -29,7 +29,7 @@
 // - FFmpeg validation determines availability of camera streaming and HKSV recording
 // - Used during plugin startup before any device initialisation
 //
-// Code version 2026.04.22
+// Code version 2026.05.06
 // Mark Hulskamp
 'use strict';
 
@@ -135,10 +135,10 @@ function processConfig(config, log, api) {
     hwaccel: false,
   };
 
-  let ffmpegPath = (config?.options?.ffmpegPath?.trim?.() ?? '') !== '' ? config.options.ffmpegPath.trim() : '/usr/local/bin';
+  let ffmpegPath = (config?.options?.ffmpegPath?.trim?.() ?? '') !== '' ? config.options.ffmpegPath.trim() : undefined;
 
   // Create FFmpeg probe
-  let ffmpeg = new FFmpeg(ffmpegPath, log);
+  let ffmpeg = new FFmpeg(ffmpegPath);
 
   if (typeof ffmpeg.version !== 'string') {
     log?.warn?.('ffmpeg binary "%s" not found or not executable, camera/doorbell streaming will be unavailable', ffmpeg.binary);
@@ -322,7 +322,7 @@ function persistMigratedConfig(config, log, api) {
 
     // Ensure platforms array exists
     if (Array.isArray(jsonConfig?.platforms) === false) {
-      return false;
+      throw new Error('existing config does not contain a valid platforms array');
     }
 
     jsonConfig.platforms.forEach((platform, index) => {
@@ -361,7 +361,7 @@ function persistMigratedConfig(config, log, api) {
 
     // Must resolve to exactly one platform to proceed safely
     if (matchingPlatforms.length !== 1) {
-      return false;
+      throw new Error('unable to safely identify a single NestAccfactory platform to migrate');
     }
 
     // Apply migrated structure
@@ -374,6 +374,11 @@ function persistMigratedConfig(config, log, api) {
 
     // Backup original config before modifying
     fs.writeFileSync(backupPath, rawConfig, 'utf8');
+
+    // Verify backup was created before touching original config
+    if (fs.existsSync(backupPath) !== true) {
+      throw new Error('unable to verify config backup was created');
+    }
 
     // Write updated config to temp file first (safer write)
     fs.writeFileSync(tempPath, JSON.stringify(jsonConfig, null, 2), 'utf8');
@@ -405,7 +410,14 @@ function persistMigratedConfig(config, log, api) {
     }
 
     // Log failure but do not crash plugin
-    log?.warn?.('Unable to automatically update config.json: %s', error?.message || error);
+    if (error instanceof SyntaxError) {
+      log?.warn?.('Unable to automatically update config.json: existing config contains invalid JSON');
+    } else if (['EACCES', 'EPERM'].includes(error?.code) === true) {
+      log?.warn?.('Unable to automatically update config.json: permission denied');
+    } else {
+      log?.warn?.('Unable to automatically update config.json: %s', error?.message || error);
+    }
+
     return false;
   }
 }

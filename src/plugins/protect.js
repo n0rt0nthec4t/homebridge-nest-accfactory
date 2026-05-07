@@ -47,7 +47,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.PROTECT;
-  static VERSION = '2026.04.26'; // Code version
+  static VERSION = '2026.05.05'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -207,7 +207,7 @@ export default class NestProtect extends HomeKitDevice {
   }
 
   onMessage(type, message) {
-    if (typeof type !== 'string' || type === '' || typeof message !== 'object' || message === '') {
+    if (typeof type !== 'string' || type === '' || (message !== undefined && (typeof message !== 'object' || message === null))) {
       return;
     }
 

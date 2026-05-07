@@ -86,13 +86,12 @@ const PREBUFFER_LENGTH = 4000;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.04.26'; // Code version
+  static VERSION = '2026.05.06'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
   motionService = undefined; // Single motion sensor for camera(s)
   batteryService = undefined; // Service for Camera/doorbell with battery
-  snapshotEvent = undefined; // Event for which to get snapshot for
   ffmpeg = undefined; // FFMpeg object class
 
   // Internal data only for this class
@@ -124,7 +123,7 @@ export default class NestCamera extends HomeKitDevice {
 
     // Create ffmpeg object if have been told valid binary
     if (typeof this.deviceData?.ffmpeg?.binary === 'string' && this.deviceData?.ffmpeg?.valid === true) {
-      this.ffmpeg = new FFmpeg(this.deviceData?.ffmpeg?.binary, log);
+      this.ffmpeg = new FFmpeg(this.deviceData?.ffmpeg?.binary);
     }
   }
 
@@ -333,19 +332,21 @@ export default class NestCamera extends HomeKitDevice {
     this.addTimer(TIMERS.CAMERA_EVENTS.name, { interval: TIMERS.CAMERA_EVENTS.interval });
   }
 
-  onRemove() {
+  async onRemove() {
     // Clean up our camera object since this device is being removed
     // Stop all streamer logic (buffering, output, etc)
-    this.streamer?.stopEverything?.();
+    await this.streamer?.stopEverything?.();
 
-    // Terminate any remaining ffmpeg sessions for this camera/doorbell
+    // Terminate all live sessions and ffmpeg processes for this camera/doorbell
+    for (let sessionID of [...this.#liveSessions.keys()]) {
+      this.#cleanupLiveSession(sessionID);
+    }
+
+    // Cleanup any recording sessions and wake HKSV generators
+    this.#cleanupRecordingSession();
+
+    // Ensure all ffmpeg processes are removed
     this.ffmpeg?.killAllSessions?.(this.uuid);
-
-    // Stop any on-going HomeKit sessions, either live or recording
-    // We'll terminate any ffmpeg, rtpSplitter etc processes
-    this.#liveSessions?.forEach?.((session) => {
-      session?.rtpSplitter?.close?.();
-    });
 
     // Remove any motion services we created
     if (this.motionService !== undefined) {
@@ -354,13 +355,16 @@ export default class NestCamera extends HomeKitDevice {
     }
 
     // Remove the camera controller
-    this.accessory.removeController(this.controller);
+    if (this.controller !== undefined) {
+      this.accessory.removeController(this.controller);
+    }
 
     // Clear references
-    this.#liveSessions = undefined;
     this.motionService = undefined;
+    this.batteryService = undefined;
     this.streamer = undefined;
     this.controller = undefined;
+    this.ffmpeg = undefined;
   }
 
   async onUpdate(deviceData) {
@@ -572,23 +576,25 @@ export default class NestCamera extends HomeKitDevice {
     }
   }
 
-  onShutdown() {
+  async onShutdown() {
     // Clear any motion
     if (this.motionService !== undefined) {
       this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false);
     }
 
     // Stop all streamer logic (buffering, output, etc)
-    this.streamer?.stopEverything?.();
+    await this.streamer?.stopEverything?.();
 
-    // Terminate any remaining ffmpeg sessions for this camera/doorbell
+    // Terminate all live sessions and ffmpeg processes for this camera/doorbell
+    for (let sessionID of [...this.#liveSessions.keys()]) {
+      this.#cleanupLiveSession(sessionID);
+    }
+
+    // Cleanup any recording sessions and wake HKSV generators
+    this.#cleanupRecordingSession();
+
+    // Ensure all ffmpeg processes are removed
     this.ffmpeg?.killAllSessions?.(this.uuid);
-
-    // Stop any on-going HomeKit sessions, either live or recording
-    // We'll terminate any ffmpeg, rtpSplitter etc processes
-    this.#liveSessions?.forEach?.((session) => {
-      session?.rtpSplitter?.close?.();
-    });
   }
 
   async onTimer(message) {
@@ -620,7 +626,7 @@ export default class NestCamera extends HomeKitDevice {
   }
 
   async onMessage(type, message) {
-    if (typeof type !== 'string' || type === '' || typeof message !== 'object') {
+    if (typeof type !== 'string' || type === '' || (message !== undefined && (typeof message !== 'object' || message === null))) {
       return;
     }
 
@@ -662,7 +668,7 @@ export default class NestCamera extends HomeKitDevice {
       }
 
       // Stop any prebuffering/record buffering
-      this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_BUFFER, {});
+      await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_BUFFER, {});
       return;
     }
   }
@@ -692,6 +698,14 @@ export default class NestCamera extends HomeKitDevice {
       // Sometimes when starting up, HAP-nodeJS or HomeKit triggers this even when motion isn't occurring
       this?.log?.debug?.(
         'Received request to commence recording for "%s" however we have not detected any motion',
+        this.deviceData.description,
+      );
+      return;
+    }
+
+    if (this.#recordingConfig?.videoCodec === undefined) {
+      this?.log?.debug?.(
+        'Received request to start recording for "%s" before HKSV recording configuration was available',
         this.deviceData.description,
       );
       return;
@@ -862,14 +876,24 @@ export default class NestCamera extends HomeKitDevice {
       }
     });
 
-    ffmpegStream?.on?.('exit', (code, signal) => {
-      if (signal !== 'SIGKILL' && (signal !== null || code !== 0)) {
-        this?.log?.error?.('ffmpeg recording process for "%s" stopped unexpectedly. Exit code was "%s"', this.deviceData.description, code);
+    ffmpegStream?.process?.on?.('exit', async (code, signal) => {
+      this.emit(MP4BOX);
+
+      if (signal === 'SIGKILL' || (signal === null && code === 0)) {
+        return;
       }
 
-      // Ensure generator wakes up and exits
-      this.emit(MP4BOX);
-      this.removeAllListeners(MP4BOX);
+      this?.log?.error?.('ffmpeg recording process for "%s" stopped unexpectedly. Exit code was "%s"', this.deviceData.description, code);
+
+      try {
+        await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_RECORD, {
+          sessionID: sessionID,
+        });
+      } catch {
+        // Ignore errors if streamer already stopped
+      }
+
+      this.#cleanupRecordingSession(sessionID);
     });
 
     // Start the appropriate streamer
@@ -922,19 +946,12 @@ export default class NestCamera extends HomeKitDevice {
   }
 
   async closeRecordingStream(sessionID, closeReason) {
-    // Stop recording stream from the streamer
     await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_RECORD, {
       sessionID: sessionID,
     });
 
-    // Terminate the ffmpeg recording process
-    this.ffmpeg?.killSession?.(this.uuid, sessionID, 'record', 'SIGKILL');
+    this.#cleanupRecordingSession(sessionID);
 
-    // Wake and clear HomeKit Secure Video generator
-    this.emit(MP4BOX);
-    this.removeAllListeners(MP4BOX);
-
-    // Log completion depending on reason
     if (closeReason === this.hap.HDSProtocolSpecificErrorReason.NORMAL) {
       this?.log?.info?.('Completed recording from "%s"', this.deviceData.description);
     } else {
@@ -1304,34 +1321,35 @@ export default class NestCamera extends HomeKitDevice {
         4, // 4 pipes required
       );
 
-      ffmpegStream?.on?.('exit', async (code, signal) => {
-        if (signal !== 'SIGKILL' && (signal !== null || code !== 0)) {
-          this?.log?.error?.(
-            'ffmpeg live streaming process for "%s" stopped unexpectedly. Exit code was "%s"',
-            this.deviceData.description,
-            code,
-          );
-
-          if (liveFfmpegStderrTail.length > 0) {
-            this?.log?.error?.(
-              'Last ffmpeg stderr lines for live stream "%s": %s',
-              this.deviceData.description,
-              liveFfmpegStderrTail.join(' | '),
-            );
-          }
-
-          // Stop the streamer and notify HomeKit that the stream has failed
-          try {
-            await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_LIVE, {
-              sessionID: request.sessionID,
-            });
-          } catch {
-            // Ignore errors if streamer already stopped
-          }
-          this.controller.forceStopStreamingSession(request.sessionID);
-          this.#liveSessions.get(request.sessionID)?.rtpSplitter?.close?.();
-          this.#liveSessions.delete(request.sessionID);
+      ffmpegStream?.process?.on?.('exit', async (code, signal) => {
+        if (signal === 'SIGKILL' || (signal === null && code === 0)) {
+          return;
         }
+
+        this?.log?.error?.(
+          'ffmpeg live streaming process for "%s" stopped unexpectedly. Exit code was "%s"',
+          this.deviceData.description,
+          code,
+        );
+
+        if (liveFfmpegStderrTail.length > 0) {
+          this?.log?.error?.(
+            'Last ffmpeg stderr lines for live stream "%s": %s',
+            this.deviceData.description,
+            liveFfmpegStderrTail.join(' | '),
+          );
+        }
+
+        try {
+          await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_LIVE, {
+            sessionID: request.sessionID,
+          });
+        } catch {
+          // Ignore errors if streamer already stopped
+        }
+
+        this.controller?.forceStopStreamingSession?.(request.sessionID);
+        this.#cleanupLiveSession(request.sessionID);
       });
 
       let ffmpegTalk = null; // No ffmpeg session for talkback yet
@@ -1351,12 +1369,14 @@ export default class NestCamera extends HomeKitDevice {
           session.rtpSplitter = dgram.createSocket('udp4');
           session.rtpSplitter.bind(session.rtpSplitterPort);
           session.rtpSplitter.on('error', (error) => {
-            this?.log?.debug?.(
+            this?.log?.error?.(
               'Talkback RTP splitter on "%s" had an error. Error was "%s"',
               this.deviceData.description,
               typeof error?.message === 'string' ? error.message : String(error),
             );
-            session.rtpSplitter.close();
+
+            session?.rtpSplitter?.removeAllListeners?.();
+            session?.rtpSplitter?.close?.();
           });
           session.rtpSplitter.on('message', (message) => {
             let version = 0;
@@ -1459,26 +1479,27 @@ export default class NestCamera extends HomeKitDevice {
             3, // 3 pipes required
           );
 
-          ffmpegTalk?.on?.('exit', async (code, signal) => {
-            if (signal !== 'SIGKILL' && (signal !== null || code !== 0)) {
-              this?.log?.error?.(
-                'ffmpeg talkback process for "%s" stopped unexpectedly. Exit code was "%s"',
-                this.deviceData.description,
-                code,
-              );
-
-              // Stop the streamer and notify HomeKit that the stream has failed
-              try {
-                await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_LIVE, {
-                  sessionID: request.sessionID,
-                });
-              } catch {
-                // Ignore errors if streamer already stopped
-              }
-              this.controller.forceStopStreamingSession(request.sessionID);
-              this.#liveSessions.get(request.sessionID)?.rtpSplitter?.close?.();
-              this.#liveSessions.delete(request.sessionID);
+          ffmpegTalk?.process?.on?.('exit', async (code, signal) => {
+            if (signal === 'SIGKILL' || (signal === null && code === 0)) {
+              return;
             }
+
+            this?.log?.error?.(
+              'ffmpeg talkback process for "%s" stopped unexpectedly. Exit code was "%s"',
+              this.deviceData.description,
+              code,
+            );
+
+            try {
+              await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_LIVE, {
+                sessionID: request.sessionID,
+              });
+            } catch {
+              // Ignore errors if streamer already stopped
+            }
+
+            this.controller?.forceStopStreamingSession?.(request.sessionID);
+            this.#cleanupLiveSession(request.sessionID);
           });
 
           let sdp = [
@@ -1528,15 +1549,13 @@ export default class NestCamera extends HomeKitDevice {
     }
 
     if (request.type === this.hap.StreamRequestTypes.STOP && this.#liveSessions.has(request.sessionID)) {
-      // Stop the HomeKit stream and cleanup any associated ffmpeg or RTP splitter sessions
       await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_LIVE, {
         sessionID: request.sessionID,
       });
-      this.controller.forceStopStreamingSession(request.sessionID);
-      this.#liveSessions.get(request.sessionID)?.rtpSplitter?.close?.();
-      this.ffmpeg?.killSession?.(this.uuid, request.sessionID, 'live', 'SIGKILL');
-      this.ffmpeg?.killSession?.(this.uuid, request.sessionID, 'talk', 'SIGKILL');
-      this.#liveSessions.delete(request.sessionID);
+
+      this.#cleanupLiveSession(request.sessionID);
+      this.controller?.forceStopStreamingSession?.(request.sessionID);
+
       this?.log?.info?.('Live stream stopped on "%s"', this.deviceData.description);
     }
 
@@ -1667,6 +1686,26 @@ export default class NestCamera extends HomeKitDevice {
 
     return controllerOptions;
   }
+
+  #cleanupLiveSession(sessionID) {
+    let session = this.#liveSessions.get(sessionID);
+
+    session?.rtpSplitter?.removeAllListeners?.();
+    session?.rtpSplitter?.close?.();
+
+    this.ffmpeg?.killSession?.(this.uuid, sessionID, 'talk', 'SIGKILL');
+    this.ffmpeg?.killSession?.(this.uuid, sessionID, 'live', 'SIGKILL');
+
+    this.#liveSessions.delete(sessionID);
+  }
+
+  #cleanupRecordingSession(sessionID) {
+    if (sessionID !== undefined && sessionID !== null) {
+      this.ffmpeg?.killSession?.(this.uuid, sessionID, 'record', 'SIGKILL');
+    }
+
+    this.emit(MP4BOX);
+  }
 }
 
 // Camera field translation map
@@ -1752,7 +1791,7 @@ const CAMERA_FIELD_MAP = {
               : typeName === 'google.resource.VenusResource'
                 ? 'Doorbell (2nd gen, wired)'
                 : typeName === 'google.resource.RhodesResource'
-                  ? 'Doorbell (3nd gen, wired)'
+                  ? 'Doorbell (3rd gen, wired)'
                   : typeName === 'nest.resource.NestCamOutdoorResource'
                     ? 'Cam Outdoor (1st gen, wired)'
                     : typeName === 'google.resource.LinosaResource'
