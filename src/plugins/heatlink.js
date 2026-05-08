@@ -41,7 +41,7 @@
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
-import { processSoftwareVersion, adjustTemperature, parseDurationToSeconds } from '../utils.js';
+import { processSoftwareVersion, adjustTemperature, parseDurationToSeconds, buildDeviceDescription } from '../utils.js';
 import { buildMappedObject, createMappingContext } from '../translator.js';
 
 // Define constants
@@ -56,7 +56,7 @@ import {
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.HEATLINK;
-  static VERSION = '2026.05.06'; // Code version
+  static VERSION = '2026.05.09'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
@@ -118,11 +118,71 @@ export default class NestHeatlink extends HomeKitDevice {
   }
 
   onUpdate(deviceData) {
-    if (typeof deviceData !== 'object') {
+    if (typeof deviceData !== 'object' || deviceData?.constructor !== Object) {
       return;
     }
 
-    // TODO dynamic changes to hotwater setup ie: boost control and temperature control
+    // Check for hotwater temperature control setup change on heat link
+    if (
+      (deviceData?.has_hot_water_temperature === true && Number.isFinite(Number(deviceData?.current_water_temperature)) === true) !==
+      (this.deviceData?.has_hot_water_temperature === true && Number.isFinite(Number(this.deviceData?.current_water_temperature)) === true)
+    ) {
+      if (
+        deviceData?.has_hot_water_temperature === true &&
+        Number.isFinite(Number(deviceData?.current_water_temperature)) === true &&
+        !(
+          this.deviceData?.has_hot_water_temperature === true &&
+          Number.isFinite(Number(this.deviceData?.current_water_temperature)) === true
+        ) &&
+        this.thermostatService === undefined
+      ) {
+        // Hotwater temperature control has been added
+        this.#setupHotwaterTemperature(deviceData);
+      }
+      if (
+        !(deviceData?.has_hot_water_temperature === true && Number.isFinite(Number(deviceData?.current_water_temperature)) === true) &&
+        this.deviceData?.has_hot_water_temperature === true &&
+        Number.isFinite(Number(this.deviceData?.current_water_temperature)) === true &&
+        this.thermostatService !== undefined
+      ) {
+        // Hotwater temperature control has been removed
+        this.accessory.removeService(this.thermostatService);
+        this.thermostatService = undefined;
+      }
+
+      this?.log?.info?.(
+        'Hotwater temperature control setup on heat link "%s" has changed. Temperature control was %s',
+        deviceData.description,
+        this.thermostatService === undefined ? 'removed' : 'added',
+      );
+    }
+
+    // Check for hotwater boost control setup change on heat link
+    if (deviceData?.has_hot_water_control !== this.deviceData?.has_hot_water_control) {
+      if (
+        deviceData?.has_hot_water_control === true &&
+        this.deviceData?.has_hot_water_control !== true &&
+        this.switchService === undefined
+      ) {
+        // Hotwater boost control has been added
+        this.#setupHotwaterBoost(deviceData);
+      }
+      if (
+        deviceData?.has_hot_water_control === false &&
+        this.deviceData?.has_hot_water_control === true &&
+        this.switchService !== undefined
+      ) {
+        // Hotwater boost control has been removed
+        this.accessory.removeService(this.switchService);
+        this.switchService = undefined;
+      }
+
+      this?.log?.info?.(
+        'Hotwater boost control setup on heat link "%s" has changed. Boost control was %s',
+        deviceData.description,
+        this.switchService === undefined ? 'removed' : 'added',
+      );
+    }
 
     if (this.thermostatService !== undefined) {
       // Update when we have hot water temperature control
@@ -178,13 +238,17 @@ export default class NestHeatlink extends HomeKitDevice {
     }
   }
 
-  #setupHotwaterTemperature() {
+  #setupHotwaterTemperature(deviceData = this.deviceData) {
     this.thermostatService = this.addHKService(this.hap.Service.Thermostat, '', 1, { messages: this.message.bind(this) });
     this.thermostatService.setPrimaryService();
 
     this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.StatusActive);
 
     this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.TemperatureDisplayUnits, {
+      initialValue:
+        deviceData.temperature_scale.toUpperCase() === 'C'
+          ? this.hap.Characteristic.TemperatureDisplayUnits.CELSIUS
+          : this.hap.Characteristic.TemperatureDisplayUnits.FAHRENHEIT,
       onSet: (value) => {
         let unit = value === this.hap.Characteristic.TemperatureDisplayUnits.CELSIUS ? 'C' : 'F';
 
@@ -206,6 +270,7 @@ export default class NestHeatlink extends HomeKitDevice {
 
     this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.CurrentTemperature, {
       props: { minStep: 0.5 },
+      initialValue: deviceData.current_water_temperature,
       onGet: () => {
         return this.deviceData.current_water_temperature;
       },
@@ -214,9 +279,10 @@ export default class NestHeatlink extends HomeKitDevice {
     this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.TargetTemperature, {
       props: {
         minStep: 0.5,
-        minValue: this.deviceData.hotwaterMinTemp,
-        maxValue: this.deviceData.hotwaterMaxTemp,
+        minValue: deviceData.hotwaterMinTemp,
+        maxValue: deviceData.hotwaterMaxTemp,
       },
+      initialValue: deviceData.hot_water_temperature,
       onSet: (value) => {
         if (value !== this.deviceData.hot_water_temperature) {
           this.set({ uuid: this.deviceData.associated_thermostat, hot_water_temperature: value });
@@ -234,13 +300,15 @@ export default class NestHeatlink extends HomeKitDevice {
       props: {
         validValues: [this.hap.Characteristic.TargetHeatingCoolingState.HEAT],
       },
+      initialValue: this.hap.Characteristic.TargetHeatingCoolingState.HEAT,
     });
   }
 
-  #setupHotwaterBoost() {
+  #setupHotwaterBoost(deviceData = this.deviceData) {
     this.switchService = this.addHKService(this.hap.Service.Switch, '', 1);
 
     this.addHKCharacteristic(this.switchService, this.hap.Characteristic.On, {
+      initialValue: deviceData.hot_water_boost_active === true,
       onSet: (value) => {
         if (value !== this.deviceData.hot_water_boost_active) {
           this.set({
@@ -507,69 +575,16 @@ const HEATLINK_FIELD_MAP = {
 
   description: {
     required: true,
-
     google: {
       fields: ['label', 'device_info', 'device_located_settings'],
       related: ['located_annotations'],
-      translate: ({ rawData, raw }) => {
-        let description = String(raw?.value?.label?.label ?? '').trim();
-        let location = String(raw?.value?.device_located_settings?.whereLabel?.literal ?? '').trim();
-
-        if (location === '') {
-          location = String(
-            [
-              ...Object.values(
-                rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {},
-              ),
-              ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {}),
-            ].find((where) => where?.whereId?.resourceId === raw?.value?.device_located_settings?.whereAnnotationRid?.resourceId)?.label
-              ?.literal ?? '',
-          ).trim();
-        }
-
-        if (description.toUpperCase() === location.toUpperCase()) {
-          location = '';
-        }
-
-        if (description === '' && location !== '') {
-          description = location;
-          location = '';
-        }
-
-        if (description === '' && location === '') {
-          description = 'unknown description';
-        }
-
-        return HomeKitDevice.makeValidHKName(location === '' ? description : description + ' - ' + location);
-      },
+      translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
     },
 
     nest: {
       fields: ['serial_number', 'where_id'],
       related: ['name', 'wheres', 'structure'],
-      translate: ({ rawData, raw }) => {
-        let description = String(rawData?.['shared.' + raw?.value?.serial_number]?.value?.name ?? '').trim();
-        let location = String(
-          rawData?.['where.' + rawData?.['link.' + raw?.value?.serial_number]?.value?.structure?.split?.('.')[1]]?.value?.wheres?.find(
-            (where) => where?.where_id === raw?.value?.where_id,
-          )?.name ?? '',
-        ).trim();
-
-        if (description.toUpperCase() === location.toUpperCase()) {
-          location = '';
-        }
-
-        if (description === '' && location !== '') {
-          description = location;
-          location = '';
-        }
-
-        if (description === '' && location === '') {
-          description = 'unknown description';
-        }
-
-        return HomeKitDevice.makeValidHKName(location === '' ? description : description + ' - ' + location);
-      },
+      translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
     },
   },
 };

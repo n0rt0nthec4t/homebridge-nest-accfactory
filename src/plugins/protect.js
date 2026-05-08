@@ -39,7 +39,7 @@
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
-import { processSoftwareVersion, scaleValue } from '../utils.js';
+import { processSoftwareVersion, scaleValue, buildDeviceDescription } from '../utils.js';
 import { buildMappedObject, createMappingContext } from '../translator.js';
 
 // Define constants
@@ -47,7 +47,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.PROTECT;
-  static VERSION = '2026.05.05'; // Code version
+  static VERSION = '2026.05.09'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -348,63 +348,12 @@ const PROTECT_FIELD_MAP = {
     google: {
       fields: ['label', 'device_info', 'device_located_settings'],
       related: ['located_annotations'],
-      translate: ({ rawData, raw }) => {
-        let description = String(raw?.value?.label?.label ?? '').trim();
-        let location = String(raw?.value?.device_located_settings?.whereLabel?.literal ?? '').trim();
-
-        if (location === '') {
-          location = String(
-            [
-              ...Object.values(
-                rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {},
-              ),
-              ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {}),
-            ].find((where) => where?.whereId?.resourceId === raw?.value?.device_located_settings?.whereAnnotationRid?.resourceId)?.label
-              ?.literal ?? '',
-          ).trim();
-        }
-
-        if (description.toUpperCase() === location.toUpperCase()) {
-          location = '';
-        }
-
-        if (description === '' && location !== '') {
-          description = location;
-          location = '';
-        }
-
-        if (description === '' && location === '') {
-          description = 'unknown description';
-        }
-
-        return HomeKitDevice.makeValidHKName(location === '' ? description : description + ' - ' + location);
-      },
+      translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
     },
     nest: {
       fields: ['description', 'structure_id', 'where_id'],
       related: ['wheres'],
-      translate: ({ rawData, raw }) => {
-        let description = String(raw?.value?.description ?? '').trim();
-        let location = String(
-          rawData?.['where.' + raw?.value?.structure_id]?.value?.wheres?.find((where) => where?.where_id === raw?.value?.where_id)?.name ??
-            '',
-        ).trim();
-
-        if (description.toUpperCase() === location.toUpperCase()) {
-          location = '';
-        }
-
-        if (description === '' && location !== '') {
-          description = location;
-          location = '';
-        }
-
-        if (description === '' && location === '') {
-          description = 'unknown description';
-        }
-
-        return HomeKitDevice.makeValidHKName(location === '' ? description : description + ' - ' + location);
-      },
+      translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
     },
   },
 

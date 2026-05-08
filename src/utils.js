@@ -10,12 +10,14 @@
 // - Scale and transform numeric values between ranges
 // - Handle HTTP requests with retry, timeout, and error handling
 // - Parse duration strings into normalised seconds
+// - Build normalised device descriptions from Google and Nest metadata
 // - Apply common device data processing and configuration overrides
 //
 // Features:
 // - Temperature conversion with optional rounding (Celsius / Fahrenheit)
 // - CRC24 hashing for stable device identifiers
 // - Value scaling with bounds checking
+// - Shared Google Home/Nest device description normalisation helper
 // - Robust fetch wrapper with:
 //   - retry logic (exponential backoff)
 //   - timeout handling
@@ -25,9 +27,10 @@
 // Notes:
 // - Used by all device and system modules
 // - fetchWrapper() is the primary HTTP client abstraction for the plugin
+// - Shared helpers centralise common Google protobuf and Nest REST processing logic
 // - Functions are designed to fail safely and return undefined where appropriate
 //
-// Code version 2026.05.06
+// Code version 2026.05.09
 // Mark Hulskamp
 'use strict';
 
@@ -396,5 +399,81 @@ function processSoftwareVersion(versionString) {
   return version;
 }
 
+// Build a normalised device display name from Google protobuf or Nest REST data.
+// Uses the device label/name plus the most specific available location.
+// Examples:
+// - label "Camera", fixture "Front Door", room "Entryway" -> "Camera - Front Door"
+// - label "Front Door", fixture "Front Door" -> "Front Door"
+// - missing label, room "Hallway" -> "Hallway"
+// - missing label and location -> "unknown description"
+function buildDeviceDescription(rawData, raw) {
+  let value = raw?.value;
+  let description = '';
+  let location = '';
+
+  if (
+    typeof value?.label?.label === 'string' ||
+    (typeof value?.device_located_settings === 'object' && value.device_located_settings !== null)
+  ) {
+    description = String(value?.label?.label ?? '').trim();
+
+    let pairerId = value?.device_info?.pairerId?.resourceId;
+
+    let wheres = [
+      ...Object.values(rawData?.[pairerId]?.value?.located_annotations?.predefinedWheres || {}),
+      ...Object.values(rawData?.[pairerId]?.value?.located_annotations?.customWheres || {}),
+    ];
+
+    let findWhere = (id) => String(wheres.find((where) => where?.whereId?.resourceId === id)?.label?.literal ?? '').trim();
+    let whereLocation = String(value?.device_located_settings?.whereLabel?.literal ?? '').trim();
+    let fixtureLocation = String(value?.device_located_settings?.fixtureNameLabel?.literal ?? '').trim();
+
+    if (whereLocation === '') {
+      whereLocation = findWhere(value?.device_located_settings?.whereAnnotationRid?.resourceId);
+    }
+
+    if (fixtureLocation === '') {
+      fixtureLocation = findWhere(value?.device_located_settings?.fixtureAnnotationRid?.resourceId);
+    }
+
+    location = fixtureLocation !== '' ? fixtureLocation : whereLocation;
+  } else {
+    let serialNumber = value?.serial_number;
+
+    description =
+      typeof value?.description === 'string'
+        ? value.description.trim()
+        : typeof serialNumber === 'string'
+          ? String(rawData?.['shared.' + serialNumber]?.value?.name ?? '').trim()
+          : '';
+
+    let structureId =
+      typeof value?.structure_id === 'string' && value.structure_id !== ''
+        ? value.structure_id
+        : typeof serialNumber === 'string'
+          ? rawData?.['link.' + serialNumber]?.value?.structure?.split?.('.')[1]
+          : undefined;
+
+    location = String(
+      rawData?.['where.' + structureId]?.value?.wheres?.find((where) => where?.where_id === value?.where_id)?.name ?? '',
+    ).trim();
+  }
+
+  if (description.toUpperCase() === location.toUpperCase()) {
+    location = '';
+  }
+
+  if (description === '' && location !== '') {
+    description = location;
+    location = '';
+  }
+
+  if (description === '' && location === '') {
+    description = 'unknown description';
+  }
+
+  return location === '' ? description : description + ' - ' + location;
+}
+
 // Define exports
-export { processSoftwareVersion, adjustTemperature, crc24, scaleValue, fetchWrapper, parseDurationToSeconds };
+export { processSoftwareVersion, adjustTemperature, crc24, scaleValue, buildDeviceDescription, fetchWrapper, parseDurationToSeconds };

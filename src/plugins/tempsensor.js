@@ -40,7 +40,7 @@
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
-import { adjustTemperature, scaleValue } from '../utils.js';
+import { adjustTemperature, scaleValue, buildDeviceDescription } from '../utils.js';
 import { buildMappedObject, createMappingContext } from '../translator.js';
 
 // Define constants
@@ -48,7 +48,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestTemperatureSensor extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.TEMPSENSOR;
-  static VERSION = '2026.04.26'; // Code version
+  static VERSION = '2026.05.09'; // Code version
 
   batteryService = undefined;
   temperatureService = undefined;
@@ -211,71 +211,12 @@ const TEMPSENSOR_FIELD_MAP = {
     google: {
       fields: ['label', 'device_info', 'device_located_settings'],
       related: ['located_annotations'],
-      translate: ({ rawData, raw }) => {
-        let value = raw?.value;
-        let description = String(value?.label?.label ?? '').trim();
-        let location = String(value?.device_located_settings?.whereLabel?.literal ?? '').trim();
-
-        let pairerId = value?.device_info?.pairerId?.resourceId;
-        let whereId = value?.device_located_settings?.whereAnnotationRid?.resourceId;
-
-        if (location === '' && typeof pairerId === 'string' && pairerId !== '' && typeof whereId === 'string' && whereId !== '') {
-          let wheres = [
-            ...Object.values(rawData?.[pairerId]?.value?.located_annotations?.predefinedWheres || {}),
-            ...Object.values(rawData?.[pairerId]?.value?.located_annotations?.customWheres || {}),
-          ];
-
-          location = String(wheres.find((where) => where?.whereId?.resourceId === whereId)?.label?.literal ?? '').trim();
-        }
-
-        if (description.toUpperCase() === location.toUpperCase()) {
-          location = '';
-        }
-
-        if (description === '' && location !== '') {
-          description = location;
-          location = '';
-        }
-
-        if (description === '' && location === '') {
-          description = 'unknown description';
-        }
-
-        return HomeKitDevice.makeValidHKName(location === '' ? description : description + ' - ' + location);
-      },
+      translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
     },
     nest: {
       fields: ['description', 'structure_id', 'where_id'],
       related: ['wheres'],
-      translate: ({ rawData, raw }) => {
-        let value = raw?.value;
-        let description = String(value?.description ?? '').trim();
-        let location = '';
-
-        let structureId = value?.structure_id;
-        let whereId = value?.where_id;
-
-        if (typeof structureId === 'string' && structureId !== '' && typeof whereId === 'string' && whereId !== '') {
-          location = String(
-            rawData?.['where.' + structureId]?.value?.wheres?.find((where) => where?.where_id === whereId)?.name ?? '',
-          ).trim();
-        }
-
-        if (description.toUpperCase() === location.toUpperCase()) {
-          location = '';
-        }
-
-        if (description === '' && location !== '') {
-          description = location;
-          location = '';
-        }
-
-        if (description === '' && location === '') {
-          description = 'unknown description';
-        }
-
-        return HomeKitDevice.makeValidHKName(location === '' ? description : description + ' - ' + location);
-      },
+      translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
     },
   },
 

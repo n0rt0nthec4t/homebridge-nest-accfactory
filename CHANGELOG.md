@@ -12,6 +12,24 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - Motion sensing on wired Nest Protect devices may report incorrect states due to recent firmware changes
 - Video from Google Home-hosted streams may be slow to start up
 
+## v0.4.2 (2026/05/xx)
+
+- Fixed a regression affecting some Nest × Yale lock accessories introduced during recent lock service improvements [@alexis-andino](https://github.com/alexis-andino) / [@DigitalFokus](https://github.com/DigitalFokus)
+  - Prevented affected lock accessories from initialising correctly in HomeKit
+  - Improved lock state tracking, transition handling, and action source reporting
+  - Added enhanced verbose logging for lock state changes and actor details
+  - Removed invalid `Characteristic.LockLastKnownAction` references causing accessory startup failures
+
+- Aligned device plugins description/name generation with shared device naming handling
+
+- Improved dynamic HomeKit service updates for thermostats and Heat Link accessories
+  - Fan, humidifier, dehumidifier, hot water temperature, and hot water boost services now use the incoming device state when added during an update
+  - Fixed setup-time handling for fan speed support, humidity thresholds, and hot water temperature bounds
+  - Improved add/remove handling when hot water, fan, humidifier, or dehumidifier capabilities change after startup
+
+- Fixed thermostat target temperature writes from HomeKit
+  - Heating and cooling `TargetTemperature` changes now update the matching Nest heat/cool setpoint instead of only the generic target temperature field
+  
 ## v0.4.1 (2026/05/07)
 
 ### ⚠️ Compatibility Changes
@@ -19,6 +37,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - Minimum supported Homebridge 2.x version is now **2.0.2**
   - Includes Homebridge-side fixes required for reliable HomeKit Secure Video behaviour
   - Earlier Homebridge 2.x releases are no longer officially supported
+
 - Minimum supported FFmpeg version is now **6.1**
   - Older FFmpeg 6.0 builds are no longer officially supported
 
@@ -29,7 +48,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ### 🛠️ Fixes
 
-- Fixed handling of Nest Heat Link hot water temperature data
+- Fixed handling of Nest Heat Link hot water temperature data [@dhemesbrahma-commits](https://github.com/dhemesbrahma-commits)
   - Prevents HomeKit warnings when hot water temperature is unavailable
   - Hot water temperature controls are now hidden when unsupported by the connected system
 

@@ -4,6 +4,33 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.2-beta.1 (2026/05/09)
+
+This beta focuses on thermostat and Heat Link control-path fixes. Please test thermostat setpoint changes and any systems with optional fan, humidifier, dehumidifier, or hot water controls.
+
+- `plugins/*.js`
+  - Aligned device plugins description/name generation with shared device naming handling
+
+- `plugins/thermostat.js`
+  - Fixed HomeKit `TargetTemperature` writes so heat mode updates the Nest heating setpoint and cool mode updates the Nest cooling setpoint
+  - Improved dynamic fan setup so newly-added fan services use the incoming device state during update processing
+  - Improved dynamic humidifier/dehumidifier setup so newly-added services and threshold characteristics use the incoming device state
+  - Added/removes humidifier and dehumidifier threshold characteristics when capabilities change after startup
+  - Updated humidity control valid values when humidifier/dehumidifier capabilities change
+
+- `plugins/heatlink.js`
+  - Added dynamic HomeKit service handling for hot water temperature and hot water boost capability changes
+  - Hot water temperature control now appears only when usable temperature data is available
+  - Newly-added hot water services now initialise from the incoming device state during update processing
+
+- Recommended beta testing
+  - Verify heat mode setpoint changes stick after HomeKit/Home app changes
+  - Verify cool mode setpoint changes stick where cooling is supported
+  - Verify range/auto heat and cool thresholds still behave correctly
+  - Verify fan speed controls appear only where supported
+  - Verify humidifier/dehumidifier threshold controls appear and disappear correctly
+  - Verify Heat Link hot water temperature and boost controls appear only when supported
+
 ## v0.4.0-beta.16 (2026/04/26)
 
 - Standardised device description and location handling across all device types for improved HomeKit naming consistency, resulting in cleaner and more user-friendly accessory names

@@ -53,7 +53,7 @@ import Streamer from '../streamer.js';
 import NexusTalk from '../nexustalk.js';
 import WebRTC from '../webrtc.js';
 import FFmpeg from '../ffmpeg.js';
-import { processSoftwareVersion, parseDurationToSeconds, scaleValue } from '../utils.js';
+import { processSoftwareVersion, parseDurationToSeconds, scaleValue, buildDeviceDescription } from '../utils.js';
 import { buildMappedObject, createMappingContext } from '../translator.js';
 
 // Define constants
@@ -86,7 +86,7 @@ const PREBUFFER_LENGTH = 4000;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.05.06'; // Code version
+  static VERSION = '2026.05.09'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -1746,7 +1746,6 @@ const CAMERA_FIELD_MAP = {
   },
 
   nest_google_home_uuid: {
-    required: true,
     google: {
       fields: ['device_info'],
       translate: ({ raw }) => raw?.value?.device_info?.pairerId?.resourceId,
@@ -1842,74 +1841,12 @@ const CAMERA_FIELD_MAP = {
     google: {
       fields: ['label', 'device_info', 'device_located_settings'],
       related: ['located_annotations'],
-      translate: ({ rawData, raw }) => {
-        let description = String(raw?.value?.label?.label ?? '').trim();
-        let wheres = [
-          ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {}),
-          ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {}),
-        ];
-
-        let location = String(raw?.value?.device_located_settings?.whereLabel?.literal ?? '').trim();
-
-        if (location === '') {
-          location = String(
-            wheres.find((where) => where?.whereId?.resourceId === raw?.value?.device_located_settings?.whereAnnotationRid?.resourceId)
-              ?.label?.literal ?? '',
-          ).trim();
-        }
-
-        if (location === '') {
-          location = String(raw?.value?.device_located_settings?.fixtureNameLabel?.literal ?? '').trim();
-        }
-
-        if (location === '') {
-          location = String(
-            wheres.find((where) => where?.whereId?.resourceId === raw?.value?.device_located_settings?.fixtureAnnotationRid?.resourceId)
-              ?.label?.literal ?? '',
-          ).trim();
-        }
-
-        if (description.toUpperCase() === location.toUpperCase()) {
-          location = '';
-        }
-
-        if (description === '' && location !== '') {
-          description = location;
-          location = '';
-        }
-
-        if (description === '' && location === '') {
-          description = 'unknown description';
-        }
-
-        return HomeKitDevice.makeValidHKName(location === '' ? description : description + ' - ' + location);
-      },
+      translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
     },
     nest: {
       fields: ['description', 'structure_id', 'where_id'],
       related: ['wheres'],
-      translate: ({ rawData, raw }) => {
-        let description = typeof raw?.value?.description === 'string' ? raw.value.description.trim() : '';
-        let location = String(
-          rawData?.['where.' + raw?.value?.structure_id]?.value?.wheres?.find((where) => where?.where_id === raw?.value?.where_id)?.name ??
-            '',
-        ).trim();
-
-        if (description.toUpperCase() === location.toUpperCase()) {
-          location = '';
-        }
-
-        if (description === '' && location !== '') {
-          description = location;
-          location = '';
-        }
-
-        if (description === '' && location === '') {
-          description = 'unknown description';
-        }
-
-        return HomeKitDevice.makeValidHKName(location === '' ? description : description + ' - ' + location);
-      },
+      translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
     },
   },
 

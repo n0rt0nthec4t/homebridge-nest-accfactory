@@ -46,7 +46,7 @@
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
-import { processSoftwareVersion, scaleValue } from '../utils.js';
+import { processSoftwareVersion, scaleValue, buildDeviceDescription } from '../utils.js';
 import { buildMappedObject, createMappingContext } from '../translator.js';
 
 // Define constants
@@ -54,7 +54,7 @@ import { DATA_SOURCE, DEVICE_TYPE, PROTOBUF_RESOURCES, LOW_BATTERY_LEVEL } from 
 
 export default class NestLock extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.LOCK;
-  static VERSION = '2026.05.08'; // Code version
+  static VERSION = '2026.05.09'; // Code version
 
   // Define lock bolt states
   static STATE = {
@@ -102,10 +102,7 @@ export default class NestLock extends HomeKitDevice {
           this.lockService.updateCharacteristic(this.hap.Characteristic.LockTargetState, value);
 
           // Log lock state change with source and actor details if available
-          this.#logLockChange(
-            'HomeKit',
-            locked === true ? NestLock.STATE.LOCKED : NestLock.STATE.UNLOCKED,
-          );
+          this.#logLockChange('HomeKit', locked === true ? NestLock.STATE.LOCKED : NestLock.STATE.UNLOCKED);
         }
       },
       onGet: () => {
@@ -203,17 +200,9 @@ export default class NestLock extends HomeKitDevice {
       deviceData.tampered !== true ? this.hap.Characteristic.StatusTampered.NOT_TAMPERED : this.hap.Characteristic.StatusTampered.TAMPERED,
     );
 
-    // Log lock state changes
+    // Log lock state changes with source and actor details if available
     if (deviceData.bolt_state !== this.deviceData.bolt_state) {
       this.#logLockChange('Lock', deviceData.bolt_state, deviceData.bolt_actor);
-    }
-
-    if (deviceData.bolt_state === NestLock.STATE.JAMMED && this.deviceData.bolt_state !== NestLock.STATE.JAMMED) {
-      this?.log?.error?.('Lock jammed on "%s"', deviceData.description);
-    }
-
-    if (deviceData.bolt_state !== NestLock.STATE.JAMMED && this.deviceData.bolt_state === NestLock.STATE.JAMMED) {
-      this?.log?.info?.('Lock unjammed on "%s"', deviceData.description);
     }
 
     // Log lock status to history only if changed to previous recording
@@ -284,6 +273,18 @@ export default class NestLock extends HomeKitDevice {
   #logLockChange(source, stateLabel, actor = undefined) {
     // Ignore invalid/empty state labels
     if (typeof stateLabel !== 'string' || stateLabel.trim() === '') {
+      return;
+    }
+
+    // Jammed state is always noteworthy, regardless of where the change originated
+    if (stateLabel === NestLock.STATE.JAMMED) {
+      this?.log?.error?.('Lock jammed on "%s"', this.deviceData.description);
+      return;
+    }
+
+    // Any transition away from jammed means the lock has recovered
+    if (this.deviceData.bolt_state === NestLock.STATE.JAMMED) {
+      this?.log?.info?.('Lock unjammed on "%s"', this.deviceData.description);
       return;
     }
 
@@ -372,48 +373,7 @@ const LOCK_FIELD_MAP = {
     google: {
       fields: ['label', 'device_info', 'device_located_settings'],
       related: ['located_annotations'],
-      translate: ({ rawData, raw }) => {
-        let description = String(raw?.value?.label?.label ?? '').trim();
-        let wheres = [
-          ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {}),
-          ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {}),
-        ];
-
-        let findWhere = (id) => String(wheres.find((where) => where?.whereId?.resourceId === id)?.label?.literal ?? '').trim();
-
-        let whereLocation = String(raw?.value?.device_located_settings?.whereLabel?.literal ?? '').trim();
-
-        if (whereLocation === '') {
-          whereLocation = findWhere(raw?.value?.device_located_settings?.whereAnnotationRid?.resourceId);
-        }
-
-        let fixtureLocation = String(raw?.value?.device_located_settings?.fixtureNameLabel?.literal ?? '').trim();
-
-        if (fixtureLocation === '') {
-          fixtureLocation = findWhere(raw?.value?.device_located_settings?.fixtureAnnotationRid?.resourceId);
-        }
-
-        let location = fixtureLocation !== '' ? fixtureLocation : whereLocation;
-
-        if (description.toUpperCase() === location.toUpperCase()) {
-          location = '';
-        }
-
-        if (description === '' && location !== '') {
-          description = location;
-          location = '';
-        }
-
-        if (description === '' && location === '') {
-          description = 'unknown description';
-        }
-
-        if (location !== '' && whereLocation !== '' && fixtureLocation !== '' && fixtureLocation !== whereLocation) {
-          return HomeKitDevice.makeValidHKName(description + ' - ' + fixtureLocation + ' (' + whereLocation + ')');
-        }
-
-        return HomeKitDevice.makeValidHKName(location === '' ? description : description + ' - ' + location);
-      },
+      translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
     },
   },
 
