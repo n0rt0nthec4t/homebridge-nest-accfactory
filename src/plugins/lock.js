@@ -3,7 +3,8 @@
 //
 // HomeKit accessory implementation for Nest × Yale Lock devices.
 // Provides secure lock control, battery monitoring, auto-relock configuration,
-// tamper reporting, and activity tracking using Google protobuf API data.
+// tamper reporting, activity tracking, and structured state synchronisation
+// using Google protobuf API data.
 //
 // Responsibilities:
 // - Expose lock state and control via HomeKit LockMechanism service
@@ -11,6 +12,7 @@
 // - Support auto-relock timeout control
 // - Report tamper, fault, and battery status
 // - Record lock activity history for Eve Home integration
+// - Track lock action source and transitional lock states
 //
 // Services:
 // - LockMechanism (primary service)
@@ -21,6 +23,8 @@
 // - Remote lock and unlock control
 // - Configurable auto-relock timeout
 // - Lock action source tracking (physical, keypad, remote, voice, implicit)
+// - Transitional lock state handling (locking/unlocking)
+// - Structured logging for HomeKit and external lock state changes
 // - Tamper detection support
 // - Battery monitoring with low battery alerts
 // - Eve Home history integration
@@ -29,6 +33,8 @@
 // - Google protobuf API support only
 // - Nest REST API is not used for lock devices
 // - Lock state and actor details are normalised before presentation to HomeKit
+// - Transitional lock packets may temporarily report empty actor details
+// - Final lock state updates are used to synchronise HomeKit current/target state
 //
 // Data Translation:
 // - Raw Google lock data is mapped using LOCK_FIELD_MAP
@@ -48,7 +54,7 @@ import { DATA_SOURCE, DEVICE_TYPE, PROTOBUF_RESOURCES, LOW_BATTERY_LEVEL } from 
 
 export default class NestLock extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.LOCK;
-  static VERSION = '2026.04.26'; // Code version
+  static VERSION = '2026.05.08'; // Code version
 
   // Define lock bolt states
   static STATE = {
@@ -95,7 +101,11 @@ export default class NestLock extends HomeKitDevice {
 
           this.lockService.updateCharacteristic(this.hap.Characteristic.LockTargetState, value);
 
-          this?.log?.info?.('Setting lock on "%s" to "%s"', this.deviceData.description, locked ? 'Locked' : 'Unlocked');
+          // Log lock state change with source and actor details if available
+          this.#logLockChange(
+            'HomeKit',
+            locked === true ? NestLock.STATE.LOCKED : NestLock.STATE.UNLOCKED,
+          );
         }
       },
       onGet: () => {
@@ -156,7 +166,12 @@ export default class NestLock extends HomeKitDevice {
   }
 
   onUpdate(deviceData) {
-    if (typeof deviceData !== 'object') {
+    if (
+      typeof deviceData !== 'object' ||
+      deviceData?.constructor !== Object ||
+      this.lockService === undefined ||
+      this.batteryService === undefined
+    ) {
       return;
     }
 
@@ -189,12 +204,8 @@ export default class NestLock extends HomeKitDevice {
     );
 
     // Log lock state changes
-    if (deviceData.bolt_state === NestLock.STATE.LOCKED && this.deviceData.bolt_state === NestLock.STATE.UNLOCKED) {
-      this?.log?.info?.('Lock locked on "%s" by %s', deviceData.description, deviceData.bolt_actor);
-    }
-
-    if (deviceData.bolt_state === NestLock.STATE.UNLOCKED && this.deviceData.bolt_state === NestLock.STATE.LOCKED) {
-      this?.log?.warn?.('Lock unlocked on "%s" by %s', deviceData.description, deviceData.bolt_actor);
+    if (deviceData.bolt_state !== this.deviceData.bolt_state) {
+      this.#logLockChange('Lock', deviceData.bolt_state, deviceData.bolt_actor);
     }
 
     if (deviceData.bolt_state === NestLock.STATE.JAMMED && this.deviceData.bolt_state !== NestLock.STATE.JAMMED) {
@@ -230,19 +241,84 @@ export default class NestLock extends HomeKitDevice {
   }
 
   #lastAction(deviceData) {
-    return deviceData.bolt_actor === NestLock.LAST_ACTION.PHYSICAL
-      ? deviceData.bolt_state === NestLock.STATE.LOCKED || deviceData.bolt_state === NestLock.STATE.LOCKING
+    // Determine whether the lock is currently considered secured
+    // Treat both LOCKED and LOCKING as secured states
+    let secured = deviceData.bolt_state === NestLock.STATE.LOCKED || deviceData.bolt_state === NestLock.STATE.LOCKING;
+
+    // Lock/unlock initiated physically at the lock
+    if (deviceData.bolt_actor === NestLock.LAST_ACTION.PHYSICAL) {
+      return secured === true
         ? this.hap.Characteristic.LockLastKnownAction.SECURED_PHYSICALLY
-        : this.hap.Characteristic.LockLastKnownAction.UNSECURED_PHYSICALLY
-      : deviceData.bolt_actor === NestLock.LAST_ACTION.KEYPAD
-        ? deviceData.bolt_state === NestLock.STATE.LOCKED || deviceData.bolt_state === NestLock.STATE.LOCKING
-          ? this.hap.Characteristic.LockLastKnownAction.SECURED_BY_KEYPAD
-          : this.hap.Characteristic.LockLastKnownAction.UNSECURED_BY_KEYPAD
-        : deviceData.bolt_actor === NestLock.LAST_ACTION.REMOTE || deviceData.bolt_actor === NestLock.LAST_ACTION.VOICE
-          ? deviceData.bolt_state === NestLock.STATE.LOCKED || deviceData.bolt_state === NestLock.STATE.LOCKING
-            ? this.hap.Characteristic.LockLastKnownAction.SECURED_REMOTELY
-            : this.hap.Characteristic.LockLastKnownAction.UNSECURED_REMOTELY
-          : this.hap.Characteristic.LockLastKnownAction.UNSECURED; // Fallback
+        : this.hap.Characteristic.LockLastKnownAction.UNSECURED_PHYSICALLY;
+    }
+
+    // Lock/unlock initiated from keypad
+    if (deviceData.bolt_actor === NestLock.LAST_ACTION.KEYPAD) {
+      return secured === true
+        ? this.hap.Characteristic.LockLastKnownAction.SECURED_BY_KEYPAD
+        : this.hap.Characteristic.LockLastKnownAction.UNSECURED_BY_KEYPAD;
+    }
+
+    // Lock/unlock initiated remotely (app/automation/voice assistant)
+    if (deviceData.bolt_actor === NestLock.LAST_ACTION.REMOTE || deviceData.bolt_actor === NestLock.LAST_ACTION.VOICE) {
+      return secured === true
+        ? this.hap.Characteristic.LockLastKnownAction.SECURED_REMOTELY
+        : this.hap.Characteristic.LockLastKnownAction.UNSECURED_REMOTELY;
+    }
+
+    // Local implicit actions are usually automatic secure events.
+    // HAP has no matching automatic/unsecured value, so report that as remote.
+    if (deviceData.bolt_actor === NestLock.LAST_ACTION.IMPLICIT) {
+      return secured === true
+        ? this.hap.Characteristic.LockLastKnownAction.SECURED_BY_AUTO_SECURE_TIMEOUT
+        : this.hap.Characteristic.LockLastKnownAction.UNSECURED_REMOTELY;
+    }
+
+    // Unknown/missing actor values should not be reported as physical.
+    // Actor-less transition packets can precede the final remote actor update.
+    return secured === true
+      ? this.hap.Characteristic.LockLastKnownAction.SECURED_REMOTELY
+      : this.hap.Characteristic.LockLastKnownAction.UNSECURED_REMOTELY;
+  }
+
+  #logLockChange(source, stateLabel, actor = undefined) {
+    // Ignore invalid/empty state labels
+    if (typeof stateLabel !== 'string' || stateLabel.trim() === '') {
+      return;
+    }
+
+    // Format state label for cleaner logging output
+    stateLabel = stateLabel.charAt(0).toUpperCase() + stateLabel.slice(1).toLowerCase();
+
+    // Convert internal actor enum into user-friendly log label
+    actor =
+      actor === NestLock.LAST_ACTION.KEYPAD
+        ? 'keypad'
+        : actor === NestLock.LAST_ACTION.REMOTE
+          ? 'remote'
+          : actor === NestLock.LAST_ACTION.VOICE
+            ? 'voice'
+            : actor === NestLock.LAST_ACTION.IMPLICIT
+              ? 'auto'
+              : actor === NestLock.LAST_ACTION.PHYSICAL
+                ? 'physical'
+                : undefined;
+
+    // HomeKit-originated changes are explicit user requests
+    if (source === 'HomeKit') {
+      this?.log?.info?.('Set lock on "%s" to "%s"', this.deviceData.description, stateLabel);
+      return;
+    }
+
+    // External lock state changes are logged at debug level
+    // These may originate from keypad, physical interaction,
+    // remote actions, or automatic lock behaviour
+    this?.log?.debug?.(
+      'Lock on "%s" changed to "%s"%s',
+      this.deviceData.description,
+      stateLabel,
+      actor !== undefined ? ' by ' + actor : '',
+    );
   }
 }
 
@@ -256,7 +332,7 @@ const LOCK_FIELD_MAP = {
   serialNumber: {
     required: true,
     google: {
-      fields: ['device_identity'],
+      fields: [],
       translate: ({ raw }) =>
         typeof raw?.value?.device_identity?.serialNumber === 'string' && raw.value.device_identity.serialNumber.trim() !== ''
           ? raw.value.device_identity.serialNumber.trim().toUpperCase()
@@ -291,51 +367,54 @@ const LOCK_FIELD_MAP = {
     },
   },
 
-  translate: ({ rawData, raw }) => {
-    let description = String(raw?.value?.label?.label ?? '').trim();
-    let wheres = [
-      ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {}),
-      ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {}),
-    ];
+  description: {
+    required: true,
+    google: {
+      fields: ['label', 'device_info', 'device_located_settings'],
+      related: ['located_annotations'],
+      translate: ({ rawData, raw }) => {
+        let description = String(raw?.value?.label?.label ?? '').trim();
+        let wheres = [
+          ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.predefinedWheres || {}),
+          ...Object.values(rawData?.[raw?.value?.device_info?.pairerId?.resourceId]?.value?.located_annotations?.customWheres || {}),
+        ];
 
-    let findWhere = (id) => String(wheres.find((where) => where?.whereId?.resourceId === id)?.label?.literal ?? '').trim();
+        let findWhere = (id) => String(wheres.find((where) => where?.whereId?.resourceId === id)?.label?.literal ?? '').trim();
 
-    let whereLocation = String(raw?.value?.device_located_settings?.whereLabel?.literal ?? '').trim();
+        let whereLocation = String(raw?.value?.device_located_settings?.whereLabel?.literal ?? '').trim();
 
-    if (whereLocation === '') {
-      whereLocation = findWhere(raw?.value?.device_located_settings?.whereAnnotationRid?.resourceId);
-    }
+        if (whereLocation === '') {
+          whereLocation = findWhere(raw?.value?.device_located_settings?.whereAnnotationRid?.resourceId);
+        }
 
-    let fixtureLocation = String(raw?.value?.device_located_settings?.fixtureNameLabel?.literal ?? '').trim();
+        let fixtureLocation = String(raw?.value?.device_located_settings?.fixtureNameLabel?.literal ?? '').trim();
 
-    if (fixtureLocation === '') {
-      fixtureLocation = findWhere(raw?.value?.device_located_settings?.fixtureAnnotationRid?.resourceId);
-    }
+        if (fixtureLocation === '') {
+          fixtureLocation = findWhere(raw?.value?.device_located_settings?.fixtureAnnotationRid?.resourceId);
+        }
 
-    // Prefer fixture (door) as primary location
-    let location = fixtureLocation !== '' ? fixtureLocation : whereLocation;
+        let location = fixtureLocation !== '' ? fixtureLocation : whereLocation;
 
-    // Avoid duplication
-    if (description.toUpperCase() === location.toUpperCase()) {
-      location = '';
-    }
+        if (description.toUpperCase() === location.toUpperCase()) {
+          location = '';
+        }
 
-    // If description missing, use best location
-    if (description === '' && location !== '') {
-      description = location;
-      location = '';
-    }
+        if (description === '' && location !== '') {
+          description = location;
+          location = '';
+        }
 
-    if (description === '' && location === '') {
-      description = 'unknown description';
-    }
+        if (description === '' && location === '') {
+          description = 'unknown description';
+        }
 
-    // If both exist and different -> include both (door + room)
-    if (location !== '' && whereLocation !== '' && fixtureLocation !== '' && fixtureLocation !== whereLocation) {
-      return HomeKitDevice.makeValidHKName(description + ' - ' + fixtureLocation + ' (' + whereLocation + ')');
-    }
+        if (location !== '' && whereLocation !== '' && fixtureLocation !== '' && fixtureLocation !== whereLocation) {
+          return HomeKitDevice.makeValidHKName(description + ' - ' + fixtureLocation + ' (' + whereLocation + ')');
+        }
 
-    return HomeKitDevice.makeValidHKName(location === '' ? description : description + ' - ' + location);
+        return HomeKitDevice.makeValidHKName(location === '' ? description : description + ' - ' + location);
+      },
+    },
   },
 
   // Core operational fields
@@ -375,7 +454,6 @@ const LOCK_FIELD_MAP = {
   },
 
   bolt_actor: {
-    required: true,
     google: {
       fields: ['bolt_lock'],
       translate: ({ raw }) =>
@@ -396,7 +474,7 @@ const LOCK_FIELD_MAP = {
                       raw?.value?.bolt_lock?.boltLockActor?.method,
                     ) === true
                       ? NestLock.LAST_ACTION.IMPLICIT
-                      : NestLock.LAST_ACTION.PHYSICAL,
+                      : undefined,
     },
   },
 
