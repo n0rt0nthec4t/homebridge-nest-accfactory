@@ -54,7 +54,7 @@ import { DATA_SOURCE, DEVICE_TYPE, PROTOBUF_RESOURCES, LOW_BATTERY_LEVEL } from 
 
 export default class NestLock extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.LOCK;
-  static VERSION = '2026.05.09'; // Code version
+  static VERSION = '2026.05.10'; // Code version
 
   // Define lock bolt states
   static STATE = {
@@ -79,17 +79,17 @@ export default class NestLock extends HomeKitDevice {
 
   onAdd() {
     // Setup lock service if not already present on the accessory and link it to the Eve app if configured to do so
-    this.lockService = this.addHKService(this.hap.Service.LockMechanism, '', 1, {});
+    this.lockService = this.addService(this.hap.Service.LockMechanism, '', 1, {});
     this.lockService.setPrimaryService();
 
     // Setup set characteristics
-    this.addHKCharacteristic(this.lockService, this.hap.Characteristic.LockCurrentState, {
+    this.addCharacteristic(this.lockService, this.hap.Characteristic.LockCurrentState, {
       onGet: () => {
         return this.#currentState(this.deviceData);
       },
     });
 
-    this.addHKCharacteristic(this.lockService, this.hap.Characteristic.LockTargetState, {
+    this.addCharacteristic(this.lockService, this.hap.Characteristic.LockTargetState, {
       onSet: (value) => {
         if (value !== this.lockService.getCharacteristic(this.hap.Characteristic.LockTargetState).value) {
           let locked = value === this.hap.Characteristic.LockTargetState.SECURED;
@@ -110,7 +110,7 @@ export default class NestLock extends HomeKitDevice {
       },
     });
 
-    this.addHKCharacteristic(this.lockService, this.hap.Characteristic.LockManagementAutoSecurityTimeout, {
+    this.addCharacteristic(this.lockService, this.hap.Characteristic.LockManagementAutoSecurityTimeout, {
       props: {
         minValue: 0,
         maxValue: this.deviceData.max_auto_relock_duration,
@@ -136,13 +136,13 @@ export default class NestLock extends HomeKitDevice {
       },
     });
 
-    this.addHKCharacteristic(this.lockService, this.hap.Characteristic.LockLastKnownAction, {
+    this.addCharacteristic(this.lockService, this.hap.Characteristic.LockLastKnownAction, {
       onGet: () => {
         return this.#lastAction(this.deviceData);
       },
     });
 
-    this.addHKCharacteristic(this.lockService, this.hap.Characteristic.StatusTampered, {
+    this.addCharacteristic(this.lockService, this.hap.Characteristic.StatusTampered, {
       onGet: () => {
         return this.deviceData.tampered === true
           ? this.hap.Characteristic.StatusTampered.TAMPERED
@@ -151,13 +151,13 @@ export default class NestLock extends HomeKitDevice {
     });
 
     // Setup battery service if not already present on the accessory
-    this.batteryService = this.addHKService(this.hap.Service.Battery, '', 1);
+    this.batteryService = this.addService(this.hap.Service.Battery, '', 1);
     this.batteryService.setHiddenService(true);
   }
 
   onRemove() {
-    this.accessory.removeService(this.lockService);
-    this.accessory.removeService(this.batteryService);
+    this.removeService(this.lockService);
+    this.removeService(this.batteryService);
     this.lockService = undefined;
     this.batteryService = undefined;
   }

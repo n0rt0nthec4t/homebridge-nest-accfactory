@@ -48,7 +48,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestTemperatureSensor extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.TEMPSENSOR;
-  static VERSION = '2026.05.09'; // Code version
+  static VERSION = '2026.05.10'; // Code version
 
   batteryService = undefined;
   temperatureService = undefined;
@@ -56,18 +56,18 @@ export default class NestTemperatureSensor extends HomeKitDevice {
   // Class functions
   onAdd() {
     // Setup temperature service if not already present on the accessory and link it to the Eve app if configured to do so
-    this.temperatureService = this.addHKService(this.hap.Service.TemperatureSensor, '', 1, {});
+    this.temperatureService = this.addService(this.hap.Service.TemperatureSensor, '', 1, {});
     this.temperatureService.setPrimaryService();
 
     // Setup battery service if not already present on the accessory
-    this.batteryService = this.addHKService(this.hap.Service.Battery, '', 1);
+    this.batteryService = this.addService(this.hap.Service.Battery, '', 1);
     this.batteryService.setHiddenService(true);
     this.temperatureService.addLinkedService(this.batteryService);
   }
 
   onRemove() {
-    this.accessory.removeService(this.temperatureService);
-    this.accessory.removeService(this.batteryService);
+    this.removeService(this.temperatureService);
+    this.removeService(this.batteryService);
     this.temperatureService = undefined;
     this.batteryService = undefined;
   }

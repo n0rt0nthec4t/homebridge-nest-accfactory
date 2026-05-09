@@ -56,7 +56,7 @@ import {
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.HEATLINK;
-  static VERSION = '2026.05.09'; // Code version
+  static VERSION = '2026.05.10'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
@@ -86,7 +86,7 @@ export default class NestHeatlink extends HomeKitDevice {
       // No longer have usable hot water temperature control, so remove any existing thermostat service
       this.thermostatService = this.accessory.getService(this.hap.Service.Thermostat);
       if (this.thermostatService !== undefined) {
-        this.accessory.removeService(this.thermostatService);
+        this.removeService(this.thermostatService);
       }
       this.thermostatService = undefined;
     }
@@ -99,7 +99,7 @@ export default class NestHeatlink extends HomeKitDevice {
       // No longer have hotwater heating configured and service present, so removed it
       this.switchService = this.accessory.getService(this.hap.Service.Switch);
       if (this.switchService !== undefined) {
-        this.accessory.removeService(this.switchService);
+        this.removeService(this.switchService);
       }
       this.switchService = undefined;
     }
@@ -111,8 +111,8 @@ export default class NestHeatlink extends HomeKitDevice {
   }
 
   onRemove() {
-    this.accessory.removeService(this.thermostatService);
-    this.accessory.removeService(this.switchService);
+    this.removeService(this.thermostatService);
+    this.removeService(this.switchService);
     this.thermostatService = undefined;
     this.switchService = undefined;
   }
@@ -146,7 +146,7 @@ export default class NestHeatlink extends HomeKitDevice {
         this.thermostatService !== undefined
       ) {
         // Hotwater temperature control has been removed
-        this.accessory.removeService(this.thermostatService);
+        this.removeService(this.thermostatService);
         this.thermostatService = undefined;
       }
 
@@ -173,7 +173,7 @@ export default class NestHeatlink extends HomeKitDevice {
         this.switchService !== undefined
       ) {
         // Hotwater boost control has been removed
-        this.accessory.removeService(this.switchService);
+        this.removeService(this.switchService);
         this.switchService = undefined;
       }
 
@@ -231,7 +231,7 @@ export default class NestHeatlink extends HomeKitDevice {
       return;
     }
 
-    if (type === HomeKitDevice?.HISTORY?.GET) {
+    if (type === HomeKitDevice?.EVEHOME?.GET) {
       // Extend Eve Thermo GET payload with device state
       message.attached = this.deviceData.online === true;
       return message;
@@ -239,12 +239,12 @@ export default class NestHeatlink extends HomeKitDevice {
   }
 
   #setupHotwaterTemperature(deviceData = this.deviceData) {
-    this.thermostatService = this.addHKService(this.hap.Service.Thermostat, '', 1, { messages: this.message.bind(this) });
+    this.thermostatService = this.addService(this.hap.Service.Thermostat, '', 1, { messages: this.message.bind(this) });
     this.thermostatService.setPrimaryService();
 
-    this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.StatusActive);
+    this.addCharacteristic(this.thermostatService, this.hap.Characteristic.StatusActive);
 
-    this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.TemperatureDisplayUnits, {
+    this.addCharacteristic(this.thermostatService, this.hap.Characteristic.TemperatureDisplayUnits, {
       initialValue:
         deviceData.temperature_scale.toUpperCase() === 'C'
           ? this.hap.Characteristic.TemperatureDisplayUnits.CELSIUS
@@ -268,7 +268,7 @@ export default class NestHeatlink extends HomeKitDevice {
       },
     });
 
-    this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.CurrentTemperature, {
+    this.addCharacteristic(this.thermostatService, this.hap.Characteristic.CurrentTemperature, {
       props: { minStep: 0.5 },
       initialValue: deviceData.current_water_temperature,
       onGet: () => {
@@ -276,7 +276,7 @@ export default class NestHeatlink extends HomeKitDevice {
       },
     });
 
-    this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.TargetTemperature, {
+    this.addCharacteristic(this.thermostatService, this.hap.Characteristic.TargetTemperature, {
       props: {
         minStep: 0.5,
         minValue: deviceData.hotwaterMinTemp,
@@ -296,7 +296,7 @@ export default class NestHeatlink extends HomeKitDevice {
     });
 
     // We only support heating for this thermostat service
-    this.addHKCharacteristic(this.thermostatService, this.hap.Characteristic.TargetHeatingCoolingState, {
+    this.addCharacteristic(this.thermostatService, this.hap.Characteristic.TargetHeatingCoolingState, {
       props: {
         validValues: [this.hap.Characteristic.TargetHeatingCoolingState.HEAT],
       },
@@ -305,9 +305,9 @@ export default class NestHeatlink extends HomeKitDevice {
   }
 
   #setupHotwaterBoost(deviceData = this.deviceData) {
-    this.switchService = this.addHKService(this.hap.Service.Switch, '', 1);
+    this.switchService = this.addService(this.hap.Service.Switch, '', 1);
 
-    this.addHKCharacteristic(this.switchService, this.hap.Characteristic.On, {
+    this.addCharacteristic(this.switchService, this.hap.Characteristic.On, {
       initialValue: deviceData.hot_water_boost_active === true,
       onSet: (value) => {
         if (value !== this.deviceData.hot_water_boost_active) {

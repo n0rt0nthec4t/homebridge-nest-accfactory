@@ -22,7 +22,7 @@
 //   - endpoint + auth identity, when uuid is not supplied
 // - Different logical connections must not accidentally share the same session
 //
-// Code version 2026.05.06
+// Code version 2026.05.10
 // Mark Hulskamp
 'use strict';
 
@@ -754,14 +754,15 @@ export default class GrpcTransport {
           result.status !== GrpcTransport.STATUS.OK &&
           expectedObserveEnd !== true
         ) {
+          let errorText = typeof result.error === 'string' && result.error !== '' ? ' error="' + result.error + '"' : '';
           this.log?.debug?.(
-            'gRPC stream closed for "%s/%s" with status=%s code="%s" message="%s" error="%s" frames=%d',
+            'gRPC stream closed for "%s/%s" with status=%s code="%s" message="%s"%s frames=%d',
             service,
             command,
             result.status,
             result.code,
             result.message,
-            result.error,
+            errorText,
             frameCount,
           );
         }

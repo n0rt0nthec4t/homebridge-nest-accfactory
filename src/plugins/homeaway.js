@@ -46,18 +46,18 @@ import { DATA_SOURCE, DEVICE_TYPE, NESTLABS_MAC_PREFIX } from '../consts.js';
 
 export default class NestHomeAway extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.HOMEAWAY;
-  static VERSION = '2026.04.26'; // Code version
+  static VERSION = '2026.05.10'; // Code version
 
   occupancyService = undefined;
 
   // Class functions
   onAdd() {
     // Setup occupancy service if not already present on the accessory
-    this.occupancyService = this.addHKService(this.hap.Service.OccupancySensor, '', 1);
+    this.occupancyService = this.addService(this.hap.Service.OccupancySensor, '', 1);
   }
 
   onRemove() {
-    this.accessory.removeService(this.occupancyService);
+    this.removeService(this.occupancyService);
     this.occupancyService = undefined;
   }
 

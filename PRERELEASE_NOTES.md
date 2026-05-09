@@ -4,6 +4,23 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.2-beta.2 (2026/05/10)
+
+- `plugins/heatlink.js`
+  - Fixed EveHome GET message handling for Heat Link history/status payloads
+
+- `connections.js`
+  - Added a dedicated connection manager for Nest/Google account runtime state, authorisation, token refresh, retry scheduling, gRPC transport ownership, and snapshot waiter cleanup
+  - Moved runtime connection building out of `config.js`; configuration processing now stays focused on validation/defaulting
+  - Excluded accounts are now filtered during connection creation and are not stored in runtime connection state
+  - Consolidated initial authorisation, retry backoff, and token refresh into a single lifecycle timer per connection
+
+- `system.js`
+  - Wired platform startup to the new `Connections` manager after Homebridge has finished loading
+  - Removed inline account authorisation and reconnect handling from the platform manager
+  - Tightened subscribe/observe loop rescheduling so stale in-flight requests cannot restart loops after shutdown
+  - Quietened duplicate Google camera activity-history timeout logging by treating gRPC request timeouts as no recent events
+
 ## v0.4.2-beta.1 (2026/05/09)
 
 This beta focuses on thermostat and Heat Link control-path fixes. Please test thermostat setpoint changes and any systems with optional fan, humidifier, dehumidifier, or hot water controls.

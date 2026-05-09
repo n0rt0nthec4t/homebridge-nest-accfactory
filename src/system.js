@@ -1,46 +1,45 @@
 // Overall system communications and device management
 // Part of homebridge-nest-accfactory
 //
-// Core platform manager for communication with Nest and Google APIs.
-// Handles account authorisation, API connection lifecycle, device discovery,
-// raw data aggregation, snapshot coordination, protobuf-backed observe/subscribe
-// handling, and routing of updates and commands between cloud APIs and
+// Core platform manager for coordinating Nest/Google cloud data with
 // HomeKit device modules.
 //
+// Handles platform startup/shutdown, device discovery, raw data aggregation,
+// protobuf-backed observe/subscribe processing, snapshot coordination, and
+// routing of updates and commands between cloud APIs and HomeKit devices.
+//
 // Responsibilities:
-// - Authorise and maintain connections to Nest and Google accounts
-// - Manage Nest REST API and Google protobuf/gRPC API communication
+// - Initialise validated configuration and device support modules
+// - Build and start configured Nest/Google account connections
 // - Observe and subscribe to cloud updates in near real-time
 // - Aggregate and maintain raw device data from multiple API sources
 // - Coordinate protobuf-backed camera snapshot requests and responses
 // - Discover, create, update, and remove supported device instances
 // - Route HomeKit get/set requests to the correct upstream API
-// - Load and coordinate device support modules
-// - Build and manage protobuf-backed observe trait subscriptions
+// - Build protobuf-backed observe trait subscriptions
+// - Generate support dumps for troubleshooting when enabled
 //
 // Features:
-// - Multi-account support (multiple Google and/or Nest accounts simultaneously)
-// - Automatic reconnect and token/session refresh handling
+// - Multi-account support through the Connections module
 // - Nest REST API subscribe loop and Google protobuf observe loop
 // - Shared protobuf schema/type caching via protobuf.js helpers
 // - Raw data merging across Nest and Google sources
 // - Promise-based snapshot waiter handling for upload_live_image updates
-// - Support dump generation for troubleshooting when enabled
 // - Dynamic device module loading and HomeKit category selection
 //
 // Notes:
+// - Account authorisation, token refresh, retry handling, and connection cleanup are handled by connections.js
 // - HomeKit characteristic and service management is handled by individual device modules
-// - This module is responsible for platform orchestration, API communication,
-//   snapshot coordination, protobuf observe handling, and device lifecycle
 // - Camera, thermostat, sensor, and lock behaviour is implemented in device-specific modules
 //
 // Architecture:
 // - Exports the main NestAccfactory platform class
-// - Maintains connection state, raw data cache, snapshot waiters, and tracked devices
-// - Uses shared protobuf helpers for protobuf schema/type loading and traversal
+// - Maintains raw data cache and tracked HomeKit device instances
+// - Uses Connections for account/session state and gRPC transport ownership
+// - Uses shared protobuf helpers for schema/type loading and traversal
 // - Creates and updates HomeKitDevice-based instances for supported device types
 //
-// Code version 2026.05.07
+// Code version 2026.05.10
 // Mark Hulskamp
 'use strict';
 
@@ -54,10 +53,10 @@ import os from 'node:os';
 import { URL } from 'node:url';
 
 // Import our modules
-import GrpcTransport from './grpctransport.js';
 import HomeKitDevice from './HomeKitDevice.js';
+import Connections from './connections.js';
 import { loadDeviceModules, getDeviceHKCategory } from './devices.js';
-import { processConfig, buildConnections } from './config.js';
+import { processConfig } from './config.js';
 import { adjustTemperature, scaleValue, fetchWrapper } from './utils.js';
 import { getProtoTypes } from './protobuf.js';
 
@@ -83,7 +82,7 @@ export default class NestAccfactory {
   cachedAccessories = []; // Track restored cached accessories
 
   // Internal data only for this class
-  #connections = undefined; // Object of confirmed connections
+  #connections = undefined; // Connections manager
   #rawData = {}; // Cached copy of data from both Nest and Google APIs
   #trackedDevices = new Map(); // Devices we've created, keyed by serial number
   #deviceModules = undefined; // No loaded device support modules to start
@@ -91,6 +90,9 @@ export default class NestAccfactory {
   constructor(log, config, api) {
     this.log = log;
     this.api = api;
+
+    // Set the shared HomeKitDevice module logger so device modules don't need it passed in.
+    HomeKitDevice.LOGGER = log;
 
     // Validate required version of Node.js that we're running on.
     // If less than our minimum required version, log an error and stop initialisation
@@ -118,13 +120,6 @@ export default class NestAccfactory {
 
     // Perform validation on the configuration passed into us and set defaults if not present
     this.config = processConfig(config, this.log, this.api);
-    this.#connections = buildConnections(this.config);
-
-    // Check for valid connections, either a Nest and/or Google one specified. Otherwise, return back.
-    if (Object.keys(this.#connections).length === 0) {
-      this?.log?.error?.('No connections have been specified in the JSON configuration. Please review');
-      return;
-    }
 
     api?.on?.('didFinishLaunching', async () => {
       // We got notified that Homebridge has finished loading
@@ -132,67 +127,26 @@ export default class NestAccfactory {
       // Load device support modules from the plugins folder if not already done
       this.#deviceModules = await loadDeviceModules(this.log, 'plugins');
 
-      // Start reconnect loop per connection with backoff for failed tries
-      // This also initiates both Nest API subscribes and Google API observes
-      for (const uuid of Object.keys(this.#connections)) {
-        let reconnectDelay = 15000;
-        let connection = this.#connections?.[uuid];
+      // Build runtime connection state now that cached accessories have been restored
+      // and device modules are ready to receive cloud updates.
+      this.#connections = this.#createConnections();
 
-        const reconnectLoop = async () => {
-          if (connection?.authorised !== true && connection?.allowRetry !== false) {
-            try {
-              await this.#connect(uuid);
-              this.#subscribeNestAPI(uuid);
-              this.#observeGoogleAPI(uuid);
-              // eslint-disable-next-line no-unused-vars
-            } catch (error) {
-              // Empty
-            }
+      // Check for valid connections, either a Nest and/or Google one specified. Otherwise, return back.
+      if (this.#connections.size === 0) {
+        this?.log?.error?.('No active connections have been specified in the JSON configuration. Please review');
+        return;
+      }
 
-            reconnectDelay = connection?.authorised === true ? 15000 : Math.min(reconnectDelay * 2, 60000);
-          } else {
-            reconnectDelay = 15000;
-          }
-
-          if (this.#connections?.[uuid] === connection) {
-            clearTimeout(connection.reconnectTimer);
-            connection.reconnectTimer = setTimeout(reconnectLoop, reconnectDelay);
-          }
-        };
-
-        if (connection?.exclude !== true) {
-          reconnectLoop();
-        } else {
-          this?.log?.warn?.('Account "%s" is ignored due to it being marked as excluded', connection?.name);
-        }
+      // Start connection lifecycle per configured account.
+      for (let [uuid] of this.#connections.entries()) {
+        this.#connections.start(uuid);
       }
     });
 
     api?.on?.('shutdown', async () => {
       // We got notified that Homebridge is shutting down
       // Perform cleanup of internal state
-      for (let uuid of Object.keys(this.#connections ?? {})) {
-        // Cleanup any active timers or transports for this connection
-        clearTimeout(this.#connections?.[uuid]?.timer);
-        clearTimeout(this.#connections?.[uuid]?.reconnectTimer);
-        clearTimeout(this.#connections?.[uuid]?.subscribeTimer);
-        clearTimeout(this.#connections?.[uuid]?.observeTimer);
-
-        // If we have an active gRPC transport for this connection, release it to clean up resources and connections
-        this.#connections?.[uuid]?.grpcTransport?.release?.();
-
-        // If we have any pending snapshot waiters for this connection, trigger them
-        // so any in-flight snapshot requests can finish cleanly during shutdown
-        if (this.#connections?.[uuid]?.snapshotWaiters instanceof Map) {
-          for (let waiter of this.#connections[uuid].snapshotWaiters.values()) {
-            if (typeof waiter === 'function') {
-              waiter();
-            }
-          }
-
-          this.#connections[uuid].snapshotWaiters.clear();
-        }
-      }
+      this.#connections?.shutdown?.();
 
       // Cleanup internal data
       this.#trackedDevices.clear();
@@ -228,323 +182,68 @@ export default class NestAccfactory {
     this.cachedAccessories.push(accessory);
   }
 
-  async #connect(uuid) {
-    if (typeof this.#connections?.[uuid] !== 'object') {
-      return;
-    }
+  #createConnections() {
+    return Connections.fromConfig(this.config, {
+      log: this.log,
+      onAuthorised: async (uuid, connection, details = {}) => {
+        // Notify any camera related devices (camera/doorbell/floodlight) of updated auth details.
+        for (let [, trackedDevice] of this.#trackedDevices) {
+          if (typeof trackedDevice !== 'object' || trackedDevice === null) {
+            continue;
+          }
 
-    let connection = this.#connections[uuid];
-    let isRetry = connection.allowRetry === true;
-    let accountLabel = connection.type === ACCOUNT_TYPE.GOOGLE ? 'Google' : 'Nest';
+          if (
+            trackedDevice.type !== DEVICE_TYPE.CAMERA &&
+            trackedDevice.type !== DEVICE_TYPE.DOORBELL &&
+            trackedDevice.type !== DEVICE_TYPE.FLOODLIGHT
+          ) {
+            // Not a camera/doorbell/floodlight device, so skip
+            continue;
+          }
 
-    // If allowRetry is true, we assume this is not the first connection attempt, so we'll only use debug level logging
-    // Otherwise, we'll use info level
-    this?.log?.[isRetry === true ? 'debug' : 'info']?.(
-      'Performing authorisation for connection "%s" %s',
-      connection.name,
-      connection.fieldTest === true ? 'using field test endpoints' : '',
-    );
-
-    // Cleanup runtime state before re-auth
-    // Ensures no stale waiters or transports remain
-    let cleanupConnectionRuntime = () => {
-      if (this.#connections?.[uuid]?.snapshotWaiters instanceof Map) {
-        for (let waiter of this.#connections[uuid].snapshotWaiters.values()) {
-          if (typeof waiter === 'function') {
-            waiter(); // resolve any pending snapshot promises
+          try {
+            // Send an update message onto the device so it can update its api access details if needed.
+            await HomeKitDevice.message(trackedDevice.uuid, HomeKitDevice.UPDATE, {
+              apiAccess: connection.cameraAuth,
+            });
+          } catch (error) {
+            this?.log?.debug?.(
+              'Unable to update camera auth for tracked device "%s": %s',
+              trackedDevice.uuid,
+              typeof error?.message === 'string' ? error.message : String(error),
+            );
           }
         }
 
-        this.#connections[uuid].snapshotWaiters.clear();
-      }
-
-      this.#connections?.[uuid]?.grpcTransport?.release?.();
-    };
-
-    // Create gRPC transport (protobuf backend)
-    // Uses the live connection object so refreshed token values are picked up by getAuthHeader()
-    let createGrpcTransport = () => {
-      if (this.config?.options?.useGoogleAPI !== true) {
-        return;
-      }
-
-      return new GrpcTransport({
-        log: this.log,
-        protoPath: path.join(__dirname, 'protobuf/root.proto'),
-        endpointHost: 'https://' + this.#connections[uuid].grpcEndpointHost,
-        uuid: uuid,
-        userAgent: USER_AGENT,
-        getAuthHeader: () => {
-          let token = this.#connections?.[uuid]?.token;
-          return typeof token === 'string' && token.trim() !== '' ? 'Basic ' + token : '';
-        },
-      });
-    };
-
-    // Apply successful auth result
-    // Shared across Google and Nest flows
-    let applyAuthorisedConnection = (sessionData, cameraAPI, refreshSeconds, successMessage) => {
-      this?.log?.[isRetry === true ? 'debug' : 'success']?.(successMessage, connection.name);
-
-      cleanupConnectionRuntime();
-
-      Object.assign(this.#connections[uuid], {
-        authorised: true,
-        allowRetry: true,
-        userID: sessionData.userid,
-        transport_url: sessionData.urls.transport_url,
-        weather_url: sessionData.urls.weather_url,
-        token: sessionData.access_token,
-        cameraAPI: cameraAPI,
-        grpcTransport: createGrpcTransport(),
-        snapshotWaiters: new Map(), // Keyed by resource Id for protobuf snapshot waiters
-      });
-
-      // Notify any camera related devices (camera/doorbell/floodlight) of updated auth details
-      for (let [, trackedDevice] of this.#trackedDevices) {
-        if (typeof trackedDevice !== 'object' || trackedDevice === null) {
-          continue;
+        // Initial authorisation/re-authorisation should start ingestion loops.
+        // Token refreshes keep existing loops running.
+        if (details?.wasAuthorised !== true) {
+          this.#subscribeNestAPI(uuid).catch((error) => {
+            this?.log?.debug?.(
+              'Unable to start Nest API subscribe for connection "%s": %s',
+              connection?.name,
+              typeof error?.message === 'string' ? error.message : String(error),
+            );
+          });
+          this.#observeGoogleAPI(uuid).catch((error) => {
+            this?.log?.debug?.(
+              'Unable to start Google API observe for connection "%s": %s',
+              connection?.name,
+              typeof error?.message === 'string' ? error.message : String(error),
+            );
+          });
         }
-
-        if (
-          trackedDevice.type !== DEVICE_TYPE.CAMERA &&
-          trackedDevice.type !== DEVICE_TYPE.DOORBELL &&
-          trackedDevice.type !== DEVICE_TYPE.FLOODLIGHT
-        ) {
-          continue;
-        }
-
-        // Message device with updated cameraAPI details
-        HomeKitDevice.message(trackedDevice.uuid, HomeKitDevice.UPDATE, {
-          apiAccess: this.#connections[uuid].cameraAPI,
-        });
-      }
-
-      // Schedule token refresh before expiry
-      clearTimeout(this.#connections[uuid].timer);
-      this.#connections[uuid].timer = setTimeout(() => {
-        this?.log?.debug?.(
-          'Performing periodic token refresh using %s account for connection "%s"',
-          accountLabel,
-          this.#connections[uuid].name,
-        );
-        this.#connections[uuid].allowRetry = true;
-        this.#connect(uuid);
-      }, refreshSeconds * 1000);
-    };
-
-    // Common error handling
-    // Determines retry behaviour and logs appropriately
-    let handleConnectError = (error, nonRetryableCodes, retryErrorMessage, authErrorMessage) => {
-      let statusCode =
-        error?.code !== undefined && error?.code !== null
-          ? error.code
-          : error?.status !== undefined && error?.status !== null
-            ? error.status
-            : undefined;
-
-      if (nonRetryableCodes.includes(statusCode) === true) {
-        this.#connections[uuid].allowRetry = false;
-      }
-
-      this.#connections[uuid].authorised = false;
-
-      this?.log?.debug?.(
-        'Failed to connect using %s credentials for connection "%s" %s: Error was "%s"',
-        accountLabel,
-        this.#connections[uuid].name,
-        this.#connections[uuid].allowRetry === true ? 'will retry' : 'will not retry',
-        typeof error?.message === 'string' ? error.message : String(error),
-      );
-
-      this?.log?.error?.(this.#connections[uuid].allowRetry === true ? retryErrorMessage : authErrorMessage, this.#connections[uuid].name);
-    };
-
-    // Google account authentication flow
-    if (connection.type === ACCOUNT_TYPE.GOOGLE) {
-      try {
-        // Obtain OAuth token from Google using the token exchange endpoint and the cookie we already have from config
-        let tokenResponse = await fetchWrapper('get', connection.issueToken, {
-          headers: {
-            Referer: 'https://accounts.google.com/',
-            Cookie: connection.cookie,
-            'User-Agent': USER_AGENT,
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-origin',
-            'X-Requested-With': 'XmlHttpRequest',
-          },
-        });
-
-        let tokenData = await tokenResponse.json();
-
-        if (typeof tokenData?.error === 'string') {
-          let error = new Error(
-            (tokenData?.detail ? String(tokenData.detail) : '') + (tokenData?.error ? ' (' + String(tokenData.error) + ')' : ''),
-          );
-          error.name = 'GoogleAuthError';
-          error.code = tokenData.error;
-          error.statusText = tokenData.detail || 'OAuth error';
-          throw error;
-        }
-
-        let googleOAuth2Token = tokenData.access_token.trim();
-
-        // Obtain JWT from Google using the OAuth token we just obtained
-        let jwtResponse = await fetchWrapper(
-          'post',
-          'https://nestauthproxyservice-pa.googleapis.com/v1/issue_jwt',
-          {
-            headers: {
-              Referer: 'https://' + connection.referer,
-              Origin: 'https://' + connection.referer,
-              Authorization: tokenData.token_type + ' ' + tokenData.access_token,
-              'User-Agent': USER_AGENT,
-              'Content-Type': 'application/json',
-              'Sec-Fetch-Mode': 'cors',
-              'Sec-Fetch-Site': 'cross-site',
-            },
-          },
-          {
-            policy_id: 'authproxy-oauth-policy',
-            google_oauth_access_token: tokenData.access_token,
-            embed_google_oauth_access_token: true,
-            expire_after: '3600s',
-          },
-        );
-
-        let jwtData = await jwtResponse.json();
-
-        if ((jwtData?.jwt?.trim?.() ?? '') === '') {
-          this?.log?.debug?.('JWT response object', jwtData);
-          throw new Error('Missing jwt in JWT response');
-        }
-
-        // Get Nest session using the JWT token we just obtained
-        let sessionResponse = await fetchWrapper('get', new URL('/session', 'https://' + connection.restAPIHost).href, {
-          headers: {
-            Referer: 'https://' + connection.referer,
-            Origin: 'https://' + connection.referer,
-            Authorization: 'Basic ' + jwtData.jwt,
-            'User-Agent': USER_AGENT,
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-origin',
-          },
-        });
-
-        let sessionData = await sessionResponse.json();
-
-        if ((sessionData?.access_token?.trim?.() ?? '') === '') {
-          this?.log?.debug?.('Nest session response object', sessionData);
-          throw new Error('Missing access_token in session response');
-        }
-
-        // Apply final authorised state
-        applyAuthorisedConnection(
-          sessionData,
-          {
-            key: 'Authorization',
-            value: 'Basic ',
-            token: sessionData.access_token,
-            oauth2: googleOAuth2Token,
-            fieldTest: connection.fieldTest === true,
-          },
-          tokenData.expires_in - 300,
-          isRetry === true
-            ? 'Successfully performed token refresh using Google account for connection "%s"'
-            : 'Successfully authorised using Google account for connection "%s"',
-        );
-      } catch (error) {
-        handleConnectError(
-          error,
-          ['USER_LOGGED_OUT', 'ERR_INVALID_URL', 401, 403],
-          'Token refresh failed using Google account for connection "%s"',
-          'Authorisation failed using Google account for connection "%s"',
-        );
-      }
-
-      return;
-    }
-
-    // Nest account authentication flow (legacy)
-    if (connection.type === ACCOUNT_TYPE.NEST) {
-      try {
-        // Retrieve session token from Nest login endpoint using the access token we already have from config
-        let loginResponse = await fetchWrapper(
-          'post',
-          new URL('/api/v1/login.login_nest', 'https://webapi.' + connection.cameraAPIHost).href,
-          {
-            withCredentials: true,
-            headers: {
-              Referer: 'https://' + connection.referer,
-              Origin: 'https://' + connection.referer,
-              'User-Agent': USER_AGENT,
-              'Content-Type': 'application/x-www-form-urlencoded',
-              'Sec-Fetch-Mode': 'cors',
-              'Sec-Fetch-Site': 'same-origin',
-            },
-          },
-          Buffer.from('access_token=' + connection.access_token, 'utf8'),
-        );
-
-        let loginData = await loginResponse.json();
-
-        if (typeof loginData?.status === 'number' && (loginData?.items?.[0]?.session_token.trim?.() ?? '') === '') {
-          let error = new Error(
-            (loginData?.status_detail ? String(loginData.status_detail) : '') +
-              (loginData?.status_description ? ' (' + String(loginData.status_description) + ')' : '') +
-              (loginData?.status_detail || loginData?.status_description ? '' : 'Nest login failed with status ' + loginData.status),
-          );
-          error.name = 'NestAuthError';
-          error.code = loginData.status;
-          error.message = loginData?.status_description || 'Error';
-          throw error;
-        }
-
-        let nestToken = loginData.items[0].session_token;
-
-        // Get Nest session details after successful login
-        let sessionResponse = await fetchWrapper('get', new URL('/session', 'https://' + connection.restAPIHost).href, {
-          headers: {
-            Referer: 'https://' + connection.referer,
-            Origin: 'https://' + connection.referer,
-            Authorization: 'Basic ' + connection.access_token,
-            'User-Agent': USER_AGENT,
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-origin',
-          },
-        });
-
-        let sessionData = await sessionResponse.json();
-
-        // Apply final authorised state
-        applyAuthorisedConnection(
-          sessionData,
-          {
-            key: 'cookie',
-            value: connection.fieldTest === true ? 'website_ft=' : 'website_2=',
-            token: nestToken,
-            fieldTest: connection.fieldTest === true,
-          },
-          3600 * 24,
-          isRetry === true
-            ? 'Successfully performed token refresh using Nest account for connection "%s"'
-            : 'Successfully authorised using Nest account for connection "%s"',
-        );
-      } catch (error) {
-        handleConnectError(
-          error,
-          ['ERR_INVALID_URL', 401, 403],
-          'Token refresh failed using Nest account for connection "%s"',
-          'Authorisation failed using Nest account for connection "%s"',
-        );
-      }
-    }
+      },
+    });
   }
 
   async #subscribeNestAPI(uuid, firstRun = true, fullRead = true) {
+    let connection = this.#connections?.get(uuid);
+
     if (
-      typeof this.#connections?.[uuid] !== 'object' ||
-      this.#connections?.[uuid]?.authorised !== true ||
+      typeof connection !== 'object' ||
+      connection === null ||
+      connection.authorised !== true ||
       this.config?.options?.useNestAPI !== true
     ) {
       // Not a valid connection object and/or we're not authorised
@@ -554,7 +253,7 @@ export default class NestAccfactory {
     // By default, setup for a full data read from the Nest API
     let subscribeJSONData = undefined;
     if (firstRun !== false || fullRead !== false) {
-      this?.log?.debug?.('Starting Nest API subscribe for connection "%s"', this.#connections[uuid].name);
+      this?.log?.debug?.('Starting Nest API subscribe for connection "%s"', connection.name);
       subscribeJSONData = { known_bucket_types: NEST_API_BUCKETS, known_bucket_versions: [] };
     }
 
@@ -577,13 +276,13 @@ export default class NestAccfactory {
     fetchWrapper(
       'post',
       subscribeJSONData?.objects !== undefined
-        ? new URL('/v5/subscribe', this.#connections[uuid].transport_url).href
-        : new URL('/api/0.1/user/' + this.#connections[uuid].userID + '/app_launch', 'https://' + this.#connections[uuid].restAPIHost).href,
+        ? new URL('/v5/subscribe', connection.transport_url).href
+        : new URL('/api/0.1/user/' + connection.userID + '/app_launch', 'https://' + connection.restAPIHost).href,
       {
         headers: {
-          Referer: 'https://' + this.#connections[uuid].referer,
-          Origin: 'https://' + this.#connections[uuid].referer,
-          Authorization: 'Basic ' + this.#connections[uuid].token,
+          Referer: 'https://' + connection.referer,
+          Origin: 'https://' + connection.referer,
+          Authorization: 'Basic ' + connection.token,
           Connection: 'keep-alive',
           'User-Agent': USER_AGENT,
           'Sec-Fetch-Mode': 'cors',
@@ -722,6 +421,7 @@ export default class NestAccfactory {
               });
             }
           }
+
           // Only record this object if at least one field changed
           if (changedFields.size !== 0) {
             changedData.set(objectKey, { fields: changedFields });
@@ -751,15 +451,11 @@ export default class NestAccfactory {
               ? error.status
               : undefined;
 
-        // If we get a 401 Unauthorized or 403 Forbidden and the connection was previously authorised,
-        // mark it as unauthorised so the reconnect loop will handle it
-        if ((statusCode === 401 || statusCode === 403) && this.#connections?.[uuid]?.authorised === true) {
-          this?.log?.debug?.(
-            'Connection "%s" is no longer authorised with the Nest API, will attempt to reconnect',
-            this.#connections[uuid].name,
-          );
-          this.#connections[uuid].authorised = false;
-          this.#connections[uuid].allowRetry = true;
+        // If we get a 401 Unauthorized or 403 Forbidden, wake the connection
+        // lifecycle so it can re-authorise and reschedule itself.
+        if ((statusCode === 401 || statusCode === 403) && connection.authorised === true) {
+          this?.log?.debug?.('Connection "%s" is no longer authorised with the Nest API, will attempt to reconnect', connection.name);
+          this.#connections?.markUnauthorised?.(uuid, 'nest-api-' + statusCode);
           return;
         }
 
@@ -771,25 +467,28 @@ export default class NestAccfactory {
         ) {
           this?.log?.debug?.(
             'Nest API had an error performing subscription with connection "%s". Error was "%s"',
-            this.#connections[uuid].name,
+            connection.name,
             typeof error?.message === 'string' ? error.message : String(error),
           );
         }
       })
       .finally(() => {
-        // Only continue the subscription loop if the connection is still authorised
-        if (this.#connections?.[uuid]?.authorised === true) {
-          clearTimeout(this.#connections[uuid].subscribeTimer);
-          this.#connections[uuid].subscribeTimer = setTimeout(() => this.#subscribeNestAPI(uuid, false, fullRead), 1000);
+        // Only continue the subscription loop if this exact connection is still active and authorised.
+        if (this.#connections?.get(uuid) === connection && connection.authorised === true) {
+          clearTimeout(connection.subscribeTimer);
+          connection.subscribeTimer = setTimeout(() => this.#subscribeNestAPI(uuid, false, fullRead), 1000);
         }
       });
   }
 
   async #observeGoogleAPI(uuid) {
+    let connection = this.#connections?.get(uuid);
+
     if (
-      typeof this.#connections?.[uuid] !== 'object' ||
-      this.#connections?.[uuid]?.authorised !== true ||
-      this.#connections?.[uuid]?.grpcTransport === undefined ||
+      typeof connection !== 'object' ||
+      connection === null ||
+      connection.authorised !== true ||
+      connection.grpcTransport === undefined ||
       this.config?.options?.useGoogleAPI !== true
     ) {
       // Not a valid connection object and/or we're not authorised
@@ -800,11 +499,11 @@ export default class NestAccfactory {
     let observeTraitsList = getProtoTypes(path.join(__dirname, 'protobuf/root.proto'), this.log)
       .filter((type) => {
         return (
-          (this.#connections[uuid].type === ACCOUNT_TYPE.NEST &&
+          (connection.type === ACCOUNT_TYPE.NEST &&
             type.fullName.startsWith('.nest.trait.product.camera') === false &&
             type.fullName.startsWith('.nest.trait.product.doorbell') === false &&
             (type.fullName.startsWith('.nest.trait') === true || type.fullName.startsWith('.weave.') === true)) ||
-          (this.#connections[uuid].type === ACCOUNT_TYPE.GOOGLE &&
+          (connection.type === ACCOUNT_TYPE.GOOGLE &&
             (type.fullName.startsWith('.nest.trait') === true ||
               type.fullName.startsWith('.weave.') === true ||
               type.fullName.startsWith('.google.trait.product.camera') === true))
@@ -824,12 +523,12 @@ export default class NestAccfactory {
     if (observeTraitsList.length === 0) {
       this?.log?.warn?.(
         'Google API observe cannot start for connection "%s" because no observable protobuf traits were loaded',
-        this.#connections[uuid].name,
+        connection.name,
       );
       return;
     }
 
-    this.#connections[uuid].grpcTransport
+    connection.grpcTransport
       .observe(
         'nestlabs.gateway.v2.',
         'GatewayService',
@@ -878,6 +577,7 @@ export default class NestAccfactory {
                   .filter((trait) => trait.stateTypes.includes('ACCEPTED') === true)
                   .map((trait) => trait.traitId.resourceId + '/' + trait.traitId.traitLabel),
               );
+
               observeResponse.traitStates = [
                 ...traits.filter((trait) => acceptedKeys.has(trait.traitId.resourceId + '/' + trait.traitId.traitLabel) === false),
                 ...traits.filter((trait) => trait.stateTypes.includes('ACCEPTED') === true),
@@ -894,6 +594,7 @@ export default class NestAccfactory {
                   changedEntry = { fields: new Set() };
                   changedData.set(resourceId, changedEntry);
                 }
+
                 changedEntry.fields.add(traitLabel);
 
                 // Create or update trait entry and assign latest patch values
@@ -945,10 +646,10 @@ export default class NestAccfactory {
 
                 // We have an update for a camera live image trait
                 // so we'll trigger any waiting snapshot requests to process this new image data
-                if (traitLabel === 'upload_live_image' && this.#connections?.[uuid]?.snapshotWaiters instanceof Map) {
-                  let waiter = this.#connections[uuid].snapshotWaiters.get(resourceId);
+                if (traitLabel === 'upload_live_image' && connection.snapshotWaiters instanceof Map) {
+                  let waiter = connection.snapshotWaiters.get(resourceId);
 
-                  this.#connections[uuid].snapshotWaiters.delete(resourceId);
+                  connection.snapshotWaiters.delete(resourceId);
 
                   if (typeof waiter === 'function') {
                     waiter();
@@ -964,20 +665,22 @@ export default class NestAccfactory {
       .catch((error) => {
         this?.log?.debug?.(
           'Google API observe failed for connection "%s": %s',
-          this.#connections?.[uuid]?.name,
+          connection.name,
           typeof error?.message === 'string' ? error.message : String(error),
         );
       })
       .finally(() => {
-        // Only continue the observe loop if the connection is still authorised
-        if (this.#connections?.[uuid]?.authorised === true) {
-          clearTimeout(this.#connections[uuid].observeTimer);
-          this.#connections[uuid].observeTimer = setTimeout(() => this.#observeGoogleAPI(uuid), 1000);
+        // Only continue the observe loop if this exact connection is still active and authorised.
+        if (this.#connections?.get(uuid) === connection && connection.authorised === true) {
+          clearTimeout(connection.observeTimer);
+          connection.observeTimer = setTimeout(() => this.#observeGoogleAPI(uuid), 1000);
         }
       });
   }
 
   async #processData(uuid, changedData = undefined) {
+    let connection = this.#connections?.get(uuid);
+
     const dumpSupportData = (source, changedData = undefined) => {
       let sourceInfo =
         source === DATA_SOURCE.GOOGLE ? { name: 'Google API' } : source === DATA_SOURCE.NEST ? { name: 'Nest API' } : undefined;
@@ -989,7 +692,8 @@ export default class NestAccfactory {
         this?.config?.options?.supportDump !== true ||
         typeof uuid !== 'string' ||
         uuid.trim() === '' ||
-        typeof this.#connections?.[uuid] !== 'object' ||
+        typeof connection !== 'object' ||
+        connection === null ||
         typeof sourceInfo !== 'object'
       ) {
         return;
@@ -1152,8 +856,8 @@ export default class NestAccfactory {
                     .toLowerCase()
                     .replace(/\b\w/g, (character) => character.toUpperCase());
 
-                let tempDevice = new deviceModule.class(this.cachedAccessories, this.api, this.log, deviceData);
-                tempDevice.add(accessoryName, getDeviceHKCategory(deviceModule.class.TYPE), deviceData?.eveHistory === true);
+                let tempDevice = new deviceModule.class(this.cachedAccessories, this.api, deviceData);
+                await tempDevice.add(accessoryName, getDeviceHKCategory(deviceModule.class.TYPE), deviceData?.eveHistory === true);
 
                 // Register per-device set/get handlers
                 HomeKitDevice.message(tempDevice.uuid, HomeKitDevice.SET, async (values) => {
@@ -1209,7 +913,7 @@ export default class NestAccfactory {
                     'Using %s API as data source for "%s" from connection "%s"',
                     this.#rawData[deviceData.nest_google_device_uuid].source,
                     deviceData.description,
-                    this.#connections[this.#rawData[deviceData.nest_google_device_uuid].connection].name,
+                    this.#connections.get(this.#rawData[deviceData.nest_google_device_uuid].connection)?.name,
                   );
 
                   trackedDevice.source = this.#rawData[deviceData.nest_google_device_uuid].source;
@@ -1217,14 +921,14 @@ export default class NestAccfactory {
                 }
               }
 
-              // For any camera type devices, inject camera API call access credentials for that device
+              // For any camera type devices, inject camera API auth credentials for that device
               // from its associated connection
               if (
                 deviceModule.class.TYPE === DEVICE_TYPE.CAMERA ||
                 deviceModule.class.TYPE === DEVICE_TYPE.DOORBELL ||
                 deviceModule.class.TYPE === DEVICE_TYPE.FLOODLIGHT
               ) {
-                deviceData.apiAccess = this.#connections?.[this.#rawData?.[deviceData?.nest_google_device_uuid]?.connection]?.cameraAPI;
+                deviceData.apiAccess = this.#connections?.get(this.#rawData?.[deviceData?.nest_google_device_uuid]?.connection)?.cameraAuth;
               }
 
               // Send updated data onto HomeKit device for it to process
@@ -1237,11 +941,15 @@ export default class NestAccfactory {
   }
 
   async #set(uuid, nest_google_device_uuid, values) {
+    let connection = this.#connections?.get(uuid);
+
     if (
       typeof values !== 'object' ||
+      values === null ||
       typeof this.#rawData?.[nest_google_device_uuid] !== 'object' ||
-      typeof this.#connections?.[uuid] !== 'object' ||
-      this.#connections?.[uuid]?.authorised !== true
+      typeof connection !== 'object' ||
+      connection === null ||
+      connection.authorised !== true
     ) {
       return;
     }
@@ -1253,10 +961,7 @@ export default class NestAccfactory {
           continue;
         }
 
-        if (
-          this.#rawData?.[nest_google_device_uuid]?.source === DATA_SOURCE.GOOGLE &&
-          this.#connections?.[uuid]?.grpcTransport !== undefined
-        ) {
+        if (this.#rawData?.[nest_google_device_uuid]?.source === DATA_SOURCE.GOOGLE && connection.grpcTransport !== undefined) {
           let updatedTraits = [];
           let commandTraits = [];
 
@@ -1646,14 +1351,9 @@ export default class NestAccfactory {
 
           // Perform any direct trait updates we have to do. This can be done via a single call in a batch
           if (updatedTraits.length !== 0) {
-            let grpcResult = await this.#connections[uuid].grpcTransport.command(
-              'nestlabs.gateway.v1.',
-              'TraitBatchApi',
-              'BatchUpdateState',
-              {
-                batchUpdateStateRequest: updatedTraits,
-              },
-            );
+            let grpcResult = await connection.grpcTransport.command('nestlabs.gateway.v1.', 'TraitBatchApi', 'BatchUpdateState', {
+              batchUpdateStateRequest: updatedTraits,
+            });
             let commandResponse = Array.isArray(grpcResult?.data) === true ? grpcResult.data[0] : undefined;
             if (commandResponse?.traitOperations?.[0]?.progress !== 'COMPLETE') {
               this?.log?.debug?.('Google API had error updating traits for device uuid "%s"', nest_google_device_uuid);
@@ -1662,12 +1362,7 @@ export default class NestAccfactory {
 
           // Perform any trait updates required via resource commands. Each one is done separately
           for (let command of commandTraits ?? []) {
-            let grpcResult = await this.#connections[uuid].grpcTransport.command(
-              'nestlabs.gateway.v1.',
-              'ResourceApi',
-              'SendCommand',
-              command,
-            );
+            let grpcResult = await connection.grpcTransport.command('nestlabs.gateway.v1.', 'ResourceApi', 'SendCommand', command);
             let commandResponse = Array.isArray(grpcResult?.data) === true ? grpcResult.data[0] : undefined;
             if (commandResponse?.traitOperations?.[0]?.progress !== 'COMPLETE') {
               this?.log?.debug?.(
@@ -1693,13 +1388,12 @@ export default class NestAccfactory {
 
             let response = await fetchWrapper(
               'post',
-              new URL('/api/dropcams.set_properties', 'https://webapi.' + this.#connections[uuid].cameraAPIHost).href,
+              new URL('/api/dropcams.set_properties', 'https://webapi.' + connection.cameraAPIHost).href,
               {
                 headers: {
-                  Referer: 'https://' + this.#connections[uuid].referer,
-                  Origin: 'https://' + this.#connections[uuid].referer,
-                  [this.#connections[uuid].cameraAPI.key]:
-                    this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
+                  Referer: 'https://' + connection.referer,
+                  Origin: 'https://' + connection.referer,
+                  [connection.cameraAuth.key]: connection.cameraAuth.value + connection.cameraAuth.token,
                   'Content-Type': 'application/x-www-form-urlencoded',
                   'User-Agent': USER_AGENT,
                   'Sec-Fetch-Mode': 'cors',
@@ -1897,12 +1591,12 @@ export default class NestAccfactory {
             if (subscribeJSONData.objects.length !== 0) {
               let response = await fetchWrapper(
                 'post',
-                new URL('/v5/put', this.#connections[uuid].transport_url).href,
+                new URL('/v5/put', connection.transport_url).href,
                 {
                   headers: {
-                    Referer: 'https://' + this.#connections[uuid].referer,
-                    Origin: 'https://' + this.#connections[uuid].referer,
-                    Authorization: 'Basic ' + this.#connections[uuid].token,
+                    Referer: 'https://' + connection.referer,
+                    Origin: 'https://' + connection.referer,
+                    Authorization: 'Basic ' + connection.token,
                     'User-Agent': USER_AGENT,
                     'Sec-Fetch-Mode': 'cors',
                     'Sec-Fetch-Site': 'same-origin',
@@ -2009,9 +1703,13 @@ export default class NestAccfactory {
   }
 
   async #getCameraSnapshot(uuid, nest_google_device_uuid) {
+    let connection = this.#connections?.get(uuid);
+
     if (
-      this.#connections?.[uuid]?.authorised !== true ||
-      (this.#connections?.[uuid]?.referer ?? '') === '' ||
+      typeof connection !== 'object' ||
+      connection === null ||
+      connection.authorised !== true ||
+      (connection.referer ?? '') === '' ||
       (nest_google_device_uuid?.trim?.() ?? '') === '' ||
       typeof this.#rawData?.[nest_google_device_uuid]?.value !== 'object'
     ) {
@@ -2057,10 +1755,10 @@ export default class NestAccfactory {
       this.config?.options?.useNestAPI === true &&
       nest_google_device_uuid.startsWith('quartz.') === true &&
       (this.#rawData?.[nest_google_device_uuid]?.value?.nexus_api_http_server_url ?? '') !== '' &&
-      (this.#connections?.[uuid]?.cameraAPIHost ?? '') !== '' &&
-      (this.#connections?.[uuid]?.cameraAPI?.key ?? '') !== '' &&
-      (this.#connections?.[uuid]?.cameraAPI?.value ?? '') !== '' &&
-      (this.#connections?.[uuid]?.cameraAPI?.token ?? '') !== ''
+      (connection?.cameraAPIHost ?? '') !== '' &&
+      (connection?.cameraAuth?.key ?? '') !== '' &&
+      (connection?.cameraAuth?.value ?? '') !== '' &&
+      (connection?.cameraAuth?.token ?? '') !== ''
     ) {
       // Nest cameras provide a direct image endpoint, so just fetch the latest image available
       snapshot = await fetchSnapshotImage(
@@ -2069,9 +1767,9 @@ export default class NestAccfactory {
           this.#rawData[nest_google_device_uuid].value.nexus_api_http_server_url.trim(),
         ).href,
         {
-          Referer: 'https://' + this.#connections[uuid].referer,
-          Origin: 'https://' + this.#connections[uuid].referer,
-          [this.#connections[uuid].cameraAPI.key]: this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
+          Referer: 'https://' + connection.referer,
+          Origin: 'https://' + connection.referer,
+          [connection.cameraAuth.key]: connection.cameraAuth.value + connection.cameraAuth.token,
           'User-Agent': USER_AGENT,
           'Sec-Fetch-Mode': 'cors',
           'Sec-Fetch-Site': 'same-origin',
@@ -2086,8 +1784,8 @@ export default class NestAccfactory {
     if (
       this.config?.options?.useGoogleAPI === true &&
       nest_google_device_uuid.startsWith('DEVICE_') === true &&
-      (this.#connections?.[uuid]?.token ?? '') !== '' &&
-      this.#connections?.[uuid]?.grpcTransport !== undefined &&
+      (connection?.token ?? '') !== '' &&
+      connection?.grpcTransport !== undefined &&
       (PROTOBUF_RESOURCES.CAMERA.includes(this.#rawData?.[nest_google_device_uuid]?.value?.device_info?.typeName) === true ||
         PROTOBUF_RESOURCES.DOORBELL.includes(this.#rawData?.[nest_google_device_uuid]?.value?.device_info?.typeName) === true ||
         PROTOBUF_RESOURCES.FLOODLIGHT.includes(this.#rawData?.[nest_google_device_uuid]?.value?.device_info?.typeName) === true)
@@ -2101,16 +1799,16 @@ export default class NestAccfactory {
 
       // Register a waiter for this device so observe processing can wake this snapshot request
       let snapshotUpdated = false;
-      this.#connections?.[uuid]?.snapshotWaiters?.delete?.(nest_google_device_uuid);
+      connection?.snapshotWaiters?.delete?.(nest_google_device_uuid);
       let waitForSnapshotUpdate = new Promise((resolve) => {
-        this.#connections[uuid].snapshotWaiters.set(nest_google_device_uuid, () => {
+        connection.snapshotWaiters.set(nest_google_device_uuid, () => {
           snapshotUpdated = true;
           resolve();
         });
       });
 
       // Ask Google to refresh the live image
-      let grpcResult = await this.#connections[uuid].grpcTransport.command('nestlabs.gateway.v1.', 'ResourceApi', 'SendCommand', {
+      let grpcResult = await connection.grpcTransport.command('nestlabs.gateway.v1.', 'ResourceApi', 'SendCommand', {
         resourceRequest: {
           resourceId: nest_google_device_uuid,
           requestId: crypto.randomUUID(),
@@ -2140,7 +1838,7 @@ export default class NestAccfactory {
 
       // If timeout won the race, remove the waiter so a later observe update does not resolve a stale request
       if (snapshotUpdated === false) {
-        this.#connections?.[uuid]?.snapshotWaiters?.delete?.(nest_google_device_uuid);
+        connection?.snapshotWaiters?.delete?.(nest_google_device_uuid);
       }
 
       // Re-read final upload_live_image state after either observe update or timeout
@@ -2154,9 +1852,9 @@ export default class NestAccfactory {
 
       if ((latestUrl ?? '') !== '') {
         snapshot = await fetchSnapshotImage(latestUrl, {
-          Referer: 'https://' + this.#connections[uuid].referer,
-          Origin: 'https://' + this.#connections[uuid].referer,
-          Authorization: 'Basic ' + this.#connections[uuid].token,
+          Referer: 'https://' + connection.referer,
+          Origin: 'https://' + connection.referer,
+          Authorization: 'Basic ' + connection.token,
           'User-Agent': USER_AGENT,
           'Sec-Fetch-Mode': 'cors',
           'Sec-Fetch-Site': 'same-origin',
@@ -2174,13 +1872,17 @@ export default class NestAccfactory {
   }
 
   async #getLocationWeather(uuid, nest_google_device_uuid, postal_code, country_code) {
+    let connection = this.#connections?.get(uuid);
+
     if (
+      typeof connection !== 'object' ||
+      connection === null ||
+      connection.authorised !== true ||
+      (connection.referer ?? '') === '' ||
+      (connection.token ?? '') === '' ||
+      (connection.restAPIHost ?? '') === '' ||
       (postal_code?.trim?.() ?? '') === '' ||
       (country_code?.trim?.() ?? '') === '' ||
-      this.#connections?.[uuid]?.authorised !== true ||
-      (this.#connections?.[uuid]?.referer ?? '') === '' ||
-      (this.#connections?.[uuid]?.token ?? '') === '' ||
-      (this.#connections?.[uuid]?.restAPIHost ?? '') === '' ||
       (nest_google_device_uuid?.trim?.() ?? '') === ''
     ) {
       // Not a valid connection object and/or we're not authorised
@@ -2190,12 +1892,12 @@ export default class NestAccfactory {
     try {
       let response = await fetchWrapper(
         'get',
-        new URL('/api/0.1/weather/forecast/' + postal_code + ',' + country_code, 'https://' + this.#connections[uuid].restAPIHost).href,
+        new URL('/api/0.1/weather/forecast/' + postal_code + ',' + country_code, 'https://' + connection.restAPIHost).href,
         {
           headers: {
-            Referer: 'https://' + this.#connections[uuid].referer,
-            Origin: 'https://' + this.#connections[uuid].referer,
-            Authorization: 'Basic ' + this.#connections[uuid].token,
+            Referer: 'https://' + connection.referer,
+            Origin: 'https://' + connection.referer,
+            Authorization: 'Basic ' + connection.token,
             'User-Agent': USER_AGENT,
             'Sec-Fetch-Mode': 'cors',
             'Sec-Fetch-Site': 'same-origin',
@@ -2255,13 +1957,17 @@ export default class NestAccfactory {
   }
 
   async #getCameraProperties(uuid, nest_google_device_uuid) {
+    let connection = this.#connections?.get(uuid);
+
     if (
-      this.#connections?.[uuid]?.authorised !== true ||
-      (this.#connections?.[uuid]?.referer ?? '') === '' ||
-      (this.#connections?.[uuid]?.cameraAPIHost ?? '') === '' ||
-      (this.#connections?.[uuid]?.cameraAPI?.key ?? '') === '' ||
-      (this.#connections?.[uuid]?.cameraAPI?.value ?? '') === '' ||
-      (this.#connections?.[uuid]?.cameraAPI?.token ?? '') === '' ||
+      typeof connection !== 'object' ||
+      connection === null ||
+      connection.authorised !== true ||
+      (connection.referer ?? '') === '' ||
+      (connection.cameraAPIHost ?? '') === '' ||
+      (connection.cameraAuth?.key ?? '') === '' ||
+      (connection.cameraAuth?.value ?? '') === '' ||
+      (connection.cameraAuth?.token ?? '') === '' ||
       (nest_google_device_uuid?.trim?.() ?? '') === '' ||
       this.config?.options?.useNestAPI !== true ||
       nest_google_device_uuid.startsWith('quartz.') !== true
@@ -2275,13 +1981,13 @@ export default class NestAccfactory {
         'get',
         new URL(
           '/api/cameras.get_with_properties?uuid=' + nest_google_device_uuid.trim().split('.')[1],
-          'https://webapi.' + this.#connections[uuid].cameraAPIHost,
+          'https://webapi.' + connection.cameraAPIHost,
         ).href,
         {
           headers: {
-            Referer: 'https://' + this.#connections[uuid].referer,
-            Origin: 'https://' + this.#connections[uuid].referer,
-            [this.#connections[uuid].cameraAPI.key]: this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
+            Referer: 'https://' + connection.referer,
+            Origin: 'https://' + connection.referer,
+            [connection.cameraAuth.key]: connection.cameraAuth.value + connection.cameraAuth.token,
             'User-Agent': USER_AGENT,
             'Sec-Fetch-Mode': 'cors',
             'Sec-Fetch-Site': 'same-origin',
@@ -2290,6 +1996,7 @@ export default class NestAccfactory {
           timeout: 4000,
         },
       );
+
       let data = await response.json();
 
       // If returned JSON has empty properties, throw it
@@ -2308,8 +2015,12 @@ export default class NestAccfactory {
   }
 
   async #getCameraEvents(uuid, nest_google_device_uuid, nexus_api_url) {
+    let connection = this.#connections?.get(uuid);
+
     if (
-      this.#connections?.[uuid]?.authorised !== true ||
+      typeof connection !== 'object' ||
+      connection === null ||
+      connection.authorised !== true ||
       (uuid?.trim?.() ?? '') === '' ||
       (nest_google_device_uuid?.trim?.() ?? '') === ''
     ) {
@@ -2320,9 +2031,9 @@ export default class NestAccfactory {
     if (
       this.config?.options?.useGoogleAPI === true &&
       nest_google_device_uuid.startsWith('DEVICE_') === true &&
-      this.#connections?.[uuid]?.grpcTransport !== undefined
+      connection?.grpcTransport !== undefined
     ) {
-      let grpcResult = await this.#connections[uuid].grpcTransport.command('nestlabs.gateway.v1.', 'ResourceApi', 'SendCommand', {
+      let grpcResult = await connection.grpcTransport.command('nestlabs.gateway.v1.', 'ResourceApi', 'SendCommand', {
         resourceRequest: {
           resourceId: nest_google_device_uuid,
           requestId: crypto.randomUUID(),
@@ -2350,7 +2061,13 @@ export default class NestAccfactory {
 
       let commandResponse = Array.isArray(grpcResult?.data) === true ? grpcResult.data[0] : undefined;
 
-      // Only continue if gRPC reports the snapshot request completed successfully
+      // Camera history queries can legitimately time out when Google has no recent
+      // event data ready. Treat that as no events rather than logging duplicate noise.
+      if (grpcResult?.status === 4 || grpcResult?.code === 'REQUEST_TIMEOUT') {
+        return [];
+      }
+
+      // Only continue if gRPC reports the camera history request completed successfully
       if (commandResponse?.traitOperations?.[0]?.progress === 'COMPLETE') {
         let events =
           Array.isArray(commandResponse?.traitOperations?.[0]?.event?.event?.cameraEventWindow?.cameraEvent) === true
@@ -2398,11 +2115,11 @@ export default class NestAccfactory {
     if (
       this.config?.options?.useNestAPI === true &&
       nest_google_device_uuid.startsWith('quartz.') === true &&
-      (this.#connections?.[uuid]?.referer ?? '') !== '' &&
-      (this.#connections?.[uuid]?.cameraAPIHost ?? '') !== '' &&
-      (this.#connections?.[uuid]?.cameraAPI?.key ?? '') !== '' &&
-      (this.#connections?.[uuid]?.cameraAPI?.value ?? '') !== '' &&
-      (this.#connections?.[uuid]?.cameraAPI?.token ?? '') !== '' &&
+      (connection?.referer ?? '') !== '' &&
+      (connection?.cameraAPIHost ?? '') !== '' &&
+      (connection?.cameraAuth?.key ?? '') !== '' &&
+      (connection?.cameraAuth?.value ?? '') !== '' &&
+      (connection?.cameraAuth?.token ?? '') !== '' &&
       (nexus_api_url?.trim?.() ?? '') !== ''
     ) {
       try {
@@ -2414,9 +2131,9 @@ export default class NestAccfactory {
           ).href,
           {
             headers: {
-              Referer: 'https://' + this.#connections[uuid].referer,
-              Origin: 'https://' + this.#connections[uuid].referer,
-              [this.#connections[uuid].cameraAPI.key]: this.#connections[uuid].cameraAPI.value + this.#connections[uuid].cameraAPI.token,
+              Referer: 'https://' + connection.referer,
+              Origin: 'https://' + connection.referer,
+              [connection.cameraAuth.key]: connection.cameraAuth.value + connection.cameraAuth.token,
               'User-Agent': USER_AGENT,
               'Sec-Fetch-Mode': 'cors',
               'Sec-Fetch-Site': 'same-origin',

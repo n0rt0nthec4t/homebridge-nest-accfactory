@@ -47,7 +47,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from 
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.PROTECT;
-  static VERSION = '2026.05.09'; // Code version
+  static VERSION = '2026.05.10'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -57,7 +57,7 @@ export default class NestProtect extends HomeKitDevice {
   // Class functions
   onAdd() {
     // Setup the smoke sensor service if not already present on the accessory
-    this.smokeService = this.addHKService(this.hap.Service.SmokeSensor, '', 1, {
+    this.smokeService = this.addService(this.hap.Service.SmokeSensor, '', 1, {
       messages: this.message.bind(this),
       EveSmoke_lastalarmtest: this.deviceData.latest_alarm_test,
       EveSmoke_alarmtest: this.deviceData.self_test_in_progress,
@@ -69,29 +69,29 @@ export default class NestProtect extends HomeKitDevice {
     });
     this.smokeService.setPrimaryService();
 
-    this.addHKCharacteristic(this.smokeService, this.hap.Characteristic.StatusActive);
-    this.addHKCharacteristic(this.smokeService, this.hap.Characteristic.StatusFault);
+    this.addCharacteristic(this.smokeService, this.hap.Characteristic.StatusActive);
+    this.addCharacteristic(this.smokeService, this.hap.Characteristic.StatusFault);
 
     // Setup the carbon monoxide service if not already present on the accessory
-    this.carbonMonoxideService = this.addHKService(this.hap.Service.CarbonMonoxideSensor, '', 1);
+    this.carbonMonoxideService = this.addService(this.hap.Service.CarbonMonoxideSensor, '', 1);
 
     // Setup battery service if not already present on the accessory
-    this.batteryService = this.addHKService(this.hap.Service.Battery, '', 1);
+    this.batteryService = this.addService(this.hap.Service.Battery, '', 1);
     this.batteryService.setHiddenService(true);
 
     // Setup motion service if not already present on the accessory and Nest protect is a wired version
     if (this.deviceData?.wired_or_battery === false) {
-      this.motionService = this.addHKService(this.hap.Service.MotionSensor, '', 1);
+      this.motionService = this.addService(this.hap.Service.MotionSensor, '', 1);
       this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
       this.postSetupDetail('With motion sensor');
     }
   }
 
   onRemove() {
-    this.accessory.removeService(this.smokeService);
-    this.accessory.removeService(this.carbonMonoxideService);
-    this.accessory.removeService(this.batteryService);
-    this.accessory.removeService(this.motionService);
+    this.removeService(this.smokeService);
+    this.removeService(this.carbonMonoxideService);
+    this.removeService(this.batteryService);
+    this.removeService(this.motionService);
     this.smokeService = undefined;
     this.carbonMonoxideService = undefined;
     this.batteryService = undefined;

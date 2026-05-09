@@ -24,7 +24,6 @@
 //
 // Notes:
 // - processConfig() mutates the provided config object in place
-// - buildConnections() creates runtime connection definitions keyed by UUID
 // - persistMigratedConfig() safely updates config.json when migration occurs
 // - FFmpeg validation determines availability of camera streaming and HKSV recording
 // - Used during plugin startup before any device initialisation
@@ -34,7 +33,6 @@
 'use strict';
 
 // Define nodejs module requirements
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 
 // Define external library requirements
@@ -44,7 +42,7 @@ import chalk from 'chalk';
 import FFmpeg from './ffmpeg.js';
 
 // Define constants
-import { FFMPEG_VERSION, ACCOUNT_TYPE } from './consts.js';
+import { FFMPEG_VERSION } from './consts.js';
 
 function processConfig(config, log, api) {
   let migratedAccounts = false;
@@ -245,64 +243,6 @@ function processConfig(config, log, api) {
   return config;
 }
 
-function buildConnections(config) {
-  let connections = {};
-
-  (config.accounts || []).forEach((account) => {
-    // Skip invalid accounts
-    if (typeof account?.name !== 'string' || account.name.trim() === '') {
-      return;
-    }
-
-    let accountName = account.name.trim();
-    let fieldTest = account?.fieldTest === true; // Default to false
-    let exclude = account?.exclude === true; // Default to false
-
-    if (account?.type === 'nest' && typeof account?.access_token === 'string' && account.access_token.trim() !== '') {
-      connections[crypto.randomUUID()] = {
-        name: accountName,
-        type: ACCOUNT_TYPE.NEST,
-        authorised: false,
-        allowRetry: undefined, // On purpose having this as undefined
-        access_token: account.access_token.trim(),
-        fieldTest: fieldTest,
-        referer: fieldTest ? 'home.ft.nest.com' : 'home.nest.com',
-        restAPIHost: fieldTest ? 'home.ft.nest.com' : 'home.nest.com',
-        cameraAPIHost: fieldTest ? 'camera.home.ft.nest.com' : 'camera.home.nest.com',
-        grpcEndpointHost: fieldTest ? 'apigw.ft.nest.com' : 'apigw.production.nest.com',
-        protobufAPIHost: fieldTest ? 'grpc-web.ft.nest.com' : 'grpc-web.production.nest.com',
-        exclude: exclude,
-      };
-    }
-
-    if (
-      account?.type === 'google' &&
-      typeof account?.issueToken === 'string' &&
-      account.issueToken.trim() !== '' &&
-      typeof account?.cookie === 'string' &&
-      account.cookie.trim() !== ''
-    ) {
-      connections[crypto.randomUUID()] = {
-        name: accountName,
-        type: ACCOUNT_TYPE.GOOGLE,
-        authorised: false,
-        allowRetry: undefined, // On purpose having this as undefined
-        issueToken: account.issueToken.trim(),
-        cookie: account.cookie.trim(),
-        fieldTest: fieldTest,
-        referer: fieldTest ? 'home.ft.nest.com' : 'home.nest.com',
-        restAPIHost: fieldTest ? 'home.ft.nest.com' : 'home.nest.com',
-        cameraAPIHost: fieldTest ? 'camera.home.ft.nest.com' : 'camera.home.nest.com',
-        grpcEndpointHost: fieldTest ? 'apigw.ft.nest.com' : 'apigw.production.nest.com',
-        protobufAPIHost: fieldTest ? 'grpc-web.ft.nest.com' : 'grpc-web.production.nest.com',
-        exclude: exclude,
-      };
-    }
-  });
-
-  return connections;
-}
-
 function persistMigratedConfig(config, log, api) {
   // Ensure Homebridge API supports configPath()
   if (typeof api?.user?.configPath !== 'function') {
@@ -423,4 +363,4 @@ function persistMigratedConfig(config, log, api) {
 }
 
 // Define exports
-export { processConfig, buildConnections };
+export { processConfig };

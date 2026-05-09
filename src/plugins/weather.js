@@ -50,7 +50,7 @@ import { DATA_SOURCE, DEVICE_TYPE, MAX_ELEVATION, MIN_ELEVATION, NESTLABS_MAC_PR
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.WEATHER;
-  static VERSION = '2026.04.26'; // Code version
+  static VERSION = '2026.05.10'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -60,42 +60,42 @@ export default class NestWeather extends HomeKitDevice {
   // Class functions
   onAdd() {
     // Setup temperature service if not already present on the accessory
-    this.temperatureService = this.addHKService(this.hap.Service.TemperatureSensor, '', 1);
+    this.temperatureService = this.addService(this.hap.Service.TemperatureSensor, '', 1);
     this.temperatureService.setPrimaryService();
 
     // Setup humidity service if not already present on the accessory
-    this.humidityService = this.addHKService(this.hap.Service.HumiditySensor, '', 1);
+    this.humidityService = this.addService(this.hap.Service.HumiditySensor, '', 1);
 
     // Setup battery service if not already present on the accessory (required for EveHome support)
-    this.batteryService = this.addHKService(this.hap.Service.Battery, '', 1);
+    this.batteryService = this.addService(this.hap.Service.Battery, '', 1);
     this.batteryService.setHiddenService(true);
 
     // Add custom weather service and characteristics if they have been defined
     if (this.hap.Service?.EveAirPressureSensor !== undefined) {
       // This will be linked to the Eve app if configured to do so
-      this.airPressureService = this.addHKService(this.hap.Service.EveAirPressureSensor, '', 1, {});
+      this.airPressureService = this.addService(this.hap.Service.EveAirPressureSensor, '', 1, {});
     }
 
     if (this.hap.Characteristic?.ForecastDay !== undefined) {
-      this.addHKCharacteristic(this.temperatureService, this.hap.Characteristic.ForecastDay);
+      this.addCharacteristic(this.temperatureService, this.hap.Characteristic.ForecastDay);
     }
     if (this.hap.Characteristic?.ObservationStation !== undefined) {
-      this.addHKCharacteristic(this.temperatureService, this.hap.Characteristic.ObservationStation);
+      this.addCharacteristic(this.temperatureService, this.hap.Characteristic.ObservationStation);
     }
     if (this.hap.Characteristic?.Condition !== undefined) {
-      this.addHKCharacteristic(this.temperatureService, this.hap.Characteristic.Condition);
+      this.addCharacteristic(this.temperatureService, this.hap.Characteristic.Condition);
     }
     if (this.hap.Characteristic?.WindDirection !== undefined) {
-      this.addHKCharacteristic(this.temperatureService, this.hap.Characteristic.WindDirection);
+      this.addCharacteristic(this.temperatureService, this.hap.Characteristic.WindDirection);
     }
     if (this.hap.Characteristic?.WindSpeed !== undefined) {
-      this.addHKCharacteristic(this.temperatureService, this.hap.Characteristic.WindSpeed);
+      this.addCharacteristic(this.temperatureService, this.hap.Characteristic.WindSpeed);
     }
     if (this.hap.Characteristic?.SunriseTime !== undefined) {
-      this.addHKCharacteristic(this.temperatureService, this.hap.Characteristic.SunriseTime);
+      this.addCharacteristic(this.temperatureService, this.hap.Characteristic.SunriseTime);
     }
     if (this.hap.Characteristic?.SunsetTime !== undefined) {
-      this.addHKCharacteristic(this.temperatureService, this.hap.Characteristic.SunsetTime);
+      this.addCharacteristic(this.temperatureService, this.hap.Characteristic.SunsetTime);
     }
 
     // Extra setup details for output
@@ -106,10 +106,10 @@ export default class NestWeather extends HomeKitDevice {
   }
 
   onRemove() {
-    this.accessory.removeService(this.temperatureService);
-    this.accessory.removeService(this.humidityService);
-    this.accessory.removeService(this.batteryService);
-    this.accessory.removeService(this.airPressureService);
+    this.removeService(this.temperatureService);
+    this.removeService(this.humidityService);
+    this.removeService(this.batteryService);
+    this.removeService(this.airPressureService);
     this.temperatureService = undefined;
     this.humidityService = undefined;
     this.batteryService = undefined;

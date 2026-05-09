@@ -46,7 +46,7 @@ import { DEVICE_TYPE, TIMERS } from '../consts.js';
 
 export default class NestDoorbell extends NestCamera {
   static TYPE = DEVICE_TYPE.DOORBELL;
-  static VERSION = '2026.04.21'; // Code version
+  static VERSION = '2026.05.10'; // Code version
 
   switchService = undefined; // HomeKit switch for enabling/disabling chime
 
@@ -58,10 +58,10 @@ export default class NestDoorbell extends NestCamera {
     if (this.deviceData?.has_indoor_chime === true && this.deviceData?.chimeSwitch === true) {
       // Add service to allow automation and enabling/disabling indoor chiming.
       // This needs to be explicitly enabled via a configuration option for the device
-      this.switchService = this.addHKService(this.hap.Service.Switch, '', 1);
+      this.switchService = this.addService(this.hap.Service.Switch, '', 1);
 
       // Setup set callback for this switch service
-      this.addHKCharacteristic(this.switchService, this.hap.Characteristic.On, {
+      this.addCharacteristic(this.switchService, this.hap.Characteristic.On, {
         onSet: (value) => {
           if (value !== this.deviceData.indoor_chime_enabled) {
             // only change indoor chime status value if different than on-device
@@ -83,7 +83,7 @@ export default class NestDoorbell extends NestCamera {
       // This is to handle Homebridge cached restored accessories and if configuration options have changed
       this.switchService = this.accessory.getService(this.hap.Service.Switch);
       if (this.switchService !== undefined) {
-        this.accessory.removeService(this.switchService);
+        this.removeService(this.switchService);
       }
       this.switchService = undefined;
     }
@@ -91,7 +91,7 @@ export default class NestDoorbell extends NestCamera {
 
   onRemove() {
     if (this.switchService !== undefined) {
-      this.accessory.removeService(this.switchService);
+      this.removeService(this.switchService);
     }
     this.switchService = undefined;
   }

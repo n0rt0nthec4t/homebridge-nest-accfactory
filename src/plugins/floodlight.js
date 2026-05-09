@@ -44,7 +44,7 @@ import { DEVICE_TYPE } from '../consts.js';
 
 export default class NestFloodlight extends NestCamera {
   static TYPE = DEVICE_TYPE.FLOODLIGHT;
-  static VERSION = '2026.04.22'; // Code version
+  static VERSION = '2026.05.10'; // Code version
 
   lightService = undefined; // HomeKit light
 
@@ -52,8 +52,8 @@ export default class NestFloodlight extends NestCamera {
   onAdd() {
     if (this.deviceData?.has_light === true) {
       // Add service for a light, including brightness control
-      this.lightService = this.addHKService(this.hap.Service.Lightbulb, '', 1);
-      this.addHKCharacteristic(this.lightService, this.hap.Characteristic.Brightness, {
+      this.lightService = this.addService(this.hap.Service.Lightbulb, '', 1);
+      this.addCharacteristic(this.lightService, this.hap.Characteristic.Brightness, {
         props: { minStep: 10 }, // Light only goes in 10% increments
         onSet: (value) => {
           if (value !== this.deviceData.light_brightness) {
@@ -67,7 +67,7 @@ export default class NestFloodlight extends NestCamera {
         },
       });
 
-      this.addHKCharacteristic(this.lightService, this.hap.Characteristic.On, {
+      this.addCharacteristic(this.lightService, this.hap.Characteristic.On, {
         onSet: (value) => {
           if (value !== this.deviceData.light_enabled) {
             this.set({ uuid: this.deviceData.nest_google_device_uuid, light_enabled: value });
@@ -87,7 +87,7 @@ export default class NestFloodlight extends NestCamera {
       // No longer required to have the light service
       this.lightService = this.accessory.getService(this.hap.Service.Lightbulb);
       if (this.lightService !== undefined) {
-        this.accessory.removeService(this.lightService);
+        this.removeService(this.lightService);
       }
       this.lightService = undefined;
     }
@@ -95,7 +95,7 @@ export default class NestFloodlight extends NestCamera {
 
   onRemove() {
     if (this.lightService !== undefined) {
-      this.accessory.removeService(this.lightService);
+      this.removeService(this.lightService);
     }
     this.lightService = undefined;
   }
