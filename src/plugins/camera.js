@@ -444,6 +444,9 @@ export default class NestCamera extends HomeKitDevice {
       }
     }
 
+    // Pass updated auth/host details through to an already-created streamer.
+    await this.streamer?.onUpdate?.(deviceData);
+
     // Handle motion detection on camera changes
     if (
       (deviceData.has_motion_detection === true && this.deviceData.has_motion_detection !== true) ||

@@ -856,6 +856,18 @@ export default class NestAccfactory {
                     .toLowerCase()
                     .replace(/\b\w/g, (character) => character.toUpperCase());
 
+                // For camera type devices, inject camera API auth credentials before initial setup
+                // so streaming backends have auth details during their first construction/update pass.
+                if (
+                  deviceModule.class.TYPE === DEVICE_TYPE.CAMERA ||
+                  deviceModule.class.TYPE === DEVICE_TYPE.DOORBELL ||
+                  deviceModule.class.TYPE === DEVICE_TYPE.FLOODLIGHT
+                ) {
+                  deviceData.apiAccess = this.#connections?.get(
+                    this.#rawData?.[deviceData?.nest_google_device_uuid]?.connection,
+                  )?.cameraAuth;
+                }
+
                 let tempDevice = new deviceModule.class(this.cachedAccessories, this.api, deviceData);
                 await tempDevice.add(accessoryName, getDeviceHKCategory(deviceModule.class.TYPE), deviceData?.eveHistory === true);
 

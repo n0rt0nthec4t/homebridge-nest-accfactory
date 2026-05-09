@@ -4,7 +4,24 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.2-beta.3 (2026/05/10)
+
+- Follow-up beta after `v0.4.2-beta.2` was unpublished.
+
+- `HomeKitDevice`
+  - Fixed partial `.UPDATE` payload handling so updates such as refreshed camera API credentials are merged with existing device data before validation
+  - Prevents auth-only updates from being dropped when they do not include required full device metadata fields
+
+- `plugins/camera.js`
+  - Forwarded updated camera auth/host details to already-created streamer instances
+  - Fixes active NexusTalk/WebRTC streams continuing to use stale credentials after token refresh
+
+- `system.js`
+  - Injected camera API auth details before initial camera/doorbell/floodlight accessory setup so streaming backends receive credentials during first construction
+
 ## v0.4.2-beta.2 (2026/05/10)
+
+> This version was unpublished due to issues identified after release.
 
 - `plugins/heatlink.js`
   - Fixed EveHome GET message handling for Heat Link history/status payloads
