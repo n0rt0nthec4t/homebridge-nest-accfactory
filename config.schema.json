@@ -18,6 +18,8 @@
           "properties": {
             "name": {
               "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
               "placeholder": "Account description for configuration"
             },
             "type": {
@@ -27,14 +29,20 @@
             },
             "access_token": {
               "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
               "placeholder": "See https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/#nest-account"
             },
             "issueToken": {
               "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
               "placeholder": "See https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/#google-account"
             },
             "cookie": {
               "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
               "placeholder": "See https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/#google-account"
             },
             "fieldTest": {
@@ -135,8 +143,9 @@
           "properties": {
             "serialNumber": {
               "type": "string",
-              "placeholder": "Device serial number",
-              "required": true
+              "minLength": 1,
+              "pattern": "\\S",
+              "placeholder": "Device serial number"
             },
             "name": {
               "title": "Name",
@@ -204,7 +213,8 @@
             "name": {
               "title": "Home name",
               "type": "string",
-              "required": true
+              "minLength": 1,
+              "pattern": "\\S"
             },
             "elevation": {
               "type": "number",

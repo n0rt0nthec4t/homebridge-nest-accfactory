@@ -28,7 +28,7 @@
 // - FFmpeg validation determines availability of camera streaming and HKSV recording
 // - Used during plugin startup before any device initialisation
 //
-// Code version 2026.05.06
+// Code version 2026.05.11
 // Mark Hulskamp
 'use strict';
 
@@ -223,10 +223,20 @@ function processConfig(config, log, api) {
     }
   }
 
+  if (Array.isArray(config.devices) === true) {
+    // Drop UI-generated placeholder device rows from runtime config.
+    // A device override is usable only when it identifies a device serial number.
+    config.devices = config.devices.filter((device) => typeof device?.serialNumber === 'string' && device.serialNumber.trim() !== '');
+  }
+
   // Per home configuration(s)
   if (Array.isArray(config?.homes) === false) {
     config.homes = [];
   }
+
+  // Drop UI-generated placeholder home rows from runtime config.
+  // A home override is usable only when it identifies a home by name.
+  config.homes = config.homes.filter((home) => typeof home?.name === 'string' && home.name.trim() !== '');
 
   if (migratedAccounts === true || migratedDevices === true) {
     if (persistMigratedConfig(config, log, api) === false) {
