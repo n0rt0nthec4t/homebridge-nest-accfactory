@@ -45,9 +45,21 @@ import { buildMappedObject, createMappingContext } from '../translator.js';
 // Define constants
 import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from '../consts.js';
 
+function hasSafetySummaryFailure(raw, failureType) {
+  if (typeof failureType !== 'string' || failureType.trim() === '') {
+    return false;
+  }
+
+  return ['criticalDevices', 'warningDevices'].some((deviceList) =>
+    Array.isArray(raw?.value?.safety_summary?.[deviceList]) === true
+      ? raw.value.safety_summary[deviceList].some((device) => device?.failures?.includes?.(failureType) === true)
+      : false,
+  );
+}
+
 export default class NestProtect extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.PROTECT;
-  static VERSION = '2026.05.10'; // Code version
+  static VERSION = '2026.05.11'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -74,6 +86,9 @@ export default class NestProtect extends HomeKitDevice {
 
     // Setup the carbon monoxide service if not already present on the accessory
     this.carbonMonoxideService = this.addService(this.hap.Service.CarbonMonoxideSensor, '', 1);
+
+    this.addCharacteristic(this.carbonMonoxideService, this.hap.Characteristic.StatusActive);
+    this.addCharacteristic(this.carbonMonoxideService, this.hap.Characteristic.StatusFault);
 
     // Setup battery service if not already present on the accessory
     this.batteryService = this.addService(this.hap.Service.Battery, '', 1);
@@ -128,16 +143,18 @@ export default class NestProtect extends HomeKitDevice {
     }
     this.batteryService.updateCharacteristic(this.hap.Characteristic.ChargingState, this.hap.Characteristic.ChargingState.NOT_CHARGEABLE);
 
+    let isProtectActive = deviceData.online === true && Math.floor(Date.now() / 1000) <= deviceData.replacement_date;
+
     // Update smoke details
-    // If protect isn't online, replacement date past, report in HomeKit
+    // If Protect isn't online, replacement date has passed, or smoke self-test failed, report fault in HomeKit
     this.smokeService.updateCharacteristic(
       this.hap.Characteristic.StatusActive,
-      deviceData.online === true && Math.floor(Date.now() / 1000) <= deviceData.replacement_date,
+      isProtectActive,
     );
 
     this.smokeService.updateCharacteristic(
       this.hap.Characteristic.StatusFault,
-      deviceData.online === true && Math.floor(Date.now() / 1000) <= deviceData.replacement_date
+      isProtectActive === true && deviceData.smoke_test_passed !== false
         ? this.hap.Characteristic.StatusFault.NO_FAULT
         : this.hap.Characteristic.StatusFault.GENERAL_FAULT,
     );
@@ -158,6 +175,18 @@ export default class NestProtect extends HomeKitDevice {
     }
 
     // Update carbon monoxide details
+    this.carbonMonoxideService.updateCharacteristic(
+      this.hap.Characteristic.StatusActive,
+      isProtectActive,
+    );
+
+    this.carbonMonoxideService.updateCharacteristic(
+      this.hap.Characteristic.StatusFault,
+      isProtectActive === true && deviceData.co_test_passed !== false
+        ? this.hap.Characteristic.StatusFault.NO_FAULT
+        : this.hap.Characteristic.StatusFault.GENERAL_FAULT,
+    );
+
     this.carbonMonoxideService.updateCharacteristic(
       this.hap.Characteristic.CarbonMonoxideDetected,
       deviceData.co_status === true
@@ -316,9 +345,9 @@ const PROTECT_FIELD_MAP = {
               ? 'Protect (1st gen)'
               : 'Protect (unknown)';
 
-        return raw?.value?.wired_or_battery === true
+        return raw?.value?.wired_or_battery === 1
           ? model.replace(/\bgen\)/, 'gen, battery)')
-          : raw?.value?.wired_or_battery === false
+          : raw?.value?.wired_or_battery === 0
             ? model.replace(/\bgen\)/, 'gen, wired)')
             : model;
       },
@@ -456,8 +485,8 @@ const PROTECT_FIELD_MAP = {
 
   heat_status: {
     google: {
-      fields: [],
-      translate: () => false, // TODO <- need to find in protobuf
+      fields: ['temperature'],
+      translate: ({ raw }) => raw?.value?.temperature?.faultInformation?.type === 'TEMPERATURE_FAULT_TYPE_OUT_OF_NORMAL_RANGE',
     },
     nest: {
       fields: ['heat_status'],
@@ -493,8 +522,8 @@ const PROTECT_FIELD_MAP = {
     google: {
       fields: ['safety_summary', 'smoke'],
       translate: ({ raw }) =>
-        raw?.value?.safety_summary?.warningDevices?.failures?.includes?.('FAILURE_TYPE_SMOKE') === false
-          ? true
+        hasSafetySummaryFailure(raw, 'FAILURE_TYPE_SMOKE') === true
+          ? false
           : typeof raw?.value?.smoke !== 'object'
             ? undefined
             : raw?.value?.smoke?.infraredLedFault === undefined || raw?.value?.smoke?.blueLedFault === undefined
@@ -510,15 +539,15 @@ const PROTECT_FIELD_MAP = {
 
   heat_test_passed: {
     google: {
-      fields: ['safety_summary', 'passive_infrared'],
+      fields: ['safety_summary', 'temperature'],
       translate: ({ raw }) =>
-        raw?.value?.safety_summary?.warningDevices?.failures?.includes?.('FAILURE_TYPE_TEMP') === false
-          ? true
-          : typeof raw?.value?.passive_infrared !== 'object'
+        hasSafetySummaryFailure(raw, 'FAILURE_TYPE_TEMP') === true
+          ? false
+          : typeof raw?.value?.temperature !== 'object'
             ? undefined
-            : raw?.value?.passive_infrared?.faultInformation === undefined
+            : raw?.value?.temperature?.faultInformation === undefined
               ? true
-              : raw?.value?.passive_infrared?.faultInformation?.type === 'PASSIVE_INFRARED_FAULT_TYPE_NONE',
+              : raw?.value?.temperature?.faultInformation?.type === 'TEMPERATURE_FAULT_TYPE_NONE',
     },
     nest: {
       fields: ['component_temp_test_passed'],
@@ -528,13 +557,15 @@ const PROTECT_FIELD_MAP = {
 
   co_test_passed: {
     google: {
-      fields: ['carbon_monoxide'],
+      fields: ['safety_summary', 'carbon_monoxide'],
       translate: ({ raw }) =>
-        typeof raw?.value?.carbon_monoxide !== 'object'
-          ? undefined
-          : raw?.value?.carbon_monoxide?.faultInformation === undefined
-            ? true
-            : raw?.value?.carbon_monoxide?.faultInformation?.type === 'CO_FAULT_TYPE_NONE',
+        hasSafetySummaryFailure(raw, 'FAILURE_TYPE_CO') === true
+          ? false
+          : typeof raw?.value?.carbon_monoxide !== 'object'
+            ? undefined
+            : raw?.value?.carbon_monoxide?.faultInformation === undefined
+              ? true
+              : raw?.value?.carbon_monoxide?.faultInformation?.type === 'CO_FAULT_TYPE_NONE',
     },
     nest: {
       fields: ['component_co_test_passed'],

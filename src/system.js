@@ -901,46 +901,33 @@ export default class NestAccfactory {
 
             // Finally, if device is not excluded, send updated data to device for it to process
             if (trackedDevice?.exclude === false) {
-              if (
-                deviceData?.nest_google_device_uuid !== undefined &&
-                this.#rawData?.[deviceData.nest_google_device_uuid]?.source !== undefined &&
-                this.#rawData[deviceData.nest_google_device_uuid].source !== trackedDevice.source
-              ) {
-                // Data source for this device has been updated
-                // Only allow switch to Google API (upgrade), not from Google to Nest (downgrade)
-                // Exception: Camera, doorbell, and floodlight devices can switch back to Nest
-                let isCameraType =
-                  deviceModule.class.TYPE === DEVICE_TYPE.CAMERA ||
-                  deviceModule.class.TYPE === DEVICE_TYPE.DOORBELL ||
-                  deviceModule.class.TYPE === DEVICE_TYPE.FLOODLIGHT;
+              let resourceId = deviceData?.nest_google_device_uuid;
+              let resourceData = this.#rawData?.[resourceId];
+              let newSource = resourceData?.source;
 
-                let allowSourceSwitch =
+              if (newSource !== undefined && newSource !== trackedDevice.source) {
+                // Data source for this device has changed.
+                // Allow initial source assignment and Nest -> Google upgrades.
+                // Camera, doorbell, and floodlight devices may also move back
+                // from Google -> Nest because streaming can depend on Nest data.
+                if (
                   trackedDevice.source === undefined ||
-                  (trackedDevice.source === DATA_SOURCE.NEST &&
-                    this.#rawData[deviceData.nest_google_device_uuid].source === DATA_SOURCE.GOOGLE) ||
-                  (isCameraType === true && trackedDevice.source === DATA_SOURCE.GOOGLE);
-
-                if (allowSourceSwitch === true) {
+                  (trackedDevice.source === DATA_SOURCE.NEST && newSource === DATA_SOURCE.GOOGLE) ||
+                  ((deviceModule.class.TYPE === DEVICE_TYPE.CAMERA ||
+                    deviceModule.class.TYPE === DEVICE_TYPE.DOORBELL ||
+                    deviceModule.class.TYPE === DEVICE_TYPE.FLOODLIGHT) &&
+                    trackedDevice.source === DATA_SOURCE.GOOGLE)
+                ) {
                   this?.log?.debug?.(
                     'Using %s API as data source for "%s" from connection "%s"',
-                    this.#rawData[deviceData.nest_google_device_uuid].source,
+                    newSource,
                     deviceData.description,
-                    this.#connections.get(this.#rawData[deviceData.nest_google_device_uuid].connection)?.name,
+                    this.#connections.get(resourceData.connection)?.name,
                   );
 
-                  trackedDevice.source = this.#rawData[deviceData.nest_google_device_uuid].source;
-                  trackedDevice.nest_google_device_uuid = deviceData.nest_google_device_uuid;
+                  trackedDevice.source = newSource;
+                  trackedDevice.nest_google_device_uuid = resourceId;
                 }
-              }
-
-              // For any camera type devices, inject camera API auth credentials for that device
-              // from its associated connection
-              if (
-                deviceModule.class.TYPE === DEVICE_TYPE.CAMERA ||
-                deviceModule.class.TYPE === DEVICE_TYPE.DOORBELL ||
-                deviceModule.class.TYPE === DEVICE_TYPE.FLOODLIGHT
-              ) {
-                deviceData.apiAccess = this.#connections?.get(this.#rawData?.[deviceData?.nest_google_device_uuid]?.connection)?.cameraAuth;
               }
 
               // Send updated data onto HomeKit device for it to process
@@ -2045,31 +2032,37 @@ export default class NestAccfactory {
       nest_google_device_uuid.startsWith('DEVICE_') === true &&
       connection?.grpcTransport !== undefined
     ) {
-      let grpcResult = await connection.grpcTransport.command('nestlabs.gateway.v1.', 'ResourceApi', 'SendCommand', {
-        resourceRequest: {
-          resourceId: nest_google_device_uuid,
-          requestId: crypto.randomUUID(),
-        },
-        resourceCommands: [
-          {
-            traitLabel: 'camera_observation_history',
-            command: {
-              type_url: 'type.nestlabs.com/nest.trait.history.CameraObservationHistoryTrait.CameraObservationHistoryRequest',
-              value: {
-                // We want camera history from up to 15 seconds ago until now
-                queryStartTime: {
-                  seconds: Math.floor((Date.now() - 15000) / 1000),
-                  nanos: ((Date.now() - 15000) % 1000) * 1e6,
-                },
-                queryEndTime: {
-                  seconds: Math.floor(Date.now() / 1000),
-                  nanos: (Date.now() % 1000) * 1e6,
+      let grpcResult = await connection.grpcTransport.command(
+        'nestlabs.gateway.v1.',
+        'ResourceApi',
+        'SendCommand',
+        {
+          resourceRequest: {
+            resourceId: nest_google_device_uuid,
+            requestId: crypto.randomUUID(),
+          },
+          resourceCommands: [
+            {
+              traitLabel: 'camera_observation_history',
+              command: {
+                type_url: 'type.nestlabs.com/nest.trait.history.CameraObservationHistoryTrait.CameraObservationHistoryRequest',
+                value: {
+                  // We want camera history from up to 15 seconds ago until now
+                  queryStartTime: {
+                    seconds: Math.floor((Date.now() - 15000) / 1000),
+                    nanos: ((Date.now() - 15000) % 1000) * 1e6,
+                  },
+                  queryEndTime: {
+                    seconds: Math.floor(Date.now() / 1000),
+                    nanos: (Date.now() % 1000) * 1e6,
+                  },
                 },
               },
             },
-          },
-        ],
-      });
+          ],
+        },
+        { timeout: 4000 },
+      );
 
       let commandResponse = Array.isArray(grpcResult?.data) === true ? grpcResult.data[0] : undefined;
 

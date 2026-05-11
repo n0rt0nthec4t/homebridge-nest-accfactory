@@ -4,6 +4,20 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.2-beta.4 (2026/05/11)
+
+- `plugins/protect.js`
+  - Fixed Nest Protect `wired_or_battery` translation so `0` is treated as wired and `1` as battery
+  - Added `StatusActive` and `StatusFault` handling to the carbon monoxide service to mirror the smoke service
+  - Split smoke and carbon monoxide fault reporting so each service uses its own component self-test result while still faulting when the Protect is offline or expired
+  - Improved Google API Protect heat/temperature mapping using the temperature fault trait instead of PIR motion data
+  - Fixed Google API Protect safety summary failure parsing for smoke, CO, and temperature self-test status
+
+- `config.schema.json` / `config.js`
+  - Fixed Homebridge UI-X config validation warnings caused by optional blank Home/Device placeholder rows
+  - Tightened account validation so blank Google/Nest credential fields are rejected
+  - Ignored placeholder Home/Device override rows at runtime unless they include a home name or device serial number
+
 ## v0.4.2-beta.3 (2026/05/10)
 
 - Follow-up beta after `v0.4.2-beta.2` was unpublished.

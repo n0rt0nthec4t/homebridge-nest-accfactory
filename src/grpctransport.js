@@ -325,7 +325,7 @@ export default class GrpcTransport {
     this.#session = entry.session;
   }
 
-  async #executeStream(messagePrefix, service, command, values, onFrame, timeout = 0) {
+  async #executeStream(messagePrefix, service, command, values, onFrame, options = {}) {
     // Core gRPC transport:
     // - validate inputs
     // - resolve protobuf types
@@ -354,6 +354,7 @@ export default class GrpcTransport {
     let authHeader = this.#getAuthHeader?.();
     let request = undefined;
     let requestTimeout = undefined;
+    let timeout = Number.isFinite(Number(options?.timeout)) && Number(options.timeout) > 0 ? Number(options.timeout) : 0;
     let isObserveStream = timeout === 0;
     let terminalStatusLogged = false;
     let expectedObserveEnd = false;
@@ -833,7 +834,10 @@ export default class GrpcTransport {
     let retry = Number.isFinite(Number(options.retry)) && Number(options.retry) > 0 ? Number(options.retry) : 1;
     let retryCount = Number.isFinite(Number(options._retryCount)) ? Number(options._retryCount) : 0;
     let data = [];
-    let result = await this.#executeStream(messagePrefix, service, command, values, (message) => data.push(message), this.#requestTimeout);
+    let result = await this.#executeStream(messagePrefix, service, command, values, (message) => data.push(message), {
+      ...options,
+      timeout: Number.isFinite(Number(options.timeout)) && Number(options.timeout) > 0 ? Number(options.timeout) : this.#requestTimeout,
+    });
 
     if (
       retry > 1 &&
@@ -882,7 +886,7 @@ export default class GrpcTransport {
       });
     };
 
-    let result = await this.#executeStream(messagePrefix, service, command, values, queueMessage);
+    let result = await this.#executeStream(messagePrefix, service, command, values, queueMessage, options);
 
     await messageChain;
 
