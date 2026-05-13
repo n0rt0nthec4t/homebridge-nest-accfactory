@@ -75,7 +75,7 @@ import { PassThrough } from 'stream';
 
 // Define our modules
 import HomeKitDevice from './HomeKitDevice.js';
-import MediaTimeline from './mediaTimeline.js';
+import MediaTimeline from './mediatimeline.js';
 import StreamTransport from './streamtransport.js';
 
 // Define constants

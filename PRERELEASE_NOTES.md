@@ -4,7 +4,7 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.4.3-alpha.1 (2026/05/xx)
+## v0.4.3-alpha.2 (2026/05/13)
 
 ### Changed
 
