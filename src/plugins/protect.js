@@ -147,10 +147,7 @@ export default class NestProtect extends HomeKitDevice {
 
     // Update smoke details
     // If Protect isn't online, replacement date has passed, or smoke self-test failed, report fault in HomeKit
-    this.smokeService.updateCharacteristic(
-      this.hap.Characteristic.StatusActive,
-      isProtectActive,
-    );
+    this.smokeService.updateCharacteristic(this.hap.Characteristic.StatusActive, isProtectActive);
 
     this.smokeService.updateCharacteristic(
       this.hap.Characteristic.StatusFault,
@@ -175,10 +172,7 @@ export default class NestProtect extends HomeKitDevice {
     }
 
     // Update carbon monoxide details
-    this.carbonMonoxideService.updateCharacteristic(
-      this.hap.Characteristic.StatusActive,
-      isProtectActive,
-    );
+    this.carbonMonoxideService.updateCharacteristic(this.hap.Characteristic.StatusActive, isProtectActive);
 
     this.carbonMonoxideService.updateCharacteristic(
       this.hap.Characteristic.StatusFault,

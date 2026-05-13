@@ -4,6 +4,63 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.3-alpha.1 (2026/05/xx)
+
+### Changed
+
+- `streamer.js`
+  - Reworked the media pipeline to use a shared `MediaTimeline` for retained media buffering and indexed playback
+  - Added independent video/audio cursors per output session to improve live stream pacing and prevent audio starvation behind bursty video delivery
+  - Improved live camera stream pacing to reduce bursty delivery into ffmpeg
+  - Ensured media timestamps strictly advance when an upstream source repeats or regresses timestamps
+  - Added catch-up handling for lagging outputs to recover smoothly without excessive burst playback
+  - Added decoder-safe startup handling with optional keyframe gating for recording outputs
+  - Added automatic SPS/PPS bootstrap injection for H264 outputs before first keyframe when required
+  - Avoided writing an extra H264 start code for video already normalised to Annex-B before output
+  - Adjusted live audio/video drain limits to reduce small audio pauses when video frames arrive in bursts
+  - Decoupled live output audio/video cursors so due audio is not pinned behind capped or bursty video output
+  - Added support dump diagnostics for:
+    - source media arrival gaps
+    - output write gaps
+    - output catch-up behaviour
+    - audio blocked behind capped video output
+  - Added transport abstraction layer support via `StreamTransport` for protocol-specific stream backends
+
+- `mediatimeline.js`
+  - Added shared ordered media timeline implementation for retained camera media
+  - Added media-specific indexes for video, audio, and keyframes to improve lookup performance
+  - Added efficient decoder-safe keyframe discovery for new live and recording sessions
+  - Improved retention trimming using protected output cursors
+
+- `streamtransport.js`
+  - Added new shared transport base class for camera streaming backends
+  - Standardised transport lifecycle handling (`connecting`, `ready`, `reconnecting`, `closed`)
+  - Added shared codec metadata reporting and media statistics collection
+  - Added unified transport-to-streamer media interface for complete audio/video frame delivery
+
+- `webrtc.js`
+  - Refactored WebRTC streaming to use the new `StreamTransport` architecture
+  - Requested a startup keyframe after the incoming video SSRC is known so WebRTC live streams do not wait for the natural keyframe cadence
+  - Allowed slower startup keyframe assembly and delayed decoder-ready output until SPS/PPS parameter sets are available
+  - Added a small paced audio playout queue with bounded silence fill so short WebRTC RTP callback gaps do not starve ffmpeg audio input
+  - Added runtime transport update support for refreshed OAuth2 credentials and Google Home device UUID changes
+  - Improved internal stream recovery and transport lifecycle handling
+
+- `nexustalk.js`
+  - Refactored NexusTalk streaming to use the new `StreamTransport` architecture
+  - Added runtime transport update support for refreshed access tokens, Nest/Google device UUID changes, NexusTalk host updates, and Google authentication mode changes
+  - Improved NexusTalk host-change handling so active sessions reconnect cleanly when the backend redirects or changes host
+  - Always request AAC audio from NexusTalk to keep the upstream media profile aligned with the ffmpeg input pipeline
+  - Improved offline/unreachable camera handling so `ERROR_LEAF_NODE_CANNOT_REACH_CAMERA` no longer causes rapid reconnect loops
+  - Improved separation between transport responsibilities and HomeKit-facing stream output
+
+- `plugins/camera.js`
+  - Refactored camera stream setup to inject protocol transports (`WebRTC` / `NexusTalk`) into the shared `Streamer` pipeline
+  - Added dynamic transport updates for API access changes without recreating streamer instances
+  - Added support for passing shared API access configuration into transport backends
+  - Reserved prepared live-stream UDP ports until session cleanup to prevent local port reuse between simultaneous viewers and talkback paths
+  - Improved migration handling when switching between Nest and Google Home streaming backends
+
 ## v0.4.2-beta.4 (2026/05/11)
 
 - `plugins/protect.js`

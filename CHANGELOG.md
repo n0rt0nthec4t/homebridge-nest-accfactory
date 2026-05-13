@@ -12,23 +12,41 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - Motion sensing on wired Nest Protect devices may report incorrect states due to recent firmware changes
 - Video from Google Home-hosted streams may be slow to start up
 
-## v0.4.2 (2026/05/xx)
+## v0.4.3-alpha.1 (2026/05/xx)
 
-- Fixed a regression affecting some Nest × Yale lock accessories introduced during recent lock service improvements [@alexis-andino](https://github.com/alexis-andino) / [@DigitalFokus](https://github.com/DigitalFokus)
-  - Prevented affected lock accessories from initialising correctly in HomeKit
-  - Improved lock state tracking, transition handling, and action source reporting
-  - Added enhanced verbose logging for lock state changes and actor details
-  - Removed invalid `Characteristic.LockLastKnownAction` references causing accessory startup failures
+### ⚠️ Alpha Release Notes
 
-- Aligned device plugins description/name generation with shared device naming handling
+This release includes a significant internal rewrite of the camera streaming pipeline used for live streaming and HomeKit Secure Video.
 
-- Improved dynamic HomeKit service updates for thermostats and Heat Link accessories
-  - Fan, humidifier, dehumidifier, hot water temperature, and hot water boost services now use the incoming device state when added during an update
-  - Fixed setup-time handling for fan speed support, humidity thresholds, and hot water temperature bounds
-  - Improved add/remove handling when hot water, fan, humidifier, or dehumidifier capabilities change after startup
+While extensive testing has been performed, users may still encounter regressions or camera-specific streaming issues. Feedback and logs are appreciated, particularly for camera and doorbell accessories.
 
-- Fixed thermostat target temperature writes from HomeKit
-  - Heating and cooling `TargetTemperature` changes now update the matching Nest heat/cool setpoint instead of only the generic target temperature field
+### 🛠️ Fixes
+
+- Fixed a Nest × Yale lock startup regression affecting some accessories [@alexis-andino](https://github.com/alexis-andino) / [@DigitalFokus](https://github.com/DigitalFokus)
+- Fixed thermostat setpoint changes from HomeKit so heat and cool targets update the correct Nest setpoints
+- Fixed Homebridge UI-X validation warnings from optional blank Home/Device placeholder rows [@starlessblack](https://github.com/starlessblack)
+- Fixed Heat Link Eve Home history and status handling
+
+### 📹 Camera Streaming Improvements
+
+- Major internal rewrite of camera and doorbell streaming to improve reliability and reduce stream instability
+- Improved HomeKit live streaming performance with smoother video playback and reduced ffmpeg timestamp warnings
+- Improved HomeKit Secure Video (HKSV) stream startup and decoder compatibility
+- Improved camera handling after Nest/Google credential refreshes and device migration events
+- Improved stream recovery and reconnect handling for Nest and Google Home camera sessions
+- Improved camera audio/video synchronisation during live streaming
+- Reduced audio interruptions during live camera playback
+
+### 🔁 Behaviour Changes / Improvements
+
+- Improved thermostat and Heat Link service updates when optional fan, humidifier, dehumidifier, hot water temperature, or hot water boost features appear or change
+- Improved Nest/Google account connection, retry, token refresh, and shutdown handling
+- Improved Nest Protect smoke, carbon monoxide, wired/battery, and heat/temperature status handling
+- Aligned device naming across plugins for more consistent HomeKit accessory names
+
+### 📦 Dependency Updates
+
+- Updated `protobufjs` from `8.0.3` to `8.2.0`
   
 ## v0.4.1 (2026/05/07)
 

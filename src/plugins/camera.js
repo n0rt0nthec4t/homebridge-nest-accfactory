@@ -86,7 +86,7 @@ const PREBUFFER_LENGTH = 4000;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.05.10'; // Code version
+  static VERSION = '2026.05.13'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -96,6 +96,7 @@ export default class NestCamera extends HomeKitDevice {
 
   // Internal data only for this class
   #liveSessions = new Map(); // Track active HomeKit live stream sessions (port, crypto, rtpSplitter)
+  #livePorts = new Set(); // Ports reserved for prepared/active live sessions
   #recordingConfig = {}; // HomeKit Secure Video recording configuration
   #cameraImages = {}; // Snapshot resource images
   #motionCooldownActive = false; // Flag to track if motion cooldown is active
@@ -413,22 +414,38 @@ export default class NestCamera extends HomeKitDevice {
           this?.log?.debug?.('Using WebRTC streamer for "%s" after migration', deviceData.description);
         }
 
-        this.streamer = new WebRTC(this.uuid, deviceData, {
+        this.streamer = new Streamer(this.uuid, deviceData, {
           log: this.log,
           supportDump: this.deviceData.supportDump === true,
           bufferDuration: PREBUFFER_LENGTH * 2,
+          transport: new WebRTC({
+            log: this.log,
+            uuid: deviceData.nest_google_device_uuid,
+            apiAccess: deviceData?.apiAccess,
+            fieldTest: deviceData?.apiAccess?.fieldTest === true,
+          }),
         });
       }
 
-      if (deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.NEXUSTALK) === true && NexusTalk !== undefined) {
+      if (
+        this.streamer === undefined &&
+        deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.NEXUSTALK) === true &&
+        NexusTalk !== undefined
+      ) {
         if (this.deviceData.migrating === true && deviceData.migrating !== true) {
           this?.log?.debug?.('Using NexusTalk streamer for "%s" after migration', deviceData.description);
         }
 
-        this.streamer = new NexusTalk(this.uuid, deviceData, {
+        this.streamer = new Streamer(this.uuid, deviceData, {
           log: this.log,
           supportDump: this.deviceData.supportDump === true,
           bufferDuration: PREBUFFER_LENGTH * 2,
+          transport: new NexusTalk({
+            log: this.log,
+            uuid: deviceData.nest_google_device_uuid,
+            apiAccess: deviceData?.apiAccess,
+            host: deviceData.nexustalk_host,
+          }),
         });
       }
 
@@ -1047,13 +1064,31 @@ export default class NestCamera extends HomeKitDevice {
     const getPort = async () => {
       return new Promise((resolve, reject) => {
         let server = dgram.createSocket('udp4');
+        let done = false;
+
         server.bind({ port: 0, exclusive: true }, () => {
           let port = server.address().port;
-          server.close(() => resolve(port));
+          server.close(() => {
+            if (this.#livePorts.has(port) === true) {
+              return getPort().then(resolve, reject);
+            }
+
+            this.#livePorts.add(port);
+            done = true;
+            resolve(port);
+          });
         });
-        server.on('error', reject);
+        server.on('error', (error) => {
+          if (done !== true) {
+            reject(error);
+          }
+        });
       });
     };
+
+    if (this.#liveSessions.has(request.sessionID) === true) {
+      this.#cleanupLiveSession(request.sessionID);
+    }
 
     // Generate streaming session information
     let sessionInfo = {
@@ -1691,6 +1726,22 @@ export default class NestCamera extends HomeKitDevice {
 
     session?.rtpSplitter?.removeAllListeners?.();
     session?.rtpSplitter?.close?.();
+
+    if (typeof session?.localVideoPort === 'number') {
+      this.#livePorts.delete(session.localVideoPort);
+    }
+
+    if (typeof session?.localAudioPort === 'number') {
+      this.#livePorts.delete(session.localAudioPort);
+    }
+
+    if (typeof session?.audioTalkbackPort === 'number') {
+      this.#livePorts.delete(session.audioTalkbackPort);
+    }
+
+    if (typeof session?.rtpSplitterPort === 'number') {
+      this.#livePorts.delete(session.rtpSplitterPort);
+    }
 
     this.ffmpeg?.killSession?.(this.uuid, sessionID, 'talk', 'SIGKILL');
     this.ffmpeg?.killSession?.(this.uuid, sessionID, 'live', 'SIGKILL');
