@@ -45,8 +45,8 @@
 //   (first decodable keyframe), not connection state
 // - Startup delays may occur due to upstream (Google) keyframe delivery behaviour
 // - Audio is decoded to PCM and paced before delivery to downstream consumers
-// - Video timestamps are derived from RTP timing and constrained to wall-clock
-//   to avoid excessive drift, stalls, or playback bursts
+// - Emitted media timestamps describe source media time derived from RTP timing
+// - Output playout timing, catch-up, and live latency policy are owned by Streamer
 //
 // Code version 2026.05.13
 // Mark Hulskamp
@@ -84,11 +84,11 @@ const RTP_H264_VIDEO_RTX_PAYLOAD_TYPE = 99; // H.264 RTX payload type for retran
 const RTP_OPUS_AUDIO_PAYLOAD_TYPE = 111; // Opus audio payload type
 const GOOGLE_HOME_FOYER_PREFIX = 'google.internal.home.foyer.v1.';
 const TIMESTAMP_MAX_VIDEO_DELTA = 2300; // Track observed ~2.2s IDR assembly windows without forcing aggressive timestamp compression
-const TIMESTAMP_MAX_KEYFRAME_DELTA = 600; // Cap keyframe playout step more aggressively
+const TIMESTAMP_MAX_KEYFRAME_DELTA = 600; // Cap keyframe source-time step more aggressively
 const TIMESTAMP_VIDEO_MAX_BEHIND = 700; // Keep emitted timestamps from lagging too far behind wall clock
 const TIMESTAMP_VIDEO_MAX_AHEAD = 700; // Allow variable-FPS bursts without compressing frame emission too aggressively
-const TIMESTAMP_MAX_AUDIO_DELTA = 160;
-const TIMESTAMP_AUDIO_RESYNC_BEHIND = 240; // Only hard-resync audio when callback delay has grown materially large
+const TIMESTAMP_MAX_AUDIO_DELTA = 240;
+const TIMESTAMP_AUDIO_RESYNC_BEHIND = 700; // Only hard-resync audio when callback delay has grown materially large
 const KEYFRAME_MAX_ASSEMBLY_MS = 2500; // Drop pathological keyframes assembled too slowly
 const KEYFRAME_STARTUP_MAX_ASSEMBLY_MS = 4000; // First decodable keyframe may be slow while WebRTC starts
 const KEYFRAME_MAX_BYTES = 140000; // Drop oversized keyframes that cause visible playback shock
@@ -98,10 +98,15 @@ const HEALTH_RECOVERING_CLEAN_TARGET = 6; // Exit RECOVERING after this weighted
 const DELTA_FU_SWITCH_GRACE_MS = 180; // Tiny grace before abandoning a young non-keyframe FU-A on timestamp switch
 const STALLED_TIMEOUT = 10000; // Time with no playback packets before we consider stream stalled and attempt restart
 const AUDIO_PLAYOUT_INTERVAL_MS = 10; // How often queued WebRTC audio is drained toward Streamer
-const AUDIO_PLAYOUT_DELAY_MS = 60; // Small jitter cushion before emitting decoded PCM
+const AUDIO_PLAYOUT_DELAY_MS = 140; // Small jitter cushion before emitting decoded PCM
 const AUDIO_PLAYOUT_MAX_FRAMES_PER_TICK = 4; // Bound audio work per timer tick
 const AUDIO_PLAYOUT_MAX_SILENCE_FILL_MS = 160; // Cap blank PCM inserted for short upstream gaps
+const AUDIO_PLAYOUT_MICRO_GAP_MS = 40; // Wait for queued real audio rather than synthesize tiny timestamp holes
+const AUDIO_QUEUE_HEALTHY_FRAMES = 4; // Queue depth that indicates enough buffered audio to absorb a micro-gap
 const AUDIO_QUEUE_MAX_FRAMES = 50; // Bound queued decoded audio frames
+const AUDIO_STARVATION_RECONNECT_MS = 3000; // Reconnect if audio has to synthesize this much PCM while video is active
+const VIDEO_RTP_REORDER_DELAY_MS = 120; // Hold video RTP briefly so reordered fragments/RTX can arrive before FU-A assembly
+const VIDEO_RTP_REORDER_MAX_PACKETS = 64; // Bound video RTP reorder queue
 const PCM_S16LE_48000_STEREO_BLANK = Buffer.alloc(960 * 2 * 2); // Default blank audio frame (20ms) in PCM S16LE, stereo @ 48kHz
 
 // WebRTC object
@@ -474,6 +479,10 @@ export default class WebRTC extends StreamTransport {
       this.#audioPlayoutTimer = undefined;
       this.#lastPacketAt = undefined;
 
+      // Release any video packets that were being held briefly for RTP reordering
+      // before flushing the final completed access unit.
+      this.#drainPlaybackVideoJitterBuffer(true);
+
       // Flush any pending video access unit before tearing state down.
       // Video is emitted frame-by-frame, so the last completed frame would otherwise
       // be lost if close occurs before another packet triggers a normal flush.
@@ -830,7 +839,7 @@ export default class WebRTC extends StreamTransport {
         };
       }
 
-      // Output timestamp tracking used when handing frames to Streamer
+      // Source media timestamp tracking used when handing frames to Streamer
       if (typeof video.output !== 'object' || video.output === null) {
         video.output = {
           lastTimestamp: undefined,
@@ -845,8 +854,20 @@ export default class WebRTC extends StreamTransport {
         video.lastNACKTime = undefined;
       }
 
+      if (typeof video.keyframeRequestInFlight !== 'boolean') {
+        video.keyframeRequestInFlight = false;
+      }
+
       if (typeof video.lastIDRTime === 'undefined') {
         video.lastIDRTime = undefined;
+      }
+
+      if (typeof video.jitter !== 'object' || video.jitter === null) {
+        video.jitter = {
+          queue: [],
+          lastReleasedSequence: undefined,
+          lastDropLogTime: undefined,
+        };
       }
 
       if (typeof video.health !== 'object' || video.health === null) {
@@ -917,7 +938,7 @@ export default class WebRTC extends StreamTransport {
         };
       }
 
-      // Output timestamp tracking used when handing PCM frames to Streamer
+      // Source media timestamp tracking used when handing PCM frames to Streamer
       if (typeof audio.output !== 'object' || audio.output === null) {
         audio.output = {
           lastTimestamp: undefined,
@@ -931,6 +952,7 @@ export default class WebRTC extends StreamTransport {
           baseWallclock: undefined,
           lastEmitTimestamp: undefined,
           silenceFillMs: 0,
+          consecutiveSilenceFillMs: 0,
           lastSilenceFillLogTime: undefined,
         };
       }
@@ -947,8 +969,69 @@ export default class WebRTC extends StreamTransport {
     }
   }
 
-  #handlePlaybackVideoPacket(rtpPacket) {
-    if (this.closing === true || this.closed === true) {
+  #drainPlaybackVideoJitterBuffer(force = false) {
+    let video = this.#tracks?.video;
+    let jitter = video?.jitter;
+    let queue = jitter?.queue;
+    let now = Date.now();
+    let expectedSequence = 0;
+    let packet = undefined;
+
+    if (
+      (this.closing === true && force !== true) ||
+      this.closed === true ||
+      typeof video !== 'object' ||
+      video === null ||
+      typeof jitter !== 'object' ||
+      jitter === null ||
+      Array.isArray(queue) !== true
+    ) {
+      return;
+    }
+
+    queue.sort((left, right) => {
+      return (right.sequenceNumber - left.sequenceNumber + RTP_SEQUENCE_WRAP) % RTP_SEQUENCE_WRAP < RTP_SEQUENCE_WRAP / 2 ? -1 : 1;
+    });
+
+    while (queue.length > 0) {
+      if (typeof jitter.lastReleasedSequence === 'number') {
+        expectedSequence = (jitter.lastReleasedSequence + 1) & RTP_SEQUENCE_MASK;
+
+        if (queue[0]?.sequenceNumber !== expectedSequence && force !== true && queue.length < VIDEO_RTP_REORDER_MAX_PACKETS) {
+          let oldestAgeMs = queue.reduce((age, entry) => Math.max(age, now - (entry?.receivedAt || now)), 0);
+
+          if (oldestAgeMs < VIDEO_RTP_REORDER_DELAY_MS) {
+            this.recordVideoReorder('defers');
+            break;
+          }
+        }
+      } else if (force !== true && queue.length < VIDEO_RTP_REORDER_MAX_PACKETS) {
+        let firstAgeMs = queue.reduce((age, entry) => Math.max(age, now - (entry?.receivedAt || now)), 0);
+
+        if (firstAgeMs < VIDEO_RTP_REORDER_DELAY_MS) {
+          this.recordVideoReorder('defers');
+          break;
+        }
+      }
+
+      packet = queue.shift();
+      jitter.lastReleasedSequence = packet.sequenceNumber;
+      this.#handlePlaybackVideoPacket(packet.packet, true);
+    }
+
+    while (queue.length > VIDEO_RTP_REORDER_MAX_PACKETS) {
+      packet = queue.shift();
+      this.recordVideoReorder('overflowDrops');
+
+      if (typeof jitter.lastDropLogTime !== 'number' || now - jitter.lastDropLogTime >= 10000) {
+        jitter.lastDropLogTime = now;
+        this?.log?.debug?.('Dropping overflowed WebRTC video reorder packet for uuid "%s": seq="%s"', this.uuid, packet?.sequenceNumber);
+      }
+    }
+  }
+
+  #handlePlaybackVideoPacket(rtpPacket, fromJitterBuffer = false) {
+    if ((this.closing === true && fromJitterBuffer !== true) || this.closed === true) {
       // We are closing or closed, so ignore any incoming packets. This can happen when remote is still sending
       // before we finish tearing down the connection, but we do not want to process any new packets at this point.
       return;
@@ -983,6 +1066,9 @@ export default class WebRTC extends StreamTransport {
     let pendingPartCount = 0;
     let pendingByteCount = 0;
     let pendingHasContent = false;
+    let jitter = undefined;
+    let queueSequenceNumber = 0;
+    let packetReceivedAt = 0;
 
     // Ensure we have a valid RTP packet with a payload before processing video data
     if (
@@ -1004,6 +1090,7 @@ export default class WebRTC extends StreamTransport {
     let rtpTimestamp = Number.isInteger(header.timestamp) === true ? header.timestamp >>> 0 : 0;
     let payloadType = Number.isInteger(header.payloadType) === true ? header.payloadType : undefined;
     let ssrc = Number.isInteger(header.ssrc) === true ? header.ssrc >>> 0 : undefined;
+    packetReceivedAt = Number.isFinite(rtpPacket.receivedAt) === true ? rtpPacket.receivedAt : Date.now();
 
     // Ensure playback state exists even if packets arrive before track open handling finishes
     if (
@@ -1024,6 +1111,74 @@ export default class WebRTC extends StreamTransport {
     let videoRtp = video.rtp;
     let deltaAudit = video.deltaAudit;
     isRtxPacket = typeof payloadType === 'number' && payloadType === video.rtxId;
+
+    if (fromJitterBuffer !== true) {
+      jitter = video.jitter;
+
+      if (typeof jitter !== 'object' || jitter === null || Array.isArray(jitter.queue) !== true) {
+        jitter = {
+          queue: [],
+          lastReleasedSequence: undefined,
+          lastDropLogTime: undefined,
+        };
+        video.jitter = jitter;
+      }
+
+      if (isRtxPacket === true) {
+        if (typeof video.rtxSsrc !== 'number' && typeof ssrc === 'number') {
+          video.rtxSsrc = ssrc;
+        }
+
+        if (typeof video.rtxSsrc === 'number' && typeof ssrc === 'number' && ssrc !== video.rtxSsrc) {
+          return;
+        }
+
+        if (Buffer.isBuffer(payload) !== true || payload.length < 3 || typeof video.ssrc !== 'number') {
+          return;
+        }
+
+        queueSequenceNumber = payload.readUInt16BE(0);
+        payload = payload.subarray(2);
+        payloadType = video.id;
+        ssrc = video.ssrc;
+      } else {
+        queueSequenceNumber = sequenceNumber;
+      }
+
+      if (typeof payloadType === 'number' && payloadType !== video.id) {
+        return;
+      }
+
+      if (typeof jitter.lastReleasedSequence === 'number') {
+        seqDelta = (queueSequenceNumber - jitter.lastReleasedSequence + RTP_SEQUENCE_WRAP) % RTP_SEQUENCE_WRAP;
+
+        if (seqDelta === 0 || seqDelta > RTP_SEQUENCE_WRAP / 2) {
+          return;
+        }
+      }
+
+      if (jitter.queue.some((packet) => packet.sequenceNumber === queueSequenceNumber) === true) {
+        return;
+      }
+
+      jitter.queue.push({
+        sequenceNumber: queueSequenceNumber,
+        receivedAt: packetReceivedAt,
+        packet: {
+          receivedAt: packetReceivedAt,
+          header: {
+            ...header,
+            payloadType: video.id,
+            sequenceNumber: queueSequenceNumber,
+            ssrc: ssrc,
+          },
+          payload: payload,
+        },
+      });
+
+      this.#drainPlaybackVideoJitterBuffer();
+      return;
+    }
 
     if (typeof deltaAudit !== 'object' || deltaAudit === null) {
       deltaAudit = {
@@ -1180,6 +1335,7 @@ export default class WebRTC extends StreamTransport {
       if (Number.isFinite(fuAgeMs) === true && fuAgeMs <= DELTA_FU_SWITCH_GRACE_MS) {
         if (incomingIsIdrFuStart !== true) {
           deltaAudit.deltaFuGraceDefers++;
+          this.recordVideoReorder('fuTimestampDefers');
 
           return;
         }
@@ -1217,6 +1373,8 @@ export default class WebRTC extends StreamTransport {
           }
         }
 
+        this.recordVideoDrop(h264.pendingKeyFrame === true ? 'pending-keyframe-incomplete' : 'pending-delta-incomplete');
+
         this?.log?.debug?.(
           'Drop incomplete pending video uuid "%s": oldTs=%s newTs=%s deltaTicks=%s wrapCandidate=%s parts=%s bytes=%s ageMs=%s marker=%s',
           this.uuid,
@@ -1246,12 +1404,20 @@ export default class WebRTC extends StreamTransport {
       fuAgeMs = typeof h264.fuFirstPacketTime === 'number' ? Date.now() - h264.fuFirstPacketTime : undefined;
 
       if (h264.fuNalType === StreamTransport.H264NALUS.TYPES.SLICE_NON_IDR) {
+        if (Number.isFinite(fuAgeMs) === true && fuAgeMs <= DELTA_FU_SWITCH_GRACE_MS && incomingIsIdrFuStart !== true) {
+          deltaAudit.deltaFuGraceDefers++;
+          this.recordVideoReorder('fuTimestampDefers');
+          return;
+        }
+
         deltaAudit.deltaFuAbandonedTsSwitch++;
 
         if (Number.isFinite(fuAgeMs) === true && fuAgeMs <= 80) {
           deltaAudit.deltaEarlyAbandon++;
         }
       }
+
+      this.recordVideoDrop(h264.fuNalType === StreamTransport.H264NALUS.TYPES.IDR ? 'fu-keyframe-incomplete' : 'fu-delta-incomplete');
 
       this?.log?.debug?.(
         'Drop incomplete FU-A uuid "%s": oldTs=%s newTs=%s deltaTicks=%s wrapCandidate=%s nalType=%s parts=%s bytes=%s ageMs=%s',
@@ -1277,7 +1443,7 @@ export default class WebRTC extends StreamTransport {
     // Initialise the pending frame timestamp from the first packet we see for this frame
     if (typeof h264.pendingRtpTimestamp !== 'number') {
       h264.pendingRtpTimestamp = rtpTimestamp;
-      h264.pendingFirstPacketTime = Date.now();
+      h264.pendingFirstPacketTime = packetReceivedAt;
     }
 
     let nalHeader = payload[0];
@@ -1401,7 +1567,7 @@ export default class WebRTC extends StreamTransport {
         h264.fuNalType = fuNalType;
         h264.fuParts = [];
         h264.fuBytes = 0;
-        h264.fuFirstPacketTime = Date.now();
+        h264.fuFirstPacketTime = packetReceivedAt;
 
         // Important:
         // for fragmented keyframes, the real frame arrival time starts with the FU-A start packet,
@@ -1411,7 +1577,7 @@ export default class WebRTC extends StreamTransport {
         }
 
         if (typeof h264.pendingFirstPacketTime !== 'number') {
-          h264.pendingFirstPacketTime = Date.now();
+          h264.pendingFirstPacketTime = packetReceivedAt;
         }
 
         part = Buffer.allocUnsafe(StreamTransport.H264NALUS.START_CODE.length + 1 + fragment.length);
@@ -1579,7 +1745,7 @@ export default class WebRTC extends StreamTransport {
       video.deltaAudit = deltaAudit;
     }
 
-    // Output timing state is kept separate from RTP timing so we can pace frames cleanly to Streamer
+    // Source media timing state is kept separate from raw RTP timing before handing frames to Streamer
     if (typeof videoOutput !== 'object' || videoOutput === null) {
       video.output = {
         lastTimestamp: undefined,
@@ -1717,6 +1883,8 @@ export default class WebRTC extends StreamTransport {
 
     // Drop frames already marked corrupt during packet assembly
     if (h264.pendingCorrupt === true) {
+      this.recordVideoDrop(pendingKeyFrame === true ? 'corrupt-keyframe' : 'corrupt-delta');
+
       this?.log?.debug?.(
         'Dropping corrupt WebRTC video frame for uuid "%s": rtpTs="%s" bytes="%s"',
         this.uuid,
@@ -1755,6 +1923,8 @@ export default class WebRTC extends StreamTransport {
 
     // Do not emit delta frames until at least one IDR has been accepted
     if (pendingKeyFrame !== true && deltaAudit.hasAcceptedKeyframe !== true) {
+      this.recordVideoDrop('pre-keyframe-delta');
+
       this?.log?.debug?.(
         'Dropping pre-keyframe WebRTC video frame for uuid "%s": bytes="%s" rtpTs="%s"',
         this.uuid,
@@ -1778,6 +1948,8 @@ export default class WebRTC extends StreamTransport {
         (Number.isFinite(keyframeAssemblyMs) === true && keyframeAssemblyMs > keyframeAssemblyLimitMs) ||
         data.length > KEYFRAME_MAX_BYTES
       ) {
+        this.recordVideoDrop('shock-keyframe');
+
         this?.log?.debug?.(
           'Dropping shock keyframe for uuid "%s": rtpTs=%s bytes=%s assemblyMs=%s hasParameterSets=%s (limits: bytes<=%s assemblyMs<=%s)',
           this.uuid,
@@ -1796,7 +1968,7 @@ export default class WebRTC extends StreamTransport {
       }
     }
 
-    // Hybrid timestamp model:
+    // Hybrid source timestamp model:
     // - First frame anchors to first packet arrival time
     // - Subsequent frames advance by RTP delta
     // - Timestamps are clamped near wall clock so they neither run far behind nor race ahead
@@ -1804,6 +1976,8 @@ export default class WebRTC extends StreamTransport {
       deltaTicks = (pendingRtpTimestamp - videoRtp.lastTimestamp + RTP_TIMESTAMP_MASK) % RTP_TIMESTAMP_MASK;
 
       if (deltaTicks > RTP_TIMESTAMP_MAX_DELTA) {
+        this.recordVideoDrop('backwards-timestamp');
+
         this?.log?.debug?.(
           'Dropping reordered/backwards WebRTC video frame for uuid "%s": pendingTs="%s" lastTs="%s" deltaTicks="%s"',
           this.uuid,
@@ -1867,7 +2041,7 @@ export default class WebRTC extends StreamTransport {
       }
     }
 
-    // Enforce monotonic output timestamps even when upstream timing is noisy
+    // Enforce monotonic source media timestamps even when upstream timing is noisy
     pendingTimestamp =
       typeof videoOutput.lastTimestamp === 'number' ? Math.max(pendingTimestamp, videoOutput.lastTimestamp + 1) : pendingTimestamp;
 
@@ -1917,9 +2091,9 @@ export default class WebRTC extends StreamTransport {
       break;
     }
 
-    // Estimate FPS from accepted emitted video frame timing.
-    // This is based on final transport output timestamps, not raw RTP arrival,
-    // so it reflects what we actually hand to the consumer.
+    // Estimate FPS from accepted transport source-media timing.
+    // This is based on emitted media timestamps, not raw RTP arrival,
+    // so it reflects the source cadence handed to Streamer.
     if (typeof videoOutput.lastEmittedTimestamp === 'number' && pendingTimestamp > videoOutput.lastEmittedTimestamp) {
       let frameDuration = pendingTimestamp - videoOutput.lastEmittedTimestamp;
       let instantFps = frameDuration > 0 ? 1000 / frameDuration : undefined;
@@ -1949,7 +2123,8 @@ export default class WebRTC extends StreamTransport {
 
     videoOutput.lastEmittedTimestamp = pendingTimestamp;
 
-    // Push final access unit into Streamer using paced output timestamp
+    // Push final access unit into Streamer using source media timestamp.
+    // Streamer maps this onto each output's playout schedule.
     this.emitMedia({
       type: Streamer.MEDIA_TYPE.VIDEO,
       codec: this.codecs.video,
@@ -2023,6 +2198,7 @@ export default class WebRTC extends StreamTransport {
     let frameDuration = 20;
     let dueTimestamp = 0;
     let nextTimestamp = 0;
+    let gapToQueuedFrame = 0;
     let emitted = 0;
     let frame = undefined;
 
@@ -2039,6 +2215,10 @@ export default class WebRTC extends StreamTransport {
     }
 
     frameDuration = Number.isFinite(audio.packetTime) === true && audio.packetTime > 0 ? audio.packetTime : 20;
+
+    if (Number.isFinite(playout.consecutiveSilenceFillMs) !== true) {
+      playout.consecutiveSilenceFillMs = 0;
+    }
 
     if (typeof playout.baseTimestamp !== 'number' || typeof playout.baseWallclock !== 'number') {
       if (queue.length === 0 || typeof queue[0]?.timestamp !== 'number') {
@@ -2066,6 +2246,7 @@ export default class WebRTC extends StreamTransport {
         queue.shift();
         playout.lastEmitTimestamp = frame.timestamp;
         playout.silenceFillMs = 0;
+        playout.consecutiveSilenceFillMs = 0;
 
         this.emitMedia({
           type: Streamer.MEDIA_TYPE.AUDIO,
@@ -2088,14 +2269,27 @@ export default class WebRTC extends StreamTransport {
         break;
       }
 
-      nextTimestamp = playout.lastEmitTimestamp + frameDuration;
+      if (frame === undefined || typeof frame.timestamp !== 'number') {
+        break;
+      }
 
-      if (nextTimestamp > dueTimestamp + frameDuration / 2 || playout.silenceFillMs >= AUDIO_PLAYOUT_MAX_SILENCE_FILL_MS) {
+      nextTimestamp = playout.lastEmitTimestamp + frameDuration;
+      gapToQueuedFrame = frame.timestamp - nextTimestamp;
+
+      if (
+        nextTimestamp > dueTimestamp + frameDuration / 2 ||
+        nextTimestamp + frameDuration / 2 >= frame.timestamp ||
+        (queue.length >= AUDIO_QUEUE_HEALTHY_FRAMES && gapToQueuedFrame <= AUDIO_PLAYOUT_MICRO_GAP_MS) ||
+        playout.silenceFillMs >= AUDIO_PLAYOUT_MAX_SILENCE_FILL_MS
+      ) {
         break;
       }
 
       playout.lastEmitTimestamp = nextTimestamp;
       playout.silenceFillMs += frameDuration;
+      this.recordAudioSilenceFill(frameDuration);
+      playout.consecutiveSilenceFillMs =
+        Number.isFinite(playout.consecutiveSilenceFillMs) === true ? playout.consecutiveSilenceFillMs + frameDuration : frameDuration;
 
       if (typeof playout.lastSilenceFillLogTime !== 'number' || now - playout.lastSilenceFillLogTime >= 10000) {
         playout.lastSilenceFillLogTime = now;
@@ -2119,6 +2313,24 @@ export default class WebRTC extends StreamTransport {
         keyFrame: false,
         data: this.audio.blank,
       });
+
+      if (
+        playout.consecutiveSilenceFillMs >= AUDIO_STARVATION_RECONNECT_MS &&
+        typeof this.#tracks?.video?.output?.lastEmittedTimestamp === 'number' &&
+        now - this.#tracks.video.output.lastEmittedTimestamp <= STALLED_TIMEOUT &&
+        this.reconnecting !== true
+      ) {
+        this?.log?.debug?.(
+          'WebRTC audio starvation for uuid "%s": fillMs=%s videoActiveMs=%s. Closing connection',
+          this.uuid,
+          Math.round(playout.consecutiveSilenceFillMs),
+          Math.round(now - this.#tracks.video.output.lastEmittedTimestamp),
+        );
+
+        this.#requestReconnect('audio-starvation');
+        this.close();
+        break;
+      }
 
       emitted++;
     }
@@ -2188,6 +2400,7 @@ export default class WebRTC extends StreamTransport {
         baseWallclock: undefined,
         lastEmitTimestamp: undefined,
         silenceFillMs: 0,
+        consecutiveSilenceFillMs: 0,
         lastSilenceFillLogTime: undefined,
       };
       playout = audio.playout;
@@ -2520,8 +2733,13 @@ export default class WebRTC extends StreamTransport {
   #sendVideoPLI(reason = '') {
     let video = this.#tracks?.video;
     let now = Date.now();
+    let sendResult = undefined;
 
     if (this.#videoTransceiver === undefined || video === undefined || typeof video?.ssrc !== 'number') {
+      return;
+    }
+
+    if (video.keyframeRequestInFlight === true) {
       return;
     }
 
@@ -2530,11 +2748,32 @@ export default class WebRTC extends StreamTransport {
     }
 
     video.lastPLITime = now;
+    video.keyframeRequestInFlight = true;
+    this.recordKeyframeRequest();
 
     // Disabled: too noisy in practice. Stream health logging already captures PLI-related behaviour.
     //this?.log?.debug?.('Sending RTCP PLI for uuid "%s"%s', this.uuid, reason !== '' ? ' (' + reason + ')' : '');
 
-    this.#videoTransceiver?.receiver?.sendRtcpPLI?.(video.ssrc);
+    try {
+      sendResult = this.#videoTransceiver?.receiver?.sendRtcpPLI?.(video.ssrc);
+
+      if (sendResult instanceof Promise) {
+        sendResult
+          .catch((error) => {
+            this?.log?.debug?.('Error sending WebRTC PLI for uuid "%s": %s', this.uuid, String(error));
+          })
+          .finally(() => {
+            if (this.#tracks?.video === video) {
+              video.keyframeRequestInFlight = false;
+            }
+          });
+        return;
+      }
+    } catch (error) {
+      this?.log?.debug?.('Error sending WebRTC PLI for uuid "%s": %s', this.uuid, String(error));
+    }
+
+    video.keyframeRequestInFlight = false;
   }
 
   #requestReconnect(reason) {

@@ -24,6 +24,8 @@
 // - Video should be complete access units or NAL units
 // - Audio should be complete codec frames
 // - Partial RTP fragments or incomplete payloads should not be emitted
+// - media.timestamp is source media time, not final HomeKit/output playout time
+// - Output pacing, catch-up, and live latency policy are owned by Streamer
 //
 // Typical transport lifecycle states:
 // - CONNECTING
@@ -33,7 +35,7 @@
 // - CLOSING
 // - CLOSED
 //
-// Code version 2026.05.12
+// Code version 2026.05.13
 // Mark Hulskamp
 'use strict';
 
@@ -119,6 +121,7 @@ export default class StreamTransport {
       readyAt: undefined,
       closedAt: undefined,
       reconnects: 0,
+      reconnectReasons: {},
     },
 
     media: {
@@ -131,6 +134,15 @@ export default class StreamTransport {
       maxVideoGapMs: 0,
       maxAudioGapMs: 0,
       largeAudioGaps: 0,
+      videoDrops: {},
+      videoReorder: {
+        defers: 0,
+        fuTimestampDefers: 0,
+        overflowDrops: 0,
+      },
+      audioSilenceFillFrames: 0,
+      audioSilenceFillMs: 0,
+      keyframeRequests: 0,
       videoFrames: 0,
       audioFrames: 0,
       keyframes: 0,
@@ -138,6 +150,7 @@ export default class StreamTransport {
   };
 
   #state = StreamTransport.STATE.CLOSED; // Current transport lifecycle state
+  #mediaSequences = {}; // Per-media-type fallback sequence counters
 
   constructor(options = {}) {
     // Optional consumer callback interface.
@@ -218,16 +231,61 @@ export default class StreamTransport {
   emitMedia(media) {
     let now = Date.now();
     let gapMs = 0;
+    let mediaType = undefined;
+    let codec = undefined;
 
     // Emit only complete media frames.
+    mediaType = typeof media?.type === 'string' ? media.type.toLowerCase() : undefined;
+
     if (
       typeof media !== 'object' ||
       media === null ||
-      (media.type !== 'video' && media.type !== 'audio' && media.type !== 'talk' && media.type !== 'meta') ||
+      (mediaType !== 'video' && mediaType !== 'audio' && mediaType !== 'talk' && mediaType !== 'meta') ||
       Buffer.isBuffer(media.data) !== true ||
       media.data.length === 0
     ) {
       return;
+    }
+
+    // Normalise the transport media contract before handing frames to Streamer.
+    // Timestamps are source media time; Streamer later maps them onto output playout time.
+    codec =
+      typeof media.codec === 'string' && media.codec.trim() !== ''
+        ? media.codec.toLowerCase()
+        : mediaType === 'video'
+          ? this.video.codec
+          : mediaType === 'audio'
+            ? this.audio.codec
+            : mediaType === 'talk'
+              ? this.talkback.codec
+              : mediaType === 'meta'
+                ? StreamTransport.CODEC_TYPE.META
+                : undefined;
+
+    if (typeof this.#mediaSequences?.[mediaType] !== 'number') {
+      this.#mediaSequences[mediaType] = 0;
+    }
+
+    media.type = mediaType;
+    media.codec = typeof codec === 'string' && codec.trim() !== '' ? codec : media.codec;
+    media.sequence = Number.isFinite(media.sequence) === true ? media.sequence : this.#mediaSequences[mediaType]++;
+    media.timestamp = Number.isFinite(media.timestamp) === true ? Math.round(media.timestamp) : now;
+    media.keyFrame = media.keyFrame === true;
+
+    if (mediaType === 'video') {
+      media.profile = typeof media.profile === 'string' ? media.profile : this.video.profile;
+      media.width = Number.isFinite(media.width) === true ? media.width : this.video.width;
+      media.height = Number.isFinite(media.height) === true ? media.height : this.video.height;
+      media.fps = Number.isFinite(media.fps) === true ? media.fps : this.video.fps;
+      media.bitrate = Number.isFinite(media.bitrate) === true ? media.bitrate : this.video.bitrate;
+    }
+
+    if (mediaType === 'audio') {
+      media.profile = typeof media.profile === 'string' ? media.profile : this.audio.profile;
+      media.sampleRate = Number.isFinite(media.sampleRate) === true ? media.sampleRate : this.audio.sampleRate;
+      media.channels = Number.isFinite(media.channels) === true ? media.channels : this.audio.channels;
+      media.bitrate = Number.isFinite(media.bitrate) === true ? media.bitrate : this.audio.bitrate;
+      media.frameDuration = Number.isFinite(media.frameDuration) === true ? media.frameDuration : this.audio.frameDuration;
     }
 
     // Ensure media stats are initialised before updating counters.
@@ -236,7 +294,7 @@ export default class StreamTransport {
     }
 
     // Track transport video delivery stats before handing off to Streamer.
-    if (media.type === 'video') {
+    if (mediaType === 'video') {
       if (typeof this.stats.media.firstVideoAt !== 'number') {
         this.stats.media.firstVideoAt = now;
       }
@@ -263,7 +321,7 @@ export default class StreamTransport {
     }
 
     // Track transport audio delivery stats before handing off to Streamer.
-    if (media.type === 'audio') {
+    if (mediaType === 'audio') {
       if (typeof this.stats.media.firstAudioAt !== 'number') {
         this.stats.media.firstAudioAt = now;
       }
@@ -305,6 +363,7 @@ export default class StreamTransport {
     // Runtime media metadata and media timing stats should be relearned.
     if (type === StreamTransport.STATE.CONNECTING || type === StreamTransport.STATE.RECONNECTING) {
       this.resetMediaStats();
+      this.#mediaSequences = {};
     }
 
     // Track transport lifecycle timing here, because StreamTransport owns state.
@@ -322,6 +381,14 @@ export default class StreamTransport {
 
     if (type === StreamTransport.STATE.RECONNECTING) {
       this.stats.lifecycle.reconnects++;
+
+      if (typeof this.stats.lifecycle.reconnectReasons !== 'object' || this.stats.lifecycle.reconnectReasons === null) {
+        this.stats.lifecycle.reconnectReasons = {};
+      }
+
+      if (typeof reason === 'string' && reason !== '') {
+        this.stats.lifecycle.reconnectReasons[reason] = (this.stats.lifecycle.reconnectReasons[reason] ?? 0) + 1;
+      }
     }
 
     if (type === StreamTransport.STATE.CLOSED) {
@@ -365,11 +432,72 @@ export default class StreamTransport {
       // Audio continuity indicators.
       largeAudioGaps: 0,
 
+      // Transport-level recovery/quality indicators.
+      videoDrops: {},
+      videoReorder: {
+        defers: 0,
+        fuTimestampDefers: 0,
+        overflowDrops: 0,
+      },
+      audioSilenceFillFrames: 0,
+      audioSilenceFillMs: 0,
+      keyframeRequests: 0,
+
       // Totals.
       videoFrames: 0,
       audioFrames: 0,
       keyframes: 0,
     };
+  }
+
+  recordVideoDrop(reason = 'unknown') {
+    if (typeof this.stats?.media !== 'object' || this.stats.media === null) {
+      this.resetMediaStats();
+    }
+
+    if (typeof this.stats.media.videoDrops !== 'object' || this.stats.media.videoDrops === null) {
+      this.stats.media.videoDrops = {};
+    }
+
+    reason = typeof reason === 'string' && reason !== '' ? reason : 'unknown';
+    this.stats.media.videoDrops[reason] = (this.stats.media.videoDrops[reason] ?? 0) + 1;
+  }
+
+  recordVideoReorder(type = 'defers') {
+    if (typeof this.stats?.media !== 'object' || this.stats.media === null) {
+      this.resetMediaStats();
+    }
+
+    if (typeof this.stats.media.videoReorder !== 'object' || this.stats.media.videoReorder === null) {
+      this.stats.media.videoReorder = {
+        defers: 0,
+        fuTimestampDefers: 0,
+        overflowDrops: 0,
+      };
+    }
+
+    if (typeof this.stats.media.videoReorder[type] !== 'number') {
+      this.stats.media.videoReorder[type] = 0;
+    }
+
+    this.stats.media.videoReorder[type]++;
+  }
+
+  recordAudioSilenceFill(durationMs = 0) {
+    if (typeof this.stats?.media !== 'object' || this.stats.media === null) {
+      this.resetMediaStats();
+    }
+
+    this.stats.media.audioSilenceFillFrames = (this.stats.media.audioSilenceFillFrames ?? 0) + 1;
+    this.stats.media.audioSilenceFillMs += Number.isFinite(durationMs) === true && durationMs > 0 ? durationMs : 0;
+  }
+
+  recordKeyframeRequest() {
+    if (typeof this.stats?.media !== 'object' || this.stats.media === null) {
+      this.resetMediaStats();
+    }
+
+    this.stats.media.keyframeRequests = (this.stats.media.keyframeRequests ?? 0) + 1;
   }
 
   static getH264NALUnits(data) {

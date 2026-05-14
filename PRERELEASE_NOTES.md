@@ -4,6 +4,38 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.3-alpha.3 (2026/05/13)
+
+### Changed
+
+- `webrtc.js`
+  - Increased WebRTC audio playout delay to improve tolerance of transport jitter before PCM is handed to `Streamer`
+  - Relaxed WebRTC audio hard-resync thresholds so delayed callbacks do not create avoidable short silence-fill gaps
+  - Changed audio silence fill so empty queue ticks are not treated as gaps unless RTP-derived timing shows audio is actually due
+  - Added WebRTC audio micro-gap tolerance so small timestamp holes are absorbed by queued real audio instead of immediately inserting blank PCM
+  - Added sustained audio-starvation recovery that reconnects only when audio fill persists while video remains active
+  - Added a small video RTP reorder window before H264 FU-A assembly so delayed fragments and RTX recovery can arrive before incomplete frames are abandoned
+  - Added an extra young FU-A timestamp-switch guard at the drop point to avoid abandoning very recent non-keyframe fragments
+  - Normalised recovered RTX packets into the original RTP sequence path before H264 packet parsing
+  - Preserved original RTP receive time through the video reorder buffer so emitted source media timestamps are not biased by packet hold time
+  - Added a keyframe request in-flight guard so repeated PLI requests cannot stack during recovery
+
+- `streamer.js`
+  - Slightly increased live stream playout delay to smooth small transport jitter without changing recording playout behaviour
+  - Added adaptive live playout delay so `Streamer` can absorb temporary source jitter and relax back toward lower latency after stable output
+  - Added transport media-quality counters to support dumps for audio fill, video reorder recovery, keyframe requests, video drops, and reconnect reasons
+
+- `streamtransport.js`
+  - Added shared transport diagnostics counters for media-quality and reconnect-reason tracking
+  - Tightened emitted media-frame metadata normalisation before frames are passed to `Streamer`
+
+- `nexustalk.js`
+  - Added transport video-drop accounting when an oversized pending NexusTalk frame is reset
+
+- `plugins/camera.js`
+  - Tightened the camera/streamer boundary so camera setup now centralises Streamer and transport construction
+  - Awaited Streamer teardown when migration or streaming protocol changes require replacing the active streamer
+
 ## v0.4.3-alpha.2 (2026/05/13)
 
 ### Changed

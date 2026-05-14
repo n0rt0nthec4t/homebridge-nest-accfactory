@@ -38,6 +38,7 @@
 // Notes:
 // - Video is delivered as H264 NAL units and assembled into complete Annex-B access units before emission
 // - Audio is delivered as AAC frames and emitted directly
+// - Emitted timestamps are source media timeline values; Streamer owns output playout timing
 // - Protobuf schemas and message types are shared/cached globally to avoid repeated protobufjs parsing across multiple camera instances
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
@@ -985,6 +986,8 @@ export default class NexusTalk extends StreamTransport {
 
       // Guard against pathological growth if a frame never flushes cleanly.
       if (video.pendingParts.length > MAX_PENDING_VIDEO_PARTS || video.pendingBytes > MAX_PENDING_VIDEO_BYTES) {
+        this.recordVideoDrop('oversized-pending-frame');
+
         this?.log?.warn?.(
           'Resetting oversized pending NexusTalk video frame for uuid "%s" (%s parts, %s bytes)',
           this.uuid,
@@ -1389,8 +1392,9 @@ export default class NexusTalk extends StreamTransport {
   #calculateTimestamp(delta, stream, sampleRate, maxStepMs = undefined) {
     let deltaMs = 0;
 
-    // Convert NexusTalk timestamp deltas into a monotonic media timestamp
-    // anchored to the shared playback session start time.
+    // Convert NexusTalk timestamp deltas into monotonic source media time
+    // anchored to the shared playback session start time. Streamer later maps
+    // this source media time onto each output's playout schedule.
     if (typeof stream?.mediaTime !== 'number') {
       stream.mediaTime = typeof this.#sessionStartTime === 'number' ? this.#sessionStartTime + (stream?.startOffset ?? 0) : Date.now();
     }
@@ -1419,10 +1423,10 @@ export default class NexusTalk extends StreamTransport {
   }
 
   #getPayloadBuffer(payload) {
-    // Copy payload bytes out of protobuf-decoded objects so downstream media
-    // handling never depends on protobufjs backing-buffer lifetime/aliasing.
-    // This does add one allocation per packet, so revisit if profiling shows
-    // meaningful GC pressure in NexusTalk playback.
+    // Copy payload bytes out of protobuf-decoded objects before retaining them.
+    // Streamer treats media buffers as immutable, but protobufjs byte fields may
+    // alias the reusable NexusTalk packet buffer, which is compacted/overwritten
+    // as more TLS data arrives.
     if (Buffer.isBuffer(payload) === true) {
       return Buffer.from(payload);
     }
@@ -1431,7 +1435,7 @@ export default class NexusTalk extends StreamTransport {
       return Buffer.from(payload);
     }
 
-    // Fallback: assume it's a base64-encoded string
+    // Fallback: protobufjs may expose bytes as a base64-encoded string.
     if (typeof payload === 'string') {
       return Buffer.from(payload, 'base64');
     }
@@ -1502,8 +1506,8 @@ export default class NexusTalk extends StreamTransport {
       }
     }
 
-    // Use learned transport video FPS metadata to keep flushed frame timestamps
-    // moving forward. Fallback to 30fps until we learn the stream cadence.
+    // Use learned transport video FPS metadata to keep emitted source media
+    // timestamps moving forward. Fallback to 30fps until we learn the cadence.
     minimumStep = Math.max(1, Math.round(1000 / (Number.isFinite(this.video.fps) === true && this.video.fps > 0 ? this.video.fps : 30)));
 
     // Keep emitted frame timestamps monotonic.

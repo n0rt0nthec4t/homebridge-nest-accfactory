@@ -7,9 +7,9 @@
 //
 // Responsibilities:
 // - Configure HomeKit CameraController or DoorbellController services
-// - Manage live streaming and recording session lifecycle for HomeKit
+// - Manage HomeKit live streaming and recording session requests
 // - Select and initialise the appropriate streaming backend (WebRTC or NexusTalk)
-// - Coordinate ffmpeg for HomeKit live streaming, talkback, and HKSV recording
+// - Coordinate ffmpeg process plumbing for live streaming, talkback, and HKSV recording
 // - Handle motion events, cooldown timing, and Eve history integration
 // - Provide snapshot handling with fallback images
 // - Translate Nest / Google camera data into HomeKit-facing state
@@ -32,7 +32,8 @@
 // - Eve Home activity history integration when enabled
 //
 // Notes:
-// - Streaming transport is handled by protocol-specific streamer modules
+// - Streamer owns source buffering, transport lifecycle, output pacing, and fallback video
+// - Protocol-specific media transport is handled by StreamTransport implementations
 // - ffmpeg is used for HomeKit-compatible live streaming, talkback, and HKSV recording
 // - Motion events trigger HKSV recording and HomeKit automations
 // - Snapshot fallback images are used for offline, disabled, or migration states
@@ -86,7 +87,7 @@ const PREBUFFER_LENGTH = 4000;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.05.13'; // Code version
+  static VERSION = '2026.05.14'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -389,7 +390,7 @@ export default class NestCamera extends HomeKitDevice {
     if (this.deviceData.migrating !== true && deviceData.migrating === true) {
       // Migration happening between Nest <-> Google Home apps. We'll stop any active streams, close the current streaming object
       this?.log?.warn?.('Migration between Nest <-> Google Home apps has started for "%s"', deviceData.description);
-      this.streamer?.stopEverything?.();
+      await this.streamer?.stopEverything?.();
       this.streamer = undefined;
     }
 
@@ -404,50 +405,12 @@ export default class NestCamera extends HomeKitDevice {
       JSON.stringify(deviceData.streaming_protocols) !== JSON.stringify(this.deviceData.streaming_protocols)
     ) {
       this?.log?.warn?.('Available streaming protocols have changed for "%s"', deviceData.description);
-      this.streamer.stopEverything();
+      await this.streamer.stopEverything();
       this.streamer = undefined;
     }
 
     if (this.streamer === undefined && deviceData.migrating !== true) {
-      if (deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.WEBRTC) === true && WebRTC !== undefined) {
-        if (this.deviceData.migrating === true && deviceData.migrating !== true) {
-          this?.log?.debug?.('Using WebRTC streamer for "%s" after migration', deviceData.description);
-        }
-
-        this.streamer = new Streamer(this.uuid, deviceData, {
-          log: this.log,
-          supportDump: this.deviceData.supportDump === true,
-          bufferDuration: PREBUFFER_LENGTH * 2,
-          transport: new WebRTC({
-            log: this.log,
-            uuid: deviceData.nest_google_device_uuid,
-            apiAccess: deviceData?.apiAccess,
-            fieldTest: deviceData?.apiAccess?.fieldTest === true,
-          }),
-        });
-      }
-
-      if (
-        this.streamer === undefined &&
-        deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.NEXUSTALK) === true &&
-        NexusTalk !== undefined
-      ) {
-        if (this.deviceData.migrating === true && deviceData.migrating !== true) {
-          this?.log?.debug?.('Using NexusTalk streamer for "%s" after migration', deviceData.description);
-        }
-
-        this.streamer = new Streamer(this.uuid, deviceData, {
-          log: this.log,
-          supportDump: this.deviceData.supportDump === true,
-          bufferDuration: PREBUFFER_LENGTH * 2,
-          transport: new NexusTalk({
-            log: this.log,
-            uuid: deviceData.nest_google_device_uuid,
-            apiAccess: deviceData?.apiAccess,
-            host: deviceData.nexustalk_host,
-          }),
-        });
-      }
+      this.streamer = this.#createStreamer(deviceData, this.deviceData.migrating === true ? ' after migration' : '');
 
       if (
         this?.streamer?.isBuffering() === false &&
@@ -1719,6 +1682,49 @@ export default class NestCamera extends HomeKitDevice {
     };
 
     return controllerOptions;
+  }
+
+  #createStreamer(deviceData, reason = '') {
+    // Camera owns backend selection/configuration; Streamer owns media lifecycle once created.
+    // Prefer WebRTC when available, falling back to NexusTalk for older Nest-capable cameras.
+    let protocol = undefined;
+    let TransportClass = undefined;
+    let transportInstance = undefined;
+
+    if (Array.isArray(deviceData?.streaming_protocols) !== true) {
+      return undefined;
+    }
+
+    if (deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.WEBRTC) === true && WebRTC !== undefined) {
+      protocol = STREAMING_PROTOCOL.WEBRTC;
+    } else if (deviceData.streaming_protocols.includes(STREAMING_PROTOCOL.NEXUSTALK) === true && NexusTalk !== undefined) {
+      protocol = STREAMING_PROTOCOL.NEXUSTALK;
+    }
+
+    TransportClass = STREAMERS[protocol]?.module;
+
+    if (TransportClass === undefined) {
+      return undefined;
+    }
+
+    if (typeof reason === 'string' && reason !== '') {
+      this?.log?.debug?.('Using %s for "%s"%s', STREAMERS[protocol]?.label ?? 'selected streamer', deviceData.description, reason);
+    }
+
+    transportInstance = new TransportClass({
+      log: this.log,
+      uuid: deviceData.nest_google_device_uuid,
+      apiAccess: deviceData?.apiAccess,
+      fieldTest: deviceData?.apiAccess?.fieldTest === true,
+      host: protocol === STREAMING_PROTOCOL.NEXUSTALK ? deviceData.nexustalk_host : undefined,
+    });
+
+    return new Streamer(this.uuid, deviceData, {
+      log: this.log,
+      supportDump: deviceData.supportDump === true,
+      bufferDuration: PREBUFFER_LENGTH * 2,
+      transport: transportInstance,
+    });
   }
 
   #cleanupLiveSession(sessionID) {

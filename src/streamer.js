@@ -6,7 +6,7 @@
 // Streamer owns the HomeKit-facing media pipeline:
 // - shared media retention via MediaTimeline
 // - live and recording output fan-out
-// - per-output pacing and catch-up behaviour
+// - adaptive per-output pacing, live jitter smoothing, and catch-up behaviour
 // - decoder-safe startup handling
 // - H264 SPS/PPS bootstrap for outputs
 // - fallback video frame injection when the camera is offline, video is disabled, or migrating
@@ -26,14 +26,17 @@
 //
 // Transport boundary:
 // - Transport emits complete media frames using consumer.media(media)
+// - Transport media timestamps describe source media time
 // - Transport reports lifecycle state using consumer.state(state, reason)
-// - Streamer consumes those callbacks and writes retained/timed output streams
+// - Streamer converts source media time into per-output playout timing
+// - Streamer consumes callbacks and writes retained/timed output streams
 //
 // Media model:
 // - Streamer expects complete media frames, not partial RTP/NAL fragments
 // - Video should be complete H264 NAL units or access units
 // - Audio should be complete AAC/PCM/Opus/etc frames as produced by the transport
-// - Streamer preserves media ordering using monotonic timeline timestamps
+// - Streamer preserves media ordering using monotonic source timeline timestamps
+// - Transport-specific jitter repair and frame assembly stay below the StreamTransport boundary
 //
 // Buffering model:
 // - A shared MediaTimeline stores recent media items
@@ -43,8 +46,10 @@
 //
 // Live streaming behaviour:
 // - Live outputs attach at the current live edge
-// - Output policy controls whether startup waits for a keyframe
-// - This keeps latency low while still allowing decoder-safe startup when required
+// - Output policy controls startup keyframe requirements, burst limits, and playout delay
+// - Live playout delay adapts upward during transient jitter and relaxes back toward low latency
+// - Catch-up mode drains retained media faster when an output falls too far behind live
+// - This keeps latency low while still allowing decoder-safe startup and smoother recovery
 //
 // Recording behaviour:
 // - Recording outputs can start from a requested timestamp
@@ -85,10 +90,14 @@ const MAX_BUFFERED_ITEMS_PER_OUTPUT_PER_TICK = 20; // Prevent one output starvin
 const STREAM_FRAME_INTERVAL = 1000 / 30; // 30fps approx
 const OUTPUT_LOOP_INTERVAL = 10; // Shared output scheduler interval
 const OUTPUT_BUDGET_LOG_INTERVAL = 30000; // Throttle per-streamer over-budget debug logs
+const OUTPUT_STABLE_PLAYOUT_TARGET = 20; // Ticks before live playout delay relaxes back down
 const OUTPUT_PLAYOUT_POLICY = {
   live: {
     requireKeyFrameStart: false,
-    playoutDelayMs: 350,
+    playoutDelayMs: 380,
+    minPlayoutDelayMs: 340,
+    maxPlayoutDelayMs: 620,
+    playoutAdjustStepMs: 20,
     maxLagBehindLiveMs: 1000,
     dueTolerance: 12,
     dueSlack: 18,
@@ -550,13 +559,13 @@ export default class Streamer {
       this.#sequenceCounters[mediaType] = 0;
     }
 
-    // Use provided sequence/timestamp or fallback to generated values.
+    // Use provided transport sequence/source timestamp or fallback to generated values.
     sequence = Number.isFinite(media?.sequence) === true ? media.sequence : this.#sequenceCounters[mediaType]++;
     sourceTimestamp = Number.isFinite(media?.timestamp) === true ? Math.round(media.timestamp) : now;
 
     // Ensure monotonic media time.
-    // StreamTransport owns media timing metadata, but Streamer still protects
-    // MediaTimeline ordering if timestamps repeat or go backwards.
+    // StreamTransport owns source media timing metadata, but Streamer still
+    // protects MediaTimeline ordering if timestamps repeat or go backwards.
     if (typeof this.#lastMediaTime?.[mediaType] !== 'number') {
       this.#lastMediaTime[mediaType] = 0;
     }
@@ -798,6 +807,8 @@ export default class Streamer {
       // wallclockTime = wallclockBaseTime + (item.time - sourceBaseTime)
       sourceBaseTime: undefined,
       wallclockBaseTime: undefined,
+      playoutDelayMs: undefined,
+      stablePlayoutTicks: 0,
 
       // Playout policy:
       // Defines how aggressively we stay near live edge vs preserve continuity.
@@ -1093,6 +1104,8 @@ export default class Streamer {
       output.sentCodecConfig = false;
       output.sourceBaseTime = undefined;
       output.wallclockBaseTime = undefined;
+      output.playoutDelayMs = undefined;
+      output.stablePlayoutTicks = 0;
       output.catchingUp = false;
       output.catchupTicks = 0;
       output.catchupStableFrames = 0;
@@ -1281,6 +1294,8 @@ export default class Streamer {
     let outputAudio = undefined;
     let includeAudio = false;
     let isH264Output = false;
+    let isLiveOutput = false;
+    let isRecordOutput = false;
 
     let lastSPS = undefined;
     let lastPPS = undefined;
@@ -1292,6 +1307,9 @@ export default class Streamer {
     let policy = undefined;
     let requireKeyFrameStart = false;
     let playoutDelayMs = 0;
+    let minPlayoutDelayMs = 0;
+    let maxPlayoutDelayMs = 0;
+    let playoutAdjustStepMs = 0;
     let maxLagBehindLiveMs = 0;
     let dueTolerance = 0;
     let dueSlack = 0;
@@ -1302,15 +1320,21 @@ export default class Streamer {
     let normalVideoBurstLimit = 0;
 
     let state = undefined;
-    let due = undefined;
-    let caps = undefined;
-    let writes = undefined;
-
     let shouldCatchUp = false;
     let catchupExitedThisTick = false;
     let budgetDeadline = 0;
     let itemLag = 0;
     let lateness = 0;
+    let dueVideo = false;
+    let dueAudio = false;
+    let capVideo = false;
+    let capAudio = false;
+    let dueVideoTime = 0;
+    let dueAudioTime = 0;
+    let catchupAudioWrites = 0;
+    let catchupVideoWrites = 0;
+    let normalAudioWrites = 0;
+    let normalVideoWrites = 0;
 
     // Validate required inputs and shared timeline state before doing any work.
     if (typeof output !== 'object' || output === null || typeof dateNow !== 'number' || timeline instanceof MediaTimeline !== true) {
@@ -1330,6 +1354,8 @@ export default class Streamer {
     outputAudio = output.audio;
     includeAudio = output.includeAudio === true && outputAudio !== null;
     isH264Output = this.codecs?.video === StreamTransport.CODEC_TYPE.H264;
+    isLiveOutput = output.type === Streamer.STREAM_TYPE.LIVE;
+    isRecordOutput = output.type === Streamer.STREAM_TYPE.RECORD;
 
     // Resolve output policy.
     // Allows per-output tuning (live vs record) while falling back to sensible defaults.
@@ -1347,7 +1373,17 @@ export default class Streamer {
     // a fallback H264 image.
     requireKeyFrameStart = policy.requireKeyFrameStart === true || (isH264Output === true && output.seenKeyFrame !== true);
 
-    playoutDelayMs = Number.isFinite(policy.playoutDelayMs) === true && policy.playoutDelayMs >= 0 ? policy.playoutDelayMs : 120;
+    playoutDelayMs = Number.isFinite(output.playoutDelayMs) === true ? output.playoutDelayMs : policy.playoutDelayMs;
+    playoutDelayMs = Number.isFinite(playoutDelayMs) === true && playoutDelayMs >= 0 ? playoutDelayMs : 120;
+    minPlayoutDelayMs =
+      Number.isFinite(policy.minPlayoutDelayMs) === true && policy.minPlayoutDelayMs >= 0 ? policy.minPlayoutDelayMs : playoutDelayMs;
+    maxPlayoutDelayMs =
+      Number.isFinite(policy.maxPlayoutDelayMs) === true && policy.maxPlayoutDelayMs >= minPlayoutDelayMs
+        ? policy.maxPlayoutDelayMs
+        : Math.max(minPlayoutDelayMs, playoutDelayMs);
+    playoutAdjustStepMs =
+      Number.isFinite(policy.playoutAdjustStepMs) === true && policy.playoutAdjustStepMs > 0 ? policy.playoutAdjustStepMs : 20;
+    playoutDelayMs = Math.min(maxPlayoutDelayMs, Math.max(minPlayoutDelayMs, playoutDelayMs));
     maxLagBehindLiveMs =
       Number.isFinite(policy.maxLagBehindLiveMs) === true && policy.maxLagBehindLiveMs > 0 ? policy.maxLagBehindLiveMs : 750;
     dueTolerance = Number.isFinite(policy.dueTolerance) === true && policy.dueTolerance >= 0 ? policy.dueTolerance : 10;
@@ -1358,28 +1394,28 @@ export default class Streamer {
     catchupAudioBurstLimit =
       Number.isFinite(policy.catchupAudioBurstLimit) === true && policy.catchupAudioBurstLimit > 0
         ? policy.catchupAudioBurstLimit
-        : output.type === Streamer.STREAM_TYPE.RECORD
+        : isRecordOutput === true
           ? 4
           : 2;
 
     catchupVideoBurstLimit =
       Number.isFinite(policy.catchupVideoBurstLimit) === true && policy.catchupVideoBurstLimit > 0
         ? policy.catchupVideoBurstLimit
-        : output.type === Streamer.STREAM_TYPE.RECORD
+        : isRecordOutput === true
           ? 8
           : 4;
 
     normalAudioBurstLimit =
       Number.isFinite(policy.normalAudioBurstLimit) === true && policy.normalAudioBurstLimit > 0
         ? policy.normalAudioBurstLimit
-        : output.type === Streamer.STREAM_TYPE.RECORD
+        : isRecordOutput === true
           ? 4
           : 2;
 
     normalVideoBurstLimit =
       Number.isFinite(policy.normalVideoBurstLimit) === true && policy.normalVideoBurstLimit > 0
         ? policy.normalVideoBurstLimit
-        : output.type === Streamer.STREAM_TYPE.RECORD
+        : isRecordOutput === true
           ? 3
           : 2;
 
@@ -1402,30 +1438,12 @@ export default class Streamer {
       catchingUp: output.catchingUp === true,
       sourceBaseTime: output.sourceBaseTime,
       wallclockBaseTime: output.wallclockBaseTime,
+      playoutDelayMs: playoutDelayMs,
+      stablePlayoutTicks:
+        Number.isInteger(output.stablePlayoutTicks) === true && output.stablePlayoutTicks >= 0 ? output.stablePlayoutTicks : 0,
       catchupTicks: Number.isInteger(output.catchupTicks) === true && output.catchupTicks >= 0 ? output.catchupTicks : 0,
       catchupStableFrames:
         Number.isInteger(output.catchupStableFrames) === true && output.catchupStableFrames >= 0 ? output.catchupStableFrames : 0,
-    };
-
-    // Per-tick due/cap/write counters.
-    // These are intentionally reset each scheduler tick.
-    due = {
-      video: false,
-      audio: false,
-      videoTime: 0,
-      audioTime: 0,
-    };
-
-    caps = {
-      video: false,
-      audio: false,
-    };
-
-    writes = {
-      catchupAudio: 0,
-      catchupVideo: 0,
-      normalAudio: 0,
-      normalVideo: 0,
     };
 
     // Clamp cursors to the currently retained media window.
@@ -1456,6 +1474,8 @@ export default class Streamer {
 
     // Optional time budget for cooperative scheduling across outputs.
     budgetDeadline = typeof budgetMs === 'number' && budgetMs > 0 ? dateNow + budgetMs : 0;
+
+    playoutDelayMs = state.playoutDelayMs;
 
     // Detect if this output is too far behind the retained live head.
     // Uses the earliest protected cursor item as the lag reference.
@@ -1489,10 +1509,10 @@ export default class Streamer {
       videoItem = state.videoCursor < timelineEnd ? timeline.nextVideoFrom(state.videoCursor) : undefined;
       audioItem = includeAudio === true && state.audioCursor < timelineEnd ? timeline.nextAudioFrom(state.audioCursor) : undefined;
 
-      due.video = false;
-      due.audio = false;
-      caps.video = false;
-      caps.audio = false;
+      dueVideo = false;
+      dueAudio = false;
+      capVideo = false;
+      capAudio = false;
       selectedType = undefined;
 
       if (videoItem === undefined && audioItem === undefined) {
@@ -1520,53 +1540,53 @@ export default class Streamer {
         }
 
         if (typeof videoItem?.time === 'number') {
-          due.videoTime = state.wallclockBaseTime + (videoItem.time - state.sourceBaseTime);
-          due.video = due.videoTime <= dateNow + dueTolerance + dueSlack;
+          dueVideoTime = state.wallclockBaseTime + (videoItem.time - state.sourceBaseTime);
+          dueVideo = dueVideoTime <= dateNow + dueTolerance + dueSlack;
         }
 
         if (typeof audioItem?.time === 'number') {
-          due.audioTime = state.wallclockBaseTime + (audioItem.time - state.sourceBaseTime);
-          due.audio = due.audioTime <= dateNow + dueTolerance + dueSlack;
+          dueAudioTime = state.wallclockBaseTime + (audioItem.time - state.sourceBaseTime);
+          dueAudio = dueAudioTime <= dateNow + dueTolerance + dueSlack;
         }
       } else {
-        due.video = videoItem !== undefined;
-        due.audio = audioItem !== undefined;
-        due.videoTime = dateNow;
-        due.audioTime = dateNow;
+        dueVideo = videoItem !== undefined;
+        dueAudio = audioItem !== undefined;
+        dueVideoTime = dateNow;
+        dueAudioTime = dateNow;
       }
 
-      if (due.video !== true && due.audio !== true) {
+      if (dueVideo !== true && dueAudio !== true) {
         stopReason = 'not-due';
         break;
       }
 
       // Enforce burst limits separately for normal and catch-up playback.
-      if (due.video === true) {
-        caps.video =
-          (shouldCatchUp !== true && writes.normalVideo >= normalVideoBurstLimit) ||
-          (shouldCatchUp === true && writes.catchupVideo >= catchupVideoBurstLimit);
+      if (dueVideo === true) {
+        capVideo =
+          (shouldCatchUp !== true && normalVideoWrites >= normalVideoBurstLimit) ||
+          (shouldCatchUp === true && catchupVideoWrites >= catchupVideoBurstLimit);
       }
 
-      if (due.audio === true) {
-        caps.audio =
-          (shouldCatchUp !== true && writes.normalAudio >= normalAudioBurstLimit) ||
-          (shouldCatchUp === true && writes.catchupAudio >= catchupAudioBurstLimit);
+      if (dueAudio === true) {
+        capAudio =
+          (shouldCatchUp !== true && normalAudioWrites >= normalAudioBurstLimit) ||
+          (shouldCatchUp === true && catchupAudioWrites >= catchupAudioBurstLimit);
       }
 
-      if ((due.video !== true || caps.video === true) && (due.audio !== true || caps.audio === true)) {
+      if ((dueVideo !== true || capVideo === true) && (dueAudio !== true || capAudio === true)) {
         stopReason =
-          caps.video === true && caps.audio === true
+          capVideo === true && capAudio === true
             ? 'media-cap'
-            : caps.video === true
+            : capVideo === true
               ? 'video-cap'
-              : caps.audio === true
+              : capAudio === true
                 ? 'audio-cap'
                 : 'not-due';
         break;
       }
 
       // Choose the oldest due media item so A/V ordering remains timeline based.
-      if (due.audio === true && caps.audio !== true && (due.video !== true || caps.video === true || due.audioTime <= due.videoTime)) {
+      if (dueAudio === true && capAudio !== true && (dueVideo !== true || capVideo === true || dueAudioTime <= dueVideoTime)) {
         selectedType = Streamer.MEDIA_TYPE.AUDIO;
         item = audioItem;
       } else {
@@ -1584,11 +1604,28 @@ export default class Streamer {
       // If normal playback is badly late, re-anchor timing to avoid falling
       // further behind due to temporary scheduler or upstream jitter.
       if (shouldCatchUp !== true) {
-        lateness = dateNow - (selectedType === Streamer.MEDIA_TYPE.AUDIO ? due.audioTime : due.videoTime);
+        lateness = dateNow - (selectedType === Streamer.MEDIA_TYPE.AUDIO ? dueAudioTime : dueVideoTime);
 
         if (lateness > Math.max(playoutDelayMs / 2, 120)) {
+          if (isLiveOutput === true && state.playoutDelayMs < maxPlayoutDelayMs) {
+            state.playoutDelayMs = Math.min(maxPlayoutDelayMs, state.playoutDelayMs + playoutAdjustStepMs);
+            playoutDelayMs = state.playoutDelayMs;
+          }
+
+          state.stablePlayoutTicks = 0;
           state.sourceBaseTime = item.time;
           state.wallclockBaseTime = dateNow - playoutDelayMs;
+        } else if (isLiveOutput === true && state.playoutDelayMs > minPlayoutDelayMs && lateness <= dueTolerance + dueSlack) {
+          state.stablePlayoutTicks++;
+
+          if (state.stablePlayoutTicks >= OUTPUT_STABLE_PLAYOUT_TARGET) {
+            state.playoutDelayMs = Math.max(minPlayoutDelayMs, state.playoutDelayMs - playoutAdjustStepMs);
+            playoutDelayMs = state.playoutDelayMs;
+            state.stablePlayoutTicks = 0;
+            state.wallclockBaseTime = dateNow - playoutDelayMs - (item.time - state.sourceBaseTime);
+          }
+        } else if (lateness > dueTolerance + dueSlack) {
+          state.stablePlayoutTicks = 0;
         }
       }
 
@@ -1631,7 +1668,7 @@ export default class Streamer {
         this.#statsWrite(output, Streamer.MEDIA_TYPE.VIDEO, dateNow);
 
         if (shouldCatchUp === true) {
-          writes.catchupVideo++;
+          catchupVideoWrites++;
           state.catchupTicks++;
 
           if (typeof latestItemTime === 'number' && latestItemTime - item.time <= catchupExitThresholdMs) {
@@ -1644,13 +1681,14 @@ export default class Streamer {
           if (state.catchupTicks >= 2 && state.catchupStableFrames >= 2) {
             state.catchingUp = false;
             state.sourceBaseTime = item.time;
-            state.wallclockBaseTime = dateNow - playoutDelayMs;
+            state.wallclockBaseTime = dateNow - state.playoutDelayMs;
             state.catchupTicks = 0;
             state.catchupStableFrames = 0;
+            state.stablePlayoutTicks = 0;
             catchupExitedThisTick = true;
           }
         } else {
-          writes.normalVideo++;
+          normalVideoWrites++;
         }
 
         state.videoCursor = nextCursor;
@@ -1679,9 +1717,9 @@ export default class Streamer {
         this.#statsWrite(output, Streamer.MEDIA_TYPE.AUDIO, dateNow);
 
         if (shouldCatchUp === true) {
-          writes.catchupAudio++;
+          catchupAudioWrites++;
         } else {
-          writes.normalAudio++;
+          normalAudioWrites++;
         }
 
         state.audioCursor = nextCursor;
@@ -1691,12 +1729,12 @@ export default class Streamer {
     }
 
     // Diagnostic: audio was due but was blocked by video burst limits.
-    if (this.supportDump === true && stopReason === 'video-cap' && due.audio === true && caps.audio !== true) {
+    if (this.supportDump === true && stopReason === 'video-cap' && dueAudio === true && capAudio !== true) {
       diagnostics = output?.stats?.diagnostics;
 
       if (typeof diagnostics === 'object' && diagnostics !== null) {
         diagnostics.audioBlockedBehindVideo++;
-        diagnostics.maxBlockedAudioLagMs = Math.max(diagnostics.maxBlockedAudioLagMs, Math.max(0, dateNow - due.audioTime));
+        diagnostics.maxBlockedAudioLagMs = Math.max(diagnostics.maxBlockedAudioLagMs, Math.max(0, dateNow - dueAudioTime));
       }
     }
 
@@ -1713,6 +1751,8 @@ export default class Streamer {
     output.catchingUp = state.catchingUp;
     output.sourceBaseTime = state.sourceBaseTime;
     output.wallclockBaseTime = state.wallclockBaseTime;
+    output.playoutDelayMs = state.playoutDelayMs;
+    output.stablePlayoutTicks = state.stablePlayoutTicks;
     output.catchupTicks = state.catchupTicks;
     output.catchupStableFrames = state.catchupStableFrames;
   }
@@ -1820,6 +1860,13 @@ export default class Streamer {
     let timelineStats = this.#timeline?.stats;
     let video = this.#transport?.video;
     let audio = this.#transport?.audio;
+    let videoDrops = typeof mediaStats?.videoDrops === 'object' && mediaStats.videoDrops !== null ? mediaStats.videoDrops : {};
+    let videoReorder = typeof mediaStats?.videoReorder === 'object' && mediaStats.videoReorder !== null ? mediaStats.videoReorder : {};
+    let reconnectReasons = {};
+
+    if (typeof lifecycleStats?.reconnectReasons === 'object' && lifecycleStats.reconnectReasons !== null) {
+      reconnectReasons = lifecycleStats.reconnectReasons;
+    }
 
     let elapsed = (start, end) => (typeof start === 'number' && typeof end === 'number' ? end - start + 'ms' : '-');
 
@@ -1886,6 +1933,11 @@ export default class Streamer {
     this?.log?.info?.('      "maxVideoGapMs": %s', mediaStats?.maxVideoGapMs ?? 0);
     this?.log?.info?.('      "maxAudioGapMs": %s', mediaStats?.maxAudioGapMs ?? 0);
     this?.log?.info?.('      "largeAudioGaps": %s', mediaStats?.largeAudioGaps ?? 0);
+    this?.log?.info?.('      "audioSilenceFillFrames": %s', mediaStats?.audioSilenceFillFrames ?? 0);
+    this?.log?.info?.('      "audioSilenceFillMs": %s', Math.round(mediaStats?.audioSilenceFillMs ?? 0));
+    this?.log?.info?.('      "keyframeRequests": %s', mediaStats?.keyframeRequests ?? 0);
+    this?.log?.info?.('      "videoReorder": %j', videoReorder);
+    this?.log?.info?.('      "videoDrops": %j', videoDrops);
     this?.log?.info?.('    },');
     this?.log?.info?.('    "drops": {');
     this?.log?.info?.('      "videoBeforeKeyframe": %s', outputDrops?.videoBeforeKeyframe ?? 0);
@@ -1918,7 +1970,8 @@ export default class Streamer {
     this?.log?.info?.('      "audio": "%s"', age(mediaStats?.lastAudioAt));
     this?.log?.info?.('      "keyframe": "%s"', age(mediaStats?.lastKeyframeAt));
     this?.log?.info?.('    },');
-    this?.log?.info?.('    "reconnects": %s', lifecycleStats?.reconnects ?? 0);
+    this?.log?.info?.('    "reconnects": %s,', lifecycleStats?.reconnects ?? 0);
+    this?.log?.info?.('    "reconnectReasons": %j', reconnectReasons);
     this?.log?.info?.('  }');
     this?.log?.info?.('End of support dump for device uuid "%s" data.', this.nest_google_device_uuid);
   }

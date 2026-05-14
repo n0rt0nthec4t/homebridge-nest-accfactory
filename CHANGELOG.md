@@ -12,7 +12,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - Motion sensing on wired Nest Protect devices may report incorrect states due to recent firmware changes
 - Video from Google Home-hosted streams may be slow to start up
 
-## v0.4.3-alpha.1 (2026/05/xx)
+## v0.4.3 (2026/05/xx)
 
 ### ⚠️ Alpha Release Notes
 
@@ -29,13 +29,14 @@ While extensive testing has been performed, users may still encounter regression
 
 ### 📹 Camera Streaming Improvements
 
-- Major internal rewrite of camera and doorbell streaming to improve reliability and reduce stream instability
-- Improved HomeKit live streaming performance with smoother video playback and reduced ffmpeg timestamp warnings
-- Improved HomeKit Secure Video (HKSV) stream startup and decoder compatibility
-- Improved camera handling after Nest/Google credential refreshes and device migration events
+- Major internal rewrite of camera and doorbell streaming to improve reliability across live view and HomeKit Secure Video
+- Improved WebRTC streaming for Google Home-hosted cameras, with smoother live playback and fewer short audio interruptions
+- Improved audio/video synchronisation during live camera playback
+- Improved handling of brief network jitter, packet reordering, and stream timing drift
+- Improved HomeKit Secure Video (HKSV) startup and decoder compatibility
 - Improved stream recovery and reconnect handling for Nest and Google Home camera sessions
-- Improved camera audio/video synchronisation during live streaming
-- Reduced audio interruptions during live camera playback
+- Improved camera handling after Nest/Google credential refreshes, backend redirects, and device migration events
+- Reduced ffmpeg timestamp warnings during live streaming and recording
 
 ### 🔁 Behaviour Changes / Improvements
 
