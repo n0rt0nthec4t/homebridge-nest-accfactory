@@ -58,7 +58,7 @@ import { Decoder } from '@evan/opus';
 
 // Define nodejs module requirements
 import { Buffer } from 'node:buffer';
-import { setInterval, clearInterval } from 'node:timers';
+import { setInterval, clearInterval, setTimeout } from 'node:timers';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
@@ -103,6 +103,7 @@ const AUDIO_PLAYOUT_MAX_FRAMES_PER_TICK = 4; // Bound audio work per timer tick
 const AUDIO_PLAYOUT_MAX_SILENCE_FILL_MS = 160; // Cap blank PCM inserted for short upstream gaps
 const AUDIO_PLAYOUT_MICRO_GAP_MS = 40; // Wait for queued real audio rather than synthesize tiny timestamp holes
 const AUDIO_QUEUE_HEALTHY_FRAMES = 4; // Queue depth that indicates enough buffered audio to absorb a micro-gap
+const AUDIO_SILENCE_FILL_LOG_MIN_MS = 60; // Log only material fills unless the queue is shallow
 const AUDIO_QUEUE_MAX_FRAMES = 50; // Bound queued decoded audio frames
 const AUDIO_STARVATION_RECONNECT_MS = 3000; // Reconnect if audio has to synthesize this much PCM while video is active
 const VIDEO_RTP_REORDER_DELAY_MS = 120; // Hold video RTP briefly so reordered fragments/RTX can arrive before FU-A assembly
@@ -547,9 +548,14 @@ export default class WebRTC extends StreamTransport {
         );
 
         if (this.hasConsumers() === true) {
-          this.open().catch((error) => {
-            this?.log?.debug?.('Error reconnecting WebRTC for uuid "%s": %s', this.uuid, String(error));
-          });
+          // Defer reconnect until close() has left finally and #closeInProgress
+          // is false. Otherwise open() can see teardown in progress and abort
+          // after already moving lifecycle state back to CONNECTING.
+          setTimeout(() => {
+            this.open().catch((error) => {
+              this?.log?.debug?.('Error reconnecting WebRTC for uuid "%s": %s', this.uuid, String(error));
+            });
+          }, 0);
           return;
         }
       }
@@ -2291,7 +2297,10 @@ export default class WebRTC extends StreamTransport {
       playout.consecutiveSilenceFillMs =
         Number.isFinite(playout.consecutiveSilenceFillMs) === true ? playout.consecutiveSilenceFillMs + frameDuration : frameDuration;
 
-      if (typeof playout.lastSilenceFillLogTime !== 'number' || now - playout.lastSilenceFillLogTime >= 10000) {
+      if (
+        (playout.consecutiveSilenceFillMs >= AUDIO_SILENCE_FILL_LOG_MIN_MS || queue.length < AUDIO_QUEUE_HEALTHY_FRAMES) &&
+        (typeof playout.lastSilenceFillLogTime !== 'number' || now - playout.lastSilenceFillLogTime >= 10000)
+      ) {
         playout.lastSilenceFillLogTime = now;
         this?.log?.debug?.(
           'Filling short WebRTC audio gap for uuid "%s": fillMs=%s queue=%s',

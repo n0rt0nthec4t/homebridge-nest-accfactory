@@ -4,6 +4,16 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.3-alpha.4 (2026/05/xx)
+
+### Changed
+
+- `webrtc.js`
+  - Further relaxed WebRTC audio hard-resync tolerance for delayed callbacks after long-running stream testing
+  - Added WebRTC audio micro-gap tolerance so small timestamp holes are absorbed by queued real audio instead of immediately inserting blank PCM
+  - Reduced WebRTC audio gap debug noise by suppressing isolated single-frame fills when the queued audio depth remains healthy
+  - Deferred automatic WebRTC reconnect startup until teardown has fully cleared to avoid a reconnect attempt getting stuck at `transport-connecting`
+
 ## v0.4.3-alpha.3 (2026/05/13)
 
 ### Changed
@@ -12,7 +22,6 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
   - Increased WebRTC audio playout delay to improve tolerance of transport jitter before PCM is handed to `Streamer`
   - Relaxed WebRTC audio hard-resync thresholds so delayed callbacks do not create avoidable short silence-fill gaps
   - Changed audio silence fill so empty queue ticks are not treated as gaps unless RTP-derived timing shows audio is actually due
-  - Added WebRTC audio micro-gap tolerance so small timestamp holes are absorbed by queued real audio instead of immediately inserting blank PCM
   - Added sustained audio-starvation recovery that reconnects only when audio fill persists while video remains active
   - Added a small video RTP reorder window before H264 FU-A assembly so delayed fragments and RTX recovery can arrive before incomplete frames are abandoned
   - Added an extra young FU-A timestamp-switch guard at the drop point to avoid abandoning very recent non-keyframe fragments
