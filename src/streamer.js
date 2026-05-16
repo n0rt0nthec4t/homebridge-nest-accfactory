@@ -183,7 +183,6 @@ export default class Streamer {
   #sequenceCounters = {}; // Sequence counters for item types
   #itemIndex = 0; // Monotonic item index for shared media timeline cursor tracking
   #videoState = {}; // Video state tracking
-  #audioState = {}; // Audio state tracking
   #lastFallbackFrameTime = 0; // Timer for pacing fallback frames
   #lastBudgetLogTime = 0; // Last time budget processing was sampled/logged
   #outputErrors = 0; // Consecutive output loop failures for this instance
@@ -1050,14 +1049,19 @@ export default class Streamer {
         return;
       }
 
-      await this.#transport?.open?.(this.#connectOptions);
+      if (typeof this.#transport?.open === 'function') {
+        await this.#transport.open(this.#connectOptions);
+      }
     });
   }
 
   async #doClose() {
     return await this.#queueLifecycle(async () => {
       this.#resetSourceState();
-      await this.#transport?.close?.();
+
+      if (typeof this.#transport?.close === 'function') {
+        await this.#transport.close();
+      }
     });
   }
 
@@ -1081,7 +1085,6 @@ export default class Streamer {
     this.#sequenceCounters = {};
     this.#itemIndex = 0;
     this.#videoState = {};
-    this.#audioState = {};
     this.#lastMediaTime = {};
   }
 
@@ -1093,7 +1096,6 @@ export default class Streamer {
 
   #resetSourceState() {
     this.#videoState = {};
-    this.#audioState = {};
     this.#lastMediaTime = {};
 
     // A transport reconnect means a new encoded media session.

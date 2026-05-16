@@ -39,7 +39,7 @@
 // - Uses shared protobuf helpers for schema/type loading and traversal
 // - Creates and updates HomeKitDevice-based instances for supported device types
 //
-// Code version 2026.05.10
+// Code version 2026.05.15
 // Mark Hulskamp
 'use strict';
 
@@ -75,6 +75,9 @@ import {
 const SNAPSHOT_TIMEOUT = 7000; // Overall HomeKit snapshot timeout
 const SNAPSHOT_WAIT_TIMEOUT = 3000; // Wait for Google upload_live_image observe update
 const SNAPSHOT_FETCH_TIMEOUT = 3000; // HTTP fetch timeout for snapshot image
+const API_STREAM_LOOP_INTERVAL = 1000; // Normal subscribe/observe loop restart delay
+const API_STREAM_RETRY_INITIAL = 5000; // Initial retry delay after subscribe/observe failure
+const API_STREAM_RETRY_MAX = 60000; // Maximum retry delay during API outage/failure
 
 // We handle the connections to Nest/Google
 // Perform device management (additions/removals/updates)
@@ -239,6 +242,7 @@ export default class NestAccfactory {
 
   async #subscribeNestAPI(uuid, firstRun = true, fullRead = true) {
     let connection = this.#connections?.get(uuid);
+    let subscribeFailed = false;
 
     if (
       typeof connection !== 'object' ||
@@ -441,8 +445,12 @@ export default class NestAccfactory {
         }
 
         await this.#processData(uuid, changedData);
+
+        connection.subscribeRetryDelay = undefined;
       })
       .catch((error) => {
+        subscribeFailed = true;
+
         // Attempt to extract HTTP status code from error cause or error object
         let statusCode =
           error?.code !== undefined && error?.code !== null
@@ -475,14 +483,26 @@ export default class NestAccfactory {
       .finally(() => {
         // Only continue the subscription loop if this exact connection is still active and authorised.
         if (this.#connections?.get(uuid) === connection && connection.authorised === true) {
+          let subscribeDelay = API_STREAM_LOOP_INTERVAL;
+
+          if (subscribeFailed === true) {
+            subscribeDelay =
+              Number.isFinite(connection.subscribeRetryDelay) === true && connection.subscribeRetryDelay > 0
+                ? Math.min(connection.subscribeRetryDelay * 2, API_STREAM_RETRY_MAX)
+                : API_STREAM_RETRY_INITIAL;
+
+            connection.subscribeRetryDelay = subscribeDelay;
+          }
+
           clearTimeout(connection.subscribeTimer);
-          connection.subscribeTimer = setTimeout(() => this.#subscribeNestAPI(uuid, false, fullRead), 1000);
+          connection.subscribeTimer = setTimeout(() => this.#subscribeNestAPI(uuid, false, fullRead), subscribeDelay);
         }
       });
   }
 
   async #observeGoogleAPI(uuid) {
     let connection = this.#connections?.get(uuid);
+    let observeFailed = false;
 
     if (
       typeof connection !== 'object' ||
@@ -660,9 +680,13 @@ export default class NestAccfactory {
           }
 
           await this.#processData(uuid, changedData);
+
+          connection.observeRetryDelay = undefined;
         },
       )
       .catch((error) => {
+        observeFailed = true;
+
         this?.log?.debug?.(
           'Google API observe failed for connection "%s": %s',
           connection.name,
@@ -672,8 +696,19 @@ export default class NestAccfactory {
       .finally(() => {
         // Only continue the observe loop if this exact connection is still active and authorised.
         if (this.#connections?.get(uuid) === connection && connection.authorised === true) {
+          let observeDelay = API_STREAM_LOOP_INTERVAL;
+
+          if (observeFailed === true) {
+            observeDelay =
+              Number.isFinite(connection.observeRetryDelay) === true && connection.observeRetryDelay > 0
+                ? Math.min(connection.observeRetryDelay * 2, API_STREAM_RETRY_MAX)
+                : API_STREAM_RETRY_INITIAL;
+
+            connection.observeRetryDelay = observeDelay;
+          }
+
           clearTimeout(connection.observeTimer);
-          connection.observeTimer = setTimeout(() => this.#observeGoogleAPI(uuid), 1000);
+          connection.observeTimer = setTimeout(() => this.#observeGoogleAPI(uuid), observeDelay);
         }
       });
   }

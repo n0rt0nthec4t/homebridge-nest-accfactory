@@ -48,7 +48,7 @@
 // - Emitted media timestamps describe source media time derived from RTP timing
 // - Output playout timing, catch-up, and live latency policy are owned by Streamer
 //
-// Code version 2026.05.13
+// Code version 2026.05.16
 // Mark Hulskamp
 'use strict';
 
@@ -130,7 +130,6 @@ export default class WebRTC extends StreamTransport {
   #lastPacketAt = undefined; // Last playback packet receipt time in ms
   #closeInProgress = false; // True while close() teardown is running to avoid re-entrant shutdown races
   #reconnectPending = false; // Reconnect requested once socket closes
-  #reconnectReason = undefined; // Reason for reconnect
   #tracks = { audio: {}, video: {}, talkback: {} }; // Track state for audio and video
 
   constructor(options = {}) {
@@ -170,7 +169,7 @@ export default class WebRTC extends StreamTransport {
 
   // Class functions
   // eslint-disable-next-line no-unused-vars
-  async open(options = {}) {
+  async doOpen(options = {}) {
     if (this.connecting === true || this.closing === true || (this.#peerConnection !== undefined && this.closed !== true)) {
       return;
     }
@@ -191,7 +190,6 @@ export default class WebRTC extends StreamTransport {
     this.#lastPacketAt = undefined;
     this.#streamId = undefined;
     this.#reconnectPending = false;
-    this.#reconnectReason = undefined;
     this.#tracks = { audio: {}, video: {}, talkback: {} };
 
     // Resolve Google Foyer device ID lazily so constructor prefetch failure
@@ -334,12 +332,6 @@ export default class WebRTC extends StreamTransport {
         homeFoyerResponse.data[0].sdp || '',
       ) === true;
 
-    this?.log?.debug?.(
-      'WebRTC offer agreed with remote for uuid "%s"%s',
-      this.uuid,
-      localAccessGranted === true ? ' with local access granted' : '',
-    );
-
     // Track subscription callbacks feed the media-specific assembly/playout paths.
     // Audio is queued for paced playout; video is assembled into complete access units.
     this.#audioTransceiver?.onTrack?.subscribe?.((track) => {
@@ -387,8 +379,6 @@ export default class WebRTC extends StreamTransport {
       sdp: homeFoyerResponse.data[0].sdp,
     });
 
-    this?.log?.debug?.('Playback started from WebRTC for uuid "%s" with stream ID "%s"', this.uuid, this.#streamId);
-
     // Monitor connection status. ICE "connected" means transport is ready,
     // not that media has actually started. Actual source readiness is promoted
     // later on first video packet arrival.
@@ -405,7 +395,7 @@ export default class WebRTC extends StreamTransport {
 
       if (state === 'connected' || state === 'completed' || state === 'checking') {
         if (this.connected !== true) {
-          this.setState(StreamTransport.STATE.CONNECTED);
+          this.setState(StreamTransport.STATE.CONNECTED, { sessionId: this.#streamId });
         }
         return;
       }
@@ -451,7 +441,7 @@ export default class WebRTC extends StreamTransport {
     }
   }
 
-  async close() {
+  async doClose() {
     if (this.#closeInProgress === true) {
       return;
     }
@@ -459,7 +449,6 @@ export default class WebRTC extends StreamTransport {
     this.#closeInProgress = true;
     let closingPeerConnection = this.#peerConnection;
     let closingStreamId = this.#streamId;
-    let reconnectReason = this.#reconnectReason;
     let talkbackActive = this.#tracks?.talkback?.active === true;
 
     try {
@@ -468,7 +457,7 @@ export default class WebRTC extends StreamTransport {
       // During reconnect we keep SOURCE_RECONNECTING so the lifecycle state
       // does not bounce backwards during transport teardown.
       if (this.#reconnectPending !== true) {
-        this.setState(StreamTransport.STATE.CLOSING);
+        this.setState(StreamTransport.STATE.CLOSING, { sessionId: closingStreamId });
       }
 
       // Stop timers first so we stop producing any new work immediately.
@@ -539,36 +528,27 @@ export default class WebRTC extends StreamTransport {
         // We do this only after the current session has really closed to avoid racing
         // a new stream setup against a half-torn-down old connection.
         this.#reconnectPending = false;
-        this.#reconnectReason = undefined;
-
-        this?.log?.debug?.(
-          'Connection closed to WebRTC for uuid "%s", attempting reconnect%s',
-          this.uuid,
-          typeof reconnectReason === 'string' && reconnectReason !== '' ? ' (' + reconnectReason + ')' : '',
-        );
 
         if (this.hasConsumers() === true) {
           // Defer reconnect until close() has left finally and #closeInProgress
           // is false. Otherwise open() can see teardown in progress and abort
           // after already moving lifecycle state back to CONNECTING.
           setTimeout(() => {
-            this.open().catch((error) => {
-              this?.log?.debug?.('Error reconnecting WebRTC for uuid "%s": %s', this.uuid, String(error));
-            });
+            this.open();
           }, 0);
           return;
         }
       }
 
       if (this.hasConsumers() !== true && this.#reconnectPending !== true) {
-        this.setState(StreamTransport.STATE.CLOSED);
+        this.setState(StreamTransport.STATE.CLOSED, { sessionId: closingStreamId });
       }
     } finally {
       this.#closeInProgress = false;
     }
   }
 
-  update(options = {}) {
+  doUpdate(options = {}) {
     let newToken = undefined;
     let newUuid = undefined;
     let hadToken = typeof this.token === 'string' && this.token !== '';
@@ -628,7 +608,7 @@ export default class WebRTC extends StreamTransport {
     }
   }
 
-  async sendAudio(talkingBuffer) {
+  async doSendAudio(talkingBuffer) {
     if (
       Buffer.isBuffer(talkingBuffer) !== true ||
       this.#googleHomeDeviceUUID === undefined ||
@@ -856,16 +836,8 @@ export default class WebRTC extends StreamTransport {
         video.lastPLITime = undefined;
       }
 
-      if (typeof video.lastNACKTime === 'undefined') {
-        video.lastNACKTime = undefined;
-      }
-
       if (typeof video.keyframeRequestInFlight !== 'boolean') {
         video.keyframeRequestInFlight = false;
-      }
-
-      if (typeof video.lastIDRTime === 'undefined') {
-        video.lastIDRTime = undefined;
       }
 
       if (typeof video.jitter !== 'object' || video.jitter === null) {
@@ -881,7 +853,6 @@ export default class WebRTC extends StreamTransport {
           state: 'STABLE',
           events: [],
           cleanScore: 0,
-          lastCleanKeyframeTime: undefined,
           suppressDeltas: false,
           lastSuppressedLogTime: undefined,
         };
@@ -892,13 +863,6 @@ export default class WebRTC extends StreamTransport {
           hasAcceptedKeyframe: false,
           lastAcceptedKeyframeTime: undefined,
           deltaEmittedSinceKeyframe: 0,
-          deltaFuStartsSinceKeyframe: 0,
-          deltaFuCompletesSinceKeyframe: 0,
-          deltaFuGraceDefers: 0,
-          deltaFuAbandonedTsSwitch: 0,
-          deltaPendingAbandonedTsSwitch: 0,
-          deltaEarlyAbandon: 0,
-          auditLegendLogged: false,
         };
       }
 
@@ -1191,13 +1155,6 @@ export default class WebRTC extends StreamTransport {
         hasAcceptedKeyframe: false,
         lastAcceptedKeyframeTime: undefined,
         deltaEmittedSinceKeyframe: 0,
-        deltaFuStartsSinceKeyframe: 0,
-        deltaFuCompletesSinceKeyframe: 0,
-        deltaFuGraceDefers: 0,
-        deltaFuAbandonedTsSwitch: 0,
-        deltaPendingAbandonedTsSwitch: 0,
-        deltaEarlyAbandon: 0,
-        auditLegendLogged: false,
       };
       video.deltaAudit = deltaAudit;
     }
@@ -1340,7 +1297,6 @@ export default class WebRTC extends StreamTransport {
 
       if (Number.isFinite(fuAgeMs) === true && fuAgeMs <= DELTA_FU_SWITCH_GRACE_MS) {
         if (incomingIsIdrFuStart !== true) {
-          deltaAudit.deltaFuGraceDefers++;
           this.recordVideoReorder('fuTimestampDefers');
 
           return;
@@ -1370,14 +1326,6 @@ export default class WebRTC extends StreamTransport {
         this.#flushPendingVideoFrame();
       } else {
         pendingAgeMs = typeof h264.pendingFirstPacketTime === 'number' ? Date.now() - h264.pendingFirstPacketTime : undefined;
-
-        if (h264.pendingKeyFrame !== true) {
-          deltaAudit.deltaPendingAbandonedTsSwitch++;
-
-          if (Number.isFinite(pendingAgeMs) === true && pendingAgeMs <= 80) {
-            deltaAudit.deltaEarlyAbandon++;
-          }
-        }
 
         this.recordVideoDrop(h264.pendingKeyFrame === true ? 'pending-keyframe-incomplete' : 'pending-delta-incomplete');
 
@@ -1411,16 +1359,10 @@ export default class WebRTC extends StreamTransport {
 
       if (h264.fuNalType === StreamTransport.H264NALUS.TYPES.SLICE_NON_IDR) {
         if (Number.isFinite(fuAgeMs) === true && fuAgeMs <= DELTA_FU_SWITCH_GRACE_MS && incomingIsIdrFuStart !== true) {
-          deltaAudit.deltaFuGraceDefers++;
-          this.recordVideoReorder('fuTimestampDefers');
+        this.recordVideoReorder('fuTimestampDefers');
           return;
         }
 
-        deltaAudit.deltaFuAbandonedTsSwitch++;
-
-        if (Number.isFinite(fuAgeMs) === true && fuAgeMs <= 80) {
-          deltaAudit.deltaEarlyAbandon++;
-        }
       }
 
       this.recordVideoDrop(h264.fuNalType === StreamTransport.H264NALUS.TYPES.IDR ? 'fu-keyframe-incomplete' : 'fu-delta-incomplete');
@@ -1593,9 +1535,6 @@ export default class WebRTC extends StreamTransport {
         h264.fuParts.push(part);
         h264.fuBytes += part.length;
 
-        if (fuNalType === StreamTransport.H264NALUS.TYPES.SLICE_NON_IDR) {
-          deltaAudit.deltaFuStartsSinceKeyframe++;
-        }
       } else {
         // Non-start FU-A packets must belong to an existing fragmented NAL for the same RTP timestamp
         if (
@@ -1634,7 +1573,6 @@ export default class WebRTC extends StreamTransport {
 
         if (fuNalType === StreamTransport.H264NALUS.TYPES.SLICE_NON_IDR) {
           h264.pendingHasVcl = true;
-          deltaAudit.deltaFuCompletesSinceKeyframe++;
         }
 
         this.#resetFragmentedVideoFrame();
@@ -1740,13 +1678,6 @@ export default class WebRTC extends StreamTransport {
         hasAcceptedKeyframe: false,
         lastAcceptedKeyframeTime: undefined,
         deltaEmittedSinceKeyframe: 0,
-        deltaFuStartsSinceKeyframe: 0,
-        deltaFuCompletesSinceKeyframe: 0,
-        deltaFuGraceDefers: 0,
-        deltaFuAbandonedTsSwitch: 0,
-        deltaPendingAbandonedTsSwitch: 0,
-        deltaEarlyAbandon: 0,
-        auditLegendLogged: false,
       };
       video.deltaAudit = deltaAudit;
     }
@@ -2056,7 +1987,6 @@ export default class WebRTC extends StreamTransport {
 
     // A good keyframe means startup is complete and any startup PLI loop can stop
     if (pendingKeyFrame === true) {
-      video.lastIDRTime = now;
       deltaAudit.hasAcceptedKeyframe = true;
       deltaAudit.lastAcceptedKeyframeTime = now;
       deltaAudit.deltaEmittedSinceKeyframe = 0;
@@ -2066,7 +1996,7 @@ export default class WebRTC extends StreamTransport {
 
     // Mark source ready once the first decodable keyframe is emitted
     if (pendingKeyFrame === true && this.ready !== true && this.closed !== true) {
-      this.setState(StreamTransport.STATE.READY);
+      this.setState(StreamTransport.STATE.READY, { sessionId: this.#streamId });
     }
 
     if (recoveringDeltaProbe === true && video?.health?.state === 'RECOVERING' && video?.health?.suppressDeltas === true) {
@@ -2087,10 +2017,10 @@ export default class WebRTC extends StreamTransport {
 
       if (Number.isFinite(resolution?.width) === true && Number.isFinite(resolution?.height) === true) {
         if (this.video.width !== resolution.width || this.video.height !== resolution.height) {
-          this.video.width = resolution.width;
-          this.video.height = resolution.height;
-
-          this?.log?.debug?.('Detected WebRTC video resolution for uuid "%s": %sx%s', this.uuid, this.video.width, this.video.height);
+          this.updateVideoMetadata({
+            width: resolution.width,
+            height: resolution.height,
+          });
         }
       }
 
@@ -2103,27 +2033,11 @@ export default class WebRTC extends StreamTransport {
     if (typeof videoOutput.lastEmittedTimestamp === 'number' && pendingTimestamp > videoOutput.lastEmittedTimestamp) {
       let frameDuration = pendingTimestamp - videoOutput.lastEmittedTimestamp;
       let instantFps = frameDuration > 0 ? 1000 / frameDuration : undefined;
-      let previousFPS = this.video.fps;
 
       if (Number.isFinite(instantFps) === true && instantFps >= 1 && instantFps <= 60) {
-        this.video.fps =
-          Number.isFinite(this.video.fps) === true && this.video.fps > 0 ? this.video.fps * 0.8 + instantFps * 0.2 : instantFps;
-
-        // Log initial FPS detection.
-        if (Number.isFinite(previousFPS) !== true) {
-          this?.log?.debug?.('Detected WebRTC video FPS for uuid "%s": %sfps', this.uuid, Math.round(this.video.fps));
-        }
-
-        // Log significant FPS changes.
-        if (
-          Number.isFinite(previousFPS) === true &&
-          Math.abs(Math.round(this.video.fps) - Math.round(previousFPS)) >= 3 &&
-          (typeof videoOutput.lastFPSLogTime !== 'number' || Date.now() - videoOutput.lastFPSLogTime >= 30000)
-        ) {
-          videoOutput.lastFPSLogTime = Date.now();
-
-          this?.log?.debug?.('WebRTC video FPS changed for uuid "%s": %sfps', this.uuid, Math.round(this.video.fps));
-        }
+        this.updateVideoMetadata({
+          fps: Number.isFinite(this.video.fps) === true && this.video.fps > 0 ? this.video.fps * 0.8 + instantFps * 0.2 : instantFps,
+        });
       }
     }
 
@@ -2557,7 +2471,6 @@ export default class WebRTC extends StreamTransport {
         badNonClampEvents: 0,
         clampEvents: 0,
         cleanScore: 0,
-        lastCleanKeyframeTime: undefined,
         suppressDeltas: false,
         lastSuppressedLogTime: undefined,
       };
@@ -2710,10 +2623,6 @@ export default class WebRTC extends StreamTransport {
       }
     }
 
-    if (isKeyFrame === true) {
-      health.lastCleanKeyframeTime = now;
-    }
-
     if (health.state === 'UNSTABLE' && isKeyFrame === true) {
       health.state = 'RECOVERING';
       // Slightly stricter: first clean keyframe enters RECOVERING.
@@ -2791,9 +2700,8 @@ export default class WebRTC extends StreamTransport {
     }
 
     this.#reconnectPending = true;
-    this.#reconnectReason = reason;
 
-    this.setState(StreamTransport.STATE.RECONNECTING, reason);
+    this.setState(StreamTransport.STATE.RECONNECTING, reason, { sessionId: this.#streamId });
   }
 
   #setupGoogleHomeFoyer() {

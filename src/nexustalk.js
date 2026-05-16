@@ -43,7 +43,7 @@
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.05.13
+// Code version 2026.05.16
 // Mark Hulskamp
 'use strict';
 
@@ -140,7 +140,6 @@ export default class NexusTalk extends StreamTransport {
   #lastPacketAt = undefined; // Last playback packet receipt time in ms
   #reconnectPending = false; // Reconnect requested once socket closes
   #reconnectHost = undefined; // Host to reconnect to
-  #reconnectReason = undefined; // Reason for reconnect
   #sessionStartTime = undefined; // Shared session time anchor in ms for all playback channels
   #channels = {
     video: {
@@ -158,11 +157,6 @@ export default class NexusTalk extends StreamTransport {
       startOffset: 0,
       mediaTime: undefined,
     },
-  };
-
-  #talkback = {
-    active: false,
-    lastPacketTime: undefined,
   };
 
   constructor(options = {}) {
@@ -214,7 +208,7 @@ export default class NexusTalk extends StreamTransport {
   }
 
   // Class functions
-  async open(options = {}) {
+  async doOpen(options = {}) {
     let connectHost = typeof options?.host === 'string' && options.host !== '' ? options.host : this.nexustalk_host;
 
     if (typeof connectHost !== 'string' || connectHost === '') {
@@ -234,9 +228,8 @@ export default class NexusTalk extends StreamTransport {
     this.#authorised = false;
     this.#resetPacketState(true);
 
-    this?.log?.debug?.('Connection started to "%s"', connectHost);
     this.#host = connectHost; // Update internal host name since we’re about to connect
-    this.setState(StreamTransport.STATE.CONNECTING);
+    this.setState(StreamTransport.STATE.CONNECTING, { host: connectHost });
 
     // Wrap tls.connect() in a Promise so we can await the TLS handshake
     try {
@@ -248,8 +241,7 @@ export default class NexusTalk extends StreamTransport {
           }
 
           // Opened connection to Nexus server, so now need to authenticate ourselves
-          this?.log?.debug?.('Connection established to "%s"', connectHost);
-          this.setState(StreamTransport.STATE.CONNECTED);
+          this.setState(StreamTransport.STATE.CONNECTED, { host: connectHost });
 
           socket.setKeepAlive(true); // Keep socket connection alive
           this.#authenticate(false); // Send authentication request
@@ -299,30 +291,17 @@ export default class NexusTalk extends StreamTransport {
 
           if (this.#reconnectPending === true && this.hasConsumers() === true) {
             let reconnectHost = this.#reconnectHost;
-            let reconnectReason = this.#reconnectReason;
 
             this.#reconnectPending = false;
             this.#reconnectHost = undefined;
-            this.#reconnectReason = undefined;
 
             if (typeof reconnectHost === 'string' && reconnectHost !== '') {
-              this?.log?.debug?.(
-                'Connection closed to "%s", %s to "%s"',
-                connectHost,
-                reconnectReason === 'redirect' ? 'redirecting' : 'attempting reconnection',
-                reconnectHost,
-              );
-
-              this.open({ host: reconnectHost, forceReconnect: true }).catch((error) => {
-                this?.log?.debug?.('Error reconnecting NexusTalk for uuid "%s": %s', this.uuid, String(error));
-                this.setState(StreamTransport.STATE.CLOSED, 'reconnect-failed');
-              });
+              this.open({ host: reconnectHost, forceReconnect: true });
               return;
             }
           }
 
-          this?.log?.debug?.('Connection closed to "%s"', connectHost);
-          this.setState(StreamTransport.STATE.CLOSED, 'socket-close');
+          this.setState(StreamTransport.STATE.CLOSED, 'socket-close', { host: connectHost });
         });
       });
     } catch (error) {
@@ -330,18 +309,15 @@ export default class NexusTalk extends StreamTransport {
 
       if (this.#socket === undefined && this.hasConsumers() === true) {
         this.#requestReconnect(connectHost, 'connect-failed');
-        this.open({ host: this.#reconnectHost }).catch((connectError) => {
-          this?.log?.debug?.('Error reconnecting NexusTalk for uuid "%s": %s', this.uuid, String(connectError));
-          this.setState(StreamTransport.STATE.CLOSED, 'reconnect-failed');
-        });
+        this.open({ host: this.#reconnectHost });
         return;
       }
 
-      this.setState(StreamTransport.STATE.CLOSED, 'connect-failed');
+      this.setState(StreamTransport.STATE.CLOSED, 'connect-failed', { host: connectHost });
     }
   }
 
-  async close(stopStreamFirst = true) {
+  async doClose(stopStreamFirst = true) {
     let reconnecting = this.#reconnectPending === true;
     let hadSocket = this.#socket !== undefined;
 
@@ -370,7 +346,7 @@ export default class NexusTalk extends StreamTransport {
       // The terminal closed state is owned by the socket 'close' handler.
       // For reconnect/redirect paths we keep the state as RECONNECTING
       // until the next connect attempt begins.
-      this.setState(StreamTransport.STATE.CLOSING);
+      this.setState(StreamTransport.STATE.CLOSING, { host: this.#host });
 
       // Flush any final pending NexusTalk video frame before resetting channel state.
       // Do not do this during reconnect, otherwise the final frame from the old session
@@ -380,7 +356,7 @@ export default class NexusTalk extends StreamTransport {
       this.#clearMessageQueue(0);
 
       if (hadSocket !== true) {
-        this.setState(StreamTransport.STATE.CLOSED, 'closed');
+        this.setState(StreamTransport.STATE.CLOSED, 'closed', { host: this.#host });
       }
     }
 
@@ -391,7 +367,7 @@ export default class NexusTalk extends StreamTransport {
     this.#resetPacketState(true);
   }
 
-  async update(options = {}) {
+  async doUpdate(options = {}) {
     let newToken = undefined;
     let newHost = undefined;
     let newUuid = undefined;
@@ -464,14 +440,12 @@ export default class NexusTalk extends StreamTransport {
       if (hadHost === true && this.hasConsumers() === true && this.#reconnectPending !== true) {
         this.#requestReconnect(newHost, 'host-update');
 
-        await this.close().catch((error) => {
-          this?.log?.debug?.('Error closing NexusTalk for uuid "%s": %s', this.uuid, String(error));
-        });
+        await this.close();
       }
     }
   }
 
-  sendAudio(talkingBuffer) {
+  doSendAudio(talkingBuffer) {
     let AudioPayload = undefined;
     let encodedData = undefined;
 
@@ -486,10 +460,10 @@ export default class NexusTalk extends StreamTransport {
 
     try {
       encodedData = AudioPayload.encode(
-        AudioPayload.fromObject({
+        AudioPayload.create({
           payload: talkingBuffer,
           sessionId: this.#sessionId,
-          codec: this.talkback.codec,
+          codec: 0, // SPEEX CODEC ID in NexusTalk is 0
           sampleRate: this.talkback.sampleRate,
         }),
       ).finish();
@@ -498,7 +472,6 @@ export default class NexusTalk extends StreamTransport {
       return;
     }
 
-    this.#talkback.lastPacketTime = Date.now();
     this.#sendMessage(MEDIA_TYPE.AUDIO_PAYLOAD, encodedData);
   }
 
@@ -713,7 +686,6 @@ export default class NexusTalk extends StreamTransport {
       return;
     }
 
-    this?.log?.debug?.('Performing authentication to "%s"', this.#host);
     this.#sendMessage(MEDIA_TYPE.HELLO, encodedData);
   }
 
@@ -740,11 +712,8 @@ export default class NexusTalk extends StreamTransport {
       return;
     }
 
-    this?.log?.debug?.('Redirect requested from "%s" to "%s"', this.#host, redirectToHost);
-    this.#requestReconnect(redirectToHost, 'redirect');
-    this.close().catch((error) => {
-      this?.log?.debug?.('Error closing NexusTalk for uuid "%s": %s', this.uuid, String(error));
-    });
+    this.#requestReconnect(redirectToHost, 'redirect', { fromHost: this.#host, toHost: redirectToHost });
+    this.close();
   }
 
   #handlePlaybackBegin(payload) {
@@ -856,8 +825,6 @@ export default class NexusTalk extends StreamTransport {
     this.#sessionId = decodedMessage?.sessionId;
     this.#lastPacketAt = Date.now();
     this.#startStalledMonitor();
-
-    this?.log?.debug?.('Playback started from "%s" with session ID "%s"', this.#host, this.#sessionId);
   }
 
   #handlePlaybackPacket(payload) {
@@ -921,10 +888,10 @@ export default class NexusTalk extends StreamTransport {
           resolution = StreamTransport.getH264Resolution(nalu.data);
 
           if (Number.isFinite(resolution?.width) === true && Number.isFinite(resolution?.height) === true) {
-            this.video.width = resolution.width;
-            this.video.height = resolution.height;
-
-            this?.log?.debug?.('Detected NexusTalk video resolution for uuid "%s": %sx%s', this.uuid, this.video.width, this.video.height);
+            this.updateVideoMetadata({
+              width: resolution.width,
+              height: resolution.height,
+            });
           }
 
           // Only one SPS is needed.
@@ -936,7 +903,7 @@ export default class NexusTalk extends StreamTransport {
 
       if (this.connected === true && this.ready !== true) {
         // Transition to READY now that we have real video packets.
-        this.setState(StreamTransport.STATE.READY);
+        this.setState(StreamTransport.STATE.READY, { host: this.#host, sessionId: this.#sessionId });
       }
 
       // New timestamp means the previous buffered NALs belong to the prior frame/access unit.
@@ -1049,9 +1016,7 @@ export default class NexusTalk extends StreamTransport {
       // Normal playback ended ie: when we stopped playback.
       this?.log?.debug?.('Playback ended on "%s"', this.#host);
 
-      this.close().catch((error) => {
-        this?.log?.debug?.('Error closing NexusTalk for uuid "%s": %s', this.uuid, String(error));
-      });
+      this.close();
 
       return;
     }
@@ -1067,11 +1032,9 @@ export default class NexusTalk extends StreamTransport {
         this.uuid,
       );
 
-      this.setState(StreamTransport.STATE.CLOSING, 'camera-unreachable');
+      this.setState(StreamTransport.STATE.CLOSING, 'camera-unreachable', { host: this.#host });
 
-      this.close().catch((error) => {
-        this?.log?.debug?.('Error closing NexusTalk for uuid "%s": %s', this.uuid, String(error));
-      });
+      this.close();
 
       return;
     }
@@ -1081,9 +1044,7 @@ export default class NexusTalk extends StreamTransport {
 
     this.#requestReconnect(this.#host, 'playback-end');
 
-    this.close().catch((error) => {
-      this?.log?.debug?.('Error closing NexusTalk for uuid "%s": %s', this.uuid, String(error));
-    });
+    this.close();
   }
 
   #handleNexusError(payload) {
@@ -1100,9 +1061,7 @@ export default class NexusTalk extends StreamTransport {
       if (decodedMessage.code === 'ERROR_AUTHORIZATION_FAILED') {
         this?.log?.debug?.('Authorisation failed on "%s" for uuid "%s". Reconnecting NexusTalk session.', this.#host, this.uuid);
         this.#requestReconnect(this.#host, 'reauthorise');
-        this.close().catch((error) => {
-          this?.log?.debug?.('Error closing NexusTalk for uuid "%s": %s', this.uuid, String(error));
-        });
+        this.close();
       } else {
         // NexusStreamer Error, packet.message contains the message
         this?.log?.debug?.('NexusTalk error from "%s": %s', this.#host, decodedMessage.message);
@@ -1113,8 +1072,6 @@ export default class NexusTalk extends StreamTransport {
   #handleTalkbackBegin(payload) {
     // No payload fields currently required here
     if (Buffer.isBuffer(payload) === true) {
-      this.#talkback.active = true;
-      this.#talkback.lastPacketTime = undefined; // reset timing for new session
       this?.log?.debug?.('Talking started on uuid "%s"', this.uuid);
     }
   }
@@ -1122,8 +1079,6 @@ export default class NexusTalk extends StreamTransport {
   #handleTalkbackEnd(payload) {
     // No payload fields currently required here
     if (Buffer.isBuffer(payload) === true) {
-      this.#talkback.active = false;
-      this.#talkback.lastPacketTime = undefined;
       this?.log?.debug?.('Talking ended on uuid "%s"', this.uuid);
     }
   }
@@ -1302,7 +1257,7 @@ export default class NexusTalk extends StreamTransport {
     }
   }
 
-  #requestReconnect(host, reason) {
+  #requestReconnect(host, reason, context = undefined) {
     // Request a reconnect once the current socket is closed.
     // This does NOT perform the reconnect immediately.
     // The actual reconnect is handled centrally in the socket 'close' handler.
@@ -1314,15 +1269,12 @@ export default class NexusTalk extends StreamTransport {
     if ((this.#reconnectHost ?? '') === '') {
       this.#reconnectHost = this.#host ?? this.nexustalk_host;
     }
-
-    this.#reconnectReason = reason;
-
     if (this.#reconnectPending === true) {
       return;
     }
 
     this.#reconnectPending = true;
-    this.setState(StreamTransport.STATE.RECONNECTING, reason);
+    this.setState(StreamTransport.STATE.RECONNECTING, reason, context ?? { host: this.#reconnectHost });
   }
 
   #canWrite(requiresAuthorisation = false) {
@@ -1375,9 +1327,7 @@ export default class NexusTalk extends StreamTransport {
           Math.round(STALLED_TIMEOUT / 1000),
         );
         this.#requestReconnect(this.#host, 'stalled');
-        this.close().catch((error) => {
-          this?.log?.debug?.('Error closing NexusTalk for uuid "%s": %s', this.uuid, String(error));
-        });
+        this.close();
       },
       Math.max(1000, Math.round(STALLED_TIMEOUT / 2)),
     );
@@ -1482,27 +1432,11 @@ export default class NexusTalk extends StreamTransport {
     if (typeof video.lastEmittedTimestamp === 'number' && pendingTimestamp > video.lastEmittedTimestamp) {
       let frameDuration = pendingTimestamp - video.lastEmittedTimestamp;
       let instantFps = frameDuration > 0 ? 1000 / frameDuration : undefined;
-      let previousFPS = this.video.fps;
 
       if (Number.isFinite(instantFps) === true && instantFps >= 1 && instantFps <= 60) {
-        this.video.fps =
-          Number.isFinite(this.video.fps) === true && this.video.fps > 0 ? this.video.fps * 0.8 + instantFps * 0.2 : instantFps;
-
-        // Log initial FPS detection.
-        if (Number.isFinite(previousFPS) !== true) {
-          this?.log?.debug?.('Detected NexusTalk video FPS for uuid "%s": %sfps', this.uuid, Math.round(this.video.fps));
-        }
-
-        // Log significant FPS changes (camera profile changes, adaptive streams, etc).
-        if (
-          Number.isFinite(previousFPS) === true &&
-          Math.abs(Math.round(this.video.fps) - Math.round(previousFPS)) >= 3 &&
-          (typeof video.lastFPSLogTime !== 'number' || Date.now() - video.lastFPSLogTime >= 30000)
-        ) {
-          video.lastFPSLogTime = Date.now();
-
-          this?.log?.debug?.('NexusTalk video FPS changed for uuid "%s": %sfps', this.uuid, Math.round(this.video.fps));
-        }
+        this.updateVideoMetadata({
+          fps: Number.isFinite(this.video.fps) === true && this.video.fps > 0 ? this.video.fps * 0.8 + instantFps * 0.2 : instantFps,
+        });
       }
     }
 
@@ -1570,8 +1504,5 @@ export default class NexusTalk extends StreamTransport {
     this.#channels.audio.startOffset = 0;
     this.#channels.audio.mediaTime = undefined;
 
-    // Reset talkback state as well since this can also change on each stream
-    this.#talkback.active = false;
-    this.#talkback.lastPacketTime = undefined;
   }
 }

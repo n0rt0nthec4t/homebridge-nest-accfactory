@@ -35,12 +35,14 @@
 // - CLOSING
 // - CLOSED
 //
-// Code version 2026.05.13
+// Code version 2026.05.16
 // Mark Hulskamp
 'use strict';
 
 // Define nodejs module requirements
 import { Buffer } from 'node:buffer';
+
+const VIDEO_FPS_LOG_CHANGE_THRESHOLD = 5; // Minimum rounded FPS change before logging updated stream media
 
 // StreamTransport object
 export default class StreamTransport {
@@ -151,6 +153,12 @@ export default class StreamTransport {
 
   #state = StreamTransport.STATE.CLOSED; // Current transport lifecycle state
   #mediaSequences = {}; // Per-media-type fallback sequence counters
+  #reportedVideoMetadata = {
+    width: undefined,
+    height: undefined,
+    fps: undefined,
+    lastFPSLogTime: undefined,
+  }; // Last video metadata values reported to debug logs
 
   constructor(options = {}) {
     // Optional consumer callback interface.
@@ -207,25 +215,68 @@ export default class StreamTransport {
     };
   }
 
-  // eslint-disable-next-line no-unused-vars
   async open(options = undefined) {
-    // Override in transport implementation.
+    // Public transport lifecycle API.
+    // Streamer calls this wrapper; subclasses implement doOpen().
+    // Do not override this method in protocol transports.
+    try {
+      return await this.doOpen(options);
+    } catch (error) {
+      this?.log?.debug?.('Stream transport open failed for uuid "%s": %s', this.uuid, error?.message || String(error));
+    }
+  }
+
+  async close(...args) {
+    // Public transport lifecycle API.
+    // Streamer calls this wrapper; subclasses implement doClose().
+    // Do not override this method in protocol transports.
+    try {
+      return await this.doClose(...args);
+    } catch (error) {
+      this?.log?.debug?.('Stream transport close failed for uuid "%s": %s', this.uuid, error?.message || String(error));
+    }
+  }
+
+  async sendAudio(data) {
+    // Public talkback/audio-send API.
+    // Streamer calls this wrapper; subclasses implement doSendAudio().
+    // Do not override this method in protocol transports.
+    try {
+      return await this.doSendAudio(data);
+    } catch (error) {
+      this?.log?.debug?.('Stream transport talkback send failed for uuid "%s": %s', this.uuid, error?.message || String(error));
+    }
+  }
+
+  async update(options = {}) {
+    // Public runtime configuration API.
+    // Streamer calls this wrapper; subclasses implement doUpdate().
+    // Do not override this method in protocol transports.
+    try {
+      return await this.doUpdate(options);
+    } catch (error) {
+      this?.log?.debug?.('Stream transport update failed for uuid "%s": %s', this.uuid, error?.message || String(error));
+    }
+  }
+
+  async doOpen() {
+    // Optional protocol hook called by open().
     // Used for establishing protocol/session connectivity.
   }
 
-  async close() {
-    // Override in transport implementation.
+  async doClose() {
+    // Optional protocol hook called by close().
     // Used for shutting down protocol/session connectivity.
   }
 
-  // eslint-disable-next-line no-unused-vars
-  sendAudio(data) {
-    // Override in transport implementation when talkback/audio send is supported.
+  async doSendAudio() {
+    // Optional protocol hook called by sendAudio().
+    // Implement when talkback/audio send is supported.
   }
 
-  // eslint-disable-next-line no-unused-vars
-  async update(options = {}) {
-    // Optional override in subclasses for dynamic transport configuration updates (e.g. bitrate changes).
+  async doUpdate() {
+    // Optional protocol hook called by update().
+    // Used for dynamic transport configuration updates.
   }
 
   emitMedia(media) {
@@ -346,8 +397,24 @@ export default class StreamTransport {
     this?.consumer?.media?.(media);
   }
 
-  setState(type, reason = undefined) {
+  setState(type, reason = undefined, context = undefined) {
     let now = Date.now();
+    let details = undefined;
+    let contextText = '';
+
+    // setState(type, context) is accepted as a shorthand when there is no
+    // failure/reconnect reason. This keeps call sites readable for normal
+    // CONNECTING/CONNECTED/READY transitions that only add host/session detail.
+    if (typeof reason === 'object' && reason !== null) {
+      context = reason;
+      reason = undefined;
+    }
+
+    // Context is optional diagnostic metadata for the shared lifecycle log only.
+    // It is deliberately not forwarded to Streamer so the transport state
+    // contract remains state + reason, while logs can still include protocol
+    // details such as NexusTalk host redirects or WebRTC stream IDs.
+    details = typeof context === 'object' && context !== null ? context : {};
 
     // Ignore invalid state values.
     if (Object.values(StreamTransport.STATE).includes(type) !== true) {
@@ -397,15 +464,85 @@ export default class StreamTransport {
 
     this.#state = type;
 
+    // Fold protocol-specific lifecycle details into the single shared state
+    // log line instead of having each transport emit extra connection logs.
+    if (typeof details?.host === 'string' && details.host !== '') {
+      contextText += ' on "' + details.host + '"';
+    }
+
+    if (typeof details?.fromHost === 'string' && details.fromHost !== '') {
+      contextText += ' from "' + details.fromHost + '"';
+    }
+
+    if (typeof details?.toHost === 'string' && details.toHost !== '') {
+      contextText += ' to "' + details.toHost + '"';
+    }
+
+    if (typeof details?.sessionId !== 'undefined' && details.sessionId !== null && String(details.sessionId) !== '') {
+      contextText += ' with session ID "' + String(details.sessionId) + '"';
+    }
+
     this?.log?.debug?.(
-      'Stream transport is "%s" for uuid "%s"%s',
+      'Stream transport is "%s" for uuid "%s"%s%s',
       type,
       this.uuid,
+      contextText,
       typeof reason === 'string' && reason !== '' ? ' (' + reason + ')' : '',
     );
 
     // Forward transport state changes to the consumer.
     this?.consumer?.state?.(type, reason);
+  }
+
+  updateVideoMetadata(metadata = {}) {
+    let now = Date.now();
+    let previousWidth = this.#reportedVideoMetadata.width;
+    let previousHeight = this.#reportedVideoMetadata.height;
+    let previousFPS = this.#reportedVideoMetadata.fps;
+    let nextWidth = Number.isFinite(metadata?.width) === true && metadata.width > 0 ? metadata.width : this.video.width;
+    let nextHeight = Number.isFinite(metadata?.height) === true && metadata.height > 0 ? metadata.height : this.video.height;
+    let nextFPS = Number.isFinite(metadata?.fps) === true && metadata.fps > 0 ? metadata.fps : this.video.fps;
+    let nextRoundedFPS = Number.isFinite(nextFPS) === true && nextFPS > 0 ? Math.round(nextFPS) : undefined;
+    let previousRoundedFPS = Number.isFinite(previousFPS) === true && previousFPS > 0 ? Math.round(previousFPS) : undefined;
+    let hasCompleteMetadata =
+      Number.isFinite(nextWidth) === true && Number.isFinite(nextHeight) === true && Number.isFinite(nextRoundedFPS) === true;
+    let hasReportedMetadata =
+      Number.isFinite(previousWidth) === true &&
+      Number.isFinite(previousHeight) === true &&
+      Number.isFinite(previousRoundedFPS) === true;
+    let resolutionChanged = hasReportedMetadata === true && (nextWidth !== previousWidth || nextHeight !== previousHeight);
+    let fpsChanged = hasReportedMetadata === true && nextRoundedFPS !== previousRoundedFPS;
+    let fpsLogDue =
+      hasReportedMetadata !== true ||
+      (fpsChanged === true &&
+        Math.abs(nextRoundedFPS - previousRoundedFPS) >= VIDEO_FPS_LOG_CHANGE_THRESHOLD &&
+        (typeof this.#reportedVideoMetadata.lastFPSLogTime !== 'number' ||
+          now - this.#reportedVideoMetadata.lastFPSLogTime >= 30000));
+    let description = nextWidth + 'x' + nextHeight + ' @ ' + nextRoundedFPS + 'fps';
+    let action = hasReportedMetadata === true ? 'changed to' : 'is';
+
+    // Store current transport metadata regardless of whether it is noisy enough
+    // to report. Streamer and support dumps should see the freshest values.
+    this.video.width = nextWidth;
+    this.video.height = nextHeight;
+    this.video.fps = nextFPS;
+
+    // Avoid partial startup logs such as resolution first, then FPS. Report the
+    // complete media shape once, then report meaningful changes using all fields.
+    if (hasCompleteMetadata !== true) {
+      return;
+    }
+
+    if (hasReportedMetadata === true && resolutionChanged !== true && fpsLogDue !== true) {
+      return;
+    }
+
+    this?.log?.debug?.('Stream transport media %s %s for uuid "%s"', action, description, this.uuid);
+
+    this.#reportedVideoMetadata.width = nextWidth;
+    this.#reportedVideoMetadata.height = nextHeight;
+    this.#reportedVideoMetadata.fps = nextFPS;
+    this.#reportedVideoMetadata.lastFPSLogTime = now;
   }
 
   hasConsumers() {

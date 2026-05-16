@@ -4,6 +4,24 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.3-alpha.5 (2026/05/16)
+
+### Changed
+
+- `system.js`
+  - Added backoff to the Nest API subscribe loop after upstream failures or timeouts to avoid rapid retry/log loops during Nest service outages
+  - Added matching backoff to the Google API observe restart loop so gRPC observe failures do not retry aggressively during upstream outages
+  - Restored the normal low-latency subscribe/observe cadence automatically after the next successful upstream response
+
+- `streamtransport.js`, `nexustalk.js`, `webrtc.js`
+  - Centralised transport lifecycle debug logging in `StreamTransport` and folded host/session details into the shared state log line
+  - Reduced duplicate NexusTalk/WebRTC connection debug lines during connect, redirect, reconnect, and ready transitions
+  - Centralised stream resolution/FPS debug reporting in `StreamTransport` with generic media metadata log messages
+  - Centralised public transport API error handling in `StreamTransport` wrappers while protocol implementations now use `doOpen`, `doClose`, `doUpdate`, and `doSendAudio` hooks
+
+- `nexustalk.js`
+  - Fixed NexusTalk talkback stop handling by preserving the explicit empty audio payload field when encoding `AudioPayload`, allowing the backend to return `TALKBACK_END` instead of closing the stream socket
+
 ## v0.4.3-alpha.4 (2026/05/xx)
 
 ### Changed
