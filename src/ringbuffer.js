@@ -9,17 +9,26 @@
 // - Monotonically increasing logical indexing
 // - Zero-copy trimming using circular head movement
 // - Preallocated storage to reduce allocation churn
+// - Logical index and offset-based access helpers
+// - Iterable support for for...of, Array.from(), and spread syntax
 //
 // Terminology:
 // - head: physical index of the first logical item
 // - size: number of retained items
 // - startIndex: logical index of the first retained item
+// - tailIndex: logical index immediately after the retained window
 //
 // Access is performed using logical offsets (0..size-1),
 // which are translated to physical storage locations
 // using modulo arithmetic.
 //
-// Code version 2026.05.11
+// Intended use:
+// - Timeline buffers
+// - RTP/media packet queues
+// - Jitter buffers
+// - Rolling history windows
+//
+// Code version 2026.05.17
 // Mark Hulskamp
 'use strict';
 
@@ -42,7 +51,8 @@ export default class RingBuffer {
     this.maxCapacity = Number.isInteger(maxCapacity) === true && maxCapacity > 0 ? maxCapacity : RINGBUFFER_MAX_CAPACITY;
 
     // Clamp caller supplied capacity to configured limits.
-    // Prevents bypassing the internal growth ceiling.
+    // If capacity exceeds maxCapacity, maxCapacity wins because this buffer
+    // must never grow beyond the configured ceiling.
     this.capacity =
       Number.isInteger(capacity) === true && capacity > 0
         ? Math.min(capacity, this.maxCapacity)
@@ -69,6 +79,27 @@ export default class RingBuffer {
   get tailIndex() {
     // Logical index immediately after the retained window.
     return this.startIndex + this.size;
+  }
+
+  [Symbol.iterator]() {
+    let index = 0;
+
+    // Allow RingBuffer to be used with native iteration helpers:
+    // for...of, Array.from(), spread syntax, etc.
+    // This is intended as a convenience API, not as the hot-path access method
+    // for streaming loops where allocation control matters.
+    return {
+      next: () => {
+        if (index < this.size) {
+          return {
+            value: this.getByOffset(index++),
+            done: false,
+          };
+        }
+
+        return { done: true };
+      },
+    };
   }
 
   physicalOffset(offset) {
@@ -151,11 +182,7 @@ export default class RingBuffer {
 
     // Tail = logical offset "size".
     // Convert into physical storage slot.
-    tailOffset = this.physicalOffset(this.size);
-
-    if (tailOffset < 0) {
-      return false;
-    }
+    tailOffset = (this.head + this.size) % this.capacity;
 
     // Insert at tail and expand retained size.
     this.items[tailOffset] = item;

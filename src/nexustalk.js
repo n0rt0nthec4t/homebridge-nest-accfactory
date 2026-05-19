@@ -1,7 +1,7 @@
 // NexusTalk
 // Part of homebridge-nest-accfactory
 //
-// Protocol-specific streaming transport for Nest legacy "Nexus" backend systems.
+// Protocol-specific StreamTransport for Nest legacy NexusTalk streams.
 //
 // Manages bidirectional media transport over secure TLS connections using
 // Nest's proprietary protobuf-based NexusTalk protocol.
@@ -12,7 +12,7 @@
 // - Protobuf message framing and parsing
 // - Playback session control
 // - H264 video access-unit assembly
-// - AAC audio frame handling
+// - Direct AAC audio frame emission
 // - Speex talkback/audio send handling
 // - Redirect, reconnect, stall, host-change, and backend-closure recovery
 // - Queued outbound control messages while socket/auth state is unavailable
@@ -31,19 +31,20 @@
 // - Multiplexed media and control messages over a single connection
 // - Buffered outbound control-message queue using RingBuffer
 // - H264 video access-unit assembly before media emission
-// - AAC audio frame emission with Nexus-derived media timing
+// - Direct AAC audio frame emission with Nexus-derived media timing
 // - Two-way audio/talkback support via Speex
 // - Buffered packet parsing with bounded memory protection
 //
 // Notes:
 // - Video is delivered as H264 NAL units and assembled into complete Annex-B access units before emission
 // - Audio is delivered as AAC frames and emitted directly
+// - NexusTalk media is delivered over ordered TLS, so playback packets are not RTP-jitter buffered
 // - Emitted timestamps are source media timeline values; Streamer owns output playout timing
 // - Protobuf schemas and message types are shared/cached globally to avoid repeated protobufjs parsing across multiple camera instances
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.05.16
+// Code version 2026.05.18
 // Mark Hulskamp
 'use strict';
 
@@ -58,19 +59,19 @@ import crypto from 'crypto';
 import Streamer from './streamer.js';
 import StreamTransport from './streamtransport.js';
 import RingBuffer from './ringbuffer.js';
+import H264 from './h264.js';
 import { getProtoType } from './protobuf.js';
 
 // Define constants
 import { USER_AGENT, __dirname } from './consts.js';
 
-const PING_INTERVAL = 15000; // Ping interval to nexus server while stream active
-const STALLED_TIMEOUT = 10000; // Time with no playback packets received before we consider stream stalled and attempt restart
+const PING_INTERVAL = 15000; // Ping interval to Nexus server while stream active
+const STALLED_TIMEOUT = 10000; // Time with no playback packets before stream is considered stalled
 const PENDING_MESSAGE_QUEUE_CAPACITY = 64; // Initial slot count for pending outbound control messages
 const MAX_PENDING_MESSAGES = 256; // Hard cap for queued outbound control messages while unauthorised/disconnected
 const INITIAL_PACKET_BUFFER_SIZE = 256 * 1024;
 const MAX_PACKET_BUFFER_SIZE = 10 * 1024 * 1024;
 const MAX_PACKET_PAYLOAD_SIZE = 5 * 1024 * 1024;
-
 const MEDIA_TYPE = {
   PING: 1,
   HELLO: 100,
@@ -106,13 +107,13 @@ const AAC_MONO_48000_BLANK = Buffer.from([
 const MAX_PENDING_VIDEO_PARTS = 200;
 const MAX_PENDING_VIDEO_BYTES = 4 * 1024 * 1024;
 
-// nexusTalk object
+// NexusTalk object
 export default class NexusTalk extends StreamTransport {
-  nexustalk_host = undefined; // Main nexustalk streaming host
+  nexustalk_host = undefined; // Main NexusTalk streaming host
   token = undefined;
-  useGoogleAuth = false; // Nest vs google auth
+  useGoogleAuth = false; // Nest vs Google auth
 
-  // Internal data only for this class
+  // Internal protobuf message types for this transport
   #protobufTypes = {
     AudioPayload: undefined,
     StartPlayback: undefined,
@@ -128,12 +129,12 @@ export default class NexusTalk extends StreamTransport {
 
   #socket = undefined; // TCP socket object
   #packetBuffer = undefined; // Incoming packet buffer
-  #packetOffset = undefined; // Current offset in packet buffer
+  #packetOffset = undefined; // Current write offset in packet buffer
   #packetReadIndex = 0; // Current read offset for packet parsing loop
-  // Pending outbound control messages while socket is unavailable/unauthorised
+  // Control messages may be queued before the TLS session is authorised.
   #messages = new RingBuffer(0, PENDING_MESSAGE_QUEUE_CAPACITY, PENDING_MESSAGE_QUEUE_CAPACITY * 4);
-  #authorised = false; // Have we been authorised
-  #sessionId = undefined; // Session ID
+  #authorised = false; // Have we been authorised by Nexus
+  #sessionId = undefined; // Active Nexus playback session ID
   #host = undefined; // Current host connected to
   #pingTimer = undefined; // Timer object for ping interval
   #stalledTimer = undefined; // Interval object for no received data checks
@@ -146,7 +147,6 @@ export default class NexusTalk extends StreamTransport {
       id: undefined,
       startOffset: 0,
       mediaTime: undefined,
-      lastEmittedTimestamp: undefined,
       pendingTimestamp: undefined,
       pendingKeyFrame: false,
       pendingParts: [],
@@ -178,31 +178,14 @@ export default class NexusTalk extends StreamTransport {
     this.#protobufTypes.PlaybackEnd = getProtoType(protoPath, 'nest.nexustalk.v1.PlaybackEnd', this.log);
     this.#protobufTypes.Error = getProtoType(protoPath, 'nest.nexustalk.v1.Error', this.log);
 
-    // Setup initial codec profiles based on device data, with Nexus defaults as fallback.
-    this.video = {
-      codec: StreamTransport.CODEC_TYPE.H264,
-      profile: undefined,
-      clockRate: undefined,
-      width: undefined,
-      height: undefined,
-      fps: undefined,
-      bitrate: undefined,
-    };
-
-    this.audio = {
-      codec: StreamTransport.CODEC_TYPE.AAC,
-      profile: undefined,
-      sampleRate: undefined,
-      channels: 1,
-      bitrate: undefined,
-      blank: AAC_MONO_48000_BLANK,
-    };
-
-    this.talkback = {
-      codec: StreamTransport.CODEC_TYPE.SPEEX,
-      sampleRate: 16000,
-      channels: 1,
-    };
+    // Setup Nexus-specific codec defaults; StreamTransport owns the shared media shape.
+    this.video.codec = StreamTransport.CODEC_TYPE.H264;
+    this.audio.codec = StreamTransport.CODEC_TYPE.AAC;
+    this.audio.channels = 1;
+    this.audio.blank = AAC_MONO_48000_BLANK;
+    this.talkback.codec = StreamTransport.CODEC_TYPE.SPEEX;
+    this.talkback.sampleRate = 16000;
+    this.talkback.channels = 1;
 
     this.update(options);
   }
@@ -212,7 +195,7 @@ export default class NexusTalk extends StreamTransport {
     let connectHost = typeof options?.host === 'string' && options.host !== '' ? options.host : this.nexustalk_host;
 
     if (typeof connectHost !== 'string' || connectHost === '') {
-      this.setState(StreamTransport.STATE.CLOSED, 'host-missing');
+      this.setState(StreamTransport.STATE.CLOSED, { reason: 'host-missing' });
       return;
     }
 
@@ -228,10 +211,10 @@ export default class NexusTalk extends StreamTransport {
     this.#authorised = false;
     this.#resetPacketState(true);
 
-    this.#host = connectHost; // Update internal host name since we’re about to connect
+    this.#host = connectHost; // Update internal host name since we're about to connect
     this.setState(StreamTransport.STATE.CONNECTING, { host: connectHost });
 
-    // Wrap tls.connect() in a Promise so we can await the TLS handshake
+    // Wrap tls.connect() in a Promise so we can await the TLS handshake.
     try {
       await new Promise((resolve, reject) => {
         let socket = tls.connect({ host: connectHost, port: 1443 }, () => {
@@ -240,7 +223,7 @@ export default class NexusTalk extends StreamTransport {
             return;
           }
 
-          // Opened connection to Nexus server, so now need to authenticate ourselves
+          // Opened connection to Nexus server, so now need to authenticate ourselves.
           this.setState(StreamTransport.STATE.CONNECTED, { host: connectHost });
 
           socket.setKeepAlive(true); // Keep socket connection alive
@@ -254,14 +237,14 @@ export default class NexusTalk extends StreamTransport {
             return;
           }
 
-          // TLS error (could be refused, timeout, etc.)
+          // TLS error (could be refused, timeout, etc.).
           this?.log?.warn?.('TLS error on connect to "%s": %s', connectHost, String(error));
-          this.#authorised = false; // Since we had an error, we can't be authorised
+          this.#authorised = false; // Since we had an error, we cannot be authorised
           reject(error);
         });
 
         socket.on('end', () => {
-          // Do nothing
+          // Do nothing. The socket close handler owns terminal state/reconnect handling.
         });
 
         socket.on('data', (data) => {
@@ -273,6 +256,8 @@ export default class NexusTalk extends StreamTransport {
         });
 
         socket.on('close', () => {
+          let reconnectHost = undefined;
+
           if (this.#socket !== socket) {
             return;
           }
@@ -280,46 +265,63 @@ export default class NexusTalk extends StreamTransport {
           clearInterval(this.#pingTimer);
           this.#stopStalledMonitor();
           this.#pingTimer = undefined;
-          this.#authorised = false; // Since connection closed, we can't be authorised anymore
+          this.#authorised = false;
           this.#socket = undefined; // Clear socket object
           this.#sessionId = undefined; // Not an active session anymore
-          this.#host = undefined;
 
-          if (this.hasConsumers() === true && this.#reconnectPending !== true && this.closing !== true) {
-            this.#requestReconnect(connectHost, 'service-close');
+          if (this.#reconnectPending !== true) {
+            this.#resetChannelDetails();
           }
 
-          if (this.#reconnectPending === true && this.hasConsumers() === true) {
-            let reconnectHost = this.#reconnectHost;
+          if (this.hasConsumers() === true && this.#reconnectPending !== true && this.closing !== true) {
+            this.#requestReconnect(connectHost, 'service-close', { host: connectHost });
+          }
+
+          if (this.#reconnectPending === true) {
+            reconnectHost = this.#reconnectHost;
 
             this.#reconnectPending = false;
             this.#reconnectHost = undefined;
+            this.#host = undefined;
 
-            if (typeof reconnectHost === 'string' && reconnectHost !== '') {
-              this.open({ host: reconnectHost, forceReconnect: true });
+            if (this.hasConsumers() === true && typeof reconnectHost === 'string' && reconnectHost !== '') {
+              this.open({ host: reconnectHost });
               return;
             }
           }
 
-          this.setState(StreamTransport.STATE.CLOSED, 'socket-close', { host: connectHost });
+          this.#host = undefined;
+
+          this.setState(StreamTransport.STATE.CLOSED, {
+            reason: 'socket-close',
+            host: connectHost,
+          });
         });
       });
     } catch (error) {
       this?.log?.error?.('Failed to connect to "%s": %s', connectHost, String(error));
 
-      if (this.#socket === undefined && this.hasConsumers() === true) {
+      if (this.#socket?.destroyed === true) {
+        this.#socket = undefined;
+      }
+
+      if (this.hasConsumers() === true) {
         this.#requestReconnect(connectHost, 'connect-failed');
         this.open({ host: this.#reconnectHost });
         return;
       }
 
-      this.setState(StreamTransport.STATE.CLOSED, 'connect-failed', { host: connectHost });
+      this.setState(StreamTransport.STATE.CLOSED, {
+        reason: 'connect-failed',
+        host: connectHost,
+      });
     }
   }
 
   async doClose(stopStreamFirst = true) {
     let reconnecting = this.#reconnectPending === true;
     let hadSocket = this.#socket !== undefined;
+    let closeHost = this.#host;
 
     // Close an authenticated socket stream gracefully.
     // Clear any running timers before closing socket to prevent race conditions.
@@ -327,15 +329,23 @@ export default class NexusTalk extends StreamTransport {
     this.#stopStalledMonitor();
     this.#pingTimer = undefined;
 
-    if (this.#socket !== undefined) {
-      let socket = this.#socket;
+    if (reconnecting !== true) {
+      this.setState(StreamTransport.STATE.CLOSING, { host: closeHost });
 
+      // Flush the final pending video frame before resetting channel state.
+      // This path is skipped during reconnect, otherwise the final frame from
+      // the old session can repopulate Streamer timing state just before the
+      // new session starts.
+      this.#flushPendingVideo(this.#channels.video);
+    }
+
+    if (this.#socket !== undefined) {
       if (stopStreamFirst === true) {
-        await this.#stopNexusData();
+        this.#stopNexusData();
       }
 
       try {
-        socket.destroy();
+        this.#socket.destroy();
       } catch {
         // Empty
       }
@@ -346,17 +356,13 @@ export default class NexusTalk extends StreamTransport {
       // The terminal closed state is owned by the socket 'close' handler.
       // For reconnect/redirect paths we keep the state as RECONNECTING
       // until the next connect attempt begins.
-      this.setState(StreamTransport.STATE.CLOSING, { host: this.#host });
-
-      // Flush any final pending NexusTalk video frame before resetting channel state.
-      // Do not do this during reconnect, otherwise the final frame from the old session
-      // can repopulate Streamer timing state just before the new session starts.
-      this.#flushPendingVideo(this.#channels.video);
-
       this.#clearMessageQueue(0);
 
       if (hadSocket !== true) {
-        this.setState(StreamTransport.STATE.CLOSED, 'closed', { host: this.#host });
+        this.setState(StreamTransport.STATE.CLOSED, {
+          reason: 'closed',
+          host: closeHost,
+        });
       }
     }
 
@@ -383,7 +389,7 @@ export default class NexusTalk extends StreamTransport {
     // Normalise updated values from transport options.
     // Undefined means "leave existing value unchanged".
     //
-    // Streamer now passes a shared transport update payload:
+    // Streamer passes a shared transport update payload:
     // {
     //   uuid,
     //   host,
@@ -398,8 +404,7 @@ export default class NexusTalk extends StreamTransport {
     newToken = typeof options?.apiAccess?.token === 'string' && options.apiAccess.token !== '' ? options.apiAccess.token : undefined;
     newGoogleAuth = typeof options?.apiAccess?.oauth2 === 'string' && options.apiAccess.oauth2 !== '';
 
-    // Update device UUID if supplied.
-    // Used for logging, reconnects and transport identity.
+    // Update device UUID if supplied. Used for logging, reconnects and transport identity.
     if (typeof newUuid === 'string') {
       this.uuid = newUuid;
     }
@@ -435,8 +440,7 @@ export default class NexusTalk extends StreamTransport {
 
       this.nexustalk_host = newHost;
 
-      // Force reconnect when consumers are active.
-      // Avoid duplicate reconnect requests if one is already pending.
+      // Force reconnect when consumers are active, avoiding duplicate reconnect requests.
       if (hadHost === true && this.hasConsumers() === true && this.#reconnectPending !== true) {
         this.#requestReconnect(newHost, 'host-update');
 
@@ -476,11 +480,11 @@ export default class NexusTalk extends StreamTransport {
   }
 
   #startNexusData() {
-    // Setup streaming profiles
-    // We'll use the highest profile as the main, with others for fallback
+    // Setup streaming profiles.
+    // Use the highest profile as the main profile, with lower profiles as fallback.
     let otherProfiles = ['VIDEO_H264_530KBIT_L31', 'VIDEO_H264_100KBIT_L30'];
 
-    // Include AAC profile for audio
+    // Include AAC profile for audio.
     otherProfiles.push('AUDIO_AAC');
 
     let StartPlayback = this.#protobufTypes.StartPlayback;
@@ -703,9 +707,6 @@ export default class NexusTalk extends StreamTransport {
       }
 
       redirectToHost = decodedMessage?.newHost;
-    } else if (typeof payload === 'string' && payload !== '') {
-      // Payload parameter is a string, we'll assume this is a direct hostname
-      redirectToHost = payload;
     }
 
     if (typeof redirectToHost !== 'string' || redirectToHost === '') {
@@ -748,14 +749,15 @@ export default class NexusTalk extends StreamTransport {
     // Reset current playback channel timing/state before applying new channel details.
     this.#resetChannelDetails();
 
-    // Relearn stream properties for each playback session.
-    this.video.fps = undefined;
-    this.video.width = undefined;
-    this.video.height = undefined;
-
     if (Array.isArray(decodedMessage?.channels) === true) {
       videoStream = decodedMessage.channels.find((stream) => stream?.codec === this.video.codec.toUpperCase());
       audioStream = decodedMessage.channels.find((stream) => stream?.codec === this.audio.codec.toUpperCase());
+    }
+
+    if (videoStream === undefined && audioStream === undefined) {
+      this?.log?.warn?.('PlaybackBegin contained no usable NexusTalk audio/video channels for uuid "%s"', this.uuid);
+      this.close();
+      return;
     }
 
     // Use the earliest available stream start time as the shared session anchor.
@@ -809,7 +811,9 @@ export default class NexusTalk extends StreamTransport {
       // Store audio stream details reported by NexusTalk.
       this.audio.profile = typeof audioStream.profile === 'string' ? audioStream.profile : undefined;
       this.audio.sampleRate =
-        Number.isFinite(audioStream.sampleRate) === true && audioStream.sampleRate > 0 ? audioStream.sampleRate : undefined;
+        Number.isFinite(audioStream.sampleRate) === true && audioStream.sampleRate > 0 ? audioStream.sampleRate : 48000;
+      this.audio.frameDuration =
+        Number.isFinite(this.audio.sampleRate) === true && this.audio.sampleRate > 0 ? (1024 / this.audio.sampleRate) * 1000 : undefined;
       this.audio.channels = Number.isFinite(audioStream.channels) === true && audioStream.channels > 0 ? audioStream.channels : 1;
       this.audio.bitrate = Number.isFinite(audioStream.bitrate) === true && audioStream.bitrate > 0 ? audioStream.bitrate : undefined;
 
@@ -835,7 +839,7 @@ export default class NexusTalk extends StreamTransport {
     let timestamp = 0;
     let data = undefined;
     let keyFrame = false;
-    let resolution = undefined;
+    let now = Date.now();
 
     if (this.closing === true || this.closed === true) {
       // We received a PlaybackPacket message but we're already closing/closed,
@@ -859,7 +863,7 @@ export default class NexusTalk extends StreamTransport {
     }
 
     // Update the last packet receipt time used by the stalled monitor.
-    this.#lastPacketAt = Date.now();
+    this.#lastPacketAt = now;
 
     if (decodedMessage?.channelId === undefined) {
       return;
@@ -868,45 +872,23 @@ export default class NexusTalk extends StreamTransport {
     // Handle video packet.
     if (decodedMessage.channelId === this.#channels.video?.id) {
       video = this.#channels.video;
-      timestamp = this.#calculateTimestamp(decodedMessage.timestampDelta, video, this.video.clockRate, 80);
+      timestamp = this.#calculateTimestamp(decodedMessage.timestampDelta, video, this.video.clockRate);
       data = this.#getPayloadBuffer(decodedMessage.payload);
 
       if (typeof timestamp !== 'number' || Buffer.isBuffer(data) !== true || data.length === 0) {
         return;
       }
 
-      // Learn video frame size from H264 SPS when available.
-      // NexusTalk can change profile/resolution between playback sessions, so
-      // this is intentionally relearned after each PlaybackBegin reset.
-      if (Number.isFinite(this.video.width) !== true || Number.isFinite(this.video.height) !== true) {
-        for (let nalu of StreamTransport.getH264NALUnits(data)) {
-          // Only inspect SPS NAL units.
-          if (nalu.type !== StreamTransport.H264NALUS.TYPES.SPS) {
-            continue;
-          }
-
-          resolution = StreamTransport.getH264Resolution(nalu.data);
-
-          if (Number.isFinite(resolution?.width) === true && Number.isFinite(resolution?.height) === true) {
-            this.updateVideoMetadata({
-              width: resolution.width,
-              height: resolution.height,
-            });
-          }
-
-          // Only one SPS is needed.
-          break;
-        }
+      // Normalise incoming NexusTalk video payloads to Annex-B once, here.
+      // This gives the consumer a stable "complete access unit in Annex-B format"
+      // contract and avoids rebuilding multi-NAL video later.
+      if (data.indexOf(H264.NALUS.START_CODE) !== 0) {
+        data = H264.wrapAnnexB(data);
       }
 
-      keyFrame = StreamTransport.hasH264NAL(data, StreamTransport.H264NALUS.TYPES.IDR);
+      keyFrame = H264.hasNAL(data, H264.NALUS.TYPES.IDR);
 
-      if (this.connected === true && this.ready !== true) {
-        // Transition to READY now that we have real video packets.
-        this.setState(StreamTransport.STATE.READY, { host: this.#host, sessionId: this.#sessionId });
-      }
-
-      // New timestamp means the previous buffered NALs belong to the prior frame/access unit.
+      // A new timestamp means the prior access unit/frame is complete.
       if (typeof video.pendingTimestamp === 'number' && timestamp !== video.pendingTimestamp) {
         this.#flushPendingVideo(video);
       }
@@ -915,13 +897,7 @@ export default class NexusTalk extends StreamTransport {
       if (typeof video.pendingTimestamp !== 'number') {
         video.pendingTimestamp = timestamp;
         video.pendingKeyFrame = false;
-
-        if (Array.isArray(video.pendingParts) === true) {
-          video.pendingParts.length = 0;
-        } else {
-          video.pendingParts = [];
-        }
-
+        video.pendingParts = [];
         video.pendingBytes = 0;
       }
 
@@ -933,20 +909,11 @@ export default class NexusTalk extends StreamTransport {
         video.pendingBytes = 0;
       }
 
-      // Normalise incoming NexusTalk video payloads to Annex-B once, here.
-      // This gives the consumer a stable "complete access unit in Annex-B format"
-      // contract and avoids rebuilding multi-NAL video later.
-      if (data.indexOf(StreamTransport.H264NALUS.START_CODE) !== 0) {
-        let buffer = Buffer.allocUnsafe(StreamTransport.H264NALUS.START_CODE.length + data.length);
-
-        StreamTransport.H264NALUS.START_CODE.copy(buffer, 0);
-        data.copy(buffer, StreamTransport.H264NALUS.START_CODE.length);
-        data = buffer;
-      }
-
+      // Append Annex-B NAL payload to the current pending frame.
       video.pendingParts.push(data);
       video.pendingBytes += data.length;
 
+      // Mark pending frame as keyframe if any IDR was observed.
       if (keyFrame === true) {
         video.pendingKeyFrame = true;
       }
@@ -963,7 +930,6 @@ export default class NexusTalk extends StreamTransport {
         );
 
         this.#resetPendingVideo(video);
-        return;
       }
 
       return;
@@ -972,7 +938,7 @@ export default class NexusTalk extends StreamTransport {
     // Handle audio packet.
     if (decodedMessage.channelId === this.#channels.audio?.id) {
       audio = this.#channels.audio;
-      timestamp = this.#calculateTimestamp(decodedMessage.timestampDelta, audio, this.audio.sampleRate, 120);
+      timestamp = this.#calculateTimestamp(decodedMessage.timestampDelta, audio, this.audio.sampleRate);
       data = this.#getPayloadBuffer(decodedMessage.payload);
 
       if (typeof timestamp !== 'number' || Buffer.isBuffer(data) !== true || data.length === 0) {
@@ -986,10 +952,13 @@ export default class NexusTalk extends StreamTransport {
         sampleRate: this.audio.sampleRate,
         channels: this.audio.channels,
         bitrate: this.audio.bitrate,
+        frameDuration: this.audio.frameDuration,
         timestamp: timestamp,
         keyFrame: false,
         data: data,
       });
+
+      return;
     }
   }
 
@@ -1032,7 +1001,10 @@ export default class NexusTalk extends StreamTransport {
         this.uuid,
       );
 
-      this.setState(StreamTransport.STATE.CLOSING, 'camera-unreachable', { host: this.#host });
+      this.setState(StreamTransport.STATE.CLOSING, {
+        reason: 'camera-unreachable',
+        host: this.#host,
+      });
 
       this.close();
 
@@ -1066,20 +1038,6 @@ export default class NexusTalk extends StreamTransport {
         // NexusStreamer Error, packet.message contains the message
         this?.log?.debug?.('NexusTalk error from "%s": %s', this.#host, decodedMessage.message);
       }
-    }
-  }
-
-  #handleTalkbackBegin(payload) {
-    // No payload fields currently required here
-    if (Buffer.isBuffer(payload) === true) {
-      this?.log?.debug?.('Talking started on uuid "%s"', this.uuid);
-    }
-  }
-
-  #handleTalkbackEnd(payload) {
-    // No payload fields currently required here
-    if (Buffer.isBuffer(payload) === true) {
-      this?.log?.debug?.('Talking ended on uuid "%s"', this.uuid);
     }
   }
 
@@ -1234,12 +1192,12 @@ export default class NexusTalk extends StreamTransport {
         }
 
         case MEDIA_TYPE.TALKBACK_BEGIN: {
-          this.#handleTalkbackBegin(protoBufPayload);
+          this?.log?.debug?.('Talking started on uuid "%s"', this.uuid);
           break;
         }
 
         case MEDIA_TYPE.TALKBACK_END: {
-          this.#handleTalkbackEnd(protoBufPayload);
+          this?.log?.debug?.('Talking ended on uuid "%s"', this.uuid);
           break;
         }
 
@@ -1261,6 +1219,8 @@ export default class NexusTalk extends StreamTransport {
     // Request a reconnect once the current socket is closed.
     // This does NOT perform the reconnect immediately.
     // The actual reconnect is handled centrally in the socket 'close' handler.
+    let details = typeof context === 'object' && context !== null ? context : {};
+    let hasRoute = typeof details.fromHost === 'string' || typeof details.toHost === 'string';
 
     if (typeof host === 'string' && host !== '') {
       this.#reconnectHost = host;
@@ -1269,12 +1229,17 @@ export default class NexusTalk extends StreamTransport {
     if ((this.#reconnectHost ?? '') === '') {
       this.#reconnectHost = this.#host ?? this.nexustalk_host;
     }
+
     if (this.#reconnectPending === true) {
       return;
     }
 
     this.#reconnectPending = true;
-    this.setState(StreamTransport.STATE.RECONNECTING, reason, context ?? { host: this.#reconnectHost });
+    this.setState(StreamTransport.STATE.RECONNECTING, {
+      ...details,
+      reason: reason,
+      host: hasRoute === true ? details.host : (details.host ?? this.#reconnectHost),
+    });
   }
 
   #canWrite(requiresAuthorisation = false) {
@@ -1339,7 +1304,7 @@ export default class NexusTalk extends StreamTransport {
     this.#lastPacketAt = undefined;
   }
 
-  #calculateTimestamp(delta, stream, sampleRate, maxStepMs = undefined) {
+  #calculateTimestamp(delta, stream, sampleRate) {
     let deltaMs = 0;
 
     // Convert NexusTalk timestamp deltas into monotonic source media time
@@ -1358,10 +1323,6 @@ export default class NexusTalk extends StreamTransport {
 
       if (Number.isFinite(deltaMs) !== true || deltaMs < 0) {
         deltaMs = 0;
-      }
-
-      if (typeof maxStepMs === 'number' && maxStepMs > 0 && deltaMs > maxStepMs) {
-        deltaMs = maxStepMs;
       }
     }
 
@@ -1412,8 +1373,8 @@ export default class NexusTalk extends StreamTransport {
 
   #flushPendingVideo(video) {
     let pendingTimestamp = undefined;
-    let minimumStep = 1;
     let pendingData = undefined;
+    let accessUnit = undefined;
 
     if (typeof video !== 'object' || video === null) {
       return;
@@ -1427,82 +1388,64 @@ export default class NexusTalk extends StreamTransport {
 
     pendingTimestamp = video.pendingTimestamp;
 
-    // Calculate FPS from the original emitted access-unit timing.
-    // Use smoothing to avoid oscillation due to jitter.
-    if (typeof video.lastEmittedTimestamp === 'number' && pendingTimestamp > video.lastEmittedTimestamp) {
-      let frameDuration = pendingTimestamp - video.lastEmittedTimestamp;
-      let instantFps = frameDuration > 0 ? 1000 / frameDuration : undefined;
-
-      if (Number.isFinite(instantFps) === true && instantFps >= 1 && instantFps <= 60) {
-        this.updateVideoMetadata({
-          fps: Number.isFinite(this.video.fps) === true && this.video.fps > 0 ? this.video.fps * 0.8 + instantFps * 0.2 : instantFps,
-        });
-      }
-    }
-
-    // Use learned transport video FPS metadata to keep emitted source media
-    // timestamps moving forward. Fallback to 30fps until we learn the cadence.
-    minimumStep = Math.max(1, Math.round(1000 / (Number.isFinite(this.video.fps) === true && this.video.fps > 0 ? this.video.fps : 30)));
-
-    // Keep emitted frame timestamps monotonic.
-    if (typeof video.lastEmittedTimestamp === 'number' && pendingTimestamp <= video.lastEmittedTimestamp) {
-      pendingTimestamp = video.lastEmittedTimestamp + minimumStep;
-    }
-
-    video.lastEmittedTimestamp = pendingTimestamp;
-
-    // Avoid Buffer.concat() for the common/small case where a NexusTalk frame
-    // only has a single pending Annex-B NAL/access unit part.
-    if (video.pendingParts.length === 1) {
-      pendingData = video.pendingParts[0];
-    }
-
-    if (video.pendingParts.length > 1) {
-      pendingData = Buffer.concat(video.pendingParts, video.pendingBytes);
-    }
+    accessUnit = H264.buildAccessUnit(video.pendingParts);
+    pendingData = accessUnit?.data;
 
     if (Buffer.isBuffer(pendingData) !== true || pendingData.length === 0) {
       this.#resetPendingVideo(video);
       return;
     }
 
-    this.emitMedia({
-      type: Streamer.MEDIA_TYPE.VIDEO,
-      codec: this.video.codec,
-      profile: this.video.profile,
-      width: this.video.width,
-      height: this.video.height,
-      fps: this.video.fps,
-      bitrate: this.video.bitrate,
-      timestamp: pendingTimestamp,
-      keyFrame: video.pendingKeyFrame,
-      data: pendingData,
-    });
+    if (this.canAcceptMediaFrame('video', { keyFrame: video.pendingKeyFrame }) !== true) {
+      this.recordVideoDrop(video.pendingKeyFrame === true ? 'suppressed-keyframe-recovery' : 'suppressed-delta-recovery');
+      this.#resetPendingVideo(video);
+      return;
+    }
 
-    this.#resetPendingVideo(video);
+    this.markMediaFrame('video', { keyFrame: video.pendingKeyFrame });
+
+    try {
+      this.emitMedia({
+        type: Streamer.MEDIA_TYPE.VIDEO,
+        codec: this.video.codec,
+        profile: this.video.profile,
+        bitrate: this.video.bitrate,
+        timestamp: pendingTimestamp,
+        keyFrame: video.pendingKeyFrame,
+        data: pendingData,
+      });
+
+      if (this.connected === true && this.ready !== true) {
+        // Transition to READY only after a complete video frame has actually
+        // been emitted to Streamer.
+        this.setState(StreamTransport.STATE.READY, { host: this.#host, sessionId: this.#sessionId });
+      }
+    } finally {
+      this.#resetPendingVideo(video);
+    }
   }
 
   #resetChannelDetails() {
     this.#sessionStartTime = undefined;
 
-    // Reset video channel details
+    // Reset video channel details.
     this.#channels.video.id = undefined;
     this.#channels.video.startOffset = 0;
     this.#channels.video.mediaTime = undefined;
-    this.#channels.video.lastEmittedTimestamp = undefined;
     this.#channels.video.pendingTimestamp = undefined;
     this.#channels.video.pendingKeyFrame = false;
+
     if (Array.isArray(this.#channels.video.pendingParts) === true) {
       this.#channels.video.pendingParts.length = 0;
     } else {
       this.#channels.video.pendingParts = [];
     }
+
     this.#channels.video.pendingBytes = 0;
 
-    // Reset audio channel details
+    // Reset audio channel details.
     this.#channels.audio.id = undefined;
     this.#channels.audio.startOffset = 0;
     this.#channels.audio.mediaTime = undefined;
-
   }
 }

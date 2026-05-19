@@ -4,6 +4,51 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.3-alpha.6 (2026/05/19)
+
+### Changed
+
+- `streamtransport.js`
+  - Added shared RTP jitter-buffer helpers for sequence-ordered packets and timestamp-grouped access units
+  - Added shared media recovery helpers for tracking unstable and recovering packetised media streams
+  - Centralised transport media metadata, delivery statistics, bitrate estimation, and duplicate close protection in the base transport layer
+  - Centralised H264 SPS metadata learning in `emitMedia()` so WebRTC and NexusTalk no longer duplicate resolution parsing
+  - Centralised H264 Annex-B access-unit assembly and cached SPS/PPS keyframe prepending for shared transport use
+
+- `h264.js`
+  - Moved H264 NAL parsing, Annex-B wrapping, and SPS metadata parsing into a shared utility module
+  - Improved SPS parsing robustness to better handle truncated or malformed bitstreams
+
+- `rtph264.js`
+  - Added shared RTP H264 packet helpers for payload inspection, timestamp-group completion, and FU-A fragmented NAL reconstruction
+  - Centralised FU-A sequence continuity and timestamp validation for WebRTC H264 media handling
+  - Added shared fragmented access-unit recovery helpers to improve handling of incomplete or interrupted RTP video payloads
+
+- `webrtc.js`
+  - Moved RTP reordering onto shared `StreamTransport` jitter helpers for WebRTC audio and timestamp-grouped H264 video
+  - Moved H264 RTP payload inspection and fragmented FU-A reconstruction onto shared `RtpH264` helpers
+  - Tightened H264/RTX handling so fragmented FU-A access units now require valid start/end markers and RTP sequence continuity before emission
+  - Bounded WebRTC video jitter draining per tick to avoid large keyframes monopolising the event loop
+  - Simplified WebRTC stream state by removing retained IDR payload buffers, unused RTP/SPS audit fields, and unused PLI reason tracking
+  - Improved WebRTC audio timestamp handling by keeping source timing aligned to the RTP clock and replacing hard timestamp resync with bounded low-queue catch-up
+  - Removed synthetic WebRTC audio gap filling so diagnostics now expose real upstream or output pauses instead of masking them with silent PCM
+  - Added targeted diagnostics for keyframe emission, shallow audio queues, and slow output writes to assist streaming troubleshooting
+
+- `streamer.js`
+  - Fixed shutdown ownership so camera shutdown stops owned streamers only once, avoiding duplicate transport close logs and duplicate live/recording teardown during Homebridge shutdown
+  - Explicitly removes stopped streamers from the shared output scheduler during full teardown
+  - Added output policy controls for audio-before-keyframe handling and improved backpressure diagnostics
+  - Reduced audio gap debug logging noise while retaining gap counters in support diagnostics
+
+- `nexustalk.js`
+  - Kept NexusTalk playback on the direct ordered TLS media path
+  - Improved bundled AAC audio timestamp progression by removing the previous 120ms advancement cap
+
+- `mediatimeline.js`, `ringbuffer.js`
+  - Improved retained timeline trimming so untimed items and stale output cursors cannot retain old media indefinitely
+  - Added RingBuffer logical index helpers and iterable support for shared media and jitter queue handling
+  - Simplified RingBuffer tail insertion while preserving configured maximum capacity limits
+
 ## v0.4.3-alpha.5 (2026/05/16)
 
 ### Changed
@@ -95,6 +140,7 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
   - Added new shared transport base class for camera streaming backends
   - Standardised transport lifecycle handling (`connecting`, `ready`, `reconnecting`, `closed`)
   - Added shared codec metadata reporting and media statistics collection
+  - Added shared stream-health helpers for bad-event windows, recovery scoring, and delta suppression state
   - Added unified transport-to-streamer media interface for complete audio/video frame delivery
 
 - `webrtc.js`
@@ -102,6 +148,8 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
   - Requested a startup keyframe after the incoming video SSRC is known so WebRTC live streams do not wait for the natural keyframe cadence
   - Allowed slower startup keyframe assembly and delayed decoder-ready output until SPS/PPS parameter sets are available
   - Added a small paced audio playout queue with bounded silence fill so short WebRTC RTP callback gaps do not starve ffmpeg audio input
+  - Removed temporary WebRTC hot-path and raw audio timing probes after moving RTP reordering onto the shared transport jitter helper
+  - Moved generic WebRTC stream-health bookkeeping onto shared `StreamTransport` helpers while keeping WebRTC-specific PLI/recovery decisions local
   - Added runtime transport update support for refreshed OAuth2 credentials and Google Home device UUID changes
   - Improved internal stream recovery and transport lifecycle handling
 

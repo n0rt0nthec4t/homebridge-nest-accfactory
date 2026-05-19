@@ -8,24 +8,55 @@
 //
 // Responsibilities:
 // - Connection/session lifecycle management
-// - Protocol authentication and signalling
-// - Packet receive handling
-// - Protocol-specific packet parsing
-// - Media frame assembly
+// - Protocol authentication and signalling wrappers
+// - Packet receive handling support
+// - Protocol-specific packet parsing support
+// - Media frame normalisation and emission
 // - Transport-specific reconnect behaviour
 // - Optional talkback/audio send support
+// - Shared RTP/network jitter buffering helpers
+// - Shared media metadata and delivery statistics
+// - Shared media recovery state for packetised transports
 //
 // Transport implementations are expected to:
-// - Emit complete media frames
-// - Report transport state transitions
+// - Implement doOpen(), doClose(), doUpdate(), and optionally doSendAudio()
+// - Emit complete media frames through emitMedia()
+// - Report transport state transitions through setState()
 // - Handle protocol-specific recovery and reconnect logic
+// - Use transport jitter helpers where packet reordering is needed
+// - Use media state helpers where decoder recovery is needed
 //
 // Media emitted by transports should already be normalised and complete:
-// - Video should be complete access units or NAL units
+// - Video should be complete access units or complete NAL units
 // - Audio should be complete codec frames
 // - Partial RTP fragments or incomplete payloads should not be emitted
 // - media.timestamp is source media time, not final HomeKit/output playout time
+// - media.frameDuration may be supplied for audio when known
 // - Output pacing, catch-up, and live latency policy are owned by Streamer
+//
+// Jitter helpers:
+// - createJitterBuffer() creates sequence or timestamp-grouped jitter state
+// - pushJitterPacket() inserts packets into a sequence or timestamp-grouped queue
+// - releaseJitterPackets() releases ordered single-packet media
+// - releaseJitterGroups() releases timestamp-grouped media
+// - sortJitterGroupPackets() sorts grouped packets and detects sequence gaps
+// - countJitterPackets() counts queued packets
+// - sizeJitterBuffer() returns top-level jitter queue size
+// - clearJitterBuffer() clears jitter state
+// - Internal jitter helpers use cached queue item arrays to reduce allocation churn
+// - Internal jitter sorting uses wraparound-aware RTP sequence/timestamp comparison
+//
+// Media recovery helpers:
+// - getMediaState() returns built-in per-media recovery state
+// - resetMediaState() resets one media recovery state or clears all media recovery states
+// - markMediaIssue() records bad media events
+// - markMediaFrame() records accepted clean media frames
+// - canAcceptMediaFrame() decides whether a frame should currently be accepted
+//
+// Media metadata:
+// - updateVideoMetadata() stores and rate-limits video metadata logging
+// - emitMedia() normalises codec, timing, sequence, audio, and video metadata
+// - H264 SPS metadata can be learned from complete emitted video frames
 //
 // Typical transport lifecycle states:
 // - CONNECTING
@@ -35,14 +66,26 @@
 // - CLOSING
 // - CLOSED
 //
-// Code version 2026.05.16
+// Code version 2026.05.18
 // Mark Hulskamp
 'use strict';
 
 // Define nodejs module requirements
 import { Buffer } from 'node:buffer';
 
+import H264 from './h264.js';
+import RingBuffer from './ringbuffer.js';
+
 const VIDEO_FPS_LOG_CHANGE_THRESHOLD = 5; // Minimum rounded FPS change before logging updated stream media
+const RTP_SEQUENCE_WRAP = 0x10000; // Default 16-bit RTP sequence wrap value
+const RTP_SEQUENCE_MASK = 0xffff; // Default 16-bit RTP sequence mask
+const RTP_TIMESTAMP_WRAP = 0x100000000; // Default 32-bit RTP timestamp wrap value
+const RTP_TIMESTAMP_MAX_DELTA = 0x7fffffff; // Default max positive RTP timestamp delta
+const MEDIA_BAD_WINDOW_MS = 3000; // Default rolling window for media recovery events
+const MEDIA_UNSTABLE_BAD_THRESHOLD = 4; // Default bad event count that enters unstable media state
+const MEDIA_RECOVERING_CLEAN_TARGET = 6; // Default clean score needed to return to stable media state
+const MEDIA_BITRATE_WINDOW_MS = 5000; // Rolling window used to estimate emitted media bitrate
+const MEDIA_BITRATE_MIN_WINDOW_MS = 1000; // Minimum sample duration before reporting estimated bitrate
 
 // StreamTransport object
 export default class StreamTransport {
@@ -55,23 +98,10 @@ export default class StreamTransport {
     CLOSED: 'transport-closed',
   };
 
-  static H264NALUS = {
-    START_CODE: Buffer.from([0x00, 0x00, 0x00, 0x01]),
-    TYPES: {
-      SLICE_NON_IDR: 1,
-      SLICE_PART_A: 2,
-      SLICE_PART_B: 3,
-      SLICE_PART_C: 4,
-      IDR: 5, // Instantaneous Decoder Refresh
-      SEI: 6,
-      SPS: 7,
-      PPS: 8,
-      AUD: 9,
-      END_SEQUENCE: 10,
-      END_STREAM: 11,
-      STAP_A: 24,
-      FU_A: 28,
-    },
+  static MEDIA_STATE = {
+    STABLE: 'stable',
+    UNSTABLE: 'unstable',
+    RECOVERING: 'recovering',
   };
 
   static CODEC_TYPE = {
@@ -153,12 +183,16 @@ export default class StreamTransport {
 
   #state = StreamTransport.STATE.CLOSED; // Current transport lifecycle state
   #mediaSequences = {}; // Per-media-type fallback sequence counters
+  #mediaStates = {}; // Per-media recovery/acceptance state
   #reportedVideoMetadata = {
     width: undefined,
     height: undefined,
     fps: undefined,
     lastFPSLogTime: undefined,
   }; // Last video metadata values reported to debug logs
+
+  #lastVideoMetadataTimestamp = undefined; // Last source video timestamp used for FPS learning
+  #bitrateWindows = {}; // Per-media rolling byte counters for bitrate estimation
 
   constructor(options = {}) {
     // Optional consumer callback interface.
@@ -230,6 +264,12 @@ export default class StreamTransport {
     // Public transport lifecycle API.
     // Streamer calls this wrapper; subclasses implement doClose().
     // Do not override this method in protocol transports.
+    // Closing an already closed transport is a no-op. Shutdown paths can call
+    // cleanup after live/recording output has already closed the source.
+    if (this.closed === true) {
+      return;
+    }
+
     try {
       return await this.doClose(...args);
     } catch (error) {
@@ -277,6 +317,476 @@ export default class StreamTransport {
   async doUpdate() {
     // Optional protocol hook called by update().
     // Used for dynamic transport configuration updates.
+  }
+
+  createJitterBuffer(options = {}) {
+    // Create a per-stream jitter buffer state object.
+    // This is deliberately a plain object so transports can keep separate
+    // audio/video/retransmission buffers without introducing another exported class.
+    return {
+      groupByTimestamp: options.groupByTimestamp === true,
+      delayMs: Number.isFinite(options.delayMs) === true ? options.delayMs : 0,
+      maxPackets: Number.isFinite(options.maxPackets) === true && options.maxPackets > 0 ? options.maxPackets : 64,
+      sequenceWrap: Number.isFinite(options.sequenceWrap) === true && options.sequenceWrap > 0 ? options.sequenceWrap : RTP_SEQUENCE_WRAP,
+      sequenceMask: Number.isFinite(options.sequenceMask) === true && options.sequenceMask > 0 ? options.sequenceMask : RTP_SEQUENCE_MASK,
+      timestampWrap:
+        Number.isFinite(options.timestampWrap) === true && options.timestampWrap > 0 ? options.timestampWrap : RTP_TIMESTAMP_WRAP,
+      timestampMaxDelta:
+        Number.isFinite(options.timestampMaxDelta) === true && options.timestampMaxDelta > 0
+          ? options.timestampMaxDelta
+          : RTP_TIMESTAMP_MAX_DELTA,
+      queue: new RingBuffer(
+        0,
+        Number.isFinite(options.maxPackets) === true && options.maxPackets > 0 ? options.maxPackets : 64,
+        Number.isFinite(options.maxPackets) === true && options.maxPackets > 0 ? options.maxPackets : 64,
+      ),
+      lastReleasedSequence: undefined,
+      lastReleasedTimestamp: undefined,
+      lastDropLogTime: undefined,
+    };
+  }
+
+  pushJitterPacket(jitter, packetInfo = {}) {
+    // Push one packet into a jitter buffer.
+    // groupByTimestamp buffers collect packets into timestamp groups, which is
+    // useful for video access-unit assembly. Non-grouped buffers release packets
+    // in sequence order, which is useful for audio.
+    if (typeof jitter !== 'object' || jitter === null) {
+      return false;
+    }
+
+    if (jitter.groupByTimestamp === true) {
+      return this.#jitterPushGrouped(jitter, packetInfo);
+    }
+
+    return this.#jitterPushPacket(jitter, packetInfo);
+  }
+
+  releaseJitterPackets(jitter, force = false) {
+    let now = Date.now();
+    let released = [];
+    let packet = undefined;
+    let seqDelta = 0;
+    let ageMs = 0;
+    let releaseCount = 0;
+    let queue = this.#jitterItems(jitter);
+
+    // Release packets from a non-grouped jitter buffer in sequence order.
+    if (typeof jitter !== 'object' || jitter === null || jitter.groupByTimestamp === true) {
+      return released;
+    }
+
+    // Sort queued packets by RTP sequence with wraparound handling.
+    queue.sort((left, right) => this.#jitterSort(jitter, left, right, 'sequenceNumber', jitter.sequenceWrap, jitter.sequenceWrap / 2));
+
+    while (releaseCount < queue.length) {
+      packet = queue[releaseCount];
+      ageMs = now - (packet?.receivedAt || now);
+
+      // Wait for jitter delay unless buffer is full or force requested.
+      if (force !== true && ageMs < jitter.delayMs && queue.length < jitter.maxPackets) {
+        break;
+      }
+
+      releaseCount++;
+
+      // Skip duplicate or clearly stale/out-of-order packets.
+      if (typeof jitter.lastReleasedSequence === 'number') {
+        seqDelta = (packet.sequenceNumber - jitter.lastReleasedSequence + jitter.sequenceWrap) % jitter.sequenceWrap;
+
+        if (seqDelta === 0 || seqDelta > jitter.sequenceWrap / 2) {
+          continue;
+        }
+      }
+
+      jitter.lastReleasedSequence = packet.sequenceNumber;
+      jitter.lastReleasedTimestamp = packet.rtpTimestamp;
+      released.push(packet);
+    }
+
+    // Remove released packets from jitter queue.
+    if (releaseCount > 0) {
+      queue.splice(0, releaseCount);
+      this.#jitterReplace(jitter, queue);
+    }
+
+    return released;
+  }
+
+  releaseJitterGroups(jitter, options = {}) {
+    let now = Date.now();
+    let force = options.force === true;
+    let isComplete = typeof options.isComplete === 'function' ? options.isComplete : () => true;
+    let canWait = typeof options.canWait === 'function' ? options.canWait : () => false;
+    let maxGroups = Number.isInteger(options.maxGroups) === true && options.maxGroups > 0 ? options.maxGroups : undefined;
+    let maxPackets = Number.isInteger(options.maxPackets) === true && options.maxPackets > 0 ? options.maxPackets : undefined;
+    let released = [];
+    let group = undefined;
+    let groupPackets = 0;
+    let releasedPackets = 0;
+    let queue = this.#jitterItems(jitter);
+
+    // Release timestamp groups from a grouped jitter buffer.
+    // Transport-specific code decides whether a group is complete enough to
+    // release because protocols differ in how frame boundaries are represented.
+    if (typeof jitter !== 'object' || jitter === null || jitter.groupByTimestamp !== true) {
+      return released;
+    }
+
+    queue.sort((left, right) => this.#jitterSort(jitter, left, right, 'rtpTimestamp', jitter.timestampWrap, jitter.timestampMaxDelta));
+
+    while (queue.length > 0) {
+      group = queue[0];
+      groupPackets = Array.isArray(group?.packets) === true ? group.packets.length : 0;
+
+      if (force !== true && isComplete(group, now, jitter) !== true && canWait(group, now, jitter) === true) {
+        break;
+      }
+
+      if (
+        force !== true &&
+        ((typeof maxGroups === 'number' && released.length >= maxGroups) ||
+          (typeof maxPackets === 'number' && releasedPackets > 0 && releasedPackets + groupPackets > maxPackets))
+      ) {
+        break;
+      }
+
+      group = queue.shift();
+      released.push(group);
+      releasedPackets += groupPackets;
+      jitter.lastReleasedTimestamp = group.rtpTimestamp;
+    }
+
+    this.#jitterReplace(jitter, queue);
+
+    return released;
+  }
+
+  sortJitterGroupPackets(jitter, group) {
+    let expectedSequence = undefined;
+
+    // Sort a timestamp group once and cache whether a sequence gap exists.
+    // This avoids repeated sort/gap scans during video jitter release checks.
+    if (
+      typeof jitter !== 'object' ||
+      jitter === null ||
+      typeof group !== 'object' ||
+      group === null ||
+      Array.isArray(group.packets) !== true
+    ) {
+      return false;
+    }
+
+    if (group.packetsSorted === true) {
+      return group.hasSequenceGap === true;
+    }
+
+    group.packets.sort((left, right) =>
+      this.#jitterSort(jitter, left, right, 'sequenceNumber', jitter.sequenceWrap, jitter.sequenceWrap / 2),
+    );
+    group.hasSequenceGap = false;
+
+    for (let packet of group.packets) {
+      if (typeof expectedSequence === 'number' && packet.sequenceNumber !== expectedSequence) {
+        group.hasSequenceGap = true;
+        break;
+      }
+
+      expectedSequence = (packet.sequenceNumber + 1) & jitter.sequenceMask;
+    }
+
+    group.packetsSorted = true;
+
+    return group.hasSequenceGap === true;
+  }
+
+  countJitterPackets(jitter) {
+    let count = 0;
+
+    // Return total packets currently held by a jitter buffer.
+    // For grouped video jitter this counts packets inside all timestamp groups.
+    if (typeof jitter !== 'object' || jitter === null || jitter.queue instanceof RingBuffer !== true) {
+      return 0;
+    }
+
+    if (jitter.groupByTimestamp !== true) {
+      return jitter.queue.size;
+    }
+
+    for (let group of this.#jitterItems(jitter)) {
+      count += Array.isArray(group?.packets) === true ? group.packets.length : 0;
+    }
+
+    return count;
+  }
+
+  sizeJitterBuffer(jitter) {
+    // Return top-level jitter queue size.
+    // For grouped buffers this is the number of timestamp groups, not packets.
+    return typeof jitter === 'object' && jitter !== null && jitter.queue instanceof RingBuffer ? jitter.queue.size : 0;
+  }
+
+  clearJitterBuffer(jitter) {
+    // Clear jitter state and release ordering anchors.
+    if (typeof jitter !== 'object' || jitter === null) {
+      return;
+    }
+
+    jitter.queue?.clear?.(0);
+    jitter.lastReleasedSequence = undefined;
+    jitter.lastReleasedTimestamp = undefined;
+    jitter.lastDropLogTime = undefined;
+  }
+
+  getMediaState(name = 'video', options = {}) {
+    // Return built-in recovery/acceptance state for a named media stream.
+    // This keeps media recovery inside StreamTransport rather than requiring
+    // each transport to create and store its own state object.
+    name = typeof name === 'string' && name !== '' ? name : 'video';
+
+    if (typeof this.#mediaStates[name] !== 'object' || this.#mediaStates[name] === null) {
+      this.#mediaStates[name] = this.#createMediaState(options);
+    }
+
+    return this.#mediaStates[name];
+  }
+
+  resetMediaState(name = undefined) {
+    let state = undefined;
+    let options = {};
+
+    // Reset one named media recovery state, or all media recovery state if no
+    // name is supplied. The lifecycle state is not affected.
+    if (typeof name === 'string' && name !== '') {
+      state = this.getMediaState(name);
+
+      options = {
+        badWindowMs: state.badWindowMs,
+        unstableBadThreshold: state.unstableBadThreshold,
+        recoveringCleanTarget: state.recoveringCleanTarget,
+      };
+
+      this.#mediaStates[name] = this.#createMediaState(options);
+      return this.#mediaStates[name];
+    }
+
+    this.#mediaStates = {};
+    return this.#mediaStates;
+  }
+
+  markMediaIssue(name = 'video', type = '', options = {}) {
+    let state = this.getMediaState(name, options);
+    let now = Date.now();
+    let isClamp = options?.clamp === true;
+    let isBad = typeof options?.bad === 'boolean' ? options.bad : true;
+
+    // Record a media issue and update media recovery state.
+    // Protocols decide what should be considered a media issue.
+    this.#normaliseMediaState(state);
+    this.#pruneMediaStateEvents(state, now);
+
+    if (isClamp === true && typeof options?.bad !== 'boolean') {
+      // A single timestamp clamp is often harmless; repeated clamps or clamps
+      // mixed with other bad events are treated as a health signal.
+      isBad = state.clampEvents >= 1 || state.badNonClampEvents > 0;
+    }
+
+    state.events.push({
+      time: now,
+      type: typeof type === 'string' ? type : '',
+      bad: isBad === true,
+      clamp: isClamp === true,
+    });
+
+    if (isClamp === true) {
+      state.clampEvents++;
+    }
+
+    if (isBad === true) {
+      state.badEvents++;
+
+      if (isClamp !== true) {
+        state.badNonClampEvents++;
+      }
+    }
+
+    if (state.state === StreamTransport.MEDIA_STATE.RECOVERING && isBad === true) {
+      state.state = StreamTransport.MEDIA_STATE.UNSTABLE;
+      state.cleanScore = 0;
+      state.suppressDeltas = true;
+      return state;
+    }
+
+    if (state.badEvents >= state.unstableBadThreshold && state.state !== StreamTransport.MEDIA_STATE.UNSTABLE) {
+      state.state = StreamTransport.MEDIA_STATE.UNSTABLE;
+      state.cleanScore = 0;
+      state.suppressDeltas = true;
+    }
+
+    return state;
+  }
+
+  markMediaFrame(name = 'video', options = {}) {
+    let state = this.getMediaState(name, options);
+    let now = Date.now();
+    let isKeyFrame = options?.keyFrame === true;
+
+    // Record an accepted clean media frame. Keyframes can start recovery from
+    // an unstable decoder state, and enough clean frames return media to stable.
+    this.#normaliseMediaState(state);
+    this.#pruneMediaStateEvents(state, now);
+
+    if (state.state === StreamTransport.MEDIA_STATE.UNSTABLE && isKeyFrame === true) {
+      state.state = StreamTransport.MEDIA_STATE.RECOVERING;
+      state.suppressDeltas = true;
+      state.cleanScore = 2;
+      return state;
+    }
+
+    if (state.state === StreamTransport.MEDIA_STATE.RECOVERING) {
+      state.cleanScore += isKeyFrame === true ? 2 : 1;
+
+      if (state.cleanScore >= state.recoveringCleanTarget) {
+        state.state = StreamTransport.MEDIA_STATE.STABLE;
+        state.cleanScore = 0;
+        state.suppressDeltas = false;
+        state.events = [];
+        state.eventsStart = 0;
+        state.badEvents = 0;
+        state.badNonClampEvents = 0;
+        state.clampEvents = 0;
+        state.lastSuppressedLogTime = undefined;
+      }
+    }
+
+    return state;
+  }
+
+  canAcceptMediaFrame(name = 'video', options = {}) {
+    let state = this.getMediaState(name, options);
+    let isKeyFrame = options?.keyFrame === true;
+
+    // Decide whether a media frame should be accepted while a stream is
+    // recovering. This hides delta-frame suppression from protocol code.
+    this.#normaliseMediaState(state);
+
+    if (state.state === StreamTransport.MEDIA_STATE.STABLE) {
+      return true;
+    }
+
+    if (isKeyFrame === true) {
+      return true;
+    }
+
+    return state.suppressDeltas !== true;
+  }
+
+  #learnVideoMetadata(media) {
+    let info = undefined;
+
+    // Learn generic video metadata from complete frames at the transport boundary.
+    // Protocol transports still own packet/frame assembly; this only inspects
+    // already-emitted media so WebRTC and NexusTalk do not duplicate timing/SPS parsing.
+    if (media?.type !== 'video' || Number.isFinite(media?.timestamp) !== true || Buffer.isBuffer(media?.data) !== true) {
+      return;
+    }
+
+    // Estimate source FPS from accepted video frame timestamps. This is metadata
+    // only; Streamer owns output pacing and may still smooth/drop/catch up.
+    if (typeof this.#lastVideoMetadataTimestamp === 'number' && media.timestamp > this.#lastVideoMetadataTimestamp) {
+      let frameDuration = media.timestamp - this.#lastVideoMetadataTimestamp;
+      let instantFps = frameDuration > 0 ? 1000 / frameDuration : undefined;
+
+      if (Number.isFinite(instantFps) === true && instantFps >= 1 && instantFps <= 60) {
+        this.updateVideoMetadata({
+          fps: Number.isFinite(this.video.fps) === true && this.video.fps > 0 ? this.video.fps * 0.8 + instantFps * 0.2 : instantFps,
+        });
+      }
+    }
+
+    this.#lastVideoMetadataTimestamp = media.timestamp;
+
+    if (
+      media?.codec === StreamTransport.CODEC_TYPE.H264 &&
+      (Number.isFinite(media.width) !== true || Number.isFinite(media.height) !== true || media.keyFrame === true)
+    ) {
+      for (let nalu of H264.getNALUnits(media.data)) {
+        if (nalu.type !== H264.NALUS.TYPES.SPS) {
+          continue;
+        }
+
+        info = H264.getSPSInfo(nalu.data);
+
+        if (Number.isFinite(info?.width) === true && Number.isFinite(info?.height) === true) {
+          if (this.video.width !== info.width || this.video.height !== info.height) {
+            this.updateVideoMetadata({
+              width: info.width,
+              height: info.height,
+            });
+          }
+
+          media.width = info.width;
+          media.height = info.height;
+        }
+
+        break;
+      }
+    }
+  }
+
+  #updateMediaBitrate(mediaType, byteLength, now, explicitBitrate = undefined) {
+    let window = undefined;
+    let elapsedMs = 0;
+    let bitrate = undefined;
+    let mediaInfo = mediaType === 'video' ? this.video : mediaType === 'audio' ? this.audio : undefined;
+
+    // Prefer source-declared bitrate where available. Otherwise estimate from
+    // bytes emitted through the shared transport boundary.
+    if (typeof mediaInfo !== 'object' || mediaInfo === null) {
+      return undefined;
+    }
+
+    if (Number.isFinite(explicitBitrate) === true && explicitBitrate > 0) {
+      mediaInfo.bitrate = Math.round(explicitBitrate);
+      return mediaInfo.bitrate;
+    }
+
+    if (
+      mediaType === 'audio' &&
+      mediaInfo.codec === StreamTransport.CODEC_TYPE.PCM &&
+      Number.isFinite(mediaInfo.sampleRate) === true &&
+      Number.isFinite(mediaInfo.channels) === true
+    ) {
+      // PCM bitrate is determined by sample format, not packet arrival cadence.
+      mediaInfo.bitrate = Math.round(mediaInfo.sampleRate * mediaInfo.channels * 16);
+      return mediaInfo.bitrate;
+    }
+
+    if (Number.isFinite(byteLength) !== true || byteLength <= 0 || Number.isFinite(now) !== true) {
+      return Number.isFinite(mediaInfo.bitrate) === true ? mediaInfo.bitrate : undefined;
+    }
+
+    window = this.#bitrateWindows[mediaType];
+
+    if (typeof window !== 'object' || window === null || Number.isFinite(window.startedAt) !== true) {
+      window = { startedAt: now, bytes: 0 };
+      this.#bitrateWindows[mediaType] = window;
+    }
+
+    window.bytes += byteLength;
+    elapsedMs = now - window.startedAt;
+
+    if (elapsedMs >= MEDIA_BITRATE_MIN_WINDOW_MS) {
+      bitrate = Math.round((window.bytes * 8 * 1000) / elapsedMs);
+      mediaInfo.bitrate = bitrate;
+    }
+
+    if (elapsedMs >= MEDIA_BITRATE_WINDOW_MS) {
+      window.startedAt = now;
+      window.bytes = 0;
+    }
+
+    return Number.isFinite(mediaInfo.bitrate) === true ? mediaInfo.bitrate : undefined;
   }
 
   emitMedia(media) {
@@ -328,6 +838,11 @@ export default class StreamTransport {
       media.width = Number.isFinite(media.width) === true ? media.width : this.video.width;
       media.height = Number.isFinite(media.height) === true ? media.height : this.video.height;
       media.fps = Number.isFinite(media.fps) === true ? media.fps : this.video.fps;
+      media.bitrate = this.#updateMediaBitrate(mediaType, media.data.length, now, media.bitrate);
+      this.#learnVideoMetadata(media);
+      media.width = Number.isFinite(media.width) === true ? media.width : this.video.width;
+      media.height = Number.isFinite(media.height) === true ? media.height : this.video.height;
+      media.fps = Number.isFinite(media.fps) === true ? media.fps : this.video.fps;
       media.bitrate = Number.isFinite(media.bitrate) === true ? media.bitrate : this.video.bitrate;
     }
 
@@ -335,7 +850,7 @@ export default class StreamTransport {
       media.profile = typeof media.profile === 'string' ? media.profile : this.audio.profile;
       media.sampleRate = Number.isFinite(media.sampleRate) === true ? media.sampleRate : this.audio.sampleRate;
       media.channels = Number.isFinite(media.channels) === true ? media.channels : this.audio.channels;
-      media.bitrate = Number.isFinite(media.bitrate) === true ? media.bitrate : this.audio.bitrate;
+      media.bitrate = this.#updateMediaBitrate(mediaType, media.data.length, now, media.bitrate);
       media.frameDuration = Number.isFinite(media.frameDuration) === true ? media.frameDuration : this.audio.frameDuration;
     }
 
@@ -394,42 +909,40 @@ export default class StreamTransport {
     }
 
     // Emit a complete media frame to the consumer.
-    this?.consumer?.media?.(media);
+    try {
+      this?.consumer?.media?.(media);
+    } catch (error) {
+      this?.log?.debug?.('Stream transport media consumer failed for uuid "%s": %s', this.uuid, error?.message || String(error));
+    }
   }
 
-  setState(type, reason = undefined, context = undefined) {
+  setState(type, options = {}) {
     let now = Date.now();
-    let details = undefined;
+    let reason = typeof options?.reason === 'string' && options.reason !== '' ? options.reason : undefined;
     let contextText = '';
-
-    // setState(type, context) is accepted as a shorthand when there is no
-    // failure/reconnect reason. This keeps call sites readable for normal
-    // CONNECTING/CONNECTED/READY transitions that only add host/session detail.
-    if (typeof reason === 'object' && reason !== null) {
-      context = reason;
-      reason = undefined;
-    }
 
     // Context is optional diagnostic metadata for the shared lifecycle log only.
     // It is deliberately not forwarded to Streamer so the transport state
     // contract remains state + reason, while logs can still include protocol
     // details such as NexusTalk host redirects or WebRTC stream IDs.
-    details = typeof context === 'object' && context !== null ? context : {};
 
     // Ignore invalid state values.
     if (Object.values(StreamTransport.STATE).includes(type) !== true) {
-      return;
+      this?.log?.warn?.('Invalid stream transport state "%s" for uuid "%s"', type, this.uuid);
+      return false;
     }
 
     // Avoid duplicate state notifications.
     if (this.#state === type) {
-      return;
+      return false;
     }
 
     // New transport session/recovery attempt.
     // Runtime media metadata and media timing stats should be relearned.
     if (type === StreamTransport.STATE.CONNECTING || type === StreamTransport.STATE.RECONNECTING) {
+      this.resetVideoMetadata();
       this.resetMediaStats();
+      this.resetMediaState();
       this.#mediaSequences = {};
     }
 
@@ -453,7 +966,7 @@ export default class StreamTransport {
         this.stats.lifecycle.reconnectReasons = {};
       }
 
-      if (typeof reason === 'string' && reason !== '') {
+      if (reason !== undefined) {
         this.stats.lifecycle.reconnectReasons[reason] = (this.stats.lifecycle.reconnectReasons[reason] ?? 0) + 1;
       }
     }
@@ -466,20 +979,20 @@ export default class StreamTransport {
 
     // Fold protocol-specific lifecycle details into the single shared state
     // log line instead of having each transport emit extra connection logs.
-    if (typeof details?.host === 'string' && details.host !== '') {
-      contextText += ' on "' + details.host + '"';
+    if (typeof options?.host === 'string' && options.host !== '') {
+      contextText += ' on "' + options.host + '"';
     }
 
-    if (typeof details?.fromHost === 'string' && details.fromHost !== '') {
-      contextText += ' from "' + details.fromHost + '"';
+    if (typeof options?.fromHost === 'string' && options.fromHost !== '') {
+      contextText += ' from "' + options.fromHost + '"';
     }
 
-    if (typeof details?.toHost === 'string' && details.toHost !== '') {
-      contextText += ' to "' + details.toHost + '"';
+    if (typeof options?.toHost === 'string' && options.toHost !== '') {
+      contextText += ' to "' + options.toHost + '"';
     }
 
-    if (typeof details?.sessionId !== 'undefined' && details.sessionId !== null && String(details.sessionId) !== '') {
-      contextText += ' with session ID "' + String(details.sessionId) + '"';
+    if (typeof options?.sessionId !== 'undefined' && options.sessionId !== null && String(options.sessionId) !== '') {
+      contextText += ' with session ID "' + String(options.sessionId) + '"';
     }
 
     this?.log?.debug?.(
@@ -487,11 +1000,13 @@ export default class StreamTransport {
       type,
       this.uuid,
       contextText,
-      typeof reason === 'string' && reason !== '' ? ' (' + reason + ')' : '',
+      reason !== undefined ? ' (' + reason + ')' : '',
     );
 
     // Forward transport state changes to the consumer.
     this?.consumer?.state?.(type, reason);
+
+    return true;
   }
 
   updateVideoMetadata(metadata = {}) {
@@ -507,17 +1022,14 @@ export default class StreamTransport {
     let hasCompleteMetadata =
       Number.isFinite(nextWidth) === true && Number.isFinite(nextHeight) === true && Number.isFinite(nextRoundedFPS) === true;
     let hasReportedMetadata =
-      Number.isFinite(previousWidth) === true &&
-      Number.isFinite(previousHeight) === true &&
-      Number.isFinite(previousRoundedFPS) === true;
+      Number.isFinite(previousWidth) === true && Number.isFinite(previousHeight) === true && Number.isFinite(previousRoundedFPS) === true;
     let resolutionChanged = hasReportedMetadata === true && (nextWidth !== previousWidth || nextHeight !== previousHeight);
     let fpsChanged = hasReportedMetadata === true && nextRoundedFPS !== previousRoundedFPS;
     let fpsLogDue =
       hasReportedMetadata !== true ||
       (fpsChanged === true &&
         Math.abs(nextRoundedFPS - previousRoundedFPS) >= VIDEO_FPS_LOG_CHANGE_THRESHOLD &&
-        (typeof this.#reportedVideoMetadata.lastFPSLogTime !== 'number' ||
-          now - this.#reportedVideoMetadata.lastFPSLogTime >= 30000));
+        (typeof this.#reportedVideoMetadata.lastFPSLogTime !== 'number' || now - this.#reportedVideoMetadata.lastFPSLogTime >= 30000));
     let description = nextWidth + 'x' + nextHeight + ' @ ' + nextRoundedFPS + 'fps';
     let action = hasReportedMetadata === true ? 'changed to' : 'is';
 
@@ -543,6 +1055,19 @@ export default class StreamTransport {
     this.#reportedVideoMetadata.height = nextHeight;
     this.#reportedVideoMetadata.fps = nextFPS;
     this.#reportedVideoMetadata.lastFPSLogTime = now;
+  }
+
+  resetVideoMetadata() {
+    // Clear session-learned video shape so the next emitted frames can relearn it
+    // from SPS/timing and report fresh media metadata for the new stream.
+    this.video.width = undefined;
+    this.video.height = undefined;
+    this.video.fps = undefined;
+    this.#lastVideoMetadataTimestamp = undefined;
+    this.#reportedVideoMetadata.width = undefined;
+    this.#reportedVideoMetadata.height = undefined;
+    this.#reportedVideoMetadata.fps = undefined;
+    this.#reportedVideoMetadata.lastFPSLogTime = undefined;
   }
 
   hasConsumers() {
@@ -585,6 +1110,8 @@ export default class StreamTransport {
       audioFrames: 0,
       keyframes: 0,
     };
+
+    this.#bitrateWindows = {};
   }
 
   recordVideoDrop(reason = 'unknown') {
@@ -637,319 +1164,301 @@ export default class StreamTransport {
     this.stats.media.keyframeRequests = (this.stats.media.keyframeRequests ?? 0) + 1;
   }
 
-  static getH264NALUnits(data) {
-    let nalUnits = [];
+  #createMediaState(options = {}) {
+    // Create reusable media recovery state for transports that need bad-event
+    // windows and clean-frame recovery.
+    return {
+      state: StreamTransport.MEDIA_STATE.STABLE,
+      events: [],
+      eventsStart: 0,
+      badEvents: 0,
+      badNonClampEvents: 0,
+      clampEvents: 0,
+      cleanScore: 0,
+      suppressDeltas: false,
+      lastSuppressedLogTime: undefined,
+      badWindowMs: Number.isFinite(options?.badWindowMs) === true && options.badWindowMs > 0 ? options.badWindowMs : MEDIA_BAD_WINDOW_MS,
+      unstableBadThreshold:
+        Number.isFinite(options?.unstableBadThreshold) === true && options.unstableBadThreshold > 0
+          ? options.unstableBadThreshold
+          : MEDIA_UNSTABLE_BAD_THRESHOLD,
+      recoveringCleanTarget:
+        Number.isFinite(options?.recoveringCleanTarget) === true && options.recoveringCleanTarget > 0
+          ? options.recoveringCleanTarget
+          : MEDIA_RECOVERING_CLEAN_TARGET,
+    };
+  }
+
+  #normaliseMediaState(state) {
+    // Backfill/repair a media state object so callers can safely keep state
+    // across reconnects and incremental upgrades.
+    if (Array.isArray(state.events) !== true) {
+      state.events = [];
+    }
+
+    if (Number.isInteger(state.eventsStart) !== true || state.eventsStart < 0) {
+      state.eventsStart = 0;
+    }
+
+    if (Number.isInteger(state.badEvents) !== true || state.badEvents < 0) {
+      state.badEvents = 0;
+    }
+
+    if (Number.isInteger(state.badNonClampEvents) !== true || state.badNonClampEvents < 0) {
+      state.badNonClampEvents = 0;
+    }
+
+    if (Number.isInteger(state.clampEvents) !== true || state.clampEvents < 0) {
+      state.clampEvents = 0;
+    }
+
+    if (Object.values(StreamTransport.MEDIA_STATE).includes(state.state) !== true) {
+      state.state = StreamTransport.MEDIA_STATE.STABLE;
+    }
+
+    if (Number.isFinite(state.cleanScore) !== true || state.cleanScore < 0) {
+      state.cleanScore = 0;
+    }
+
+    if (typeof state.suppressDeltas !== 'boolean') {
+      state.suppressDeltas = false;
+    }
+
+    state.badWindowMs = Number.isFinite(state.badWindowMs) === true && state.badWindowMs > 0 ? state.badWindowMs : MEDIA_BAD_WINDOW_MS;
+    state.unstableBadThreshold =
+      Number.isFinite(state.unstableBadThreshold) === true && state.unstableBadThreshold > 0
+        ? state.unstableBadThreshold
+        : MEDIA_UNSTABLE_BAD_THRESHOLD;
+    state.recoveringCleanTarget =
+      Number.isFinite(state.recoveringCleanTarget) === true && state.recoveringCleanTarget > 0
+        ? state.recoveringCleanTarget
+        : MEDIA_RECOVERING_CLEAN_TARGET;
+  }
+
+  #pruneMediaStateEvents(state, now = Date.now()) {
+    // Expire old media state events without reallocating on every packet.
+    let expired = undefined;
+
+    while (state.eventsStart < state.events.length) {
+      expired = state.events[state.eventsStart];
+
+      if (typeof expired?.time !== 'number' || now - expired.time <= state.badWindowMs) {
+        break;
+      }
+
+      if (expired.bad === true) {
+        state.badEvents = Math.max(0, state.badEvents - 1);
+
+        if (expired.clamp !== true) {
+          state.badNonClampEvents = Math.max(0, state.badNonClampEvents - 1);
+        }
+      }
+
+      if (expired.clamp === true) {
+        state.clampEvents = Math.max(0, state.clampEvents - 1);
+      }
+
+      state.eventsStart++;
+    }
+
+    if (state.eventsStart > 0 && (state.eventsStart >= 64 || state.eventsStart * 2 >= state.events.length)) {
+      state.events = state.events.slice(state.eventsStart);
+      state.eventsStart = 0;
+    }
+  }
+
+  #jitterPushPacket(jitter, packetInfo = {}) {
+    let sequenceNumber = Number.isInteger(packetInfo.sequenceNumber) === true ? packetInfo.sequenceNumber & jitter.sequenceMask : undefined;
+    let seqDelta = 0;
+    let queue = this.#jitterItems(jitter);
+
+    // Insert a packet into a sequence-ordered jitter buffer.
+    if (typeof sequenceNumber !== 'number') {
+      return false;
+    }
+
+    if (typeof jitter.lastReleasedSequence === 'number') {
+      seqDelta = (sequenceNumber - jitter.lastReleasedSequence + jitter.sequenceWrap) % jitter.sequenceWrap;
+
+      if (seqDelta === 0 || seqDelta > jitter.sequenceWrap / 2) {
+        return false;
+      }
+    }
+
+    for (let packet of queue) {
+      if (packet?.sequenceNumber === sequenceNumber) {
+        return false;
+      }
+    }
+
+    queue.push({
+      ...packetInfo,
+      sequenceNumber: sequenceNumber,
+      receivedAt: Number.isFinite(packetInfo.receivedAt) === true ? packetInfo.receivedAt : Date.now(),
+    });
+
+    while (queue.length > jitter.maxPackets) {
+      queue.shift();
+    }
+
+    this.#jitterReplace(jitter, queue);
+
+    return true;
+  }
+
+  #jitterPushGrouped(jitter, packetInfo = {}) {
+    let rtpTimestamp = Number.isInteger(packetInfo.rtpTimestamp) === true ? packetInfo.rtpTimestamp >>> 0 : undefined;
+    let sequenceNumber = Number.isInteger(packetInfo.sequenceNumber) === true ? packetInfo.sequenceNumber & jitter.sequenceMask : undefined;
+    let receivedAt = Number.isFinite(packetInfo.receivedAt) === true ? packetInfo.receivedAt : Date.now();
+    let group = undefined;
+    let timestampDelta = 0;
+    let queue = this.#jitterItems(jitter);
+    let packetCount = 0;
+
+    // Insert a packet into a timestamp-grouped jitter buffer.
+    if (typeof rtpTimestamp !== 'number' || typeof sequenceNumber !== 'number') {
+      return false;
+    }
+
+    if (typeof jitter.lastReleasedTimestamp === 'number') {
+      timestampDelta = (rtpTimestamp - jitter.lastReleasedTimestamp + jitter.timestampWrap) % jitter.timestampWrap;
+
+      if (timestampDelta === 0 || timestampDelta > jitter.timestampMaxDelta) {
+        return false;
+      }
+    }
+
+    for (let entry of queue) {
+      if (entry?.rtpTimestamp === rtpTimestamp) {
+        group = entry;
+        break;
+      }
+    }
+
+    if (group === undefined) {
+      group = {
+        rtpTimestamp: rtpTimestamp,
+        firstReceivedAt: receivedAt,
+        lastReceivedAt: receivedAt,
+        markerSeen: false,
+        hasSequenceGap: false,
+        packetsSorted: false,
+        packets: [],
+      };
+
+      queue.push(group);
+    }
+
+    for (let packet of group.packets) {
+      if (packet?.sequenceNumber === sequenceNumber) {
+        return false;
+      }
+    }
+
+    group.firstReceivedAt = Math.min(group.firstReceivedAt, receivedAt);
+    group.lastReceivedAt = Math.max(group.lastReceivedAt, receivedAt);
+    group.markerSeen = group.markerSeen === true || packetInfo.marker === true;
+    group.packetsSorted = false;
+
+    // Protocol-specific grouped metadata can be supplied in packetInfo.group.
+    // Boolean flags accumulate across packets so later fragments cannot clear
+    // facts learned from earlier packets in the same timestamp group.
+    if (typeof packetInfo.group === 'object' && packetInfo.group !== null) {
+      for (let [key, value] of Object.entries(packetInfo.group)) {
+        group[key] = typeof value === 'boolean' ? group[key] === true || value === true : value;
+      }
+    }
+
+    group.packets.push({
+      ...packetInfo,
+      sequenceNumber: sequenceNumber,
+      rtpTimestamp: rtpTimestamp,
+      receivedAt: receivedAt,
+    });
+
+    for (let entry of queue) {
+      packetCount += Array.isArray(entry?.packets) === true ? entry.packets.length : 0;
+    }
+
+    while (packetCount > jitter.maxPackets && queue.length > 0) {
+      packetCount -= Array.isArray(queue[0]?.packets) === true ? queue[0].packets.length : 0;
+      queue.shift();
+    }
+
+    this.#jitterReplace(jitter, queue);
+
+    return true;
+  }
+
+  #jitterSort(jitter, left, right, field, wrap, maxDelta) {
+    // Push invalid entries to the end of the sort order.
+    if (typeof left?.[field] !== 'number') {
+      return 1;
+    }
+
+    if (typeof right?.[field] !== 'number') {
+      return -1;
+    }
+
+    // Stable ordering for identical values.
+    if (left[field] === right[field]) {
+      return 0;
+    }
+
+    // Compare values using wraparound-aware ordering.
+    // This handles RTP sequence number and timestamp rollover.
+    return (right[field] - left[field] + wrap) % wrap < maxDelta ? -1 : 1;
+  }
+
+  #jitterItems(jitter) {
     let index = 0;
-    let naluStart = -1;
-    let naluEnd = -1;
-    let startCodeLength = 0;
 
-    // Validate input
-    if (Buffer.isBuffer(data) !== true || data.length === 0) {
-      return nalUnits;
+    // Invalid jitter state or queue unavailable.
+    if (typeof jitter !== 'object' || jitter === null || jitter.queue instanceof RingBuffer !== true) {
+      return [];
     }
 
-    // Detect if buffer begins with Annex-B start code (3-byte or 4-byte)
-    if (
-      data.length < 3 ||
-      data[0] !== 0x00 ||
-      data[1] !== 0x00 ||
-      (data[2] !== 0x01 && (data.length < 4 || data[2] !== 0x00 || data[3] !== 0x01))
-    ) {
-      // Not Annex-B formatted -> treat entire buffer as a single NAL unit
-      return [{ type: data[0] & 0x1f, data: data }];
+    // Reuse a cached array to avoid repeated allocations during
+    // frequent jitter-buffer operations.
+    if (Array.isArray(jitter.items) !== true) {
+      jitter.items = [];
     }
 
-    // Determine initial start code length (3 or 4 bytes)
-    startCodeLength = data[2] === 0x01 ? 3 : 4;
+    // Match the current queue size so removed items are discarded.
+    jitter.items.length = jitter.queue.size;
 
-    index = startCodeLength;
-    naluStart = index;
-
-    // Single-pass scan for subsequent start codes
-    while (index <= data.length - 3) {
-      // Check for 3-byte start code (00 00 01)
-      if (data[index] === 0x00 && data[index + 1] === 0x00 && data[index + 2] === 0x01) {
-        naluEnd = index;
-
-        // Push previous NAL unit if valid
-        if (naluEnd > naluStart) {
-          nalUnits.push({
-            type: data[naluStart] & 0x1f,
-            data: data.subarray(naluStart, naluEnd),
-          });
-        }
-
-        index += 3;
-        naluStart = index;
-        continue;
-      }
-
-      // Check for 4-byte start code (00 00 00 01)
-      if (
-        index <= data.length - 4 &&
-        data[index] === 0x00 &&
-        data[index + 1] === 0x00 &&
-        data[index + 2] === 0x00 &&
-        data[index + 3] === 0x01
-      ) {
-        naluEnd = index;
-
-        // Push previous NAL unit if valid
-        if (naluEnd > naluStart) {
-          nalUnits.push({
-            type: data[naluStart] & 0x1f,
-            data: data.subarray(naluStart, naluEnd),
-          });
-        }
-
-        index += 4;
-        naluStart = index;
-        continue;
-      }
-
+    // Refresh cached items from the RingBuffer.
+    while (index < jitter.queue.size) {
+      jitter.items[index] = jitter.queue.getByOffset(index);
       index++;
     }
 
-    // Push final NAL unit (if any data remains after last start code)
-    if (naluStart < data.length) {
-      nalUnits.push({
-        type: data[naluStart] & 0x1f,
-        data: data.subarray(naluStart),
-      });
-    }
-
-    return nalUnits;
+    return jitter.items;
   }
 
-  static hasH264NAL(data, nalType) {
-    for (let nalu of StreamTransport.getH264NALUnits(data)) {
-      if (nalu.type === nalType) {
-        return true;
-      }
+  #jitterReplace(jitter, items = []) {
+    let index = 0;
+
+    // Invalid jitter state.
+    if (typeof jitter !== 'object' || jitter === null) {
+      return;
     }
 
-    return false;
-  }
-
-  static getH264Resolution(sps) {
-    let rbsp = undefined;
-    let bitOffset = 0;
-    let bitLength = 0;
-    let profileIdc = 0;
-    let chromaFormatIdc = 1;
-    let picWidthInMbsMinus1 = 0;
-    let picHeightInMapUnitsMinus1 = 0;
-    let frameMbsOnlyFlag = 1;
-    let frameCropLeftOffset = 0;
-    let frameCropRightOffset = 0;
-    let frameCropTopOffset = 0;
-    let frameCropBottomOffset = 0;
-    let cropUnitX = 1;
-    let cropUnitY = 2;
-    let r = 0;
-    let w = 0;
-    let picOrderCntType = 0;
-    let width = 0;
-    let height = 0;
-
-    // SPS NAL only.
-    if (Buffer.isBuffer(sps) !== true || sps.length < 4 || (sps[0] & 0x1f) !== this.H264NALUS.TYPES.SPS) {
-      return undefined;
+    // Ensure jitter queue exists.
+    if (jitter.queue instanceof RingBuffer !== true) {
+      jitter.queue = new RingBuffer(0, jitter.maxPackets, jitter.maxPackets);
     }
 
-    try {
-      // Strip emulation-prevention bytes (00 00 03) so we can read RBSP bits directly.
-      rbsp = Buffer.allocUnsafe(sps.length);
+    // Replace queue contents with the supplied ordered items.
+    jitter.queue.clear(0);
 
-      while (r < sps.length) {
-        if (r + 2 < sps.length && sps[r] === 0x00 && sps[r + 1] === 0x00 && sps[r + 2] === 0x03) {
-          rbsp[w++] = 0x00;
-          rbsp[w++] = 0x00;
-          r += 3;
-          continue;
-        }
-
-        rbsp[w++] = sps[r++];
-      }
-
-      rbsp = rbsp.subarray(0, w);
-      bitLength = rbsp.length * 8;
-
-      // Bit reader helpers for Exp-Golomb coded SPS fields.
-      let readBit = () => {
-        let byteOffset = 0;
-        let value = 0;
-
-        if (bitOffset >= bitLength) {
-          return 0;
-        }
-
-        byteOffset = bitOffset >> 3;
-        value = (rbsp[byteOffset] >> (7 - (bitOffset & 0x07))) & 0x01;
-        bitOffset++;
-
-        return value;
-      };
-
-      let readBits = (count) => {
-        let value = 0;
-
-        while (count-- > 0) {
-          value = (value << 1) | readBit();
-        }
-
-        return value >>> 0;
-      };
-
-      let readUE = () => {
-        let zeros = 0;
-        let value = 0;
-
-        while (bitOffset < bitLength && readBit() === 0) {
-          zeros++;
-        }
-
-        value = Math.pow(2, zeros) - 1;
-
-        if (zeros > 0) {
-          value += readBits(zeros);
-        }
-
-        return value >>> 0;
-      };
-
-      let readSE = () => {
-        let value = readUE();
-
-        return (value & 1) === 0 ? -(value >>> 1) : (value + 1) >>> 1;
-      };
-
-      readBits(8); // nal_unit_type header byte
-      profileIdc = readBits(8); // profile_idc
-      readBits(16); // constraint_set_flags + level_idc
-      readUE(); // seq_parameter_set_id
-
-      // High-profile SPS carries extra chroma / scaling-list fields.
-      if (
-        profileIdc === 100 ||
-        profileIdc === 110 ||
-        profileIdc === 122 ||
-        profileIdc === 244 ||
-        profileIdc === 44 ||
-        profileIdc === 83 ||
-        profileIdc === 86 ||
-        profileIdc === 118 ||
-        profileIdc === 128 ||
-        profileIdc === 138 ||
-        profileIdc === 139 ||
-        profileIdc === 134 ||
-        profileIdc === 135
-      ) {
-        chromaFormatIdc = readUE();
-
-        if (chromaFormatIdc === 3) {
-          readBit();
-        }
-
-        readUE(); // bit_depth_luma_minus8
-        readUE(); // bit_depth_chroma_minus8
-        readBit(); // qpprime_y_zero_transform_bypass_flag
-
-        // seq_scaling_matrix_present_flag
-        if (readBit() === 1) {
-          let count = chromaFormatIdc !== 3 ? 8 : 12;
-          let i = 0;
-
-          while (i < count) {
-            // seq_scaling_list_present_flag[i]
-            if (readBit() === 1) {
-              let size = i < 6 ? 16 : 64;
-              let last = 8;
-              let next = 8;
-              let j = 0;
-
-              while (j < size) {
-                if (next !== 0) {
-                  next = (last + readSE() + 256) % 256;
-                }
-
-                last = next === 0 ? last : next;
-                j++;
-              }
-            }
-
-            i++;
-          }
-        }
-      }
-
-      // Skip picture order / reference frame fields until width/height fields.
-      readUE(); // log2_max_frame_num_minus4
-      picOrderCntType = readUE();
-
-      if (picOrderCntType === 0) {
-        readUE(); // log2_max_pic_order_cnt_lsb_minus4
-      }
-
-      if (picOrderCntType === 1) {
-        let i = 0;
-        let count = 0;
-
-        readBit(); // delta_pic_order_always_zero_flag
-        readSE(); // offset_for_non_ref_pic
-        readSE(); // offset_for_top_to_bottom_field
-        count = readUE(); // num_ref_frames_in_pic_order_cnt_cycle
-
-        while (i < count) {
-          readSE(); // offset_for_ref_frame[i]
-          i++;
-        }
-      }
-
-      readUE(); // max_num_ref_frames
-      readBit(); // gaps_in_frame_num_value_allowed_flag
-
-      // Frame dimensions in macroblocks.
-      picWidthInMbsMinus1 = readUE();
-      picHeightInMapUnitsMinus1 = readUE();
-      frameMbsOnlyFlag = readBit();
-
-      if (frameMbsOnlyFlag === 0) {
-        readBit(); // mb_adaptive_frame_field_flag
-      }
-
-      readBit(); // direct_8x8_inference_flag
-
-      // Optional frame cropping offsets.
-      if (readBit() === 1) {
-        frameCropLeftOffset = readUE();
-        frameCropRightOffset = readUE();
-        frameCropTopOffset = readUE();
-        frameCropBottomOffset = readUE();
-      }
-
-      // Crop units depend on chroma format and whether picture is frame- or field-coded.
-      if (chromaFormatIdc === 1 || chromaFormatIdc === 2) {
-        cropUnitX = 2;
-      }
-
-      cropUnitY = chromaFormatIdc === 1 ? 2 * (2 - frameMbsOnlyFlag) : 2 - frameMbsOnlyFlag;
-
-      // Return decoded display resolution only.
-      width = (picWidthInMbsMinus1 + 1) * 16 - (frameCropLeftOffset + frameCropRightOffset) * cropUnitX;
-      height = (2 - frameMbsOnlyFlag) * (picHeightInMapUnitsMinus1 + 1) * 16 - (frameCropTopOffset + frameCropBottomOffset) * cropUnitY;
-
-      if (Number.isInteger(width) !== true || Number.isInteger(height) !== true || width <= 0 || height <= 0) {
-        return undefined;
-      }
-
-      return {
-        width: width,
-        height: height,
-      };
-    } catch {
-      return undefined;
+    while (index < items.length) {
+      jitter.queue.push(items[index]);
+      index++;
     }
+
+    // Refresh cached jitter items reference so future reads
+    // avoid rebuilding arrays unnecessarily.
+    jitter.items = items;
   }
 }

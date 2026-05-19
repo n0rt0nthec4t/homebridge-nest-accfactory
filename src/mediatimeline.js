@@ -36,7 +36,7 @@
 // - Retains timeline-based A/V ordering
 // - Minimal memory overhead from lightweight indexes
 //
-// Code version 2026.05.11
+// Code version 2026.05.18
 // Mark Hulskamp
 'use strict';
 
@@ -62,6 +62,9 @@ export default class MediaTimeline {
   #videoIndexOffset = 0; // First valid entry in #videoIndexes
   #audioIndexOffset = 0; // First valid entry in #audioIndexes
   #keyframeIndexOffset = 0; // First valid entry in #keyframeIndexes
+
+  #trimmedItems = 0; // Total items removed by retention trimming
+  #droppedItems = 0; // Total items rejected because retained capacity was full
 
   constructor(startIndex = 0, capacity = MEDIA_TIMELINE_DEFAULT_CAPACITY, maxCapacity = MEDIA_TIMELINE_MAX_CAPACITY) {
     // Initialise the logical item index.
@@ -105,9 +108,13 @@ export default class MediaTimeline {
       startIndex: this.#buffer.startIndex,
       nextIndex: this.#itemIndex,
       size: this.#buffer.size,
+      capacity: this.#buffer.capacity,
+      maxCapacity: this.#buffer.maxCapacity,
       videoIndexes: this.#videoIndexes.length - this.#videoIndexOffset,
       audioIndexes: this.#audioIndexes.length - this.#audioIndexOffset,
       keyframeIndexes: this.#keyframeIndexes.length - this.#keyframeIndexOffset,
+      trimmedItems: this.#trimmedItems,
+      droppedItems: this.#droppedItems,
     };
   }
 
@@ -126,6 +133,9 @@ export default class MediaTimeline {
     this.#videoIndexOffset = 0;
     this.#audioIndexOffset = 0;
     this.#keyframeIndexOffset = 0;
+
+    this.#trimmedItems = 0;
+    this.#droppedItems = 0;
   }
 
   add(item) {
@@ -139,6 +149,7 @@ export default class MediaTimeline {
 
     // Store in the shared ordered buffer.
     if (this.#buffer.push(item) !== true) {
+      this.#droppedItems++;
       return undefined;
     }
 
@@ -191,6 +202,24 @@ export default class MediaTimeline {
     return this.#buffer.getByOffset(this.#buffer.size - 1);
   }
 
+  latestTime() {
+    let offset = this.#buffer.size - 1;
+    let item = undefined;
+
+    // Return the newest retained media timestamp, skipping untimed metadata.
+    while (offset >= 0) {
+      item = this.#buffer.getByOffset(offset);
+
+      if (typeof item?.time === 'number' && Number.isFinite(item.time) === true) {
+        return item.time;
+      }
+
+      offset--;
+    }
+
+    return undefined;
+  }
+
   nextVideoFrom(index) {
     // Resolve next video item without scanning mixed media.
     return this.get(this.#nextIndexFrom(this.#videoIndexes, this.#videoIndexOffset, index));
@@ -229,8 +258,10 @@ export default class MediaTimeline {
 
       item = this.#buffer.getByOffset(trimCount);
 
+      // Untimed items cannot be retained by age, so allow them to be trimmed.
       if (typeof item?.time !== 'number') {
-        break;
+        trimCount++;
+        continue;
       }
 
       if (item.time >= cutoffTime) {
@@ -246,6 +277,7 @@ export default class MediaTimeline {
 
     // Trim the shared buffer.
     this.#buffer.shift(trimCount, this.#itemIndex);
+    this.#trimmedItems += trimCount;
 
     // Move index heads forward without Array.shift().
     this.#trimIndexes();
@@ -296,9 +328,9 @@ export default class MediaTimeline {
       return protectedIndex;
     }
 
-    // Find the oldest cursor still required by any output.
+    // Find the oldest valid cursor still required by any output.
     for (let output of outputs.values()) {
-      if (typeof output?.cursor === 'number' && output.cursor < protectedIndex) {
+      if (Number.isInteger(output?.cursor) === true && output.cursor >= this.#buffer.startIndex && output.cursor < protectedIndex) {
         protectedIndex = output.cursor;
       }
     }

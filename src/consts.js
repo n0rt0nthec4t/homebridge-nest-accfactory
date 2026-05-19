@@ -27,7 +27,7 @@
 // - Imported throughout the codebase for consistency and reuse
 // - Changes here may affect multiple subsystems (devices, streaming, APIs)
 //
-// Code version 2026.05.06
+// Code version 2026.05.16
 // Mark Hulskamp
 'use strict';
 
@@ -47,7 +47,7 @@ export const TIMERS = {
   MOTION_COOLDOWN: { name: 'motion-cooldown', interval: 60000 }, // Cooldown timer for motion events (ms)
 };
 
-export const USER_AGENT = 'Nest/5.86.3 (iOScom.nestlabs.jasper.release) os=26.4'; // User Agent string
+export const USER_AGENT = 'Nest/5.87.0 (iOScom.nestlabs.jasper.release) os=26.4'; // User Agent string
 
 export const __dirname = path.dirname(url.fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 

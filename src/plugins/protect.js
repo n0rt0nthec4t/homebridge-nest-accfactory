@@ -645,7 +645,6 @@ const PROTECT_FIELD_MAP = {
 };
 
 // Function to process our RAW Nest or Google data for protect devices
-
 export function processRawData(log, rawData, config, deviceType = undefined, changedData = undefined) {
   if (
     rawData === null ||
