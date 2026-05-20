@@ -4,6 +4,23 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.3-alpha.7 (2026/05/xx)
+
+### Fixed
+
+- `webrtc.js`
+  - Fixed WebRTC streams becoming unstable or stalling after RTP timestamp changes or long-running sessions
+  - Fixed stale RTP timing state causing valid WebRTC media frames to be incorrectly dropped after reconnects or RTP timestamp wrap
+
+### Changed
+
+- `webrtc.js`
+  - Updated WebRTC video and audio timestamp mapping to use previous accepted RTP timestamps instead of fixed RTP base timestamps
+  - Improved handling of RTP timestamp wrap and long-running WebRTC sessions to reduce timing drift and frame rejection
+  - Minor cleanup to internal WebRTC timing logic and comments
+
+- Updated `protobufjs` dependency version from `8.2.0` to `8.4.0`
+
 ## v0.4.3-alpha.6 (2026/05/19)
 
 ### Changed

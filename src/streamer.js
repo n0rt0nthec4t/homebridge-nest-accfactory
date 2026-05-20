@@ -1745,8 +1745,7 @@ export default class Streamer {
         (dueVideo !== true ||
           capVideo === true ||
           dueAudioTime <= dueVideoTime ||
-          (videoIsExpensive === true &&
-            (dueAudioTime <= dueVideoTime + OUTPUT_KEYFRAME_AUDIO_PRIORITY_MS || audioOverdue === true)))
+          (videoIsExpensive === true && (dueAudioTime <= dueVideoTime + OUTPUT_KEYFRAME_AUDIO_PRIORITY_MS || audioOverdue === true)))
       ) {
         selectedType = Streamer.MEDIA_TYPE.AUDIO;
         item = audioItem;
@@ -1892,12 +1891,7 @@ export default class Streamer {
 
         // Recordings keep audio aligned with the first decodable H264 keyframe.
         // Live output can let audio flow while video waits for IDR recovery.
-        if (
-          isH264Output === true &&
-          requireKeyFrameStart === true &&
-          allowAudioBeforeKeyFrame !== true &&
-          state.seenKeyFrame !== true
-        ) {
+        if (isH264Output === true && requireKeyFrameStart === true && allowAudioBeforeKeyFrame !== true && state.seenKeyFrame !== true) {
           this.#statsDrop(output, Streamer.MEDIA_TYPE.AUDIO);
           state.audioCursor = nextCursor;
           processed++;

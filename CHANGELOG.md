@@ -47,7 +47,7 @@ While extensive testing has been performed, users may still encounter regression
 
 ### 📦 Dependency Updates
 
-- Updated `protobufjs` from `8.0.3` to `8.2.0`
+- Updated `protobufjs` from `8.0.3` to `8.4.0`
   
 ## v0.4.1 (2026/05/07)
 
