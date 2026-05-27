@@ -1577,7 +1577,7 @@ export default class NestAccfactory {
             if (
               key === 'dehumidifier_state' &&
               typeof value === 'boolean' &&
-              Number.isFinite(Number(values?.target_humidity)) === true &&
+              Number.isFinite(Number(values?.target_humidity_dehumidifier)) === true &&
               nest_google_device_uuid.startsWith('device.') === true &&
               this.#rawData?.[nest_google_device_uuid]?.value?.has_dehumidifier === true
             ) {
@@ -1585,14 +1585,14 @@ export default class NestAccfactory {
               subscribeJSONData.objects.push({
                 object_key: nest_google_device_uuid,
                 op: 'MERGE',
-                value: { dehumidifier_state: value, target_humidity: Number(values.target_humidity) },
+                value: { target_humidity_enabled: value, target_humidity: Number(values.target_humidity_dehumidifier) },
               });
             }
 
             if (
               key === 'humidifier_state' &&
               typeof value === 'boolean' &&
-              Number.isFinite(Number(values?.target_humidity)) === true &&
+              Number.isFinite(Number(values?.target_humidity_humidifier)) === true &&
               nest_google_device_uuid.startsWith('device.') === true &&
               this.#rawData?.[nest_google_device_uuid]?.value?.has_humidifier === true
             ) {
@@ -1600,7 +1600,7 @@ export default class NestAccfactory {
               subscribeJSONData.objects.push({
                 object_key: nest_google_device_uuid,
                 op: 'MERGE',
-                value: { humidifier_state: value, target_humidity: Number(values.target_humidity) },
+                value: { target_humidity_enabled: value, target_humidity: Number(values.target_humidity_humidifier) },
               });
             }
 

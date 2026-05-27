@@ -30,7 +30,7 @@
 // - Shared helpers centralise common Google protobuf and Nest REST processing logic
 // - Functions are designed to fail safely and return undefined where appropriate
 //
-// Code version 2026.05.09
+// Code version 2026.05.20
 // Mark Hulskamp
 'use strict';
 
@@ -404,12 +404,16 @@ function processSoftwareVersion(versionString) {
 // Examples:
 // - label "Camera", fixture "Front Door", room "Entryway" -> "Camera - Front Door"
 // - label "Front Door", fixture "Front Door" -> "Front Door"
+// - label "Back door camera", fixture "Back Door" -> "Back door camera"
 // - missing label, room "Hallway" -> "Hallway"
 // - missing label and location -> "unknown description"
 function buildDeviceDescription(rawData, raw) {
   let value = raw?.value;
   let description = '';
   let location = '';
+  let descriptionWords = [];
+  let locationWords = [];
+  let locationInDescription = false;
 
   if (
     typeof value?.label?.label === 'string' ||
@@ -459,7 +463,30 @@ function buildDeviceDescription(rawData, raw) {
     ).trim();
   }
 
-  if (description.toUpperCase() === location.toUpperCase()) {
+  if (description !== '' && location !== '') {
+    descriptionWords = description
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim()
+      .split(/\s+/)
+      .filter((word) => word !== '');
+    locationWords = location
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim()
+      .split(/\s+/)
+      .filter((word) => word !== '');
+
+    for (let index = 0; index <= descriptionWords.length - locationWords.length && locationWords.length > 0; index++) {
+      locationInDescription = locationWords.every((word, offset) => descriptionWords[index + offset] === word);
+
+      if (locationInDescription === true) {
+        break;
+      }
+    }
+  }
+
+  if (description.toUpperCase() === location.toUpperCase() || locationInDescription === true) {
     location = '';
   }
 

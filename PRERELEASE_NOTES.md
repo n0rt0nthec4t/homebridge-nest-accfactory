@@ -4,7 +4,17 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.4.3-alpha.7 (2026/05/xx)
+## v0.4.3-beta.1 (2026/05/28)
+
+## Changed
+
+- `utils.js`
+  - Improved shared device description building so location names already present in a device label are not duplicated in the HomeKit display name
+
+- `plugins/camera.js`
+  - Renamed internal streaming backend registry terminology from `STREAMERS` to `TRANSPORTS` to better reflect the Streamer/transport split
+
+## v0.4.3-alpha.7 (2026/05/20)
 
 ### Fixed
 

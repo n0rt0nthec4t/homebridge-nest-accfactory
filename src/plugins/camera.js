@@ -78,16 +78,16 @@ const STREAMING_PROTOCOL = {
   MPEGDASH: 'PROTOCOL_MPEGDASH',
 };
 
-const STREAMERS = {
-  [STREAMING_PROTOCOL.WEBRTC]: { module: WebRTC, label: 'WebRTC streamer' },
-  [STREAMING_PROTOCOL.NEXUSTALK]: { module: NexusTalk, label: 'NexusTalk streamer' },
+const TRANSPORTS = {
+  [STREAMING_PROTOCOL.WEBRTC]: { module: WebRTC, label: 'WebRTC transport' },
+  [STREAMING_PROTOCOL.NEXUSTALK]: { module: NexusTalk, label: 'NexusTalk transport' },
 };
 
 const PREBUFFER_LENGTH = 4000;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.05.14'; // Code version
+  static VERSION = '2026.05.20'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -302,7 +302,7 @@ export default class NestCamera extends HomeKitDevice {
       this?.log?.warn?.('Migration between Nest <-> Google Home apps is underway for "%s"', this.deviceData.description);
     }
 
-    this.deviceData?.streaming_protocols?.some?.((protocol) => STREAMERS[protocol]?.module !== undefined) !== true &&
+    this.deviceData?.streaming_protocols?.some?.((protocol) => TRANSPORTS[protocol]?.module !== undefined) !== true &&
       this?.log?.error?.(
         'No suitable streaming protocol is present for "%s". Streaming and recording will be unavailable',
         this.deviceData.description,
@@ -310,7 +310,7 @@ export default class NestCamera extends HomeKitDevice {
 
     // Extra setup details for output
     this.deviceData?.streaming_protocols?.forEach?.((protocol) => {
-      STREAMERS[protocol]?.module !== undefined && this.postSetupDetail(STREAMERS[protocol].label, LOG_LEVELS.DEBUG);
+      TRANSPORTS[protocol]?.module !== undefined && this.postSetupDetail(TRANSPORTS[protocol].label, LOG_LEVELS.DEBUG);
     });
 
     (this.deviceData?.has_motion_detection !== true || this.deviceData?.motion_detection_enabled !== true) &&
@@ -1701,14 +1701,14 @@ export default class NestCamera extends HomeKitDevice {
       protocol = STREAMING_PROTOCOL.NEXUSTALK;
     }
 
-    TransportClass = STREAMERS[protocol]?.module;
+    TransportClass = TRANSPORTS[protocol]?.module;
 
     if (TransportClass === undefined) {
       return undefined;
     }
 
     if (typeof reason === 'string' && reason !== '') {
-      this?.log?.debug?.('Using %s for "%s"%s', STREAMERS[protocol]?.label ?? 'selected streamer', deviceData.description, reason);
+      this?.log?.debug?.('Using %s for "%s"%s', TRANSPORTS[protocol]?.label ?? 'selected streamer', deviceData.description, reason);
     }
 
     transportInstance = new TransportClass({

@@ -72,7 +72,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.THERMOSTAT;
-  static VERSION = '2026.05.10'; // Code version
+  static VERSION = '2026.05.21'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -1340,7 +1340,7 @@ export default class NestThermostat extends HomeKitDevice {
           this.humidifierDehumidifierService.getCharacteristic(this.hap.Characteristic.TargetHumidifierDehumidifierState).value,
         ),
       onGet: () => {
-        return this.deviceData.humidifier_enabled === true || this.deviceData.dehumidifier_enabled === true
+        return this.deviceData.humidifier_state === true || this.deviceData.dehumidifier_state === true
           ? this.hap.Characteristic.Active.ACTIVE
           : this.hap.Characteristic.Active.INACTIVE;
       },
@@ -2028,8 +2028,9 @@ const THERMOSTAT_FIELD_MAP = {
           : undefined,
     },
     nest: {
-      fields: [],
-      translate: () => undefined,
+      fields: ['target_humidity'],
+      translate: ({ raw }) =>
+        Number.isFinite(Number(raw?.value?.target_humidity)) === true ? Number(raw.value.target_humidity) : undefined,
     },
   },
 
@@ -2041,13 +2042,6 @@ const THERMOSTAT_FIELD_MAP = {
           ? Number(raw.value.humidity_control_settings.dehumidifierTargetHumidity.value)
           : undefined,
     },
-    nest: {
-      fields: [],
-      translate: () => undefined,
-    },
-  },
-
-  target_humidity: {
     nest: {
       fields: ['target_humidity'],
       translate: ({ raw }) =>
@@ -2683,12 +2677,6 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
           // If an active remote temperature sensor is selected, use its temperature as the thermostat current temperature
           if (Number.isFinite(Number(mappedResult.data.active_rcs_sensor_temperature)) === true) {
             mappedResult.data.current_temperature = mappedResult.data.active_rcs_sensor_temperature;
-          }
-
-          // Nest-only humidifier target
-          if (value?.source === DATA_SOURCE.NEST) {
-            mappedResult.data.target_humidity =
-              Number.isFinite(Number(value?.value?.target_humidity)) === true ? Number(value.value.target_humidity) : 0.0;
           }
         }
 

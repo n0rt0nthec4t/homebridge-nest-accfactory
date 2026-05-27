@@ -275,7 +275,7 @@ export default class WebRTC extends StreamTransport {
     homeFoyerResponse = await this.#grpcTransport.command(GOOGLE_HOME_FOYER_PREFIX, 'CameraService', 'JoinStream', {
       command: 'offer',
       deviceId: this.uuid,
-      local: true, // Request direct peer-to-peer connection if possible
+      local: false, // Request direct peer-to-peer connection if possible
       streamContext: 'STREAM_CONTEXT_DEFAULT',
       // Request highest possible resolution; actual delivered resolution may be lower.
       requestedVideoResolution: 'VIDEO_RESOLUTION_FULL_HIGH',
