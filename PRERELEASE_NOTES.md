@@ -4,6 +4,29 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.3-beta.3 (2026/08/04)
+
+### Changed
+
+- `webrtc.js`
+  - Replaced the fixed 140KB keyframe limit with a bounded 2MiB–4MiB allowance that adapts to the source resolution and bitrate
+  - Increased the bounded video RTP reorder capacity to support fragmented high-resolution keyframes
+  - Added Werift transport diagnostics for ICE/DTLS state, candidate pair details, round-trip time, consent status, packet loss, jitter, NACKs, PLIs, and transferred bytes
+  - Preserved the final Werift statistics snapshot before peer connection teardown for reconnect and support diagnostics
+
+- `streamtransport.js`
+  - Improved timestamp-grouped video jitter performance with indexed timestamp and RTP sequence lookups
+  - Replaced repeated per-packet queue scans and packet recounting with incremental bounded jitter bookkeeping
+  - Deferred grouped jitter sorting and queue rebuilding until frame release instead of performing it for every RTP fragment
+
+- `streamer.js`, `nexustalk.js`, `webrtc.js`
+  - Passed H264 SPS/PPS presence and cached codec configuration from transport assembly into Streamer
+  - Removed unused retained IDR copies and avoided repeated keyframe scans when preparing decoder-safe output
+  - Included Werift statistics in camera support dumps
+
+- Updated `chalk` dependency version from `5.6.2` to `6.0.0`
+- Updated `werift` dependency version from `0.23.0` to `0.24.3`, removing the legacy `werift-ice` and `ip` dependency chain
+
 ## v0.4.3-beta.1 (2026/05/28)
 
 ## Changed

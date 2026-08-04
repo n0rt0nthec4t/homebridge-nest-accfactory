@@ -495,7 +495,9 @@ export default class Streamer {
     let mediaTime = 0;
     let minimumMediaStep = 1;
     let keyFrame = false;
-    let nalUnits = undefined;
+    let codecConfig = undefined;
+    let hasSPS = false;
+    let hasPPS = false;
     let sourceAudioGapMs = 0;
     let keyframeAgeMs = undefined;
 
@@ -585,29 +587,22 @@ export default class Streamer {
     // - output writes item.data directly
     // - Streamer only caches clean SPS/PPS for optional decoder bootstrap
     if (mediaType === Streamer.MEDIA_TYPE.VIDEO && codec === StreamTransport.CODEC_TYPE.H264) {
-      nalUnits = H264.getNALUnits(data);
+      codecConfig = typeof media?.codecConfig === 'object' && media.codecConfig !== null ? media.codecConfig : undefined;
 
-      if (nalUnits.length === 0) {
-        return;
-      }
+      if (codecConfig !== undefined) {
+        hasSPS = codecConfig.hasSPS === true;
+        hasPPS = codecConfig.hasPPS === true;
 
-      for (let nalu of nalUnits) {
-        if (nalu.type === H264.NALUS.TYPES.SPS) {
-          this.#videoState.lastSPS = Buffer.from(nalu.data);
+        if (Buffer.isBuffer(codecConfig.sps) === true && codecConfig.sps.length > 0) {
+          this.#videoState.lastSPS = codecConfig.sps;
         }
 
-        if (nalu.type === H264.NALUS.TYPES.PPS) {
-          this.#videoState.lastPPS = Buffer.from(nalu.data);
-        }
-
-        if (nalu.type === H264.NALUS.TYPES.IDR) {
-          this.#videoState.lastIDR = Buffer.from(nalu.data);
-          keyFrame = true;
+        if (Buffer.isBuffer(codecConfig.pps) === true && codecConfig.pps.length > 0) {
+          this.#videoState.lastPPS = codecConfig.pps;
         }
       }
 
       if (keyFrame === true) {
-        this.#videoState.lastIDRIndex = this.#itemIndex;
         this.#lastKeyframeAt = now;
         this.#lastKeyframeBytes = data.length;
       }
@@ -665,6 +660,8 @@ export default class Streamer {
       sourceTimestamp: sourceTimestamp,
       sequence: sequence,
       keyFrame: keyFrame === true,
+      hasSPS: hasSPS,
+      hasPPS: hasPPS,
       data: data,
     });
 
@@ -1011,6 +1008,7 @@ export default class Streamer {
       }
 
       if (hasOtherLiveOutputs !== true) {
+        await this.#transport?.refreshDiagnostics?.();
         this.#outputStats(output, Date.now());
       }
     }
@@ -1817,8 +1815,8 @@ export default class Streamer {
           // Bootstrap H264 decoder with cached SPS/PPS before the first keyframe.
           // Do not duplicate config if the keyframe access unit already contains it.
           if (item.keyFrame === true && state.sentCodecConfig !== true) {
-            keyFrameHasSPS = H264.hasNAL(item.data, H264.NALUS.TYPES.SPS);
-            keyFrameHasPPS = H264.hasNAL(item.data, H264.NALUS.TYPES.PPS);
+            keyFrameHasSPS = item.hasSPS === true;
+            keyFrameHasPPS = item.hasPPS === true;
 
             if (hasSPS === true && keyFrameHasSPS !== true) {
               writeAccepted = outputVideo.write(H264.NALUS.START_CODE) !== false && writeAccepted;
@@ -2059,6 +2057,7 @@ export default class Streamer {
     let videoDrops = typeof mediaStats?.videoDrops === 'object' && mediaStats.videoDrops !== null ? mediaStats.videoDrops : {};
     let videoReorder = typeof mediaStats?.videoReorder === 'object' && mediaStats.videoReorder !== null ? mediaStats.videoReorder : {};
     let reconnectReasons = {};
+    let webRTCStats = this.#transport?.stats?.webrtc;
 
     if (typeof lifecycleStats?.reconnectReasons === 'object' && lifecycleStats.reconnectReasons !== null) {
       reconnectReasons = lifecycleStats.reconnectReasons;
@@ -2139,6 +2138,7 @@ export default class Streamer {
     this?.log?.info?.('      "videoReorder": %j', videoReorder);
     this?.log?.info?.('      "videoDrops": %j', videoDrops);
     this?.log?.info?.('    },');
+    this?.log?.info?.('    "webrtc": %j,', webRTCStats ?? null);
     this?.log?.info?.('    "drops": {');
     this?.log?.info?.('      "videoBeforeKeyframe": %s', outputDrops?.videoBeforeKeyframe ?? 0);
     this?.log?.info?.('      "audioBeforeKeyframe": %s', outputDrops?.audioBeforeKeyframe ?? 0);

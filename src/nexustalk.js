@@ -151,6 +151,8 @@ export default class NexusTalk extends StreamTransport {
       pendingKeyFrame: false,
       pendingParts: [],
       pendingBytes: 0,
+      lastSPS: undefined,
+      lastPPS: undefined,
     },
     audio: {
       id: undefined,
@@ -839,6 +841,7 @@ export default class NexusTalk extends StreamTransport {
     let timestamp = 0;
     let data = undefined;
     let keyFrame = false;
+    let nalUnits = undefined;
     let now = Date.now();
 
     if (this.closing === true || this.closed === true) {
@@ -886,7 +889,21 @@ export default class NexusTalk extends StreamTransport {
         data = H264.wrapAnnexB(data);
       }
 
-      keyFrame = H264.hasNAL(data, H264.NALUS.TYPES.IDR);
+      nalUnits = H264.getNALUnits(data);
+
+      for (let nalu of nalUnits) {
+        if (nalu.type === H264.NALUS.TYPES.SPS) {
+          video.lastSPS = Buffer.from(nalu.data);
+        }
+
+        if (nalu.type === H264.NALUS.TYPES.PPS) {
+          video.lastPPS = Buffer.from(nalu.data);
+        }
+
+        if (nalu.type === H264.NALUS.TYPES.IDR) {
+          keyFrame = true;
+        }
+      }
 
       // A new timestamp means the prior access unit/frame is complete.
       if (typeof video.pendingTimestamp === 'number' && timestamp !== video.pendingTimestamp) {
@@ -1412,6 +1429,12 @@ export default class NexusTalk extends StreamTransport {
         bitrate: this.video.bitrate,
         timestamp: pendingTimestamp,
         keyFrame: video.pendingKeyFrame,
+        codecConfig: {
+          sps: video.lastSPS,
+          pps: video.lastPPS,
+          hasSPS: accessUnit?.hasSPS === true,
+          hasPPS: accessUnit?.hasPPS === true,
+        },
         data: pendingData,
       });
 
@@ -1442,6 +1465,8 @@ export default class NexusTalk extends StreamTransport {
     }
 
     this.#channels.video.pendingBytes = 0;
+    this.#channels.video.lastSPS = undefined;
+    this.#channels.video.lastPPS = undefined;
 
     // Reset audio channel details.
     this.#channels.audio.id = undefined;

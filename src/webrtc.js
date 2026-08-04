@@ -90,13 +90,16 @@ const GOOGLE_HOME_FOYER_PREFIX = 'google.internal.home.foyer.v1.';
 const KEYFRAME_MAX_ASSEMBLY_MS = 2500; // Drop pathological keyframes assembled too slowly
 const KEYFRAME_STARTUP_MAX_ASSEMBLY_MS = 4000; // First decodable keyframe may be slow while WebRTC starts
 const KEYFRAME_BLOCKING_MAX_ASSEMBLY_MS = 900; // Do not let one broken IDR block newer timestamp groups for seconds
-const KEYFRAME_MAX_BYTES = 140000; // Drop oversized keyframes that cause visible playback shock
+const KEYFRAME_DEFAULT_BYTES = 2 * 1024 * 1024; // Startup allowance before source resolution/bitrate is known
+const KEYFRAME_MAX_BYTES = 4 * 1024 * 1024; // Absolute bound for unusually large high-resolution keyframes
+const KEYFRAME_BYTES_PER_PIXEL = 0.5; // Conservative compressed-IDR allowance derived from learned resolution
+const KEYFRAME_BITRATE_SECONDS = 4; // Allow an IDR burst up to four seconds of the learned average bitrate
 const DELTA_FU_SWITCH_GRACE_MS = 180; // Tiny grace before abandoning a young non-keyframe FU-A on timestamp switch
 const STALLED_TIMEOUT = 10000; // Time with no playback packets before we consider stream stalled and attempt restart
 const AUDIO_RTP_REORDER_DELAY_MS = 50; // Hold audio RTP briefly so reordered Opus packets can arrive before decode
 const AUDIO_RTP_REORDER_MAX_PACKETS = 64; // Bound audio RTP reorder queue
 const VIDEO_RTP_REORDER_DELAY_MS = 250; // Hold video RTP briefly so reordered fragments/RTX can arrive before FU-A assembly
-const VIDEO_RTP_REORDER_MAX_PACKETS = 512; // Bound video RTP reorder queue; large IDRs can exceed 100 RTP packets
+const VIDEO_RTP_REORDER_MAX_PACKETS = 4096; // Bound video RTP queue while allowing a fragmented 4MiB keyframe plus packet overhead
 const VIDEO_RTP_DRAIN_MAX_GROUPS = 8; // Bound synchronous video jitter release work per callback
 const VIDEO_RTP_DRAIN_MAX_PACKETS = 128; // Bound synchronous H264 assembly work per callback
 const STARTUP_KEYFRAME_PLI_INTERVAL_MS = 1500; // Retry startup keyframe requests while waiting for first decodable IDR
@@ -168,6 +171,7 @@ export default class WebRTC extends StreamTransport {
     this.#startupKeyframeTimer = undefined;
     this.#startupKeyframeStartedAt = undefined;
     this.#lastPacketAt = undefined;
+    this.stats.webrtc = undefined;
     this.#streamId = undefined;
     this.#reconnectPending = false;
     this.#tracks = { audio: {}, video: {}, talkback: {} };
@@ -433,6 +437,11 @@ export default class WebRTC extends StreamTransport {
     let talkbackActive = this.#tracks?.talkback?.active === true;
 
     try {
+      // Preserve final Werift transport/media counters before closing the peer
+      // connection. This is especially useful when a reconnect was caused by
+      // consent, ICE, or packet-flow failure.
+      await this.refreshDiagnostics();
+
       // Mark source as closing for a normal teardown so any in-flight playback
       // callbacks stop accepting new packets while shutdown is happening.
       // During reconnect we keep SOURCE_RECONNECTING so the lifecycle state
@@ -528,6 +537,72 @@ export default class WebRTC extends StreamTransport {
     } finally {
       this.#closeInProgress = false;
     }
+  }
+
+  async refreshDiagnostics() {
+    let peerConnection = this.#peerConnection;
+    let report = undefined;
+    let stats = [];
+    let transport = undefined;
+    let candidatePair = undefined;
+    let localCandidate = undefined;
+    let remoteCandidate = undefined;
+    let inbound = {};
+    let now = Date.now();
+
+    if (peerConnection === undefined || typeof peerConnection?.getStats !== 'function') {
+      return this.stats.webrtc;
+    }
+
+    if (Number.isFinite(this.stats?.webrtc?.capturedAt) === true && now - this.stats.webrtc.capturedAt < 1000) {
+      return this.stats.webrtc;
+    }
+
+    try {
+      report = await peerConnection.getStats();
+      stats = Array.from(report?.values?.() ?? []);
+      transport = stats.find((entry) => entry?.type === 'transport');
+      candidatePair =
+        (typeof transport?.selectedCandidatePairId === 'string' ? report.get(transport.selectedCandidatePairId) : undefined) ??
+        stats.find((entry) => entry?.type === 'candidate-pair' && (entry?.nominated === true || entry?.state === 'succeeded'));
+      localCandidate = report.get(candidatePair?.localCandidateId);
+      remoteCandidate = report.get(candidatePair?.remoteCandidateId);
+
+      for (let entry of stats) {
+        if (entry?.type === 'inbound-rtp' && (entry?.kind === 'video' || entry?.kind === 'audio')) {
+          inbound[entry.kind] = {
+            packets: entry.packetsReceived ?? 0,
+            bytes: entry.bytesReceived ?? 0,
+            lost: entry.packetsLost ?? 0,
+            jitterMs: Number.isFinite(entry.jitter) === true ? Math.round(entry.jitter * 100000) / 100 : undefined,
+            nacks: entry.nackCount ?? 0,
+            plis: entry.pliCount ?? 0,
+          };
+        }
+      }
+
+      this.stats.webrtc = {
+        capturedAt: now,
+        iceConnectionState: peerConnection.iceConnectionState,
+        dtlsState: transport?.dtlsState,
+        candidatePair: {
+          state: candidatePair?.state,
+          protocol: localCandidate?.protocol ?? remoteCandidate?.protocol,
+          localType: localCandidate?.candidateType,
+          remoteType: remoteCandidate?.candidateType,
+          roundTripTimeMs:
+            Number.isFinite(candidatePair?.currentRoundTripTime) === true
+              ? Math.round(candidatePair.currentRoundTripTime * 100000) / 100
+              : undefined,
+          consentExpiredAt: candidatePair?.consentExpiredTimestamp,
+        },
+        inbound: inbound,
+      };
+    } catch (error) {
+      this?.log?.debug?.('Unable to collect WebRTC stats for uuid "%s": %s', this.uuid, error?.message || String(error));
+    }
+
+    return this.stats.webrtc;
   }
 
   doUpdate(options = {}) {
@@ -873,6 +948,21 @@ export default class WebRTC extends StreamTransport {
       pendingMarkerSeen: false,
       pendingCorrupt: false,
     };
+  }
+
+  #keyframeByteLimit() {
+    let spsInfo = H264.getSPSInfo(this.#tracks?.video?.h264?.lastSPS);
+    let width = this.video?.width ?? spsInfo?.width ?? 0;
+    let height = this.video?.height ?? spsInfo?.height ?? 0;
+    let bitrate = Number.isFinite(this.video?.bitrate) === true ? this.video.bitrate : 0;
+
+    // The first startup keyframe may arrive before StreamTransport has learned
+    // resolution metadata. Use its cached SPS when available so
+    // high-resolution startup frames receive the same adaptive allowance.
+    return Math.min(
+      KEYFRAME_MAX_BYTES,
+      Math.max(KEYFRAME_DEFAULT_BYTES, width * height * KEYFRAME_BYTES_PER_PIXEL, (bitrate * KEYFRAME_BITRATE_SECONDS) / 8),
+    );
   }
 
   #drainPlaybackVideoJitterBuffer(force = false) {
@@ -1498,6 +1588,7 @@ export default class WebRTC extends StreamTransport {
     let accessUnit = undefined;
     let keyframeAssemblyMs = undefined;
     let keyframeAssemblyLimitMs = KEYFRAME_MAX_ASSEMBLY_MS;
+    let keyframeByteLimit = this.#keyframeByteLimit();
     let keyframeHasParameterSets = false;
     let recoveringDeltaProbe = false;
 
@@ -1554,7 +1645,7 @@ export default class WebRTC extends StreamTransport {
       return;
     }
 
-    if (pendingKeyFrame === true && h264.pendingBytes > KEYFRAME_MAX_BYTES) {
+    if (pendingKeyFrame === true && h264.pendingBytes > keyframeByteLimit) {
       this.recordVideoDrop('oversized-keyframe');
 
       this?.log?.debug?.(
@@ -1562,7 +1653,7 @@ export default class WebRTC extends StreamTransport {
         this.uuid,
         pendingRtpTimestamp,
         h264.pendingBytes,
-        KEYFRAME_MAX_BYTES,
+        keyframeByteLimit,
       );
 
       this.#sendVideoPLI();
@@ -1651,7 +1742,7 @@ export default class WebRTC extends StreamTransport {
       if (
         keyframeHasParameterSets !== true ||
         (Number.isFinite(keyframeAssemblyMs) === true && keyframeAssemblyMs > keyframeAssemblyLimitMs) ||
-        data.length > KEYFRAME_MAX_BYTES
+        data.length > keyframeByteLimit
       ) {
         this.recordVideoDrop('shock-keyframe');
 
@@ -1662,7 +1753,7 @@ export default class WebRTC extends StreamTransport {
           data.length,
           keyframeAssemblyMs,
           keyframeHasParameterSets === true ? 'true' : 'false',
-          KEYFRAME_MAX_BYTES,
+          keyframeByteLimit,
           keyframeAssemblyLimitMs,
         );
 
@@ -1756,6 +1847,12 @@ export default class WebRTC extends StreamTransport {
       bitrate: Number.isFinite(this.video?.bitrate) === true && this.video.bitrate > 0 ? this.video.bitrate : undefined,
       timestamp: pendingTimestamp,
       keyFrame: pendingKeyFrame === true,
+      codecConfig: {
+        sps: h264.lastSPS,
+        pps: h264.lastPPS,
+        hasSPS: accessUnit?.hasSPS === true,
+        hasPPS: accessUnit?.hasPPS === true,
+      },
       data: data,
     });
 

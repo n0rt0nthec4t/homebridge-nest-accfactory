@@ -6,15 +6,14 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ### Known Issues
 
-- The `ip` npm package has a known security advisory [GHSA-2p57-rm9w-gvfp](https://github.com/advisories/GHSA-2p57-rm9w-gvfp); this is used indirectly via the `werift` library
 - Some newer Nest/Google cameras may use different video sizes or aspect ratios, causing the video to appear slightly cropped or not fill the screen correctly
 - Enabling HomeKit Secure Video (HKSV) on battery-powered cameras will significantly reduce battery life
 - Motion sensing on wired Nest Protect devices may report incorrect states due to recent firmware changes
 - Video from Google Home-hosted streams may be slow to start up
 
-## v0.4.3 (2026/05/xx)
+## v0.4.3 (2026/08/xx)
 
-### ⚠️ Alpha Release Notes
+### ⚠️ Beta Release Notes
 
 This release includes a significant internal rewrite of the camera streaming pipeline used for live streaming and HomeKit Secure Video.
 
@@ -33,6 +32,10 @@ While extensive testing has been performed, users may still encounter regression
 - Improved WebRTC streaming for Google Home-hosted cameras, with smoother live playback and fewer short audio interruptions
 - Improved audio/video synchronisation during live camera playback
 - Improved handling of brief network jitter, packet reordering, and stream timing drift
+- Improved handling of large, high-resolution WebRTC keyframes using bounded limits that adapt to the source resolution and bitrate
+- Improved WebRTC video jitter-buffer performance by reducing repeated packet scans, sorting, and queue rebuilding
+- Reduced repeated H264 frame scanning and unnecessary keyframe copying when preparing video output
+- Added WebRTC connection and media statistics to support dumps, including ICE/DTLS state, candidate details, round-trip time, packet loss, jitter, NACKs, and PLIs
 - Improved HomeKit Secure Video (HKSV) startup and decoder compatibility
 - Improved stream recovery and reconnect handling for Nest and Google Home camera sessions
 - Improved camera handling after Nest/Google credential refreshes, backend redirects, and device migration events
@@ -47,7 +50,9 @@ While extensive testing has been performed, users may still encounter regression
 
 ### 📦 Dependency Updates
 
+- Updated `chalk` from `5.6.2` to `6.0.0`
 - Updated `protobufjs` from `8.0.3` to `8.4.0`
+- Updated `werift` from `0.23.0` to `0.24.3`, removing the transitive `werift-ice` and `ip` dependency chain
   
 ## v0.4.1 (2026/05/07)
 

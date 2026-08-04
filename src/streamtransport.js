@@ -340,6 +340,9 @@ export default class StreamTransport {
         Number.isFinite(options.maxPackets) === true && options.maxPackets > 0 ? options.maxPackets : 64,
         Number.isFinite(options.maxPackets) === true && options.maxPackets > 0 ? options.maxPackets : 64,
       ),
+      groupIndex: options.groupByTimestamp === true ? new Map() : undefined,
+      packetCount: 0,
+      groupsSorted: true,
       lastReleasedSequence: undefined,
       lastReleasedTimestamp: undefined,
       lastDropLogTime: undefined,
@@ -433,7 +436,10 @@ export default class StreamTransport {
       return released;
     }
 
-    queue.sort((left, right) => this.#jitterSort(jitter, left, right, 'rtpTimestamp', jitter.timestampWrap, jitter.timestampMaxDelta));
+    if (jitter.groupsSorted !== true) {
+      queue.sort((left, right) => this.#jitterSort(jitter, left, right, 'rtpTimestamp', jitter.timestampWrap, jitter.timestampMaxDelta));
+      jitter.groupsSorted = true;
+    }
 
     while (queue.length > 0) {
       group = queue[0];
@@ -454,6 +460,8 @@ export default class StreamTransport {
       group = queue.shift();
       released.push(group);
       releasedPackets += groupPackets;
+      jitter.groupIndex.delete(group.rtpTimestamp);
+      jitter.packetCount = Math.max(0, jitter.packetCount - groupPackets);
       jitter.lastReleasedTimestamp = group.rtpTimestamp;
     }
 
@@ -501,8 +509,6 @@ export default class StreamTransport {
   }
 
   countJitterPackets(jitter) {
-    let count = 0;
-
     // Return total packets currently held by a jitter buffer.
     // For grouped video jitter this counts packets inside all timestamp groups.
     if (typeof jitter !== 'object' || jitter === null || jitter.queue instanceof RingBuffer !== true) {
@@ -513,11 +519,7 @@ export default class StreamTransport {
       return jitter.queue.size;
     }
 
-    for (let group of this.#jitterItems(jitter)) {
-      count += Array.isArray(group?.packets) === true ? group.packets.length : 0;
-    }
-
-    return count;
+    return jitter.packetCount;
   }
 
   sizeJitterBuffer(jitter) {
@@ -533,6 +535,10 @@ export default class StreamTransport {
     }
 
     jitter.queue?.clear?.(0);
+    jitter.items = [];
+    jitter.groupIndex?.clear();
+    jitter.packetCount = 0;
+    jitter.groupsSorted = true;
     jitter.lastReleasedSequence = undefined;
     jitter.lastReleasedTimestamp = undefined;
     jitter.lastDropLogTime = undefined;
@@ -1312,8 +1318,7 @@ export default class StreamTransport {
     let receivedAt = Number.isFinite(packetInfo.receivedAt) === true ? packetInfo.receivedAt : Date.now();
     let group = undefined;
     let timestampDelta = 0;
-    let queue = this.#jitterItems(jitter);
-    let packetCount = 0;
+    let droppedGroup = undefined;
 
     // Insert a packet into a timestamp-grouped jitter buffer.
     if (typeof rtpTimestamp !== 'number' || typeof sequenceNumber !== 'number') {
@@ -1328,12 +1333,7 @@ export default class StreamTransport {
       }
     }
 
-    for (let entry of queue) {
-      if (entry?.rtpTimestamp === rtpTimestamp) {
-        group = entry;
-        break;
-      }
-    }
+    group = jitter.groupIndex.get(rtpTimestamp);
 
     if (group === undefined) {
       group = {
@@ -1343,16 +1343,20 @@ export default class StreamTransport {
         markerSeen: false,
         hasSequenceGap: false,
         packetsSorted: false,
+        sequences: new Set(),
         packets: [],
       };
 
-      queue.push(group);
-    }
-
-    for (let packet of group.packets) {
-      if (packet?.sequenceNumber === sequenceNumber) {
+      if (jitter.queue.push(group) !== true) {
         return false;
       }
+
+      jitter.groupIndex.set(rtpTimestamp, group);
+      jitter.groupsSorted = false;
+    }
+
+    if (group.sequences.has(sequenceNumber) === true) {
+      return false;
     }
 
     group.firstReceivedAt = Math.min(group.firstReceivedAt, receivedAt);
@@ -1375,17 +1379,18 @@ export default class StreamTransport {
       rtpTimestamp: rtpTimestamp,
       receivedAt: receivedAt,
     });
+    group.sequences.add(sequenceNumber);
+    jitter.packetCount++;
 
-    for (let entry of queue) {
-      packetCount += Array.isArray(entry?.packets) === true ? entry.packets.length : 0;
+    while (jitter.packetCount > jitter.maxPackets && jitter.queue.size > 0) {
+      droppedGroup = jitter.queue.getByOffset(0);
+      jitter.queue.shift(1);
+      jitter.groupIndex.delete(droppedGroup?.rtpTimestamp);
+      jitter.packetCount = Math.max(
+        0,
+        jitter.packetCount - (Array.isArray(droppedGroup?.packets) === true ? droppedGroup.packets.length : 0),
+      );
     }
-
-    while (packetCount > jitter.maxPackets && queue.length > 0) {
-      packetCount -= Array.isArray(queue[0]?.packets) === true ? queue[0].packets.length : 0;
-      queue.shift();
-    }
-
-    this.#jitterReplace(jitter, queue);
 
     return true;
   }
