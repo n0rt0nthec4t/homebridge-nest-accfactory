@@ -51,7 +51,7 @@ While extensive testing has been performed, users may still encounter regression
 ### 📦 Dependency Updates
 
 - Updated `chalk` from `5.6.2` to `6.0.0`
-- Updated `protobufjs` from `8.0.3` to `8.4.0`
+- Updated `protobufjs` from `8.0.3` to `8.7.2`
 - Updated `werift` from `0.23.0` to `0.24.3`, removing the transitive `werift-ice` and `ip` dependency chain
   
 ## v0.4.1 (2026/05/07)

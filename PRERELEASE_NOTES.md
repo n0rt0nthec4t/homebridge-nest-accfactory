@@ -4,6 +4,19 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.3-beta.4 (2026/08/10)
+
+### Changed
+
+- `HomeKitHistory`
+  - Added compatibility with the minimal file storage included in HAP-NodeJS 2.2.0 and Homebridge 2.3.0
+  - Replaced removed `setItem()` calls with the supported synchronous `setItemSync()` API
+  - Kept existing history filenames and the on-disk data format unchanged, so saved Eve history remains compatible
+
+- Updated the supported Homebridge v2 range from `^2.2.1` to `^2.3.0`
+- Updated `protobufjs` dependency version from `8.7.1` to `8.7.2`
+- Updated `werift` dependency version from `0.24.2` to `0.24.3`
+
 ## v0.4.3-beta.3 (2026/08/04)
 
 ### Changed
