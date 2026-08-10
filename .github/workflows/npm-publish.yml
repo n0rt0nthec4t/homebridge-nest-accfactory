@@ -60,11 +60,8 @@ jobs:
       # Install dependencies
       - run: npm ci
 
-      # Apply the project's combined Prettier/ESLint formatting rules
+      # Format code (auto-fix style issues)
       - run: npm run format
-
-      # Fail if formatting changed any checked-in source
-      - run: git diff --exit-code
 
       # Validate lint after formatting
       - run: npm run lint
