@@ -11,13 +11,13 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - Motion sensing on wired Nest Protect devices may report incorrect states due to recent firmware changes
 - Video from Google Home-hosted streams may be slow to start up
 
-## v0.4.3 (2026/08/xx)
+## v0.4.3 (2026/08/11)
 
-### ⚠️ Beta Release Notes
+### ⚠️ Compatibility Changes
 
-This release includes a significant internal rewrite of the camera streaming pipeline used for live streaming and HomeKit Secure Video.
-
-While extensive testing has been performed, users may still encounter regressions or camera-specific streaming issues. Feedback and logs are appreciated, particularly for camera and doorbell accessories.
+- Homebridge 2 users must update to **Homebridge 2.3.1 or newer** before installing this release
+- Updated Eve history support for Homebridge's new storage system
+  - Existing Eve history data remains compatible and is not migrated, rewritten, or lost
 
 ### 🛠️ Fixes
 
@@ -52,7 +52,7 @@ While extensive testing has been performed, users may still encounter regression
 
 - Updated `chalk` from `5.6.2` to `6.0.0`
 - Updated `protobufjs` from `8.0.3` to `8.7.2`
-- Updated `werift` from `0.23.0` to `0.24.3`, removing the transitive `werift-ice` and `ip` dependency chain
+- Updated `werift` from `0.23.0` to `0.24.4`, removing the transitive `werift-ice` and `ip` dependency chain
   
 ## v0.4.1 (2026/05/07)
 
