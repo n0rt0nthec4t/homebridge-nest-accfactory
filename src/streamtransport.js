@@ -66,7 +66,7 @@
 // - CLOSING
 // - CLOSED
 //
-// Code version 2026.05.18
+// Code version 2026.08.20
 // Mark Hulskamp
 'use strict';
 
@@ -497,12 +497,12 @@ export default class StreamTransport {
     for (let packet of group.packets) {
       if (typeof expectedSequence === 'number' && packet.sequenceNumber !== expectedSequence) {
         group.hasSequenceGap = true;
-        break;
       }
 
       expectedSequence = (packet.sequenceNumber + 1) & jitter.sequenceMask;
     }
 
+    group.lastSequence = group.packets.at(-1)?.sequenceNumber;
     group.packetsSorted = true;
 
     return group.hasSequenceGap === true;
@@ -1340,9 +1340,10 @@ export default class StreamTransport {
         rtpTimestamp: rtpTimestamp,
         firstReceivedAt: receivedAt,
         lastReceivedAt: receivedAt,
+        lastSequence: undefined,
         markerSeen: false,
         hasSequenceGap: false,
-        packetsSorted: false,
+        packetsSorted: true,
         sequences: new Set(),
         packets: [],
       };
@@ -1362,7 +1363,17 @@ export default class StreamTransport {
     group.firstReceivedAt = Math.min(group.firstReceivedAt, receivedAt);
     group.lastReceivedAt = Math.max(group.lastReceivedAt, receivedAt);
     group.markerSeen = group.markerSeen === true || packetInfo.marker === true;
-    group.packetsSorted = false;
+
+    // Preserve the sorted fast path for the overwhelmingly common case where
+    // RTP packets arrive in sequence. Re-sort only after actual reordering.
+    if (
+      group.packets.length !== 0 &&
+      (group.packetsSorted !== true ||
+        typeof group.lastSequence !== 'number' ||
+        sequenceNumber !== ((group.lastSequence + 1) & jitter.sequenceMask))
+    ) {
+      group.packetsSorted = false;
+    }
 
     // Protocol-specific grouped metadata can be supplied in packetInfo.group.
     // Boolean flags accumulate across packets so later fragments cannot clear
@@ -1380,6 +1391,9 @@ export default class StreamTransport {
       receivedAt: receivedAt,
     });
     group.sequences.add(sequenceNumber);
+    if (group.packetsSorted === true) {
+      group.lastSequence = sequenceNumber;
+    }
     jitter.packetCount++;
 
     while (jitter.packetCount > jitter.maxPackets && jitter.queue.size > 0) {

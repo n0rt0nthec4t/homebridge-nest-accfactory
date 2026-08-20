@@ -4,6 +4,32 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.4-beta.1 (2026/08/20)
+
+### Changed
+
+- Updated the `HomeKitDevice` submodule from code version `2026.05.26` to `2026.08.18`
+- Updated the supported Homebridge v2 range from `^2.3.1` to `^2.4.0`
+- Added Node.js 26 beta support when running Homebridge 2.4.0 or later; Homebridge 1.x remains supported on Node.js 22 and 24
+- Updated `@typescript-eslint/parser` development dependency version from `8.66.0` to `8.67.0`
+
+- `webrtc.js`
+  - Reduced connection latency by overlapping the camera view-intent request with local WebRTC offer and ICE candidate gathering
+  - Sent the completed local SDP, including gathered ICE candidates, when joining the Google camera stream
+  - Requested a keyframe immediately after learning the incoming video SSRC instead of waiting for jitter release or the retry timer
+  - Added FIR and 4 Mbps REMB feedback to the bounded keyframe request path to improve decoder-ready stream startup
+  - Preserved later RTP timestamp groups after an incomplete keyframe so one damaged IDR does not unnecessarily create a prolonged video gap
+  - Simplified fragmented H264 recovery and removed redundant per-packet playback-state validation while retaining recovery diagnostics
+
+- `streamer.js`, `streamtransport.js`
+  - Reduced output scheduling work by caching unconsumed media candidates between drain-loop iterations
+  - Normalised output policy defaults once at output creation instead of repeatedly validating them during media draining
+  - Allocated and updated detailed output diagnostics only when support dumps are enabled
+  - Added an in-order fast path for timestamp-grouped RTP packets while retaining sorting and gap recovery for reordered packets
+
+- Added native Node.js regression tests for H264, media timelines, ring buffers, stream transport jitter ordering, translation, and utility helpers
+- Added test, coverage, and combined validation scripts and a continuous-integration workflow for supported Node.js versions
+
 ## v0.4.3-beta.4 (2026/08/10)
 
 ### Changed
@@ -395,48 +421,48 @@ Perhaps 13 is an unlucky number? I broke some things :-( Thanks to [@marving11](
 - Improved consistency between Google and Nest data handling
 - Cleaner separation of responsibilities between device modules
 - More predictable and maintainable data flow
-- Relaxed live camera stream startup logic to improve compatibility with older Nest cameras (Hello, Indoor, Outdoor)  
-- Live streams now attach directly to the buffer and begin output immediately instead of waiting for a recent keyframe  
-- Improves stream startup time and resolves cases where live view would fail to start  
-- Recording (HKSV) pipeline unchanged  
+- Relaxed live camera stream startup logic to improve compatibility with older Nest cameras (Hello, Indoor, Outdoor)
+- Live streams now attach directly to the buffer and begin output immediately instead of waiting for a recent keyframe
+- Improves stream startup time and resolves cases where live view would fail to start
+- Recording (HKSV) pipeline unchanged
 
 ## v0.4.0-alpha.22 (2026/04/13)
 
 Due to the volume of changes in this release, versioning has been reverted to alpha
 
-- Reworked stream processing in `streamer.js` using a shared `RingBuffer` to eliminate O(n) buffer shifts and reduce latency  
-- Added reusable `RingBuffer` implementation for media queueing  
-- Improved live stream startup, catch-up, and playback responsiveness  
-- Simplified and stabilised output loop timing for more consistent real-time playback  
-- Improved fallback frame handling for missing or delayed video  
-- Improved internal tracking of streaming, recording, and buffering state transitions  
-- Fixed issue where stream startup details (resolution and FPS) were not always logged in `streamer.js`  
+- Reworked stream processing in `streamer.js` using a shared `RingBuffer` to eliminate O(n) buffer shifts and reduce latency
+- Added reusable `RingBuffer` implementation for media queueing
+- Improved live stream startup, catch-up, and playback responsiveness
+- Simplified and stabilised output loop timing for more consistent real-time playback
+- Improved fallback frame handling for missing or delayed video
+- Improved internal tracking of streaming, recording, and buffering state transitions
+- Fixed issue where stream startup details (resolution and FPS) were not always logged in `streamer.js`
 
-- Refactored WebRTC pipeline in `webrtc.js`  
-  - Improved H264 NAL unit handling and FU-A reassembly  
-  - Improved RTP packet handling, ordering, and jitter tolerance  
-  - Improved stream readiness and startup behaviour  
+- Refactored WebRTC pipeline in `webrtc.js`
+  - Improved H264 NAL unit handling and FU-A reassembly
+  - Improved RTP packet handling, ordering, and jitter tolerance
+  - Improved stream readiness and startup behaviour
 
-- Added shared Google gRPC transport for protobuf-based API communication  
-  - Centralised HTTP/2 session pooling and lifecycle management  
-  - System-level Google API communication now uses HTTP/2 (gRPC)  
-  - Improved request/response parsing and validation  
-  - Improved error handling and terminal state tracking  
+- Added shared Google gRPC transport for protobuf-based API communication
+  - Centralised HTTP/2 session pooling and lifecycle management
+  - System-level Google API communication now uses HTTP/2 (gRPC)
+  - Improved request/response parsing and validation
+  - Improved error handling and terminal state tracking
 
-- Integrated gRPC transport into WebRTC (Google Foyer) signaling and control  
-- Improved NexusTalk stability and buffering (aligned with new streamer model)  
+- Integrated gRPC transport into WebRTC (Google Foyer) signaling and control
+- Improved NexusTalk stability and buffering (aligned with new streamer model)
 
-- Removed `localAccess` device configuration option  
+- Removed `localAccess` device configuration option
 - Fixed configuration schema types (`fanDuration`, `hotwaterBoostTime`, `motionCooldown`, `doorbellCooldown`)  
-  [@retuer-commits](https://github.com/retuer-commits)  
+  [@retuer-commits](https://github.com/retuer-commits)
 
 - Fixed regression from `0.3.9` where Nest x Yale locks were no longer discovered  
-  [@DigitalFokus](https://github.com/DigitalFokus)  
+  [@DigitalFokus](https://github.com/DigitalFokus)
 
-- Small fix in `thermostat.js` for eco mode temperature checks  
+- Small fix in `thermostat.js` for eco mode temperature checks
 
-- *Testing* direct local WebRTC stream path enabled by default for Google Home cameras (bypassing remote relay where available) in `webrtc.js`  
-- *Testing* 15fps default live transcoding output to better match source frame rate in `camera.js`   
+- _Testing_ direct local WebRTC stream path enabled by default for Google Home cameras (bypassing remote relay where available) in `webrtc.js`
+- _Testing_ 15fps default live transcoding output to better match source frame rate in `camera.js`
 
 ## v0.4.0-beta.12 (2026/04/09)
 

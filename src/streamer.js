@@ -67,7 +67,7 @@
 // - MediaTimeline owns retained buffer/index stats
 // - Streamer owns per-output write/drop/playout stats
 //
-// Code version 2026.05.18
+// Code version 2026.08.20
 // Mark Hulskamp
 'use strict';
 
@@ -119,6 +119,9 @@ const OUTPUT_PLAYOUT_POLICY = {
     requireKeyFrameStart: true,
     allowAudioBeforeKeyFrame: false,
     playoutDelayMs: 200,
+    minPlayoutDelayMs: 200,
+    maxPlayoutDelayMs: 200,
+    playoutAdjustStepMs: 20,
     maxLagBehindLiveMs: 1200,
     dueTolerance: 12,
     dueSlack: 20,
@@ -893,30 +896,33 @@ export default class Streamer {
       // - preserves continuity while draining retained media
       policy: { ...(OUTPUT_PLAYOUT_POLICY[type] ?? OUTPUT_PLAYOUT_POLICY.live) },
 
-      // Debug / instrumentation stats (used for tuning pacing behaviour).
-      stats: {
-        startedAt: Date.now(),
-        firstWriteAt: undefined,
-        firstVideoWriteAt: undefined,
-        firstAudioWriteAt: undefined,
-        writes: { total: 0, video: 0, audio: 0 },
-        drops: { videoBeforeKeyframe: 0, audioBeforeKeyframe: 0, bufferTrimmed: 0 },
-        diagnostics: {
-          lastVideoWriteAt: undefined,
-          lastAudioWriteAt: undefined,
-          maxVideoWriteGapMs: 0,
-          maxAudioWriteGapMs: 0,
-          audioWriteGapsOver100Ms: 0,
-          audioWriteGapsOver250Ms: 0,
-          audioWriteGapsOver500Ms: 0,
-          audioBlockedBehindVideo: 0,
-          videoBackpressureStops: 0,
-          maxAudioQueuedBytes: 0,
-          maxBlockedAudioLagMs: 0,
-          lastAudioDiagnosticWriteAt: undefined,
-          lastAudioDiagnosticLogTime: undefined,
-        },
-      },
+      // Debug instrumentation is not allocated for normal streaming.
+      stats:
+        this.supportDump === true
+          ? {
+              startedAt: Date.now(),
+              firstWriteAt: undefined,
+              firstVideoWriteAt: undefined,
+              firstAudioWriteAt: undefined,
+              writes: { total: 0, video: 0, audio: 0 },
+              drops: { videoBeforeKeyframe: 0, audioBeforeKeyframe: 0, bufferTrimmed: 0 },
+              diagnostics: {
+                lastVideoWriteAt: undefined,
+                lastAudioWriteAt: undefined,
+                maxVideoWriteGapMs: 0,
+                maxAudioWriteGapMs: 0,
+                audioWriteGapsOver100Ms: 0,
+                audioWriteGapsOver250Ms: 0,
+                audioWriteGapsOver500Ms: 0,
+                audioBlockedBehindVideo: 0,
+                videoBackpressureStops: 0,
+                maxAudioQueuedBytes: 0,
+                maxBlockedAudioLagMs: 0,
+                lastAudioDiagnosticWriteAt: undefined,
+                lastAudioDiagnosticLogTime: undefined,
+              },
+            }
+          : undefined,
     };
 
     // Attach talkback handling for live streams.
@@ -1210,6 +1216,10 @@ export default class Streamer {
   }
 
   #statsWrite(output, type, dateNow) {
+    if (this.supportDump !== true) {
+      return;
+    }
+
     let outputStats = output?.stats;
     let outputWrites = outputStats?.writes;
     let diagnostics = outputStats?.diagnostics;
@@ -1221,7 +1231,6 @@ export default class Streamer {
         gapMs = dateNow - diagnostics.lastAudioDiagnosticWriteAt;
 
         if (
-          this.supportDump === true &&
           gapMs >= STREAMER_AUDIO_GAP_LOG_MS &&
           (typeof diagnostics.lastAudioDiagnosticLogTime !== 'number' ||
             dateNow - diagnostics.lastAudioDiagnosticLogTime >= STREAMER_AUDIO_GAP_LOG_INTERVAL_MS)
@@ -1245,10 +1254,6 @@ export default class Streamer {
       }
 
       diagnostics.lastAudioDiagnosticWriteAt = dateNow;
-    }
-
-    if (this.supportDump !== true) {
-      return;
     }
 
     if (typeof outputStats !== 'object' || outputStats === null) {
@@ -1410,7 +1415,6 @@ export default class Streamer {
     let includeAudio = false;
     let isH264Output = false;
     let isLiveOutput = false;
-    let isRecordOutput = false;
 
     let lastSPS = undefined;
     let lastPPS = undefined;
@@ -1477,16 +1481,9 @@ export default class Streamer {
     includeAudio = output.includeAudio === true && outputAudio !== null;
     isH264Output = this.codecs?.video === StreamTransport.CODEC_TYPE.H264;
     isLiveOutput = output.type === Streamer.STREAM_TYPE.LIVE;
-    isRecordOutput = output.type === Streamer.STREAM_TYPE.RECORD;
 
-    // Resolve output policy.
-    // Allows per-output tuning (live vs record) while falling back to sensible defaults.
-    policy =
-      typeof output?.policy === 'object' && output.policy !== null
-        ? output.policy
-        : (OUTPUT_PLAYOUT_POLICY[output?.type] ?? OUTPUT_PLAYOUT_POLICY.live);
-
-    // Extract policy values with safety checks.
+    // Output policy is normalised once when the output is created.
+    policy = output.policy;
     //
     // Even when live policy does not normally require keyframe startup, force
     // decoder-safe startup whenever this output has not yet seen a real keyframe.
@@ -1497,50 +1494,18 @@ export default class Streamer {
     allowAudioBeforeKeyFrame = policy.allowAudioBeforeKeyFrame === true;
 
     playoutDelayMs = Number.isFinite(output.playoutDelayMs) === true ? output.playoutDelayMs : policy.playoutDelayMs;
-    playoutDelayMs = Number.isFinite(playoutDelayMs) === true && playoutDelayMs >= 0 ? playoutDelayMs : 120;
-    minPlayoutDelayMs =
-      Number.isFinite(policy.minPlayoutDelayMs) === true && policy.minPlayoutDelayMs >= 0 ? policy.minPlayoutDelayMs : playoutDelayMs;
-    maxPlayoutDelayMs =
-      Number.isFinite(policy.maxPlayoutDelayMs) === true && policy.maxPlayoutDelayMs >= minPlayoutDelayMs
-        ? policy.maxPlayoutDelayMs
-        : Math.max(minPlayoutDelayMs, playoutDelayMs);
-    playoutAdjustStepMs =
-      Number.isFinite(policy.playoutAdjustStepMs) === true && policy.playoutAdjustStepMs > 0 ? policy.playoutAdjustStepMs : 20;
+    minPlayoutDelayMs = policy.minPlayoutDelayMs;
+    maxPlayoutDelayMs = policy.maxPlayoutDelayMs;
+    playoutAdjustStepMs = policy.playoutAdjustStepMs;
     playoutDelayMs = Math.min(maxPlayoutDelayMs, Math.max(minPlayoutDelayMs, playoutDelayMs));
-    maxLagBehindLiveMs =
-      Number.isFinite(policy.maxLagBehindLiveMs) === true && policy.maxLagBehindLiveMs > 0 ? policy.maxLagBehindLiveMs : 750;
-    dueTolerance = Number.isFinite(policy.dueTolerance) === true && policy.dueTolerance >= 0 ? policy.dueTolerance : 10;
-    dueSlack = Number.isFinite(policy.dueSlack) === true && policy.dueSlack >= 0 ? policy.dueSlack : 10;
-    catchupExitThresholdMs =
-      Number.isFinite(policy.catchupExitThresholdMs) === true && policy.catchupExitThresholdMs >= 0 ? policy.catchupExitThresholdMs : 250;
-
-    catchupAudioBurstLimit =
-      Number.isFinite(policy.catchupAudioBurstLimit) === true && policy.catchupAudioBurstLimit > 0
-        ? policy.catchupAudioBurstLimit
-        : isRecordOutput === true
-          ? 4
-          : 2;
-
-    catchupVideoBurstLimit =
-      Number.isFinite(policy.catchupVideoBurstLimit) === true && policy.catchupVideoBurstLimit > 0
-        ? policy.catchupVideoBurstLimit
-        : isRecordOutput === true
-          ? 8
-          : 4;
-
-    normalAudioBurstLimit =
-      Number.isFinite(policy.normalAudioBurstLimit) === true && policy.normalAudioBurstLimit > 0
-        ? policy.normalAudioBurstLimit
-        : isRecordOutput === true
-          ? 4
-          : 2;
-
-    normalVideoBurstLimit =
-      Number.isFinite(policy.normalVideoBurstLimit) === true && policy.normalVideoBurstLimit > 0
-        ? policy.normalVideoBurstLimit
-        : isRecordOutput === true
-          ? 3
-          : 2;
+    maxLagBehindLiveMs = policy.maxLagBehindLiveMs;
+    dueTolerance = policy.dueTolerance;
+    dueSlack = policy.dueSlack;
+    catchupExitThresholdMs = policy.catchupExitThresholdMs;
+    catchupAudioBurstLimit = policy.catchupAudioBurstLimit;
+    catchupVideoBurstLimit = policy.catchupVideoBurstLimit;
+    normalAudioBurstLimit = policy.normalAudioBurstLimit;
+    normalVideoBurstLimit = policy.normalVideoBurstLimit;
 
     // Cached clean SPS/PPS for H264 keyframe bootstrap.
     // Transport media itself remains Annex-B and is written directly.
@@ -1635,6 +1600,11 @@ export default class Streamer {
       }
     }
 
+    // Keep the unconsumed media candidate between loop iterations. Only the
+    // selected media cursor advances, so resolving both again wastes a search.
+    videoItem = state.videoCursor < timelineEnd ? timeline.nextVideoFrom(state.videoCursor) : undefined;
+    audioItem = includeAudio === true && state.audioCursor < timelineEnd ? timeline.nextAudioFrom(state.audioCursor) : undefined;
+
     // Main processing loop.
     // MediaTimeline gives us indexed video/audio lookup so we no longer walk
     // the mixed shared buffer looking for the next item of each type.
@@ -1647,9 +1617,6 @@ export default class Streamer {
         stopReason = 'budget';
         break;
       }
-
-      videoItem = state.videoCursor < timelineEnd ? timeline.nextVideoFrom(state.videoCursor) : undefined;
-      audioItem = includeAudio === true && state.audioCursor < timelineEnd ? timeline.nextAudioFrom(state.audioCursor) : undefined;
 
       dueVideo = false;
       dueAudio = false;
@@ -1809,6 +1776,7 @@ export default class Streamer {
             this.#statsDrop(output, Streamer.MEDIA_TYPE.VIDEO);
             state.videoCursor = nextCursor;
             processed++;
+            videoItem = state.videoCursor < timelineEnd ? timeline.nextVideoFrom(state.videoCursor) : undefined;
             continue;
           }
 
@@ -1876,6 +1844,7 @@ export default class Streamer {
           break;
         }
 
+        videoItem = state.videoCursor < timelineEnd ? timeline.nextVideoFrom(state.videoCursor) : undefined;
         continue;
       }
 
@@ -1884,6 +1853,7 @@ export default class Streamer {
         if (includeAudio !== true || outputAudio === null) {
           state.audioCursor = nextCursor;
           processed++;
+          audioItem = state.audioCursor < timelineEnd ? timeline.nextAudioFrom(state.audioCursor) : undefined;
           continue;
         }
 
@@ -1893,14 +1863,14 @@ export default class Streamer {
           this.#statsDrop(output, Streamer.MEDIA_TYPE.AUDIO);
           state.audioCursor = nextCursor;
           processed++;
+          audioItem = state.audioCursor < timelineEnd ? timeline.nextAudioFrom(state.audioCursor) : undefined;
           continue;
         }
 
-        queuedBytes =
-          (Number.isFinite(outputAudio.writableLength) === true ? outputAudio.writableLength : 0) +
-          (Number.isFinite(outputAudio.readableLength) === true ? outputAudio.readableLength : 0);
-
         if (this.supportDump === true && typeof output?.stats?.diagnostics === 'object' && output.stats.diagnostics !== null) {
+          queuedBytes =
+            (Number.isFinite(outputAudio.writableLength) === true ? outputAudio.writableLength : 0) +
+            (Number.isFinite(outputAudio.readableLength) === true ? outputAudio.readableLength : 0);
           output.stats.diagnostics.maxAudioQueuedBytes = Math.max(output.stats.diagnostics.maxAudioQueuedBytes ?? 0, queuedBytes);
         }
 
@@ -1916,13 +1886,14 @@ export default class Streamer {
         state.audioCursor = nextCursor;
         processed++;
 
-        queuedBytes =
-          (Number.isFinite(outputAudio.writableLength) === true ? outputAudio.writableLength : 0) +
-          (Number.isFinite(outputAudio.readableLength) === true ? outputAudio.readableLength : 0);
-
         if (this.supportDump === true && typeof output?.stats?.diagnostics === 'object' && output.stats.diagnostics !== null) {
+          queuedBytes =
+            (Number.isFinite(outputAudio.writableLength) === true ? outputAudio.writableLength : 0) +
+            (Number.isFinite(outputAudio.readableLength) === true ? outputAudio.readableLength : 0);
           output.stats.diagnostics.maxAudioQueuedBytes = Math.max(output.stats.diagnostics.maxAudioQueuedBytes ?? 0, queuedBytes);
         }
+
+        audioItem = state.audioCursor < timelineEnd ? timeline.nextAudioFrom(state.audioCursor) : undefined;
 
         continue;
       }
@@ -1959,11 +1930,9 @@ export default class Streamer {
 
   #processOutput(dateNow, budgetMs) {
     let timeline = this.#timeline;
-    let itemsLength = 0;
     let hasOutputs = false;
     let cutoffTime = 0;
     let latestItemTime = undefined;
-    let trimCount = 0;
     let oldestProtectedCursor = this.#itemIndex;
     let fallbackFrame = undefined;
     let output = undefined;
@@ -1972,11 +1941,10 @@ export default class Streamer {
       return;
     }
 
-    itemsLength = typeof timeline.size === 'number' ? timeline.size : 0;
     hasOutputs = this.#outputs.size !== 0;
 
     // Determine if timeline contains items older than retention window.
-    if (itemsLength !== 0) {
+    if (timeline.size !== 0) {
       latestItemTime = timeline.latestTime();
       latestItemTime = Number.isFinite(latestItemTime) === true ? latestItemTime : dateNow;
       cutoffTime = latestItemTime - this.#bufferDuration;
@@ -1986,11 +1954,7 @@ export default class Streamer {
       oldestProtectedCursor = timeline.protectedStart(this.#outputs);
 
       // Trim expired media while respecting the oldest protected output cursor.
-      trimCount = timeline.trim(cutoffTime, oldestProtectedCursor);
-
-      if (trimCount !== 0) {
-        itemsLength -= trimCount;
-      }
+      timeline.trim(cutoffTime, oldestProtectedCursor);
     }
 
     // No outputs attached means we only need retention maintenance this tick.
