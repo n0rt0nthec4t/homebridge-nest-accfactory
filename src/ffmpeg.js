@@ -29,7 +29,7 @@
 // - Logging and debugging are handled by the calling module
 // - Binary validation and capability checks are performed during initialisation
 //
-// Code version 2026.09.05
+// Code version 2026.09.06
 // Mark Hulskamp
 'use strict';
 
@@ -301,6 +301,9 @@ export default class FFmpeg {
         // Pi codec nodes are dynamically numbered; identify the encoder rather than a camera or decoder.
         try {
           if (fs.readFileSync('/sys/firmware/devicetree/base/model', 'utf8').startsWith('Raspberry Pi') === true) {
+            // Pi DRM nodes provide graphics, not evidence of NVENC, QSV or VAAPI encoding support.
+            hasDri = false;
+            hasIntelQSV = false;
             hasVideo = false;
             hasVideo = fs.readdirSync('/sys/class/video4linux').some((device) => {
               if (/^video\d+$/.test(device) === false) {

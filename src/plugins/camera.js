@@ -87,7 +87,7 @@ const PREBUFFER_LENGTH = 4000;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.05.20'; // Code version
+  static VERSION = '2026.09.08'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -731,17 +731,28 @@ export default class NestCamera extends HomeKitDevice {
 
       '-profile:v',
       this.#recordingConfig.videoCodec.parameters.profile === this.hap.H264Profile.HIGH
-        ? 'high'
+        ? this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_v4l2m2m'
+          ? '100'
+          : 'high'
         : this.#recordingConfig.videoCodec.parameters.profile === this.hap.H264Profile.MAIN
-          ? 'main'
-          : 'baseline',
+          ? this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_v4l2m2m'
+            ? '77'
+            : 'main'
+          : this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_v4l2m2m'
+            ? '66'
+            : 'baseline',
 
-      '-level:v',
-      this.#recordingConfig.videoCodec.parameters.level === this.hap.H264Level.LEVEL4_0
-        ? '4.0'
-        : this.#recordingConfig.videoCodec.parameters.level === this.hap.H264Level.LEVEL3_2
-          ? '3.2'
-          : '3.1',
+      // V4L2 uses numeric profiles and does not apply an explicit H264 level.
+      ...(this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_v4l2m2m'
+        ? ['-bf:v', '0']
+        : [
+            '-level:v',
+            this.#recordingConfig.videoCodec.parameters.level === this.hap.H264Level.LEVEL4_0
+              ? '4.0'
+              : this.#recordingConfig.videoCodec.parameters.level === this.hap.H264Level.LEVEL3_2
+                ? '3.2'
+                : '3.1',
+          ]),
 
       ...(this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_videotoolbox' ? ['-realtime', 'true'] : []),
 
@@ -772,7 +783,7 @@ export default class NestCamera extends HomeKitDevice {
       '-video_track_timescale',
       '90000',
       '-movflags',
-      'frag_keyframe+empty_moov+default_base_moof',
+      'frag_keyframe+empty_moov+delay_moov+default_base_moof',
 
       // Audio output
       ...(includeAudio === true
@@ -1176,17 +1187,28 @@ export default class NestCamera extends HomeKitDevice {
 
               '-profile:v',
               request.video.profile === this.hap.H264Profile.HIGH
-                ? 'high'
+                ? this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_v4l2m2m'
+                  ? '100'
+                  : 'high'
                 : request.video.profile === this.hap.H264Profile.MAIN
-                  ? 'main'
-                  : 'baseline',
+                  ? this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_v4l2m2m'
+                    ? '77'
+                    : 'main'
+                  : this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_v4l2m2m'
+                    ? '66'
+                    : 'baseline',
 
-              '-level:v',
-              request.video.level === this.hap.H264Level.LEVEL4_0
-                ? '4.0'
-                : request.video.level === this.hap.H264Level.LEVEL3_2
-                  ? '3.2'
-                  : '3.1',
+              // V4L2 uses numeric profiles and does not apply an explicit H264 level.
+              ...(this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_v4l2m2m'
+                ? ['-bf:v', '0']
+                : [
+                    '-level:v',
+                    request.video.level === this.hap.H264Level.LEVEL4_0
+                      ? '4.0'
+                      : request.video.level === this.hap.H264Level.LEVEL3_2
+                        ? '3.2'
+                        : '3.1',
+                  ]),
 
               ...(this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_videotoolbox'
                 ? ['-realtime', 'true']

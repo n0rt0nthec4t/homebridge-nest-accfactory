@@ -202,7 +202,7 @@ Homes are identified using the `"name"` field, which must match the Home name sh
 To support camera live streaming, HomeKit Secure Video (HKSV), and two-way audio, an ffmpeg binary must be installed and accessible to the plugin.
 
 Minimum requirements:
-- FFmpeg version **6.1** or later
+- FFmpeg version **7.1** or later
 - Compiled with support for:
   - `libx264`
   - `libfdk_aac`

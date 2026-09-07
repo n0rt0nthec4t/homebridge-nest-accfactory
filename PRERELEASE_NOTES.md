@@ -4,6 +4,20 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.4-beta.3 (2026/09/08)
+
+### Compatibility Changes
+
+- Raised the minimum supported FFmpeg version from **6.1** to **7.1**
+- Camera and doorbell users running FFmpeg 6.x or 7.0 must upgrade to **7.1 or newer**; live streaming and HKSV recording are unavailable when the installed binary does not meet the minimum requirements
+- FFmpeg 8.x and newer remain permitted; the required `libx264`, `libfdk_aac`, `libspeex`, and `libopus` codec checks still apply
+
+### Fixed
+
+- Delayed the HKSV MP4 initialisation header for all encoders, allowing FFmpeg to populate decoder configuration supplied with the first encoded packets [@pace8](https://github.com/pace8)
+- Prevented Raspberry Pi graphics nodes from incorrectly qualifying NVENC, QSV or VAAPI ahead of the Pi V4L2 encoder [@pace8](https://github.com/pace8)
+- Updated live and HKSV transcoding arguments for `h264_v4l2m2m` to use numeric H264 profiles, omit the unsupported level control, and explicitly disable B-frames [@pace8](https://github.com/pace8)
+
 ## v0.4.4-beta.2 (2026/09/05)
 
 ### Changed
@@ -13,7 +27,7 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
 ### Fixed
 
-- Detect Raspberry Pi hardware H264 encoders by their sysfs device name and read/write access instead of requiring `/dev/video0`, without additional FFmpeg invocations
+- Detect Raspberry Pi hardware H264 encoders by their sysfs device name and read/write access instead of requiring `/dev/video0`, without additional FFmpeg invocations [@pace8](https://github.com/pace8)
 
 ## v0.4.4-beta.1 (2026/08/20)
 

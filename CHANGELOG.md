@@ -11,6 +11,34 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - Motion sensing on wired Nest Protect devices may report incorrect states due to recent firmware changes
 - Video from Google Home-hosted streams may be slow to start up
 
+## v0.4.4 (Unreleased)
+
+### ⚠️ Compatibility Changes
+
+- Camera and doorbell users must now use **FFmpeg 7.1 or newer**; FFmpeg 6.x and 7.0 are no longer supported
+- FFmpeg must still include the video and audio codecs required by the plugin
+- Homebridge 2 users must update to **Homebridge 2.4.0 or newer**
+- Added Node.js 26 beta support when using Homebridge 2.4.0 or newer; Homebridge 1 users should continue using Node.js 22 or 24
+
+### 🛠️ Fixes
+
+- Fixed hardware video acceleration not being detected on some Raspberry Pi systems [@pace8](https://github.com/pace8)
+- Fixed Raspberry Pi systems sometimes selecting an incompatible hardware encoder [@pace8](https://github.com/pace8)
+- Fixed Raspberry Pi hardware encoding failing to start for some HomeKit video formats [@pace8](https://github.com/pace8)
+- Fixed Raspberry Pi HomeKit Secure Video recordings completing successfully but not appearing or playing in the Home app [@pace8](https://github.com/pace8)
+
+### 📹 Camera Streaming Improvements
+
+- Improved HomeKit Secure Video recording compatibility across software and hardware encoders
+- Improved live-view startup time for cameras connected through Google Home
+- Improved live-stream recovery when video packets are damaged or incomplete
+- Reduced camera-stream processing overhead
+- Reduced background diagnostic work when support dumps are disabled
+
+### 🔁 Maintenance
+
+- Updated internal HomeKit compatibility and supporting components
+
 ## v0.4.3 (2026/08/11)
 
 ### ⚠️ Compatibility Changes

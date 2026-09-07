@@ -27,7 +27,7 @@
 // - Imported throughout the codebase for consistency and reuse
 // - Changes here may affect multiple subsystems (devices, streaming, APIs)
 //
-// Code version 2026.05.16
+// Code version 2026.09.05
 // Mark Hulskamp
 'use strict';
 
@@ -162,7 +162,7 @@ export const DEVICE_CATEGORY_MAP = {
   [DEVICE_TYPE.DOORBELL]: 18,
 };
 
-export const FFMPEG_VERSION = '6.1.0';
+export const FFMPEG_VERSION = '7.1';
 
 export const ACCOUNT_TYPE = {
   NEST: 'Nest',
