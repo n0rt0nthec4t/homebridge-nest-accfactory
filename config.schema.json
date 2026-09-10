@@ -94,6 +94,11 @@
             "type": "boolean",
             "default": true
           },
+          "ecoModeStatus": {
+            "type": "boolean",
+            "default": false,
+            "description": "Expose a read-only Eco mode status indicator (Off / Eco Heat / Eco Cool / Eco Range) on thermostats. Never written back to Nest. Not shown in the stock Home app; for Eve, Home Assistant and other API readers."
+          },
           "exclude": {
             "type": "boolean"
           },
@@ -351,6 +356,11 @@
         {
           "key": "options.eveHistory",
           "title": "Enable Eve History for All Devices"
+        },
+        {
+          "key": "options.ecoModeStatus",
+          "title": "Expose Eco Mode Status for All Thermostats",
+          "description": "Read-only indicator, never written back to Nest. Not shown in the stock Home app; for Eve, Home Assistant and other API readers."
         },
         {
           "type": "array",

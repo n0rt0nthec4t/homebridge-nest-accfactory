@@ -70,6 +70,9 @@ import {
   FAN_DURATION_TIMES,
 } from '../consts.js';
 
+// UUID for the optional read-only Eco mode status characteristic (HomeKit has no native Eco characteristic).
+const ECO_MODE_STATUS_UUID = '1689311A-4C37-4B7E-BA60-57A2229CB4FD';
+
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.THERMOSTAT;
   static VERSION = '2026.05.21'; // Code version
@@ -240,6 +243,14 @@ export default class NestThermostat extends HomeKitDevice {
     if (this.deviceData?.has_air_filter === false) {
       // No longer configured to have an air filter, so remove characteristic from the accessory
       this.removeCharacteristic(this.thermostatService, this.hap.Characteristic.FilterChangeIndication);
+    }
+
+    // Optional read-only Eco mode status indicator (opt-in, default off). Never written back to Nest.
+    if (this.deviceData?.ecoModeStatus === true) {
+      this.#registerEcoModeStatusCharacteristic();
+      this.addCharacteristic(this.thermostatService, this.hap.Characteristic.EcoModeStatus);
+    } else if (this.hap.Characteristic.EcoModeStatus !== undefined) {
+      this.removeCharacteristic(this.thermostatService, this.hap.Characteristic.EcoModeStatus);
     }
 
     // Setup battery service if not already present on the accessory
@@ -628,6 +639,19 @@ export default class NestThermostat extends HomeKitDevice {
         this.hap.Characteristic.TargetHeatingCoolingState.OFF,
       );
       historyEntry.target = { low: 0, high: 0 };
+    }
+
+    // Update the optional Eco mode status indicator from the eco state already derived above.
+    if (this.deviceData?.ecoModeStatus === true && this.hap.Characteristic.EcoModeStatus !== undefined) {
+      let ecoStatus = 'Off';
+      if (hvacMode === 'ECOHEAT') {
+        ecoStatus = 'Eco Heat';
+      } else if (hvacMode === 'ECOCOOL') {
+        ecoStatus = 'Eco Cool';
+      } else if (hvacMode === 'ECORANGE') {
+        ecoStatus = 'Eco Range';
+      }
+      this.thermostatService.updateCharacteristic(this.hap.Characteristic.EcoModeStatus, ecoStatus);
     }
 
     // Update current state
@@ -1020,6 +1044,25 @@ export default class NestThermostat extends HomeKitDevice {
 
       await this.set({ uuid: this.deviceData.nest_google_device_uuid, hvac_mode: mode });
       this.#logModeChange('HomeKit', mode);
+    }
+  }
+
+  #registerEcoModeStatusCharacteristic() {
+    // Define the read-only Eco mode status characteristic once (read/notify, no PAIRED_WRITE).
+    if (this.hap.Characteristic.EcoModeStatus === undefined) {
+      let props = {
+        format: this.hap.Formats.STRING,
+        perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY],
+      };
+
+      this.hap.Characteristic.EcoModeStatus = class extends this.hap.Characteristic {
+        static UUID = ECO_MODE_STATUS_UUID;
+
+        constructor() {
+          super('Eco Mode Status', ECO_MODE_STATUS_UUID, props);
+          this.value = this.getDefaultValue();
+        }
+      };
     }
   }
 
@@ -2716,6 +2759,9 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
           tempDevice.eveHistory =
             deviceOptions?.eveHistory !== undefined ? deviceOptions.eveHistory === true : config?.options?.eveHistory === true;
           tempDevice.humiditySensor = deviceOptions?.humiditySensor === true;
+
+          // Optional read-only Eco mode status indicator (default off).
+          tempDevice.ecoModeStatus = config?.options?.ecoModeStatus === true;
 
           // Process fan running duration. We only allow values matching the app
           tempDevice.fan_duration = parseDurationToSeconds(deviceOptions?.fanDuration, {
