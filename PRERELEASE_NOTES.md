@@ -4,6 +4,20 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.4-beta.4 (2026/09/17)
+
+### Changed
+
+- Updated the `HomeKitDevice` submodule from code version `2026.08.18` to `2026.09.12`, preserving existing HAP behaviour while preparing the shared accessory lifecycle for optional Homebridge Matter support
+- Updated device creation to use the new `HomeKitDevice.add()` options object for the HAP accessory name, category, and Eve history setting
+- Moved the shared HTTP request helper into the dedicated `fetchWrapper` submodule and reused it for Nest and Daikin requests
+- Updated development dependencies: `@types/node` to `26.5.0` and `@typescript-eslint/parser` to `8.70.0`
+
+### Fixed
+
+- Restored camera off/on control through the Home app recording-mode setting when a camera had been switched off in the Nest app, by representing the remotely reversible Nest state with `HomeKitCameraActive` instead of `ManuallyDisabled` [#345](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issues/345) [@go-faustino](https://github.com/go-faustino)
+- Prevented intermittent Raspberry Pi 4 HKSV recording timeouts by increasing the V4L2 encoder capture-buffer count for hardware-accelerated recordings [#344](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issues/344) [@pace8](https://github.com/pace8)
+
 ## v0.4.4-beta.3 (2026/09/08)
 
 ### Compatibility Changes

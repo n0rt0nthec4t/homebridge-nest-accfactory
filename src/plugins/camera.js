@@ -84,10 +84,11 @@ const TRANSPORTS = {
 };
 
 const PREBUFFER_LENGTH = 4000;
+const V4L2_RECORDING_CAPTURE_BUFFERS = 32;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.09.08'; // Code version
+  static VERSION = '2026.09.17'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -177,6 +178,10 @@ export default class NestCamera extends HomeKitDevice {
     if (this.controller !== undefined) {
       // Configure the controller that's been created
       this.accessory.configureController(this.controller);
+
+      // Nest software-off is remotely reversible, so represent it using HomeKitCameraActive.
+      // Remove ManuallyDisabled in case it was persisted by an earlier plugin version.
+      this.removeCharacteristic(this.controller?.recordingManagement?.operatingModeService, this.hap.Characteristic.ManuallyDisabled);
     }
 
     // Setup battery service if required and not already present on the accessory
@@ -453,10 +458,10 @@ export default class NestCamera extends HomeKitDevice {
     if (this.controller?.recordingManagement?.operatingModeService !== undefined) {
       // Update camera off/on status
       this.controller.recordingManagement.operatingModeService.updateCharacteristic(
-        this.hap.Characteristic.ManuallyDisabled,
+        this.hap.Characteristic.HomeKitCameraActive,
         deviceData.streaming_enabled === true
-          ? this.hap.Characteristic.ManuallyDisabled.ENABLED
-          : this.hap.Characteristic.ManuallyDisabled.DISABLED,
+          ? this.hap.Characteristic.HomeKitCameraActive.ON
+          : this.hap.Characteristic.HomeKitCameraActive.OFF,
       );
 
       if (deviceData?.has_statusled === true) {
@@ -728,6 +733,11 @@ export default class NestCamera extends HomeKitDevice {
 
       '-codec:v',
       this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec !== undefined ? this.ffmpeg.hardwareH264Codec : 'libx264',
+
+      // Extra V4L2 capture buffers prevent the Raspberry Pi encoder from stalling during HKSV recordings.
+      ...(this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_v4l2m2m'
+        ? ['-num_capture_buffers', V4L2_RECORDING_CAPTURE_BUFFERS.toString()]
+        : []),
 
       '-profile:v',
       this.#recordingConfig.videoCodec.parameters.profile === this.hap.H264Profile.HIGH

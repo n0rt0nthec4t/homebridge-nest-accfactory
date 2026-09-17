@@ -24,7 +24,7 @@
 // - runtime cleanup releases transient connection resources but keeps scheduled lifecycle timers intact
 // - shutdown() fully cleans up all connections and clears the registry
 //
-// Code version 2026.05.09
+// Code version 2026.09.17
 // Mark Hulskamp
 'use strict';
 
@@ -37,7 +37,7 @@ import { URL } from 'node:url';
 
 // Import our modules
 import GrpcTransport from './grpctransport.js';
-import { fetchWrapper } from './utils.js';
+import { fetchWrapper } from './fetchWrapper.js';
 
 // Define constants
 import { ACCOUNT_TYPE, USER_AGENT, __dirname } from './consts.js';

@@ -39,7 +39,7 @@
 // - Uses shared protobuf helpers for schema/type loading and traversal
 // - Creates and updates HomeKitDevice-based instances for supported device types
 //
-// Code version 2026.05.15
+// Code version 2026.09.17
 // Mark Hulskamp
 'use strict';
 
@@ -57,7 +57,8 @@ import HomeKitDevice from './HomeKitDevice.js';
 import Connections from './connections.js';
 import { loadDeviceModules, getDeviceHKCategory } from './devices.js';
 import { processConfig } from './config.js';
-import { adjustTemperature, scaleValue, fetchWrapper } from './utils.js';
+import { fetchWrapper } from './fetchWrapper.js';
+import { adjustTemperature, scaleValue } from './utils.js';
 import { getProtoTypes } from './protobuf.js';
 
 // Define constants
@@ -904,7 +905,11 @@ export default class NestAccfactory {
                 }
 
                 let tempDevice = new deviceModule.class(this.cachedAccessories, this.api, deviceData);
-                await tempDevice.add(accessoryName, getDeviceHKCategory(deviceModule.class.TYPE), deviceData?.eveHistory === true);
+                await tempDevice.add({
+                  hapAccessoryName: accessoryName,
+                  hapCategory: getDeviceHKCategory(deviceModule.class.TYPE),
+                  enableHistory: deviceData?.eveHistory === true,
+                });
 
                 // Register per-device set/get handlers
                 HomeKitDevice.message(tempDevice.uuid, HomeKitDevice.SET, async (values) => {

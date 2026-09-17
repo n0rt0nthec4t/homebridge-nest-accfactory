@@ -17,7 +17,7 @@
 // - Maps HomeKit fan percentage to Daikin discrete fan levels
 // - Maintains last mode, temperature, humidity, and fan settings
 // - Validates and normalises system URL before enabling control
-// - Retry-aware HTTP helper with timeout and exponential backoff
+// - Shared fetchWrapper integration with timeout and exponential backoff
 // - Optional "modes=" filter to expose only selected functions
 //
 // Notes:
@@ -31,13 +31,15 @@
 // - default(logger, [url, deviceDescription])
 // - default(logger, [url, deviceDescription, 'modes=cool,fan,off'])
 //
-// Code version 2026.03.25
+// Code version 2026.09.17
 // Mark Hulskamp
 'use strict';
 
 // Define nodejs module requirements
 import { URL } from 'node:url';
-import { setTimeout } from 'node:timers';
+
+// Import our modules
+import { fetchWrapper } from '../fetchWrapper.js';
 
 // Define constants
 const POWER = {
@@ -279,118 +281,6 @@ async function off() {
     .catch((error) => {
       log?.error?.('%s Failed to turn off "%s"', logPrefix, systemURL);
     });
-}
-
-async function fetchWrapper(method, url, options, data) {
-  if ((method !== 'get' && method !== 'post') || typeof url !== 'string' || url === '' || typeof options !== 'object') {
-    return;
-  }
-
-  if (isNaN(options?.timeout) === false && Number(options.timeout) > 0) {
-    // eslint-disable-next-line no-undef
-    options.signal = AbortSignal.timeout(Number(options.timeout));
-  }
-
-  if (isNaN(options.retry) || options.retry < 1) {
-    options.retry = 1;
-  }
-
-  if (isNaN(options._retryCount)) {
-    options._retryCount = 0;
-  }
-
-  options.method = method;
-
-  if (method === 'post' && data !== undefined) {
-    if (typeof data === 'object' && data !== null && data.constructor === Object) {
-      options.body = JSON.stringify(data);
-
-      // Set Content-Type header only if not already set
-      options.headers = options.headers || {};
-      if (options.headers['Content-Type'] === undefined) {
-        options.headers['Content-Type'] = 'application/json';
-      }
-    } else {
-      options.body = data;
-    }
-  }
-
-  try {
-    // eslint-disable-next-line no-undef
-    let response = await fetch(url, {
-      ...options,
-      ...(options?.dispatcher !== undefined ? { dispatcher: options.dispatcher } : {}),
-    });
-
-    if (response?.ok === false) {
-      if (options.retry > 1) {
-        options.retry--;
-        options._retryCount++;
-
-        let delay = 500 * Math.pow(2, options._retryCount - 1);
-        await new Promise((resolve) => {
-          setTimeout(resolve, delay);
-        });
-
-        return fetchWrapper(method, url, options, data);
-      }
-
-      // Optionally get response body
-      let body;
-      try {
-        body = await response.text();
-        // eslint-disable-next-line no-unused-vars
-      } catch (error) {
-        body = '';
-      }
-      throw Object.assign(
-        new Error('HTTP ' + response.status + ' on ' + method.toUpperCase() + ' ' + url + ': ' + (response.statusText || 'Unknown error')),
-        { code: response.status, status: response.status, body },
-      );
-    }
-
-    return response;
-  } catch (error) {
-    let original = error?.cause ?? error;
-
-    // Detect invalid URL and rethrow immediately
-    if (original?.code === 'ERR_INVALID_URL') {
-      throw Object.assign(new Error('Invalid URL: ' + url), { code: 'ERR_INVALID_URL', cause: original });
-    }
-
-    // Retry only on retry-eligible errors
-    if (
-      options.retry > 1 &&
-      (original?.code === 'UND_ERR_HEADERS_TIMEOUT' ||
-        original?.code === 'UND_ERR_CONNECT_TIMEOUT' ||
-        original?.name === 'AbortError' ||
-        original?.name === 'TypeError')
-    ) {
-      options.retry--;
-      options._retryCount++;
-
-      let delay = 500 * Math.pow(2, options._retryCount - 1);
-      await new Promise((resolve) => setTimeout(resolve, delay));
-
-      return fetchWrapper(method, url, options, data);
-    }
-
-    // Final error wrap
-    throw Object.assign(
-      new Error(
-        method.toUpperCase() +
-          ' ' +
-          url +
-          ' failed after ' +
-          (options._retryCount + 1) +
-          ' attempt' +
-          (options._retryCount + 1 > 1 ? 's' : '') +
-          ': ' +
-          (original?.message || String(original)),
-      ),
-      { code: original?.code, cause: original },
-    );
-  }
 }
 
 // Export functions for use in our dynamically loaded library

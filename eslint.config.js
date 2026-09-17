@@ -26,6 +26,13 @@ export default [{
     'prefer-arrow-callback': ['warn'],
     '@stylistic/max-len': ['warn', 140],
     'no-console': ['warn'],
+    'no-restricted-syntax': [
+      'error',
+      {
+        selector: 'TemplateLiteral',
+        message: 'Use explicit string concatenation instead of template-literal strings.',
+      },
+    ],
     '@stylistic/no-non-null-assertion': ['off'],
     '@stylistic/comma-spacing': ['error'],
     '@stylistic/no-multi-spaces': ['warn', {ignoreEOLComments: true}],
