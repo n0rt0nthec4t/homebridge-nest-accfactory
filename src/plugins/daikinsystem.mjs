@@ -31,7 +31,7 @@
 // - default(logger, [url, deviceDescription])
 // - default(logger, [url, deviceDescription, 'modes=cool,fan,off'])
 //
-// Code version 2026.09.17
+// Code version 2026.09.21
 // Mark Hulskamp
 'use strict';
 
@@ -97,7 +97,7 @@ async function cool(temperature) {
   }
 
   await fetchWrapper(
-    'get',
+    fetchWrapper.GET,
     systemURL +
       '/aircon/set_control_info?pow=' +
       POWER.ON +
@@ -136,7 +136,7 @@ async function heat(temperature) {
   }
 
   await fetchWrapper(
-    'get',
+    fetchWrapper.GET,
     systemURL +
       '/aircon/set_control_info?pow=' +
       POWER.ON +
@@ -175,7 +175,7 @@ async function dehumidifier(humidity) {
   }
 
   await fetchWrapper(
-    'get',
+    fetchWrapper.GET,
     systemURL +
       '/aircon/set_control_info?pow=' +
       POWER.ON +
@@ -217,7 +217,7 @@ async function fan(speed) {
 
   // Power on, set to fan mode, fan mode is Auto and fan is swing
   await fetchWrapper(
-    'get',
+    fetchWrapper.GET,
     systemURL +
       '/aircon/set_control_info?pow=' +
       POWER.ON +
@@ -253,7 +253,7 @@ async function off() {
   }
 
   await fetchWrapper(
-    'get',
+    fetchWrapper.GET,
     systemURL +
       '/aircon/set_control_info?pow=' +
       POWER.OFF +

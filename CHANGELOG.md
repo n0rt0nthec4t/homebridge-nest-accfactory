@@ -22,6 +22,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ### 🛠️ Fixes
 
+- Fixed standalone Nest Cam battery devices being identified as wired floodlight cameras
 - Fixed hardware video acceleration not being detected on some Raspberry Pi systems [@pace8](https://github.com/pace8)
 - Fixed Raspberry Pi systems sometimes selecting an incompatible hardware encoder [@pace8](https://github.com/pace8)
 - Fixed Raspberry Pi hardware encoding failing to start for some HomeKit video formats [@pace8](https://github.com/pace8)

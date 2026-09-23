@@ -4,6 +4,18 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.4-beta.5 (2026/10/xx)
+
+### Changed
+
+- Updated the `fetchWrapper` submodule from code version `2026.09.17` to `2026.09.21`, adding public `GET` and `POST` method constants and keeping retry tracking internal so caller options remain unchanged
+- Updated the `HomeKitDevice` submodule from code version `2026.09.12` to `2026.09.17`, adding the `addMatterCluster()` helper for configuring Matter cluster state and command handlers before accessory registration
+- Updated Nest API requests to use the new `fetchWrapper.GET` and `fetchWrapper.POST` method constants
+
+### Fixed
+
+- Correctly distinguished standalone `NeonQuartz` Nest Cam battery devices from floodlight cameras by checking for their related `Aziz` floodlight resource
+
 ## v0.4.4-beta.4 (2026/09/17)
 
 ### Changed

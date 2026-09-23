@@ -39,7 +39,7 @@
 // - Uses shared protobuf helpers for schema/type loading and traversal
 // - Creates and updates HomeKitDevice-based instances for supported device types
 //
-// Code version 2026.09.17
+// Code version 2026.09.21
 // Mark Hulskamp
 'use strict';
 
@@ -1426,7 +1426,7 @@ export default class NestAccfactory {
               }[key] ?? key;
 
             let response = await fetchWrapper(
-              'post',
+              fetchWrapper.POST,
               new URL('/api/dropcams.set_properties', 'https://webapi.' + connection.cameraAPIHost).href,
               {
                 headers: {
@@ -1629,7 +1629,7 @@ export default class NestAccfactory {
 
             if (subscribeJSONData.objects.length !== 0) {
               let response = await fetchWrapper(
-                'post',
+                fetchWrapper.POST,
                 new URL('/v5/put', connection.transport_url).href,
                 {
                   headers: {
@@ -1761,7 +1761,7 @@ export default class NestAccfactory {
     // Shared image fetch logic for both Nest and Google snapshot paths
     let fetchSnapshotImage = async (url, headers) => {
       try {
-        let response = await fetchWrapper('get', url, {
+        let response = await fetchWrapper(fetchWrapper.GET, url, {
           headers,
           retry: 2,
           timeout: SNAPSHOT_FETCH_TIMEOUT,
@@ -1930,7 +1930,7 @@ export default class NestAccfactory {
 
     try {
       let response = await fetchWrapper(
-        'get',
+        fetchWrapper.GET,
         new URL('/api/0.1/weather/forecast/' + postal_code + ',' + country_code, 'https://' + connection.restAPIHost).href,
         {
           headers: {
@@ -2017,7 +2017,7 @@ export default class NestAccfactory {
 
     try {
       let response = await fetchWrapper(
-        'get',
+        fetchWrapper.GET,
         new URL(
           '/api/cameras.get_with_properties?uuid=' + nest_google_device_uuid.trim().split('.')[1],
           'https://webapi.' + connection.cameraAPIHost,
@@ -2169,7 +2169,7 @@ export default class NestAccfactory {
     ) {
       try {
         let response = await fetchWrapper(
-          'get',
+          fetchWrapper.GET,
           new URL(
             '/cuepoint/' + nest_google_device_uuid.trim().split('.')[1] + '/2?start_time=' + Math.floor(Date.now() / 1000 - 30),
             nexus_api_url,

@@ -88,7 +88,7 @@ const V4L2_RECORDING_CAPTURE_BUFFERS = 32;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.09.17'; // Code version
+  static VERSION = '2026.09.22'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -1849,10 +1849,16 @@ const CAMERA_FIELD_MAP = {
     required: true,
     google: {
       fields: [],
-      translate: ({ raw }) =>
+      translate: ({ raw, objectKey }) =>
         raw?.value?.doorbell_indoor_chime_settings?.chimeType !== undefined
           ? DEVICE_TYPE.DOORBELL
-          : typeof raw?.value?.floodlight_settings === 'object' && typeof raw?.value?.floodlight_state === 'object'
+          : objectKey.startsWith('DEVICE_') === true &&
+              PROTOBUF_RESOURCES.FLOODLIGHT.includes(raw?.value?.device_info?.typeName) === true &&
+              Object.values(raw?.value?.related_resources?.relatedResources ?? {}).some(
+                (resource) =>
+                  resource?.resourceId?.resourceId?.startsWith('SERVICE_') === true &&
+                  PROTOBUF_RESOURCES.FLOODLIGHT.includes(resource?.resourceTypeName?.resourceName) === true,
+              ) === true
             ? DEVICE_TYPE.FLOODLIGHT
             : DEVICE_TYPE.CAMERA,
     },
@@ -1865,8 +1871,8 @@ const CAMERA_FIELD_MAP = {
   model: {
     required: true,
     google: {
-      fields: ['device_info'],
-      translate: ({ raw }) => {
+      fields: ['device_info', 'related_resources'],
+      translate: ({ raw, objectKey }) => {
         let typeName = raw?.value?.device_info?.typeName ?? '';
 
         return typeName === 'google.resource.GreenQuartzResource'
@@ -1891,8 +1897,15 @@ const CAMERA_FIELD_MAP = {
                             ? 'Cam IQ Outdoor (1st gen, wired)'
                             : typeName === 'nest.resource.NestHelloResource'
                               ? 'Doorbell (1st gen, wired)'
-                              : typeName === 'google.resource.NeonQuartzResource'
-                                ? 'Cam with Floodlight (1st gen, wired)'
+                              : objectKey.startsWith('DEVICE_') === true &&
+                                  PROTOBUF_RESOURCES.FLOODLIGHT.includes(typeName) === true
+                                ? Object.values(raw?.value?.related_resources?.relatedResources ?? {}).some(
+                                  (resource) =>
+                                    resource?.resourceId?.resourceId?.startsWith('SERVICE_') === true &&
+                                    PROTOBUF_RESOURCES.FLOODLIGHT.includes(resource?.resourceTypeName?.resourceName) === true,
+                                ) === true
+                                  ? 'Cam with Floodlight (1st gen, wired)'
+                                  : 'Cam (2nd gen, battery)'
                                 : typeName === 'google.resource.GoogleNewmanResource'
                                   ? 'Max Hub (1st gen, wired)'
                                   : 'Camera (unknown)';
