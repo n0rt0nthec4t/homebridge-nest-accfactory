@@ -4,6 +4,37 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.4-beta.6 (2026/10/05)
+
+### Changed
+
+- Updated the `HomeKitDevice` submodule from code version `2026.09.17` to `2026.10.05`,
+- Updated dependencies: `chalk` to `6.0.1`, `@types/node` to `26.6.4`, `@typescript-eslint/parser` to `8.71.0`, and `eslint` to `10.12.0`
+- Updated transitive `brace-expansion` dependencies to resolve reported denial-of-service vulnerabilities in development tools
+- Reused the parsed FFmpeg encoder list for hardware detection, removing one synchronous probe per FFmpeg instance
+- Added explicit FFmpeg session states and `STARTED`, `STATE_CHANGED`, and `COMPLETE` events, bounded diagnostics, and capability queries; shutdown can now be awaited and escalates graceful termination to `SIGKILL` after a two-second grace period by default
+- Kept stopping and replaced FFmpeg processes tracked until closure so camera teardown can await every process
+- Reduced Nest camera activity polling to one request attempt because the next two-second poll already provides a retry
+- Normalised Google camera event types to the lowercase, hyphenated names used by the Nest REST API, including vehicle and package events
+
+### Fixed
+
+- Preserved working FFmpeg sessions when replacement startup fails and prevented rejected signals from arming forced termination
+- Kept expected FFmpeg `EPIPE` errors silent while retaining and reporting other pipe errors
+- Made DRM metadata probing tolerate missing or inaccessible directories and aligned minimum muxer checks with capability aliases
+- Routed FFmpeg startup failures and unexpected live/talkback completion through camera cleanup, while preventing requested stops or stale sessions from tearing down replacements
+- Applied existing Google Observe retry backoff to resolved gRPC failures instead of restarting every second
+- Released retained WebRTC gRPC connections during full camera teardown while preserving reuse across normal stream stops and reconnects
+- Ensured failed gRPC requests release their HTTP/2 stream and timeout without closing the shared connection
+- Prevented overlapping Google camera snapshot requests from replacing or removing each other's update waiters
+- Prevented a pending camera live-stream START from launching FFmpeg after its session was stopped or replaced during source startup
+- Fixed gRPC responses being rejected when an incoming chunk required more than one buffer doubling, despite remaining within the configured size limit
+- Added an RTCP watchdog for camera and doorbell live streams so sessions are stopped and cleaned up when HomeKit stops sending feedback, even if no STOP request arrives
+- Reused existing `HomeKitDevice` timers, allowing 30 seconds for initial feedback and then twice the requested RTCP interval (with a 10-second minimum) between reports
+- Silenced expected Nest camera activity timeout messages while retaining debug logging for authentication, HTTP, and malformed-response failures
+- Awaited device updates and removals so asynchronous camera lifecycle work completes before processing continues
+- Corrected Google protobuf timestamps for fan and hot-water timer deadlines and derived their seconds and nanoseconds from one millisecond value
+
 ## v0.4.4-beta.5 (2026/09/24)
 
 ### Changed

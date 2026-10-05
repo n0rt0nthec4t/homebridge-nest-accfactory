@@ -67,7 +67,7 @@
 // - MediaTimeline owns retained buffer/index stats
 // - Streamer owns per-output write/drop/playout stats
 //
-// Code version 2026.08.20
+// Code version 2026.09.29
 // Mark Hulskamp
 'use strict';
 
@@ -483,8 +483,12 @@ export default class Streamer {
     // still use #syncSchedulerState() as outputs/buffering change incrementally.
     Streamer.#removeStreamer(this);
 
-    // Always close underlying transport during shutdown/cleanup.
-    await this.#doClose();
+    // Keep full close and transport shutdown together, ahead of any later lifecycle work.
+    await this.#queueLifecycle(async () => {
+      this.#resetSourceState();
+      await this.#transport?.close?.();
+      await this.#transport?.shutdown?.();
+    });
   }
 
   addMedia(media) {

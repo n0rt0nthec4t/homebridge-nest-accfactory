@@ -22,7 +22,7 @@
 //   - endpoint + auth identity, when uuid is not supplied
 // - Different logical connections must not accidentally share the same session
 //
-// Code version 2026.05.10
+// Code version 2026.09.28
 // Mark Hulskamp
 'use strict';
 
@@ -356,13 +356,10 @@ export default class GrpcTransport {
     let requestTimeout = undefined;
     let timeout = Number.isFinite(Number(options?.timeout)) && Number(options.timeout) > 0 ? Number(options.timeout) : 0;
     let isObserveStream = timeout === 0;
-    let terminalStatusLogged = false;
-    let expectedObserveEnd = false;
     let errorCode = undefined;
     let errorName = '';
     let grpcStatus = undefined;
     let grpcMessage = '';
-    let grpcMessageLower = '';
 
     // Validate request parameters before doing any transport work.
     if (
@@ -422,6 +419,12 @@ export default class GrpcTransport {
     }
 
     try {
+      // Prepare the complete payload before opening a request that would need cleanup on encoding failure.
+      let requestValues = structuredClone(values);
+      this.#encodeAnyValues(requestValues);
+      let encodedData = RequestType.encode(RequestType.fromObject(requestValues)).finish();
+      let frame = this.#buildGrpcFrame(encodedData);
+
       this.#ensureSession();
 
       // Create one HTTP/2 request stream for the requested gRPC method.
@@ -500,24 +503,9 @@ export default class GrpcTransport {
           return;
         }
 
-        // Grow response buffer as required, preserving unread bytes only.
-        while (bufferOffset + data.length > buffer.length) {
-          newSize = Math.min(buffer.length * 2, this.#bufferMax);
-
-          if (newSize < bufferOffset + data.length) {
-            result.status = GrpcTransport.STATUS.RESOURCE_EXHAUSTED;
-            result.message = 'gRPC response exceeds maximum buffer size';
-            result.code = 'BUFFER_LIMIT_EXCEEDED';
-            isTerminal = true;
-
-            try {
-              request.close();
-            } catch {
-              // Empty
-            }
-            return;
-          }
-
+        // The cap was checked above. Grow enough for this chunk even if it needs more than one doubling.
+        if (bufferOffset + data.length > buffer.length) {
+          newSize = Math.min(Math.max(buffer.length * 2, bufferOffset + data.length), this.#bufferMax);
           newBuffer = Buffer.allocUnsafe(newSize);
 
           if (bufferOffset > readOffset) {
@@ -651,20 +639,9 @@ export default class GrpcTransport {
           result.message = grpcMessage;
         }
 
-        grpcMessageLower = grpcMessage.toLowerCase();
-
         if (grpcStatus !== undefined && grpcStatus !== GrpcTransport.STATUS.OK) {
           result.code = 'GRPC_STATUS_' + String(grpcStatus);
         }
-
-        expectedObserveEnd =
-          isObserveStream === true &&
-          (grpcStatus === GrpcTransport.STATUS.OK ||
-            grpcStatus === GrpcTransport.STATUS.CANCELLED ||
-            (grpcStatus === GrpcTransport.STATUS.DEADLINE_EXCEEDED &&
-              (grpcMessageLower.includes('context timed out') === true ||
-                grpcMessageLower.includes('deadline') === true ||
-                grpcMessageLower.includes('timeout') === true)));
       });
 
       request.on('error', (error) => {
@@ -694,14 +671,6 @@ export default class GrpcTransport {
 
         result.error = String(error?.message || error);
       });
-
-      // Encode protobuf request and wrap it in one gRPC frame.
-      // Clone and pre-encode Any payloads so callers can pass plain JS objects.
-      let requestValues = structuredClone(values);
-      this.#encodeAnyValues(requestValues);
-
-      let encodedData = RequestType.encode(RequestType.fromObject(requestValues)).finish();
-      let frame = this.#buildGrpcFrame(encodedData);
 
       request.cork();
       try {
@@ -740,7 +709,7 @@ export default class GrpcTransport {
         clearTimeout(requestTimeout);
         requestTimeout = undefined;
 
-        expectedObserveEnd =
+        let expectedObserveEnd =
           isObserveStream === true &&
           (result.status === GrpcTransport.STATUS.OK ||
             result.status === GrpcTransport.STATUS.CANCELLED ||
@@ -750,7 +719,6 @@ export default class GrpcTransport {
                 messageLower.includes('timeout') === true)));
 
         if (
-          terminalStatusLogged === false &&
           result.status !== undefined &&
           result.status !== GrpcTransport.STATUS.OK &&
           expectedObserveEnd !== true
@@ -771,12 +739,6 @@ export default class GrpcTransport {
 
       // Wait for the response stream to fully finish before returning final status.
       await EventEmitter.once(request, 'close');
-
-      try {
-        request.destroy();
-      } catch {
-        // Empty
-      }
     } catch (error) {
       // Catch unexpected higher-level failures.
       // The pooled session remains available unless the underlying HTTP/2 session itself fails.
@@ -799,6 +761,15 @@ export default class GrpcTransport {
       }
 
       result.error = String(error?.message || error);
+    } finally {
+      // Request cleanup must also run after write/errors; leave the shared HTTP/2 session reusable.
+      isTerminal = true;
+      clearTimeout(requestTimeout);
+      try {
+        request?.destroy();
+      } catch {
+        // Empty
+      }
     }
 
     // Normalise expected observe shutdowns so callers do not treat them as hard errors.

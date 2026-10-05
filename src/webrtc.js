@@ -50,7 +50,7 @@
 // - Output playout timing, catch-up, and live latency policy are owned by Streamer
 // - Incomplete keyframes and pathological access units are dropped/recovered locally rather than blocking the plugin process
 //
-// Code version 2026.08.20
+// Code version 2026.09.29
 // Mark Hulskamp
 'use strict';
 
@@ -519,8 +519,8 @@ export default class WebRTC extends StreamTransport {
         // Empty
       }
 
-      // NOTE: Do NOT release the gRPC client here. It should be reused across WebRTC reconnects
-      // and only released during final shutdown in onShutdown(). Releasing it during
+      // NOTE: Do NOT release the gRPC client here. Full Streamer teardown calls shutdown().
+      // The client is reused across WebRTC reconnects. Releasing it during
       // temporary disconnects causes in-flight requests to be canceled with "pending stream has been canceled".
       if (this.#streamId === closingStreamId) {
         this.#streamId = undefined;
@@ -555,6 +555,14 @@ export default class WebRTC extends StreamTransport {
     } finally {
       this.#closeInProgress = false;
     }
+  }
+
+  // Release the retained gRPC connection after Streamer has closed the media transport.
+  // Ordinary stream stops and reconnects keep this connection attached.
+  async shutdown() {
+    // Let constructor lookup retries finish before detaching, so they cannot reattach after teardown.
+    await this.#googleHomeDeviceUUIDPromise;
+    this.#grpcTransport?.release();
   }
 
   async refreshDiagnostics() {

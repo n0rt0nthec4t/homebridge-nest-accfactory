@@ -160,19 +160,19 @@ function processConfig(config, log, api) {
         log?.warn?.('Minimum binary version is "%s", however the installed version is "%s"', FFMPEG_VERSION, ffmpeg.version);
       }
 
-      if ((ffmpeg.features?.decoders || []).includes('libspeex') === false) {
+      if (ffmpeg.supportsDecoder('libspeex') === false) {
         log?.warn?.('Missing speex decoder in ffmpeg');
       }
 
-      if ((ffmpeg.features?.encoders || []).includes('libfdk_aac') === false) {
+      if (ffmpeg.supportsEncoder('libfdk_aac') === false) {
         log?.warn?.('Missing fdk_aac encoder in ffmpeg');
       }
 
-      if ((ffmpeg.features?.encoders || []).includes('libopus') === false) {
+      if (ffmpeg.supportsEncoder('libopus') === false) {
         log?.warn?.('Missing opus encoder in ffmpeg');
       }
 
-      if ((ffmpeg.features?.encoders || []).includes('libx264') === false) {
+      if (ffmpeg.supportsEncoder('libx264') === false) {
         log?.warn?.('Missing libx264 encoder in ffmpeg');
       }
     }

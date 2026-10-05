@@ -39,7 +39,7 @@
 // - Uses shared protobuf helpers for schema/type loading and traversal
 // - Creates and updates HomeKitDevice-based instances for supported device types
 //
-// Code version 2026.09.21
+// Code version 2026.10.05
 // Mark Hulskamp
 'use strict';
 
@@ -391,16 +391,11 @@ export default class NestAccfactory {
               // Compare previous vs incoming buckets list to detect topology changes
               let newBucketsSet = new Set(incomingValue.buckets);
 
-              // If an existing object is missing from the new list, trigger a full refresh
-              existingValue.buckets.forEach((childObjectKey) => {
+              // Missing objects trigger a full refresh and are removed from local state immediately.
+              for (let childObjectKey of existingValue.buckets) {
                 if (newBucketsSet.has(childObjectKey) === false) {
                   fullRead = true;
-                }
-              });
 
-              // Detect removed objects and clean up local state
-              existingValue.buckets.forEach((childObjectKey) => {
-                if (newBucketsSet.has(childObjectKey) === false) {
                   // Object existed previously but is no longer referenced, so treat as removed
                   if (
                     childObjectKey.startsWith('structure.') === true ||
@@ -414,7 +409,7 @@ export default class NestAccfactory {
 
                     if (trackedDevice !== undefined) {
                       // Send removed notice onto HomeKit device for it to process
-                      HomeKitDevice.message(trackedDevice.uuid, HomeKitDevice.REMOVE, {});
+                      await HomeKitDevice.message(trackedDevice.uuid, HomeKitDevice.REMOVE, {});
 
                       // Finally, remove from tracked devices
                       this.#trackedDevices.delete(serialNumber);
@@ -423,7 +418,7 @@ export default class NestAccfactory {
 
                   delete this.#rawData[childObjectKey];
                 }
-              });
+              }
             }
           }
 
@@ -577,7 +572,7 @@ export default class NestAccfactory {
 
                   if (trackedDevice !== undefined) {
                     // Send removed notice onto HomeKit device for it to process
-                    HomeKitDevice.message(trackedDevice.uuid, HomeKitDevice.REMOVE, {});
+                    await HomeKitDevice.message(trackedDevice.uuid, HomeKitDevice.REMOVE, {});
 
                     // Finally, remove from tracked devices
                     this.#trackedDevices.delete(serialNumber);
@@ -668,12 +663,11 @@ export default class NestAccfactory {
                 // We have an update for a camera live image trait
                 // so we'll trigger any waiting snapshot requests to process this new image data
                 if (traitLabel === 'upload_live_image' && connection.snapshotWaiters instanceof Map) {
-                  let waiter = connection.snapshotWaiters.get(resourceId);
-
-                  connection.snapshotWaiters.delete(resourceId);
-
-                  if (typeof waiter === 'function') {
-                    waiter();
+                  for (let [waiter, deviceId] of connection.snapshotWaiters) {
+                    if (deviceId === resourceId) {
+                      connection.snapshotWaiters.delete(waiter);
+                      waiter();
+                    }
                   }
                 }
               }
@@ -685,6 +679,10 @@ export default class NestAccfactory {
           connection.observeRetryDelay = undefined;
         },
       )
+      .then((result) => {
+        // gRPC failures normally resolve with a status rather than reject.
+        observeFailed = result.status !== 0;
+      })
       .catch((error) => {
         observeFailed = true;
 
@@ -971,7 +969,7 @@ export default class NestAccfactory {
               }
 
               // Send updated data onto HomeKit device for it to process
-              HomeKitDevice.message(trackedDevice.uuid, HomeKitDevice.UPDATE, deviceData);
+              await HomeKitDevice.message(trackedDevice.uuid, HomeKitDevice.UPDATE, deviceData);
             }
           }
         }
@@ -980,6 +978,12 @@ export default class NestAccfactory {
   }
 
   async #set(uuid, nest_google_device_uuid, values) {
+    const timestamp = (milliseconds) => ({
+      // Derive both protobuf timestamp fields from the same millisecond value.
+      seconds: Math.floor(milliseconds / 1000),
+      nanos: (milliseconds % 1000) * 1e6,
+    });
+
     let connection = this.#connections?.get(uuid);
 
     if (
@@ -1095,7 +1099,7 @@ export default class NestAccfactory {
             updateElement.state.value.targetTemperature.currentActorInfo = {
               method: 'HVAC_ACTOR_METHOD_IOS',
               originator: { resourceId: nest_google_device_uuid },
-              timeOfAction: { seconds: Math.floor(Date.now() / 1000), nanos: (Date.now() % 1000) * 1e6 },
+              timeOfAction: timestamp(Date.now()),
             };
           }
 
@@ -1148,13 +1152,7 @@ export default class NestAccfactory {
           if (key === 'fan_state' && typeof value === 'boolean' && Number.isFinite(Number(values?.fan_duration)) === true) {
             // Set fan mode on the target thermostat, including runtime if turning on
             setUpdateTrait('fan_control_settings', 'type.nestlabs.com/nest.trait.hvac.FanControlSettingsTrait');
-            updateElement.state.value.timerEnd =
-              value === true
-                ? {
-                    seconds: Number(Math.floor(Date.now() / 1000) + Number(values.fan_duration)),
-                    nanos: Number(((Math.floor(Date.now() / 1000) + Number(values.fan_duration)) % 1000) * 1e6),
-                  }
-                : { seconds: 0, nanos: 0 };
+            updateElement.state.value.timerEnd = value === true ? timestamp(Date.now() + Number(values.fan_duration) * 1000) : timestamp(0);
             if (values?.fan_timer_speed !== undefined) {
               // We have a value to set fan speed also, so handle here as combined setting
               updateElement.state.value.timerSpeed =
@@ -1188,10 +1186,7 @@ export default class NestAccfactory {
             setUpdateTrait('recording_toggle_settings', 'type.nestlabs.com/nest.trait.product.camera.RecordingToggleSettingsTrait');
             updateElement.state.value.targetCameraState = value === true ? 'CAMERA_ON' : 'CAMERA_OFF';
             updateElement.state.value.changeModeReason = 2;
-            updateElement.state.value.settingsUpdated = {
-              seconds: Math.floor(Date.now() / 1000),
-              nanos: (Date.now() % 1000) * 1e6,
-            };
+            updateElement.state.value.settingsUpdated = timestamp(Date.now());
           }
 
           if (key === 'audio_enabled' && typeof value === 'boolean') {
@@ -1263,15 +1258,8 @@ export default class NestAccfactory {
             setUpdateTrait('hot_water_settings', 'type.nestlabs.com/nest.trait.hvac.HotWaterSettingsTrait');
 
             let boostTime = Number.isFinite(Number(value?.time)) === true ? Number(value.time) : 30 * 60;
-            let boostEnd = Math.floor(Date.now() / 1000) + boostTime;
 
-            updateElement.state.value.boostTimerEnd =
-              value?.state === true
-                ? {
-                    seconds: boostEnd,
-                    nanos: (boostEnd % 1000) * 1e6,
-                  }
-                : { seconds: 0, nanos: 0 };
+            updateElement.state.value.boostTimerEnd = value?.state === true ? timestamp(Date.now() + boostTime * 1000) : timestamp(0);
           }
 
           if (
@@ -1836,48 +1824,42 @@ export default class NestAccfactory {
       let latestUploadLiveImage = beforeRequestUploadLiveImage;
       let latestUrl = beforeRequestUrl;
 
-      // Register a waiter for this device so observe processing can wake this snapshot request
-      let snapshotUpdated = false;
-      connection?.snapshotWaiters?.delete?.(nest_google_device_uuid);
-      let waitForSnapshotUpdate = new Promise((resolve) => {
-        connection.snapshotWaiters.set(nest_google_device_uuid, () => {
-          snapshotUpdated = true;
-          resolve();
-        });
-      });
+      // Key by request callback so overlapping snapshots for one device remain independent.
+      let { promise: waitForSnapshotUpdate, resolve: waiter } = Promise.withResolvers();
+      connection.snapshotWaiters.set(waiter, nest_google_device_uuid);
 
       // Ask Google to refresh the live image
-      let grpcResult = await connection.grpcTransport.command('nestlabs.gateway.v1.', 'ResourceApi', 'SendCommand', {
-        resourceRequest: {
-          resourceId: nest_google_device_uuid,
-          requestId: crypto.randomUUID(),
-        },
-        resourceCommands: [
-          {
-            traitLabel: 'upload_live_image',
-            command: {
-              type_url: 'type.nestlabs.com/nest.trait.product.camera.UploadLiveImageTrait.UploadLiveImageRequest',
-              value: {},
-            },
+      try {
+        let grpcResult = await connection.grpcTransport.command('nestlabs.gateway.v1.', 'ResourceApi', 'SendCommand', {
+          resourceRequest: {
+            resourceId: nest_google_device_uuid,
+            requestId: crypto.randomUUID(),
           },
-        ],
-      });
+          resourceCommands: [
+            {
+              traitLabel: 'upload_live_image',
+              command: {
+                type_url: 'type.nestlabs.com/nest.trait.product.camera.UploadLiveImageTrait.UploadLiveImageRequest',
+                value: {},
+              },
+            },
+          ],
+        });
 
-      let commandResponse = Array.isArray(grpcResult?.data) === true ? grpcResult.data[0] : undefined;
+        let commandResponse = Array.isArray(grpcResult?.data) === true ? grpcResult.data[0] : undefined;
 
-      // Only continue if gRPC reports the camera event request completed successfully
-      if (
-        commandResponse?.traitOperations?.[0]?.progress === 'COMPLETE' &&
-        commandResponse?.traitOperations?.[0]?.event?.event?.status === 'STATUS_SUCCESSFUL'
-      ) {
-        // Wait briefly for observe processing to deliver updated upload_live_image data for this device.
-        // If no update arrives in time, we'll fall back to whatever URL was already available.
-        await Promise.race([waitForSnapshotUpdate, new Promise((resolve) => setTimeout(resolve, SNAPSHOT_WAIT_TIMEOUT))]);
-      }
-
-      // If timeout won the race, remove the waiter so a later observe update does not resolve a stale request
-      if (snapshotUpdated === false) {
-        connection?.snapshotWaiters?.delete?.(nest_google_device_uuid);
+        // Only continue if gRPC reports the camera event request completed successfully
+        if (
+          commandResponse?.traitOperations?.[0]?.progress === 'COMPLETE' &&
+          commandResponse?.traitOperations?.[0]?.event?.event?.status === 'STATUS_SUCCESSFUL'
+        ) {
+          // Wait briefly for observe processing to deliver updated upload_live_image data for this device.
+          // If no update arrives in time, we'll fall back to whatever URL was already available.
+          await Promise.race([waitForSnapshotUpdate, new Promise((resolve) => setTimeout(resolve, SNAPSHOT_WAIT_TIMEOUT))]);
+        }
+      } finally {
+        // Remove only this request, including when the refresh command fails.
+        connection.snapshotWaiters.delete(waiter);
       }
 
       // Re-read final upload_live_image state after either observe update or timeout
@@ -2130,16 +2112,8 @@ export default class NestAccfactory {
                     Array.isArray(event.eventType) === true
                       ? event.eventType
                           .map((type) => {
-                            if (type === 'EVENT_UNFAMILIAR_FACE') {
-                              return 'unfamiliar-face';
-                            }
-                            if (type === 'EVENT_PERSON_TALKING') {
-                              return 'personHeard';
-                            }
-                            if (type === 'EVENT_DOG_BARKING') {
-                              return 'dogBarking';
-                            }
-                            return type.startsWith('EVENT_') === true ? type.slice(6).toLowerCase() : '';
+                            // Match Nest REST event names and automatically support future protobuf enum additions.
+                            return type.startsWith('EVENT_') === true ? type.slice(6).toLowerCase().replaceAll('_', '-') : '';
                           })
                           .filter(Boolean)
                       : [],
@@ -2183,35 +2157,46 @@ export default class NestAccfactory {
               'Sec-Fetch-Mode': 'cors',
               'Sec-Fetch-Site': 'same-origin',
             },
-            retry: 3,
+            // This endpoint is polled frequently, so the next poll is the retry.
+            retry: 1,
             timeout: 4000,
           },
         );
 
         let data = await response.json();
 
-        let events =
-          Array.isArray(data) === true
-            ? data
-                .map((alert) => {
-                  let zoneIds = Array.isArray(alert.zone_ids) === true ? alert.zone_ids.map((id) => (id !== 0 ? id : 1)) : [1];
-                  if (zoneIds.length === 0) {
-                    zoneIds.push(1);
-                  }
-                  return {
-                    playback_time: alert.playback_time,
-                    start_time: alert.start_time,
-                    end_time: alert.end_time,
-                    id: alert.id,
-                    zone_ids: zoneIds,
-                    types: alert.types,
-                  };
-                })
-                .sort((a, b) => b.start_time - a.start_time)
-            : [];
+        if (Array.isArray(data) === false) {
+          throw new Error(data?.status_detail ?? 'Activity notifications missing or invalid');
+        }
+
+        let events = data
+          .map((alert) => {
+            let zoneIds = Array.isArray(alert.zone_ids) === true ? alert.zone_ids.map((id) => (id !== 0 ? id : 1)) : [1];
+            if (zoneIds.length === 0) {
+              zoneIds.push(1);
+            }
+            return {
+              playback_time: alert.playback_time,
+              start_time: alert.start_time,
+              end_time: alert.end_time,
+              id: alert.id,
+              zone_ids: zoneIds,
+              types: alert.types,
+            };
+          })
+          .sort((a, b) => b.start_time - a.start_time);
 
         return events; // Return events from Nest API
       } catch (error) {
+        // Cuepoint timeouts are expected transient misses; the next two-second poll tries again.
+        if (
+          (error?.cause ?? error)?.name === 'TimeoutError' ||
+          (error?.cause ?? error)?.code === 'UND_ERR_HEADERS_TIMEOUT' ||
+          (error?.cause ?? error)?.code === 'UND_ERR_CONNECT_TIMEOUT'
+        ) {
+          return [];
+        }
+
         this?.log?.debug?.(
           'Nest API had error retrieving camera/doorbell activity notifications for device "%s". Error was "%s"',
           nest_google_device_uuid,

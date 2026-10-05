@@ -1,35 +1,24 @@
 // FFmpeg Session Manager
 // Part of homebridge-nest-accfactory
 //
-// Provides a lightweight wrapper around the FFmpeg binary for managing
-// streaming and recording sessions used by camera and doorbell devices.
+// Discovers and probes the FFmpeg binary once per instance, exposing version,
+// codec and format capabilities for camera and doorbell streaming.
+// Callers build command arguments, connect media pipes, and handle HomeKit cleanup and logging.
 //
-// Responsibilities:
-// - Locate and validate FFmpeg binary and feature support
-// - Spawn and manage FFmpeg processes
-// - Track active FFmpeg sessions per device
-// - Provide controlled lifecycle management (create / replace / stop sessions)
-// - Ensure stderr is safely drained to prevent process blocking
+// Session management:
+// - Track processes by device UUID, session ID and session type (live, record, talkback)
+// - Expose lifecycle states and STARTED, STATE_CHANGED and COMPLETE events on session handles
+// - STARTED confirms process spawning; COMPLETE follows process and pipe closure
+// - Replace older sessions only after successful spawning, preserving them if replacement startup fails
+// - Retain stopping and replaced processes until closure so device teardown can await them
+// - Support awaitable shutdown, escalating graceful termination to SIGKILL after two seconds by default
 //
-// Features:
-// - Automatic FFmpeg binary discovery across common platform paths (macOS, Linux, Windows)
-// - One-time binary probing (version + codec capability detection)
-// - Session-based process management via createSession() / killSession()
-// - Safe replacement of existing sessions with the same key
-// - Externalised error handling via callback hooks
-// - Support for multiple concurrent session types (e.g. live, record, talkback)
-// - Safe process cleanup and resource handling
+// Diagnostics:
+// - Drain stderr and retain bounded history readable from the session handle after completion
+// - Keep expected EPIPE errors silent; retain and report other pipe errors through the caller's callback
+// - Tolerate missing or inaccessible DRM metadata during hardware detection
 //
-// Notes:
-// - Used primarily by camera and doorbell modules for:
-//   - Live streaming to HomeKit
-//   - HomeKit Secure Video (HKSV) recording
-//   - Two-way audio (talkback)
-// - Does NOT perform any media processing itself — only manages FFmpeg execution
-// - Logging and debugging are handled by the calling module
-// - Binary validation and capability checks are performed during initialisation
-//
-// Code version 2026.09.06
+// Code version 2026.10.05
 // Mark Hulskamp
 'use strict';
 
@@ -39,13 +28,34 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import child_process from 'node:child_process';
+import { Buffer } from 'node:buffer';
+import { StringDecoder } from 'node:string_decoder';
+import timers from 'node:timers';
+
+const MAX_DIAGNOSTIC_CHARACTERS = 16384;
+const MAX_DIAGNOSTIC_LINES = 20;
+const SHUTDOWN_TIMEOUT_MS = 2000;
 
 // FFmpeg object
 export default class FFmpeg {
+  static SESSION_EVENT = {
+    STARTED: 'started',
+    STATE_CHANGED: 'state_changed',
+    COMPLETE: 'complete',
+  };
+
+  static SESSION_STATE = {
+    STARTING: 'starting',
+    RUNNING: 'running',
+    STOPPING: 'stopping',
+    EXITED: 'exited',
+    FAILED: 'failed',
+  };
+
   #binary = undefined;
   #version = undefined;
   #features = {};
-  #sessions = new Map(); // Map of "uuid:sessionID:sessionType" => ChildProcess
+  #sessions = new Set(); // Session handles, including replacements still shutting down
 
   constructor(binaryPath = undefined) {
     let binaryName = 'ffmpeg' + (os.platform() === 'win32' ? '.exe' : '');
@@ -96,32 +106,15 @@ export default class FFmpeg {
       return false;
     }
 
-    // Helper to check if all required items are in available list
-    const hasAllRequired = (required, available) => {
-      if (Array.isArray(required) === false || required.length === 0) {
-        return true;
-      }
-      return required.every((item) => available.includes(item) === true);
+    // Use the same capability queries for individual checks and minimum requirements, including aliases.
+    const hasAllRequired = (required, supports) => {
+      return Array.isArray(required) === false || required.every((item) => supports.call(this, item) === true);
     };
-
-    let encoders = this.#features.encoders || [];
-    let decoders = this.#features.decoders || [];
-    let muxers = this.#features.muxers || [];
-
-    // Check all feature requirements
-    if (hasAllRequired(min?.encoders, encoders) === false) {
-      return false;
-    }
-
-    if (hasAllRequired(min?.decoders, decoders) === false) {
-      return false;
-    }
-
-    if (hasAllRequired(min?.muxers, muxers) === false) {
-      return false;
-    }
-
-    return true;
+    return (
+      hasAllRequired(min?.encoders, this.supportsEncoder) === true &&
+      hasAllRequired(min?.decoders, this.supportsDecoder) === true &&
+      hasAllRequired(min?.muxers, this.supportsMuxer) === true
+    );
   }
 
   get binary() {
@@ -150,84 +143,216 @@ export default class FFmpeg {
     return this.#features?.hardwareH264Codec;
   }
 
+  supportsEncoder(encoder) {
+    // Compiled encoder support does not guarantee the required hardware is available.
+    return this.#features.encoders?.includes(encoder) === true;
+  }
+
+  supportsDecoder(decoder) {
+    // An unavailable capability list means support could not be confirmed.
+    return this.#features.decoders?.includes(decoder) === true;
+  }
+
+  supportsMuxer(muxer) {
+    // FFmpeg may list multiple names for a format on a single capability row.
+    return this.#features.muxers?.some((names) => names.split(',').includes(muxer) === true) === true;
+  }
+
   createSession(uuid, sessionID, args, sessionType = 'default', errorCallback, pipeCount = 3) {
-    let key = String(uuid) + ':' + String(sessionID) + ':' + String(sessionType);
+    // Default invalid counts to three; always include stdin, stdout and stderr.
+    pipeCount = Number.isInteger(pipeCount) === true ? Math.max(3, pipeCount) : 3;
 
-    if (this.#sessions.has(key) === true) {
-      this.killSession(uuid, sessionID, sessionType);
-    }
+    let child = child_process.spawn(this.#binary, args, {
+      stdio: Array.from({ length: pipeCount }, () => 'pipe'),
+      env: process.env,
+    });
 
-    // Ensure at least 3 pipes (stdin, stdout, stderr)
-    if (pipeCount < 3) {
-      pipeCount = 3;
-    }
+    // Keep lifecycle outcome fields together; expose only snapshots when completion is reported.
+    let lifecycle = { state: FFmpeg.SESSION_STATE.STARTING, expected: false, error: undefined };
+    let shutdownTimer;
+    let completion = Promise.withResolvers();
+    const setState = (nextState) => {
+      // Update before notifying listeners; repeated requests must not emit duplicate transitions.
+      if (lifecycle.state !== nextState) {
+        let previousState = lifecycle.state;
+        lifecycle.state = nextState;
+        child.emit(FFmpeg.SESSION_EVENT.STATE_CHANGED, { state: lifecycle.state, previousState });
+      }
+    };
 
-    let stdio = Array.from({ length: pipeCount }, () => 'pipe');
-    let child = child_process.spawn(this.#binary, args, { stdio, env: process.env });
-
-    this.#sessions.set(key, child);
+    // Keep history on the returned handle, so registry cleanup or replacement cannot lose failure details.
+    let diagnosticHistory = '';
+    let stderrDecoder = new StringDecoder('utf8');
+    const appendDiagnostics = (text) => {
+      diagnosticHistory = (diagnosticHistory + text).slice(-MAX_DIAGNOSTIC_CHARACTERS);
+    };
 
     child?.stderr?.on?.('data', (data) => {
+      // Stream chunks may split UTF-8 characters and lines; decode before retaining the bounded tail.
+      appendDiagnostics(stderrDecoder.write(Buffer.isBuffer(data) === true ? data : Buffer.from(data)));
       errorCallback?.(data);
     });
 
-    child?.on?.('error', (error) => {
-      if (this.#sessions.get(key) === child) {
-        this.#sessions.delete(key);
-      }
-
-      errorCallback?.('Failed to start ffmpeg session "' + key + '". Error was "' + String(error?.message || error) + '"');
+    child?.stderr?.on?.('end', () => {
+      appendDiagnostics(stderrDecoder.end());
     });
 
-    child?.on?.('exit', () => {
-      if (this.#sessions.get(key) === child) {
-        this.#sessions.delete(key);
+    child.once('spawn', () => {
+      // A stop requested before spawn must not transition back to running.
+      if (lifecycle.state === FFmpeg.SESSION_STATE.STARTING) {
+        setState(FFmpeg.SESSION_STATE.RUNNING);
+        // Replace only after successful spawn; failed replacements leave the previous process available.
+        if (lifecycle.state === FFmpeg.SESSION_STATE.RUNNING) {
+          for (let existing of this.#sessions) {
+            // Set insertion order identifies older requests; never stop a newer pending replacement.
+            if (existing === session) {
+              break;
+            }
+            if (existing.key === session.key) {
+              existing.kill();
+            }
+          }
+          // A successful active spawn is not confirmation that FFmpeg is ready to deliver media.
+          if (lifecycle.state === FFmpeg.SESSION_STATE.RUNNING) {
+            child.emit(FFmpeg.SESSION_EVENT.STARTED, session);
+          }
+        }
       }
+    });
+
+    child.on('error', (error) => {
+      lifecycle.error = error;
+      let startupFailure = child.pid === undefined;
+      // Spawn and signal errors share diagnostics; completion is reported once, after pipes close.
+      let message =
+        (startupFailure === true ? 'Failed to start ffmpeg session "' : 'Error in ffmpeg session "') +
+        session.key +
+        '". Error was "' +
+        String(error?.message || error) +
+        '"';
+      appendDiagnostics('\n' + message + '\n');
+      if (startupFailure === true) {
+        setState(FFmpeg.SESSION_STATE.FAILED);
+      }
+      errorCallback?.(message);
+    });
+
+    child.once('exit', (code, signal) => {
+      timers.clearTimeout(shutdownTimer);
+      setState(
+        lifecycle.expected === true || (code === 0 && signal === null && lifecycle.error === undefined)
+          ? FFmpeg.SESSION_STATE.EXITED
+          : FFmpeg.SESSION_STATE.FAILED,
+      );
+    });
+
+    child.once('close', (code, signal) => {
+      // Exit or spawn failure already set the final state; close guarantees final stderr has been drained.
+      timers.clearTimeout(shutdownTimer);
+      this.#sessions.delete(session);
+      // Both finished and complete share one outcome; expected distinguishes requested shutdown from failure.
+      let result = { ...lifecycle, code, signal };
+      completion.resolve(result);
+      child.emit(FFmpeg.SESSION_EVENT.COMPLETE, result);
     });
 
     for (let i = 0; i < pipeCount; i++) {
       child?.stdio?.[i]?.on?.('error', (error) => {
+        // Writes can race with normal shutdown; keep expected broken-pipe errors silent.
         if (error?.code === 'EPIPE') {
-          // Empty
+          return;
         }
+        lifecycle.error = error;
+        let message = 'Error on ffmpeg session "' + session.key + '" pipe ' + i + '. Error was "' + String(error?.message || error) + '"';
+        appendDiagnostics('\n' + message + '\n');
+        errorCallback?.(message);
       });
     }
 
-    return {
+    let session = {
+      key: String(uuid) + ':' + String(sessionID) + ':' + String(sessionType),
       process: child,
+      // State describes the process; finished resolves after the process and its pipes have closed.
+      get state() {
+        return lifecycle.state;
+      },
+      finished: completion.promise,
       stdin: child.stdio[0],
       stdout: child.stdio[1],
       stderr: child.stdio[2],
       stdio: child.stdio,
+      get diagnosticLines() {
+        // Return a fresh snapshot of recent nonempty lines, including unfinished output and startup errors.
+        // Character limits may truncate the oldest line; the retained handle keeps diagnostics available after exit.
+        return diagnosticHistory
+          .split(/[\r\n]+/)
+          .map((line) => line.trim())
+          .filter((line) => line !== '')
+          .slice(-MAX_DIAGNOSTIC_LINES);
+      },
       on: (...args) => child.on(...args),
       once: (...args) => child.once(...args),
-      kill: (signal) => child.kill(signal),
+      kill: (signal = 'SIGTERM', timeout = SHUTDOWN_TIMEOUT_MS) => {
+        // Timeout is the grace period in milliseconds; repeated stops share the completion promise.
+        // SIGKILL can still accelerate an existing graceful stop.
+        if (lifecycle.state === FFmpeg.SESSION_STATE.EXITED || lifecycle.state === FFmpeg.SESSION_STATE.FAILED) {
+          return completion.promise;
+        }
+        if (Number.isFinite(timeout) === false || timeout < 0) {
+          throw new RangeError('FFmpeg shutdown timeout must be a nonnegative number');
+        }
+        if (lifecycle.state === FFmpeg.SESSION_STATE.STOPPING && signal !== 'SIGKILL') {
+          return completion.promise;
+        }
+        // Rejected or unsuccessful signals must not change lifecycle intent or arm forced termination.
+        if (child.kill(signal) === false) {
+          return completion.promise;
+        }
+        lifecycle.expected = true;
+        timers.clearTimeout(shutdownTimer);
+        if (signal !== 'SIGKILL') {
+          // Escalate if FFmpeg ignores graceful termination; finish only when the child closes.
+          shutdownTimer = timers.setTimeout(() => {
+            child.kill('SIGKILL');
+          }, timeout);
+        }
+        // Notify after scheduling and signalling, so listeners can safely request an immediate force-stop.
+        if (lifecycle.state === FFmpeg.SESSION_STATE.STARTING || lifecycle.state === FFmpeg.SESSION_STATE.RUNNING) {
+          setState(FFmpeg.SESSION_STATE.STOPPING);
+        }
+        return completion.promise;
+      },
     };
+    this.#sessions.add(session);
+    return session;
   }
 
-  killSession(uuid, sessionID, sessionType = 'default', signal = 'SIGTERM') {
+  killSession(uuid, sessionID, sessionType = 'default', signal = 'SIGTERM', timeout = SHUTDOWN_TIMEOUT_MS) {
+    // Include older replacements with the same key and await their actual closure.
     let key = String(uuid) + ':' + String(sessionID) + ':' + String(sessionType);
-    let child = this.#sessions.get(key);
-    child?.kill?.(signal);
-    this.#sessions.delete(key);
+    return Promise.all([...this.#sessions].filter((session) => session.key === key).map((session) => session.kill(signal, timeout)));
   }
 
   hasSession(uuid, sessionID, sessionType = 'default') {
+    // Stopping sessions remain tracked for teardown but no longer accept media work.
     let key = String(uuid) + ':' + String(sessionID) + ':' + String(sessionType);
-    return this.#sessions.has(key);
+    return [...this.#sessions].some(
+      (session) => session.key === key && [FFmpeg.SESSION_STATE.STARTING, FFmpeg.SESSION_STATE.RUNNING].includes(session.state) === true,
+    );
   }
 
   listSessions() {
-    return Array.from(this.#sessions.keys());
+    // List unique tracked keys, including processes whose shutdown has not completed.
+    return [...new Set([...this.#sessions].map((session) => session.key))];
   }
 
-  killAllSessions(uuid, signal = 'SIGKILL') {
-    for (let [key, child] of this.#sessions.entries()) {
-      if (key.startsWith(String(uuid) + ':') === true) {
-        child?.kill?.(signal);
-        this.#sessions.delete(key);
-      }
-    }
+  killAllSessions(uuid, signal = 'SIGKILL', timeout = SHUTDOWN_TIMEOUT_MS) {
+    // Wait for every tracked process for this device, including replaced and stopping sessions.
+    return Promise.all(
+      [...this.#sessions]
+        .filter((session) => session.key.startsWith(String(uuid) + ':') === true)
+        .map((session) => session.kill(signal, timeout)),
+    );
   }
 
   // Validate binary, extract version + feature flags
@@ -275,9 +400,9 @@ export default class FFmpeg {
     this.#features.muxers = parseFeatures('-muxers', /^\s*[E][A-Z.]*\s+([^\s]+)/);
     this.#features.demuxers = parseFeatures('-demuxers', /^\s*[D][A-Z.]*\s+([^\s]+)/);
 
-    // Detect hardware H264 codec flags
-    let encoders = String(child_process.spawnSync(this.#binary, ['-encoders'], { env: process.env })?.stdout ?? '');
-    if (encoders !== '') {
+    // Reuse the parsed encoder list for hardware H264 detection without probing again.
+    let encoders = this.#features.encoders;
+    if (encoders.length > 0) {
       this.#features.h264_nvenc = encoders.includes('h264_nvenc') === true;
       this.#features.h264_vaapi = encoders.includes('h264_vaapi') === true;
       this.#features.h264_v4l2m2m = encoders.includes('h264_v4l2m2m') === true;
@@ -289,7 +414,12 @@ export default class FFmpeg {
       let platform = os.platform();
       let hasDri = fs.existsSync('/dev/dri/renderD128') === true || fs.existsSync('/dev/dri/card0') === true;
       let hasVideo = fs.existsSync('/dev/video0') === true;
-      let hasIntelQSV = fs.existsSync('/dev/dri') === true && fs.readdirSync('/dev/dri').some((f) => f.startsWith('render')) === true;
+      let hasIntelQSV = false;
+      try {
+        hasIntelQSV = fs.readdirSync('/dev/dri').some((f) => f.startsWith('render')) === true;
+      } catch {
+        // Missing, inaccessible or disappearing device metadata must not prevent software encoding.
+      }
 
       // macOS: prefer videotoolbox
       if (platform === 'darwin' && this.#features.h264_videotoolbox === true) {
