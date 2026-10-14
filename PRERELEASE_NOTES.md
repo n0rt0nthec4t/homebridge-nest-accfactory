@@ -4,10 +4,11 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.4.4-beta.7 (2026/10/xx)
+## v0.4.4-beta.7 (2026/10/14)
 
 ### Changed
 
+- Updated `protobufjs` to 8.8.1, `werift` to 0.25.0, `@types/node` to 26.6.5, `@typescript-eslint/parser` to 8.71.2, and `prettier` to 3.9.10
 - Moved five-minute weather polling into the backend so network requests run outside the accessory lifecycle queue; weather readings continue to arrive through UPDATE messages
 
 - Added the per-device `ignoreIndoorChime` option (default `false`) to allow HomeKit doorbell notifications when the physical indoor chime is disabled
