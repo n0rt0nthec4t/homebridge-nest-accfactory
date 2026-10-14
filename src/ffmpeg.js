@@ -2,7 +2,8 @@
 // Part of homebridge-nest-accfactory
 //
 // Discovers and probes the FFmpeg binary once per instance, exposing version,
-// codec and format capabilities for camera and doorbell streaming.
+// codec and format capabilities for camera and doorbell streaming. Hardware
+// selection requires a bounded encode probe, cached across managers for the same binary and discovered devices.
 // Callers build command arguments, connect media pipes, and handle HomeKit cleanup and logging.
 //
 // Session management:
@@ -18,7 +19,7 @@
 // - Keep expected EPIPE errors silent; retain and report other pipe errors through the caller's callback
 // - Tolerate missing or inaccessible DRM metadata during hardware detection
 //
-// Code version 2026.10.05
+// Code version 2026.10.10
 // Mark Hulskamp
 'use strict';
 
@@ -35,9 +36,13 @@ import timers from 'node:timers';
 const MAX_DIAGNOSTIC_CHARACTERS = 16384;
 const MAX_DIAGNOSTIC_LINES = 20;
 const SHUTDOWN_TIMEOUT_MS = 2000;
+const HARDWARE_PROBE_TIMEOUT_MS = 2000;
+const HARDWARE_PROBE_BUDGET_MS = 4000;
+const HARDWARE_PROBE_CACHE_CAPACITY = 32;
 
 // FFmpeg object
 export default class FFmpeg {
+  static #hardwareProbeCache = new Map(); // Bounded process-local results; session ownership stays per manager.
   static SESSION_EVENT = {
     STARTED: 'started',
     STATE_CHANGED: 'state_changed',
@@ -55,6 +60,7 @@ export default class FFmpeg {
   #binary = undefined;
   #version = undefined;
   #features = {};
+  #hardwareEncoder = undefined; // The validated configuration; undefined keeps software as the default.
   #sessions = new Set(); // Session handles, including replacements still shutting down
 
   constructor(binaryPath = undefined) {
@@ -130,17 +136,19 @@ export default class FFmpeg {
   }
 
   get supportsHardwareH264() {
-    return (
-      this.#features?.h264_nvenc === true ||
-      this.#features?.h264_vaapi === true ||
-      this.#features?.h264_v4l2m2m === true ||
-      this.#features?.h264_qsv === true ||
-      this.#features?.h264_videotoolbox === true
-    );
+    return this.#hardwareEncoder !== undefined;
   }
 
   get hardwareH264Codec() {
-    return this.#features?.hardwareH264Codec;
+    return this.#hardwareEncoder?.codec;
+  }
+
+  getH264EncoderOptions(useHardware = false) {
+    let encoding =
+      useHardware === true && this.#hardwareEncoder !== undefined
+        ? this.#hardwareEncoder
+        : { codec: 'libx264', inputArguments: [], filter: 'format=yuv420p', preset: 'veryfast' };
+    return { ...encoding, inputArguments: [...encoding.inputArguments] };
   }
 
   supportsEncoder(encoder) {
@@ -400,83 +408,190 @@ export default class FFmpeg {
     this.#features.muxers = parseFeatures('-muxers', /^\s*[E][A-Z.]*\s+([^\s]+)/);
     this.#features.demuxers = parseFeatures('-demuxers', /^\s*[D][A-Z.]*\s+([^\s]+)/);
 
-    // Reuse the parsed encoder list for hardware H264 detection without probing again.
-    let encoders = this.#features.encoders;
-    if (encoders.length > 0) {
-      this.#features.h264_nvenc = encoders.includes('h264_nvenc') === true;
-      this.#features.h264_vaapi = encoders.includes('h264_vaapi') === true;
-      this.#features.h264_v4l2m2m = encoders.includes('h264_v4l2m2m') === true;
-      this.#features.h264_qsv = encoders.includes('h264_qsv') === true;
-      this.#features.h264_videotoolbox = encoders.includes('h264_videotoolbox') === true;
+    this.#probeHardwareEncoder();
+  }
 
-      // Platform-aware preferred hardware encoder
-      this.#features.hardwareH264Codec = undefined;
-      let platform = os.platform();
-      let hasDri = fs.existsSync('/dev/dri/renderD128') === true || fs.existsSync('/dev/dri/card0') === true;
-      let hasVideo = fs.existsSync('/dev/video0') === true;
-      let hasIntelQSV = false;
+  #discoverHardwareEncoders() {
+    let platform = os.platform();
+    let renderDevices = [];
+    let videoEncoder;
+    let isPi = false;
+    if (platform === 'linux') {
       try {
-        hasIntelQSV = fs.readdirSync('/dev/dri').some((f) => f.startsWith('render')) === true;
+        isPi = fs.readFileSync('/sys/firmware/devicetree/base/model', 'utf8').startsWith('Raspberry Pi') === true;
       } catch {
-        // Missing, inaccessible or disappearing device metadata must not prevent software encoding.
+        // Most non-Pi hosts do not expose device-tree metadata.
       }
-
-      // macOS: prefer videotoolbox
-      if (platform === 'darwin' && this.#features.h264_videotoolbox === true) {
-        this.#features.hardwareH264Codec = 'h264_videotoolbox';
-      }
-
-      // Linux: prioritise nvenc > qsv > vaapi > v4l2m2m, only if required devices exist
-      else if (platform === 'linux') {
-        // Pi codec nodes are dynamically numbered; identify the encoder rather than a camera or decoder.
+      if (isPi === false) {
         try {
-          if (fs.readFileSync('/sys/firmware/devicetree/base/model', 'utf8').startsWith('Raspberry Pi') === true) {
-            // Pi DRM nodes provide graphics, not evidence of NVENC, QSV or VAAPI encoding support.
-            hasDri = false;
-            hasIntelQSV = false;
-            hasVideo = false;
-            hasVideo = fs.readdirSync('/sys/class/video4linux').some((device) => {
-              if (/^video\d+$/.test(device) === false) {
-                return false;
-              }
+          renderDevices = fs
+            .readdirSync('/dev/dri')
+            .filter((name) => /^renderD\d+$/.test(name) === true)
+            .sort()
+            .slice(0, 8)
+            .map((name) => '/dev/dri/' + name)
+            .filter((device) => {
               try {
-                if (fs.readFileSync('/sys/class/video4linux/' + device + '/name', 'utf8').trim() !== 'bcm2835-codec-encode') {
-                  return false;
-                }
-                fs.accessSync('/dev/' + device, fs.constants.R_OK | fs.constants.W_OK);
+                fs.accessSync(device, fs.constants.R_OK | fs.constants.W_OK);
                 return true;
               } catch {
-                // A missing or inaccessible node is not available to this process.
                 return false;
               }
             });
-          }
         } catch {
-          // Missing host metadata keeps the generic check; missing Pi codec metadata leaves acceleration disabled.
+          // Missing or inaccessible render nodes cannot enable QSV or VAAPI.
         }
-
-        let linuxEncoders = [
-          { key: 'h264_nvenc', device: hasDri },
-          { key: 'h264_qsv', device: hasIntelQSV },
-          { key: 'h264_vaapi', device: hasDri },
-          { key: 'h264_v4l2m2m', device: hasVideo },
-        ];
-
-        for (let encoder of linuxEncoders) {
-          if (this.#features[encoder.key] === true) {
-            if (encoder.device !== true) {
-              this.#features[encoder.key] = false; // Disable if device not available
-            } else if (this.#features.hardwareH264Codec === undefined) {
-              this.#features.hardwareH264Codec = encoder.key; // First match becomes selected codec
-            }
+      }
+      try {
+        videoEncoder = fs.readdirSync('/sys/class/video4linux').find((device) => {
+          if (/^video\d+$/.test(device) === false) {
+            return false;
           }
+          try {
+            let name = fs.readFileSync('/sys/class/video4linux/' + device + '/name', 'utf8').trim();
+            if ((isPi === true ? name === 'bcm2835-codec-encode' : /encode/i.test(name) === true) === false) {
+              return false;
+            }
+            fs.accessSync('/dev/' + device, fs.constants.R_OK | fs.constants.W_OK);
+            return true;
+          } catch {
+            return false;
+          }
+        });
+      } catch {
+        // Camera/decoder nodes and missing encoder metadata are not encoding capabilities.
+      }
+    }
+
+    let candidates = [];
+    if (platform === 'darwin') {
+      candidates.push({ codec: 'h264_videotoolbox', inputArguments: [], filter: 'format=yuv420p', preset: undefined });
+    } else if (platform === 'win32') {
+      candidates.push({ codec: 'h264_qsv', inputArguments: [], filter: 'format=nv12', preset: 'veryfast' });
+    } else if (platform === 'linux') {
+      if (isPi === false) {
+        candidates.push({ codec: 'h264_nvenc', inputArguments: [], filter: 'format=yuv420p', preset: 'p4' });
+        for (let device of renderDevices) {
+          candidates.push({ codec: 'h264_qsv', inputArguments: ['-qsv_device', device], filter: 'format=nv12', preset: 'veryfast' });
+        }
+        for (let device of renderDevices) {
+          candidates.push({
+            codec: 'h264_vaapi',
+            inputArguments: ['-vaapi_device', device],
+            filter: 'format=nv12,hwupload',
+            preset: undefined,
+          });
         }
       }
-
-      // Windows: qsv preferred
-      else if (platform === 'win32' && this.#features.h264_qsv === true) {
-        this.#features.hardwareH264Codec = 'h264_qsv';
+      if (videoEncoder !== undefined) {
+        candidates.push({ codec: 'h264_v4l2m2m', inputArguments: [], filter: 'format=yuv420p', preset: undefined });
       }
+    }
+    return {
+      platform,
+      videoEncoder,
+      candidates: candidates.filter((candidate) => this.supportsEncoder(candidate.codec) === true),
+    };
+  }
+
+  // Validate an actual encode, rather than treating compiled encoders or graphics nodes as hardware evidence.
+  #probeHardwareEncoder() {
+    let codecs = ['h264_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_v4l2m2m', 'h264_videotoolbox'];
+    for (let codec of codecs) {
+      this.#features[codec] = false;
+    }
+    if (codecs.some((codec) => this.supportsEncoder(codec) === true) === false) {
+      return;
+    }
+
+    let { platform, videoEncoder, candidates } = this.#discoverHardwareEncoders();
+    if (candidates.length === 0) {
+      return;
+    }
+
+    // Recheck metadata on construction, but reuse successful and failed encode probes across camera managers.
+    // Binary metadata invalidates the result when an executable at the same path is replaced.
+    let binaryMetadata;
+    try {
+      let executable = this.#binary;
+      if (executable.includes('/') === false && executable.includes('\\') === false) {
+        executable =
+          (process.env.PATH ?? '')
+            .split(path.delimiter)
+            .map((directory) => path.resolve(directory, this.#binary))
+            .find((file) => fs.existsSync(file) === true) ?? executable;
+      }
+      let stat = fs.statSync(executable);
+      binaryMetadata = [executable, stat.size, stat.mtimeMs, stat.ino];
+    } catch {
+      // An unresolved command still has a stable process-local identity including PATH and parsed capabilities.
+      binaryMetadata = [this.#binary, process.env.PATH];
+    }
+    let cacheKey = JSON.stringify([binaryMetadata, platform, this.#version, this.#features.encoders, videoEncoder, candidates]);
+    let selection = FFmpeg.#hardwareProbeCache.get(cacheKey);
+    if (selection === undefined) {
+      selection = null; // Cache a failed validation too, without inventing an encoder configuration.
+      let startedAt = Date.now();
+      for (let candidate of candidates) {
+        let remaining = HARDWARE_PROBE_BUDGET_MS - (Date.now() - startedAt);
+        if (remaining <= 0) {
+          break;
+        }
+        let probe = child_process.spawnSync(
+          this.#binary,
+          [
+            '-hide_banner',
+            '-loglevel',
+            'error',
+            '-nostdin',
+            ...candidate.inputArguments,
+            '-f',
+            'lavfi',
+            '-i',
+            'color=c=black:s=320x240:r=15',
+            '-frames:v',
+            '1',
+            '-an',
+            '-codec:v',
+            candidate.codec,
+            '-filter:v',
+            candidate.filter,
+            '-profile:v',
+            candidate.codec === 'h264_v4l2m2m' ? '66' : 'baseline',
+            ...(candidate.codec === 'h264_v4l2m2m' ? [] : ['-level:v', '3.1']),
+            '-bf:v',
+            '0',
+            ...(candidate.preset !== undefined ? ['-preset', candidate.preset] : []),
+            '-b:v',
+            '500k',
+            '-f',
+            'h264',
+            'pipe:1',
+          ],
+          {
+            env: process.env,
+            timeout: Math.min(HARDWARE_PROBE_TIMEOUT_MS, remaining),
+            killSignal: 'SIGKILL',
+            maxBuffer: 65536,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        );
+        // Require encoded output too: successful invocation alone does not establish frame production.
+        if (probe.error === undefined && probe.status === 0 && probe.stdout?.length > 0) {
+          selection = candidate;
+          break;
+        }
+      }
+      if (FFmpeg.#hardwareProbeCache.size >= HARDWARE_PROBE_CACHE_CAPACITY) {
+        FFmpeg.#hardwareProbeCache.delete(FFmpeg.#hardwareProbeCache.keys().next().value);
+      }
+      FFmpeg.#hardwareProbeCache.set(cacheKey, selection);
+    }
+    this.#hardwareEncoder = selection ?? undefined;
+    if (this.#hardwareEncoder !== undefined) {
+      // Retain the existing feature flags and codec field for callers of features.
+      this.#features[this.#hardwareEncoder.codec] = true;
+      this.#features.hardwareH264Codec = this.#hardwareEncoder.codec;
     }
   }
 

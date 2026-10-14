@@ -9,19 +9,19 @@
 // Responsibilities:
 // - Translate HomeKit thermostat actions into Daikin API commands
 // - Manage HVAC modes (cool, heat, dehumidifier, fan, off)
-// - Track last known state for safe and valid control requests
+// - Retain accepted state for safe power-off requests
 // - Provide optional filtering of supported control modes
 //
 // Features:
 // - Supports cooling, heating, dehumidifier, fan, and power-off control
 // - Maps HomeKit fan percentage to Daikin discrete fan levels
-// - Maintains last mode, temperature, humidity, and fan settings
+// - Maintains the last accepted mode, temperature, humidity, and fan settings
 // - Validates and normalises system URL before enabling control
-// - Shared fetchWrapper integration with timeout and exponential backoff
+// - Shared fetchWrapper integration for HTTP requests
 // - Optional "modes=" filter to expose only selected functions
 //
 // Notes:
-// - Stateless integration with no read-back from the Daikin system
+// - Per command state with no read-back from the Daikin system
 // - off() requires a previously established operating state
 // - Intended for use via thermostat external module configuration
 // - Returns a set of control functions dynamically based on configuration
@@ -31,12 +31,12 @@
 // - default(logger, [url, deviceDescription])
 // - default(logger, [url, deviceDescription, 'modes=cool,fan,off'])
 //
-// Code version 2026.09.21
+// Code version 2026.10.14
 // Mark Hulskamp
 'use strict';
 
 // Define nodejs module requirements
-import { URL } from 'node:url';
+import { URL, URLSearchParams } from 'node:url';
 
 // Import our modules
 import { fetchWrapper } from '../fetchWrapper.js';
@@ -80,226 +80,40 @@ const LOG_LEVELS = {
   DEBUG: 'debug',
 };
 
-let systemURL = undefined;
-let log = undefined;
-let logPrefix = '[External]';
-let lastMode = MODE.AUTO;
-let lastTemperature = undefined;
-let lastHumidity = undefined;
-let lastFanRate = FAN_RATE.AUTO;
-let lastFanMode = FAN_DIRECTION.SWING;
-
-// Define functions
-async function cool(temperature) {
-  // Power on, set to cool mode with appropriate temperature, fan mode is Auto and fan is swing
-  if (systemURL === undefined) {
-    return;
-  }
-
-  await fetchWrapper(
-    fetchWrapper.GET,
-    systemURL +
-      '/aircon/set_control_info?pow=' +
-      POWER.ON +
-      '&mode=' +
-      MODE.COOL +
-      '&stemp=' +
-      temperature +
-      '&shum=0&f_rate=' +
-      FAN_RATE.AUTO +
-      '&f_dir=' +
-      FAN_DIRECTION.SWING,
-    {},
-  )
-    .then((response) => response.text())
-    .then((data) => {
-      if (data.search('OK') === -1) {
-        throw new Error('Daikin A/C system get failed with error');
-      }
-
-      log?.debug?.('%s Cool mode on "%s" with target temperature of "%s °C"', logPrefix, systemURL, temperature);
-    })
-    // eslint-disable-next-line no-unused-vars
-    .catch((error) => {
-      log?.error?.('%s Failed to set cool mode on "%s"', logPrefix, systemURL);
-    });
-  lastMode = MODE.COOL;
-  lastTemperature = temperature;
-  lastFanMode = FAN_DIRECTION.SWING;
-  lastFanRate = FAN_RATE.AUTO; // Auto fan mode
-}
-
-async function heat(temperature) {
-  // Power on, set to heat mode with appropriate temperature, fan mode is Auto and fan is swing
-  if (systemURL === undefined) {
-    return;
-  }
-
-  await fetchWrapper(
-    fetchWrapper.GET,
-    systemURL +
-      '/aircon/set_control_info?pow=' +
-      POWER.ON +
-      '&mode=' +
-      MODE.HEAT +
-      '&stemp=' +
-      temperature +
-      '&shum=0&f_rate=' +
-      FAN_RATE.AUTO +
-      '&f_dir=' +
-      FAN_DIRECTION.SWING,
-    {},
-  )
-    .then((response) => response.text())
-    .then((data) => {
-      if (data.search('OK') === -1) {
-        throw new Error('Daikin A/C system get failed with error');
-      }
-
-      log?.debug?.('%s Heat mode on "%s" with target temperature of "%s °C"', logPrefix, systemURL, temperature);
-    })
-    // eslint-disable-next-line no-unused-vars
-    .catch((error) => {
-      log?.error?.('%s Failed to set heat mode on "%s"', logPrefix, systemURL);
-    });
-  lastMode = MODE.HEAT;
-  lastTemperature = temperature;
-  lastFanMode = FAN_DIRECTION.SWING;
-  lastFanRate = FAN_RATE.AUTO; // Auto fan mode
-}
-
-async function dehumidifier(humidity) {
-  // Power on, set to dehumidifier mode with appropriate target humidity, fan mode is Auto and fan is swing
-  if (systemURL === undefined) {
-    return;
-  }
-
-  await fetchWrapper(
-    fetchWrapper.GET,
-    systemURL +
-      '/aircon/set_control_info?pow=' +
-      POWER.ON +
-      '&mode=' +
-      MODE.DEHUMIDIFIER +
-      '&stemp=M&shum=' +
-      humidity +
-      '&f_rate=' +
-      FAN_RATE.AUTO +
-      '&f_dir=' +
-      FAN_DIRECTION.SWING,
-    {},
-  )
-    .then((response) => response.text())
-    .then((data) => {
-      if (data.search('OK') === -1) {
-        throw new Error('Daikin A/C system get failed with error');
-      }
-
-      log?.debug?.('%s Dehumidifier mode on "%s" with target humidity of "%s"', logPrefix, systemURL, humidity);
-    })
-    // eslint-disable-next-line no-unused-vars
-    .catch((error) => {
-      log?.error?.('%s Failed to set dehumidifier mode on "%s"', logPrefix, systemURL);
-    });
-  lastMode = MODE.DEHUMIDIFIER;
-  lastHumidity = humidity;
-}
-
-async function fan(speed) {
-  // Convert a HomeKit fan speed value into a Daikin fan speed value
-  if (systemURL === undefined) {
-    return;
-  }
-
-  let fanRates = [FAN_RATE.AUTO, FAN_RATE.QUIET, FAN_RATE.LEVEL1, FAN_RATE.LEVEL2, FAN_RATE.LEVEL3, FAN_RATE.LEVEL4, FAN_RATE.LEVEL5];
-  let index = Math.min(Math.floor((speed / 100) * fanRates.length), fanRates.length - 1);
-  let rate = fanRates[index];
-
-  // Power on, set to fan mode, fan mode is Auto and fan is swing
-  await fetchWrapper(
-    fetchWrapper.GET,
-    systemURL +
-      '/aircon/set_control_info?pow=' +
-      POWER.ON +
-      '&mode=' +
-      MODE.FAN +
-      '&stemp=--&shum=--&f_rate=' +
-      rate +
-      '&f_dir=' +
-      FAN_DIRECTION.SWING,
-    {},
-  )
-    .then((response) => response.text())
-    .then((data) => {
-      if (data.search('OK') === -1) {
-        throw new Error('Daikin A/C system get failed with error');
-      }
-
-      log?.debug?.('%s Fan mode on "%s" with speed of "%s"', logPrefix, systemURL, rate);
-    })
-    // eslint-disable-next-line no-unused-vars
-    .catch((error) => {
-      log?.error?.('%s Failed to set fan mode on "%s"', logPrefix, systemURL);
-    });
-  lastMode = MODE.FAN;
-  lastFanMode = FAN_DIRECTION.SWING;
-  lastFanRate = rate;
-}
-
-async function off() {
-  // Power off with all mandatory parameters - if state is invalid, don't send
-  if (systemURL === undefined || lastTemperature === undefined) {
-    return;
-  }
-
-  await fetchWrapper(
-    fetchWrapper.GET,
-    systemURL +
-      '/aircon/set_control_info?pow=' +
-      POWER.OFF +
-      '&mode=' +
-      lastMode +
-      '&stemp=' +
-      lastTemperature +
-      '&shum=' +
-      (lastHumidity ?? 0) +
-      '&f_rate=' +
-      lastFanRate +
-      '&f_dir=' +
-      lastFanMode,
-    {},
-  )
-    .then((response) => response.text())
-    .then((data) => {
-      if (data.search('OK') === -1) {
-        throw new Error('Daikin A/C system get failed with error');
-      }
-
-      log?.debug?.('%s Turned off "%s"', logPrefix, systemURL);
-    })
-    // eslint-disable-next-line no-unused-vars
-    .catch((error) => {
-      log?.error?.('%s Failed to turn off "%s"', logPrefix, systemURL);
-    });
-}
-
-// Export functions for use in our dynamically loaded library
-//
-// Example usage:
-//
-// let test = await import('./daikinsystem.mjs');
-//
-// returned = test.default(loggerFunctions, ['http://x.x.x.x']);
-// or
-// returned = test.default(loggerFunctions, ['http://x.x.x.x', 'Logging Prefix']);
-// or with mode filtering
-// returned = test.default(loggerFunctions, ['http://x.x.x.x', 'Logging Prefix', 'modes=cool,fan,off']);
-//
-// When the optional "modes=" argument is provided, only the listed
-// functions will be returned to the caller.
 export default (logger, options) => {
+  // ESM caches the module, so mutable destination and command state must belong to each factory invocation.
+  let systemURL = undefined;
+  let log = undefined;
+  let logPrefix = '[External]';
+  let lastSettings = undefined; // Only parameters acknowledged by the unit are safe to reuse for power-off.
+
+  // The thermostat awaits external calls; this module only sends a command and retains accepted settings.
+  async function sendCommand(settings) {
+    if (systemURL === undefined || (settings === undefined && lastSettings === undefined)) {
+      return;
+    }
+
+    let control =
+      settings === undefined
+        ? { ...lastSettings, pow: POWER.OFF }
+        : { pow: POWER.ON, f_rate: FAN_RATE.AUTO, f_dir: FAN_DIRECTION.SWING, ...settings };
+    try {
+      let url = systemURL + '/aircon/set_control_info?' + new URLSearchParams(control).toString();
+      let response = await fetchWrapper(fetchWrapper.GET, url, {});
+      let data = await response.text();
+      if (data.split(',').some((field) => field.trim() === 'ret=OK') === false) {
+        throw new Error('Daikin A/C system command was rejected');
+      }
+      lastSettings = control;
+      log?.debug?.('%s Daikin command accepted on "%s": power=%s, mode=%s', logPrefix, systemURL, control.pow, control.mode);
+    } catch {
+      // Failed requests leave the last accepted settings intact for subsequent power-off.
+      log?.error?.('%s Failed to send Daikin command to "%s"', logPrefix, systemURL);
+    }
+  }
+
   // Validate the passed in logging object
-  if (Object.values(LOG_LEVELS).every((fn) => typeof logger?.[fn] === 'function')) {
+  if (Object.values(LOG_LEVELS).every((fn) => typeof logger?.[fn] === 'function') === true) {
     log = logger;
   }
 
@@ -308,9 +122,6 @@ export default (logger, options) => {
   if (typeof options[1] === 'string' && options[1] !== '') {
     logPrefix = '[' + options[1] + ']';
   }
-
-  // Reset system URL before validation so that if the module is reloaded with new options, the URL will be updated correctly
-  systemURL = undefined;
 
   // Validate and normalise the system URL passed in as the first argument
   if (typeof options[0] === 'string' && options[0] !== '') {
@@ -327,11 +138,15 @@ export default (logger, options) => {
   // Define the full set of supported control functions for this module
   // These may be filtered later based on the optional "modes=" argument
   let moduleFunctions = {
-    cool,
-    heat,
-    dehumidifier,
-    fan,
-    off,
+    cool: (temperature) => sendCommand({ mode: MODE.COOL, stemp: temperature, shum: 0 }),
+    heat: (temperature) => sendCommand({ mode: MODE.HEAT, stemp: temperature, shum: 0 }),
+    dehumidifier: (humidity) => sendCommand({ mode: MODE.DEHUMIDIFIER, stemp: 'M', shum: humidity }),
+    fan: (speed) => {
+      let rates = [FAN_RATE.AUTO, FAN_RATE.QUIET, FAN_RATE.LEVEL1, FAN_RATE.LEVEL2, FAN_RATE.LEVEL3, FAN_RATE.LEVEL4, FAN_RATE.LEVEL5];
+      let index = Math.min(Math.floor((speed / 100) * rates.length), rates.length - 1);
+      return sendCommand({ mode: MODE.FAN, stemp: '--', shum: '--', f_rate: rates[index] });
+    },
+    off: () => sendCommand(),
   };
 
   // Look for an optional "modes=" argument in the options list
@@ -351,7 +166,7 @@ export default (logger, options) => {
 
     if (allowedModes.size > 0) {
       moduleFunctions = Object.fromEntries(
-        Object.entries(moduleFunctions).filter(([mode, fn]) => allowedModes.has(mode) && typeof fn === 'function'),
+        Object.entries(moduleFunctions).filter(([mode, fn]) => allowedModes.has(mode) === true && typeof fn === 'function'),
       );
     }
   }

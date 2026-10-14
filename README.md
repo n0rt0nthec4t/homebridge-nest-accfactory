@@ -121,12 +121,12 @@ Sample config.json entries below
     "devices": [
         {
             "serialNumber": "XXXXXXXX",
-            "name", "XXXXX Device",
+            "name": "XXXXX Device",
             "exclude": false
         },
         {
             "serialNumber": "YYYYYYYY",
-            "name", "YYYYY Device",
+            "name": "YYYYY Device",
             "humiditySensor": true
         }
     ],
@@ -149,7 +149,7 @@ The following options are available in the `config.json` `"options"` object. The
 | ffmpegPath         | Path to the ffmpeg binary, directory containing ffmpeg, or command name available in system PATH | ffmpeg |
 | ffmpegTranscode    | Enable video transcoding for camera(s) and doorbell(s) (higher CPU usage)                    | false          |
 | logMotionEvents    | Enable logging of motion events for camera(s), doorbell(s) and Nest Protect device(s)        | true           |
-| maxStreams         | Maximum simultaneous live view streams per camera                                            | 2              |
+| maxStreams         | Maximum simultaneous live view streams per camera (integer from 1 to 4)                       | 2              |
 | supportDump        | Enable Support Dump logging of raw Nest and Google API data                                  | false          |
 
 #### devices
@@ -166,7 +166,6 @@ The `"name"` field is optional and is only used to help identify the entry in th
 
 | Name               | Description                                                                                  | Default |
 |--------------------|----------------------------------------------------------------------------------------------|---------|
-| chimeSwitch        | Enable a switch to control the indoor doorbell chime                                         | false   |
 | doorbellCooldown   | Time between doorbell press events                                                           | 60s     |
 | eveHistory         | Provide history in the EveHome application where applicable for this device                  | true    |
 | exclude            | Exclude this device                                                                          | false   |
@@ -178,10 +177,20 @@ The `"name"` field is optional and is only used to help identify the entry in th
 | hotwaterMaxTemp    | Maximum supported temperature for hot water heating                                          | 70c     |
 | hotwaterMinTemp    | Minimum supported temperature for hot water heating                                          | 30c     |
 | humiditySensor     | Enable a separate humidity sensor for thermostat(s) where supported                          | false   |
+| ignoreIndoorChime  | Allow HomeKit doorbell rings when the indoor chime is disabled                               | false   |
 | logMotionEvents    | Enable logging of motion events for camera(s), doorbell(s) and Nest Protect device(s)        | true    |
 | motionCooldown     | Time between detected motion events                                                          | 60s     |
 | name               | Optional label to help identify this device entry                                            |         |
 | serialNumber       | Device serial number this configuration applies to                                           |         |
+
+By default, HomeKit doorbell rings respect the indoor chime setting in Nest/Google Home: disabling the indoor
+chime also suppresses HomeKit rings. Set `ignoreIndoorChime` to `true` for the doorbell to receive HomeKit
+notifications and Apple TV doorbell alerts while the physical chime is disabled, for example when using
+Google Home speakers as your chime. This option does not change the physical chime setting.
+
+Quiet Time suppresses HomeKit doorbell rings regardless of `ignoreIndoorChime`. Configure the physical chime
+and Quiet Time in Nest/Google Home. The plugin no longer exposes a chime or Quiet Time switch; remove any
+old `chimeSwitch`, `quietTimeSwitch` and `quietTimeDuration` options from your device configuration.
 
 #### homes
 
@@ -257,6 +266,17 @@ This means recording is triggered by **general motion events only**, rather than
 ### Camera Streaming
 
 Camera live streaming and HKSV recording require a compatible **ffmpeg** binary with the features described in the section above.
+
+## Development and Verification
+
+- `npm test` runs the source test suites explicitly, including the three shared submodules. Generated `dist` files do not affect test discovery.
+- `npm run lint` checks source and tests without rewriting files.
+- `npm run check` runs lint, source tests, and the build.
+- `npm run test:coverage` reports coverage for loaded production source files and lists production modules absent from the measurements.
+
+Coverage percentages describe the measured file-backed modules, not the entire project. Tests that load transformed code through data URLs or extract individual methods can exercise behaviour without measuring the original source file. An omitted module is unmeasured, which does not necessarily mean it has no behavioural tests. Review the module inventory alongside percentages when assessing coverage gaps.
+
+Hardware discovery validates a short H264 encode before selecting acceleration and reuses that result across camera managers. Unit tests mock these probes; successful unit tests do not establish real encoder, live streaming, or HKSV behaviour on a particular host.
 
 ## Support Policy
 

@@ -4,8 +4,133 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { URL } from 'node:url';
 import test from 'node:test';
+import { DATA_SOURCE, DEVICE_TYPE } from '../../src/consts.js';
 
 let source = await readFile(new URL('../../src/system.js', import.meta.url), 'utf8');
+
+let processDataBegin = source.indexOf('  async #processData(uuid, changedData = undefined) {');
+let processDataEnd = source.indexOf('  async #set(', processDataBegin);
+assert.ok(processDataBegin !== -1 && processDataEnd > processDataBegin, 'Data processing method boundaries must exist');
+
+// Run discovery, source selection, UPDATE dispatch and SET-handler registration from the production method.
+// Device mapping and cloud writes are boundaries supplied by the test; no cloud or Homebridge instance is started.
+let createDataHost = new Function(
+  'HomeKitDevice',
+  'DATA_SOURCE',
+  'DEVICE_TYPE',
+  'deviceModules',
+  'rawData',
+  'getDeviceHKCategory',
+  'return new class {' +
+    '#connections = new Map([["nest-account", { name: "Nest" }], ["google-account", { name: "Google" }]]);' +
+    '#deviceModules = deviceModules; #rawData = rawData; #trackedDevices = new Map();' +
+    'config = { options: {} }; api = {}; cachedAccessories = []; writes = [];' +
+    'async #set(...args) { this.writes.push(args); } async #get() {}' +
+    'run() { return this.#processData("google-account"); }' +
+    'tracked() { return this.#trackedDevices.get("SERIAL"); }' +
+    source.slice(processDataBegin, processDataEnd) +
+    '};',
+);
+
+function setupDataProcessing(type) {
+  let accessory;
+  let handlers = new Map();
+  let updates = [];
+  class Device {
+    static TYPE = type;
+    static VERSION = 'test';
+    constructor(cached, api, data) {
+      this.uuid = 'stable-homekit-id';
+      this.deviceData = structuredClone(data);
+      accessory = this;
+    }
+
+    async add() {}
+  }
+  let mapped = {};
+  let modules = new Map([[type, { class: Device, processRawData: () => mapped }]]);
+  let raw = {
+    'device.nest': { source: DATA_SOURCE.NEST, connection: 'nest-account' },
+    DEVICE_GOOGLE: { source: DATA_SOURCE.GOOGLE, connection: 'google-account' },
+  };
+  let homeKit = {
+    SET: 'SET',
+    GET: 'GET',
+    UPDATE: 'UPDATE',
+    message: async (uuid, type, payload) => {
+      assert.equal(uuid, 'stable-homekit-id');
+      if (typeof payload === 'function') {
+        handlers.set(type, payload);
+      } else if (type === 'UPDATE') {
+        updates.push(payload);
+        accessory.deviceData = { ...accessory.deviceData, ...payload };
+      }
+    },
+  };
+  let host = createDataHost(homeKit, DATA_SOURCE, DEVICE_TYPE, modules, raw, () => 1);
+  return {
+    host,
+    updates,
+    update: async (source, temperature, full = false) => {
+      mapped.SERIAL = {
+        full,
+        data: {
+          serialNumber: 'SERIAL',
+          description: 'Device',
+          excluded: false,
+          nest_google_device_uuid: source === DATA_SOURCE.NEST ? 'device.nest' : 'DEVICE_GOOGLE',
+          current_temperature: temperature,
+        },
+      };
+      await host.run();
+    },
+    data: () => accessory.deviceData,
+    set: () => handlers.get('SET')({ uuid: accessory.deviceData.nest_google_device_uuid, target_temperature: 23 }),
+  };
+}
+
+for (let type of [DEVICE_TYPE.THERMOSTAT, DEVICE_TYPE.PROTECT, DEVICE_TYPE.TEMPSENSOR, DEVICE_TYPE.HOMEAWAY]) {
+  for (let initialSource of [DATA_SOURCE.NEST, DATA_SOURCE.GOOGLE]) {
+    test(type + ' retains Google state and SET routing after either source arrives first: ' + initialSource, async () => {
+      let flow = setupDataProcessing(type);
+      await flow.update(initialSource, 20, true);
+      await flow.update(DATA_SOURCE.GOOGLE, 21);
+      let before = flow.updates.length;
+      await flow.update(DATA_SOURCE.NEST, 19);
+      assert.equal(flow.updates.length, before, 'rejected Nest update must not reach the accessory');
+      assert.equal(flow.data().current_temperature, 21);
+      assert.equal(flow.data().nest_google_device_uuid, 'DEVICE_GOOGLE');
+      assert.equal(flow.host.tracked().source, DATA_SOURCE.GOOGLE);
+      assert.equal(flow.host.tracked().nest_google_device_uuid, 'DEVICE_GOOGLE');
+      await flow.set();
+      assert.equal(flow.host.writes[0][0], 'google-account');
+      assert.equal(flow.host.writes[0][1], 'DEVICE_GOOGLE');
+      // Same-source updates continue to change the accessory after a rejected transition.
+      await flow.update(DATA_SOURCE.GOOGLE, 22);
+      assert.equal(flow.data().current_temperature, 22);
+    });
+  }
+}
+
+for (let type of [DEVICE_TYPE.CAMERA, DEVICE_TYPE.DOORBELL, DEVICE_TYPE.FLOODLIGHT]) {
+  test(type + ' retains Nest fallback and can return to Google with consistent SET routing', async () => {
+    let flow = setupDataProcessing(type);
+    await flow.update(DATA_SOURCE.GOOGLE, 21, true);
+    await flow.update(DATA_SOURCE.NEST, 19);
+    assert.equal(flow.data().current_temperature, 19);
+    assert.equal(flow.host.tracked().source, DATA_SOURCE.NEST);
+    assert.equal(flow.host.tracked().nest_google_device_uuid, 'device.nest');
+    await flow.set();
+    assert.equal(flow.host.writes[0][0], 'nest-account');
+    assert.equal(flow.host.writes[0][1], 'device.nest');
+    await flow.update(DATA_SOURCE.GOOGLE, 22);
+    assert.equal(flow.host.tracked().source, DATA_SOURCE.GOOGLE);
+    assert.equal(flow.data().nest_google_device_uuid, 'DEVICE_GOOGLE');
+    await flow.set();
+    assert.equal(flow.host.writes[1][0], 'google-account');
+    assert.equal(flow.host.writes[1][1], 'DEVICE_GOOGLE');
+  });
+}
 
 let begin = source.indexOf('  async #observeGoogleAPI(uuid) {');
 let end = source.indexOf('  async #processData(', begin);

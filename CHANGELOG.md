@@ -19,6 +19,7 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - FFmpeg must still include the video and audio codecs required by the plugin
 - Homebridge 2 users must update to **Homebridge 2.4.0 or newer**
 - Added Node.js 26 beta support when using Homebridge 2.4.0 or newer; Homebridge 1 users should continue using Node.js 22 or 24
+- Removed the HomeKit chime switch; manage the chime in Nest/Google Home. Set `ignoreIndoorChime` to `true` if you want HomeKit doorbell alerts while the indoor chime is off. Quiet Time still silences HomeKit alerts.
 
 ### 🛠️ Fixes
 

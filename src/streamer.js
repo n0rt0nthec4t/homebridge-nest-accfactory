@@ -67,7 +67,7 @@
 // - MediaTimeline owns retained buffer/index stats
 // - Streamer owns per-output write/drop/playout stats
 //
-// Code version 2026.09.29
+// Code version 2026.10.10
 // Mark Hulskamp
 'use strict';
 
@@ -220,7 +220,7 @@ export default class Streamer {
   }
 
   constructor(uuid, deviceData, options = {}) {
-    if (Object.values(LOG_LEVELS).every((fn) => typeof options?.log?.[fn] === 'function')) {
+    if (Object.values(LOG_LEVELS).every((fn) => typeof options?.log?.[fn] === 'function') === true) {
       this.log = options.log;
     }
 

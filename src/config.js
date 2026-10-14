@@ -11,7 +11,6 @@
 // - Process global and per-device runtime options
 // - Configure logging behaviour (including debug mode)
 // - Probe and validate FFmpeg binary and feature support
-// - Build connection objects for Nest and Google accounts
 //
 // Features:
 // - Automatic migration of legacy Nest/Google account configuration
@@ -20,7 +19,6 @@
 // - FFmpeg capability detection (version, encoders, decoders, hwaccel)
 // - Debug logging override with coloured output
 // - Optional automatic persistence of migrated config.json
-// - Connection builder for multi-account support with retry metadata
 //
 // Notes:
 // - processConfig() mutates the provided config object in place
@@ -28,7 +26,7 @@
 // - FFmpeg validation determines availability of camera streaming and HKSV recording
 // - Used during plugin startup before any device initialisation
 //
-// Code version 2026.05.11
+// Code version 2026.10.14
 // Mark Hulskamp
 'use strict';
 
@@ -90,7 +88,9 @@ function processConfig(config, log, api) {
     }
   }
 
-  let options = (config.options = typeof config?.options === 'object' ? config.options : {});
+  // Optional JSON containers may be null or malformed; apply defaults only to a usable options object.
+  let options = (config.options =
+    typeof config?.options === 'object' && config.options !== null && Array.isArray(config.options) === false ? config.options : {});
 
   options.eveHistory = config.options?.eveHistory !== false; // Default to true if not explicitly set to false
   options.exclude = config.options?.exclude === true; // Default to false if not explicitly set to true
@@ -119,13 +119,13 @@ function processConfig(config, log, api) {
 
   // Get configuration for max number of concurrent 'live view' streams.
   options.maxStreams =
-    Number.isFinite(Number(config.options?.maxStreams)) === true &&
-    Number(config.options.maxStreams) > 1 &&
+    Number.isInteger(Number(config.options?.maxStreams)) === true &&
+    Number(config.options.maxStreams) >= 1 &&
     Number(config.options.maxStreams) <= 4
       ? Number(config.options.maxStreams)
       : 2;
 
-  // Check if an ffmpeg binary exists via a specific path in configuration OR /usr/local/bin
+  // Resolve the configured FFmpeg executable, or use the platform search locations and PATH.
   options.ffmpeg = {
     binary: undefined,
     valid: false,
@@ -266,6 +266,7 @@ function persistMigratedConfig(config, log, api) {
     let tempPath = configPath + '.tmp';
 
     // Load existing Homebridge config
+    let configMode = fs.statSync(configPath).mode & 0o777;
     let rawConfig = fs.readFileSync(configPath, 'utf8');
     let jsonConfig = JSON.parse(rawConfig);
     let matchingPlatforms = [];
@@ -322,16 +323,29 @@ function persistMigratedConfig(config, log, api) {
     delete jsonConfig.platforms[matchingPlatforms[0]].nest;
     delete jsonConfig.platforms[matchingPlatforms[0]].google;
 
-    // Backup original config before modifying
-    fs.writeFileSync(backupPath, rawConfig, 'utf8');
+    // Creation modes do not tighten existing files. Secure the open file before truncating or writing credentials.
+    // Opening without O_TRUNC also preserves an existing backup if setting its permissions fails.
+    const writeProtectedConfig = (filePath, contents, mode) => {
+      let descriptor = fs.openSync(filePath, fs.constants.O_WRONLY | fs.constants.O_CREAT, 0o600);
+      try {
+        fs.fchmodSync(descriptor, mode);
+        fs.ftruncateSync(descriptor, 0);
+        fs.writeFileSync(descriptor, contents, 'utf8');
+      } finally {
+        fs.closeSync(descriptor);
+      }
+    };
+
+    // Keep backups owner-only, without granting owner permissions absent from the original.
+    writeProtectedConfig(backupPath, rawConfig, configMode & 0o600);
 
     // Verify backup was created before touching original config
     if (fs.existsSync(backupPath) !== true) {
       throw new Error('unable to verify config backup was created');
     }
 
-    // Write updated config to temp file first (safer write)
-    fs.writeFileSync(tempPath, JSON.stringify(jsonConfig, null, 2), 'utf8');
+    // Rename transfers the temporary file's permissions, so preserve the original configuration's mode.
+    writeProtectedConfig(tempPath, JSON.stringify(jsonConfig, null, 2), configMode);
 
     // Atomically replace original config
     fs.renameSync(tempPath, configPath);

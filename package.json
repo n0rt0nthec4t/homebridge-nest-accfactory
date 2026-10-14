@@ -2,7 +2,7 @@
     "name": "homebridge-nest-accfactory",
     "displayName": "Nest Accfactory",
     "type": "module",
-    "version": "0.4.4-beta.6",
+    "version": "0.4.4-beta.7",
     "description": "Homebridge support for Nest/Google devices including HomeKit Secure Video (HKSV) support for doorbells and cameras",
     "author": "n0rt0nthec4t",
     "license": "Apache-2.0",
@@ -50,10 +50,10 @@
         "clean": "rimraf dist",
         "format": "prettier --write \"{src,test}/**/*.{js,mjs}\" && eslint --fix \"src/**/*.{js,mjs}\" \"test/**/*.js\"",
         "lint": "eslint \"src/**/*.{js,mjs}\" \"test/**/*.js\" --max-warnings=20",
-        "test": "node --test",
-        "test:coverage": "node --test --experimental-test-coverage",
+        "test": "node --test \"test/unit/*.test.js\" \"src/HomeKitDevice/*.test.js\" \"src/HomeKitHistory/*.test.js\" \"src/fetchWrapper/*.test.js\"",
+        "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=\"src/**\" --test-coverage-exclude=\"**/*.test.js\" --test-reporter=spec --test-reporter=./test/coverage-reporter.js --test-reporter-destination=stdout --test-reporter-destination=stdout \"test/unit/*.test.js\" \"src/HomeKitDevice/*.test.js\" \"src/HomeKitHistory/*.test.js\" \"src/fetchWrapper/*.test.js\"",
         "check": "npm run lint && npm test && npm run build",
-        "build": "npm run clean && copyfiles -u 1 src/*.js dist && copyfiles -u 2 src/HomeKitDevice/HomeKitDevice.js dist && copyfiles -u 2 src/HomeKitHistory/*.js dist && copyfiles -u 2 src/fetchWrapper/fetchWrapper.js dist && copyfiles -u 1 src/res/*.h264 dist && copyfiles -u 1 src/res/*.jpg dist && copyfiles -u 1 'src/protobuf/**/*.proto' dist && copyfiles -u 1 src/plugins/*.js dist && copyfiles -u 1 src/plugins/*.mjs dist",
+        "build": "npm run clean && copyfiles -u 1 src/*.js dist && copyfiles -u 2 src/HomeKitDevice/HomeKitDevice.js dist && copyfiles -u 2 src/HomeKitHistory/HomeKitHistory.js dist && copyfiles -u 2 src/fetchWrapper/fetchWrapper.js dist && copyfiles -u 1 src/res/*.h264 dist && copyfiles -u 1 src/res/*.jpg dist && copyfiles -u 1 'src/protobuf/**/*.proto' dist && copyfiles -u 1 src/plugins/*.js dist && copyfiles -u 1 src/plugins/*.mjs dist",
         "prepublishOnly": "npm run format && npm run lint && npm test && npm run build"
     },
     "devDependencies": {

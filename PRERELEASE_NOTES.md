@@ -4,6 +4,33 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.4-beta.7 (2026/10/xx)
+
+### Changed
+
+- Moved five-minute weather polling into the backend so network requests run outside the accessory lifecycle queue; weather readings continue to arrive through UPDATE messages
+
+- Added the per-device `ignoreIndoorChime` option (default `false`) to allow HomeKit doorbell notifications when the physical indoor chime is disabled
+- HomeKit rings continue to respect the indoor chime setting by default; Quiet Time suppresses rings regardless of `ignoreIndoorChime`
+- Removed the optional `chimeSwitch` and its cached HomeKit service; configure the physical chime and Quiet Time in Nest/Google Home and remove `chimeSwitch` from the device configuration
+- Centralised validated FFmpeg encoder settings in one configuration and separated hardware discovery from validation and caching; retained the existing capability getters and feature flags
+- Await external thermostat controls in order before completing device updates; removed the separate Daikin command queue
+
+### Fixed
+
+- Restored camera-event and weather polling after the HomeKitDevice queue update, allowing timer hooks to read and publish device state
+- Aligned Quiet Time handling in the Nest API with the Google API
+- Require a bounded H264 encoding check before selecting hardware acceleration, reuse validation across cameras, and retain software encoding when hardware validation fails
+- Apply encoder-specific device setup, pixel formats and presets consistently to live streaming and HKSV recording
+- Preserve the automatic humidifier/dehumidifier mode when both capabilities are available, including subsequent capability updates
+- Keep external Daikin destinations, logging and command state independent for each thermostat
+- Preserve Daikin accepted settings after failed commands and allow fan or dehumidifier operation to be switched off
+- Apply default options when the configuration options container is null or an invalid type
+- Preserve configuration file permissions during legacy migration and restrict backup access to the owner before writing credentials
+- Prevent rejected Nest updates from overwriting Google-selected accessory state and command routing, while retaining camera source fallback
+- Default to two simultaneous live viewers per camera; honour integer `maxStreams` counts from one to four consistently with the Homebridge UI, independently of HKSV recording
+- Exclude history tests and lint configuration from the packaged runtime, keep test discovery independent of generated files, and report measured and omitted production modules alongside coverage percentages
+
 ## v0.4.4-beta.6 (2026/10/05)
 
 ### Changed

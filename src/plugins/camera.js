@@ -88,7 +88,7 @@ const V4L2_RECORDING_CAPTURE_BUFFERS = 32;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.10.05'; // Code version
+  static VERSION = '2026.10.14'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -705,9 +705,11 @@ export default class NestCamera extends HomeKitDevice {
       this.controller?.recordingManagement?.recordingManagementService?.getCharacteristic(this.hap.Characteristic.RecordingAudioActive)
         ?.value === this.hap.Characteristic.RecordingAudioActive.ENABLE;
 
+    let encoding = this.ffmpeg.getH264EncoderOptions(this.deviceData?.ffmpeg?.hwaccel === true);
     let commandLine = [
       '-hide_banner',
       '-nostats',
+      ...encoding.inputArguments,
       '-fflags',
       '+discardcorrupt+genpts',
       '-avoid_negative_ts',
@@ -737,28 +739,26 @@ export default class NestCamera extends HomeKitDevice {
       '0:v:0',
 
       '-codec:v',
-      this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec !== undefined ? this.ffmpeg.hardwareH264Codec : 'libx264',
+      encoding.codec,
 
       // Extra V4L2 capture buffers prevent the Raspberry Pi encoder from stalling during HKSV recordings.
-      ...(this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_v4l2m2m'
-        ? ['-num_capture_buffers', V4L2_RECORDING_CAPTURE_BUFFERS.toString()]
-        : []),
+      ...(encoding.codec === 'h264_v4l2m2m' ? ['-num_capture_buffers', V4L2_RECORDING_CAPTURE_BUFFERS.toString()] : []),
 
       '-profile:v',
       this.#recordingConfig.videoCodec.parameters.profile === this.hap.H264Profile.HIGH
-        ? this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_v4l2m2m'
+        ? encoding.codec === 'h264_v4l2m2m'
           ? '100'
           : 'high'
         : this.#recordingConfig.videoCodec.parameters.profile === this.hap.H264Profile.MAIN
-          ? this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_v4l2m2m'
+          ? encoding.codec === 'h264_v4l2m2m'
             ? '77'
             : 'main'
-          : this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_v4l2m2m'
+          : encoding.codec === 'h264_v4l2m2m'
             ? '66'
             : 'baseline',
 
       // V4L2 uses numeric profiles and does not apply an explicit H264 level.
-      ...(this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_v4l2m2m'
+      ...(encoding.codec === 'h264_v4l2m2m'
         ? ['-bf:v', '0']
         : [
             '-level:v',
@@ -769,19 +769,14 @@ export default class NestCamera extends HomeKitDevice {
                 : '3.1',
           ]),
 
-      ...(this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_videotoolbox' ? ['-realtime', 'true'] : []),
+      ...(encoding.codec === 'h264_videotoolbox' ? ['-realtime', 'true'] : []),
 
-      ...(this.deviceData?.ffmpeg?.hwaccel !== true ||
-      ['libx264', 'h264_nvenc', 'h264_qsv'].includes(this.ffmpeg?.hardwareH264Codec || '') === true
-        ? ['-preset', 'veryfast', '-bf', '0']
-        : []),
+      ...(encoding.preset !== undefined ? ['-preset', encoding.preset, '-bf', '0'] : []),
 
-      ...(this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_nvenc'
-        ? ['-tune', 'll', '-zerolatency', '1']
-        : []),
+      ...(encoding.codec === 'h264_nvenc' ? ['-tune', 'll', '-zerolatency', '1'] : []),
 
       '-filter:v',
-      'fps=fps=' + this.#recordingConfig.videoCodec.resolution[2] + ',format=yuv420p',
+      'fps=fps=' + this.#recordingConfig.videoCodec.resolution[2] + ',' + encoding.filter,
       '-fps_mode',
       'cfr',
       '-g:v',
@@ -1178,9 +1173,11 @@ export default class NestCamera extends HomeKitDevice {
       }
 
       // Build our ffmpeg command string for the liveview video/audio stream
+      let encoding = this.ffmpeg.getH264EncoderOptions(this.deviceData?.ffmpeg?.hwaccel === true);
       let commandLine = [
         '-hide_banner',
         '-nostats',
+        ...(this.deviceData?.ffmpeg?.transcode === true ? encoding.inputArguments : []),
 
         // Raw stream copy mode benefits from wallclock timestamps for stable live audio pacing
         ...(this.deviceData?.ffmpeg?.transcode === true ? [] : ['-use_wallclock_as_timestamps', '1']),
@@ -1216,25 +1213,23 @@ export default class NestCamera extends HomeKitDevice {
         ...(this.deviceData?.ffmpeg?.transcode === true
           ? [
               '-codec:v',
-              this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec !== undefined
-                ? this.ffmpeg.hardwareH264Codec
-                : 'libx264',
+              encoding.codec,
 
               '-profile:v',
               request.video.profile === this.hap.H264Profile.HIGH
-                ? this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_v4l2m2m'
+                ? encoding.codec === 'h264_v4l2m2m'
                   ? '100'
                   : 'high'
                 : request.video.profile === this.hap.H264Profile.MAIN
-                  ? this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_v4l2m2m'
+                  ? encoding.codec === 'h264_v4l2m2m'
                     ? '77'
                     : 'main'
-                  : this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_v4l2m2m'
+                  : encoding.codec === 'h264_v4l2m2m'
                     ? '66'
                     : 'baseline',
 
               // V4L2 uses numeric profiles and does not apply an explicit H264 level.
-              ...(this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_v4l2m2m'
+              ...(encoding.codec === 'h264_v4l2m2m'
                 ? ['-bf:v', '0']
                 : [
                     '-level:v',
@@ -1245,21 +1240,14 @@ export default class NestCamera extends HomeKitDevice {
                         : '3.1',
                   ]),
 
-              ...(this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_videotoolbox'
-                ? ['-realtime', 'true']
-                : []),
+              ...(encoding.codec === 'h264_videotoolbox' ? ['-realtime', 'true'] : []),
 
-              ...(this.deviceData?.ffmpeg?.hwaccel !== true ||
-              ['libx264', 'h264_nvenc', 'h264_qsv'].includes(this.ffmpeg?.hardwareH264Codec || '') === true
-                ? ['-preset', 'veryfast', '-bf', '0']
-                : []),
+              ...(encoding.preset !== undefined ? ['-preset', encoding.preset, '-bf', '0'] : []),
 
-              ...(this.deviceData?.ffmpeg?.hwaccel === true && this.ffmpeg?.hardwareH264Codec === 'h264_nvenc'
-                ? ['-tune', 'll', '-zerolatency', '1']
-                : []),
+              ...(encoding.codec === 'h264_nvenc' ? ['-tune', 'll', '-zerolatency', '1'] : []),
 
               '-filter:v',
-              'format=yuv420p',
+              encoding.filter,
               '-fps_mode',
               'passthrough',
               '-g:v',
@@ -1401,10 +1389,8 @@ export default class NestCamera extends HomeKitDevice {
       if (typeof talkback?.write === 'function') {
         // Two-way audio support if enabled and codecs available
         if (
-          ((this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.SPEEX &&
-            this.ffmpeg?.supportsEncoder('libspeex') === true) ||
-            (this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.OPUS &&
-              this.ffmpeg?.supportsEncoder('libopus') === true)) &&
+          ((this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.SPEEX && this.ffmpeg?.supportsEncoder('libspeex') === true) ||
+            (this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.OPUS && this.ffmpeg?.supportsEncoder('libopus') === true)) &&
           this.ffmpeg?.supportsEncoder('libfdk_aac') === true &&
           this.deviceData.audio_enabled === true &&
           this.deviceData.has_speaker === true &&
@@ -1686,8 +1672,7 @@ export default class NestCamera extends HomeKitDevice {
               audio: {
                 twoWayAudio:
                   this.ffmpeg?.supportsEncoder('libfdk_aac') === true &&
-                  (this.ffmpeg?.supportsEncoder('libspeex') === true ||
-                    this.ffmpeg?.supportsEncoder('libopus') === true) &&
+                  (this.ffmpeg?.supportsEncoder('libspeex') === true || this.ffmpeg?.supportsEncoder('libopus') === true) &&
                   this.deviceData.has_speaker === true &&
                   this.deviceData.has_microphone === true,
                 codecs: [
@@ -1947,12 +1932,11 @@ const CAMERA_FIELD_MAP = {
                             ? 'Cam IQ Outdoor (1st gen, wired)'
                             : typeName === 'nest.resource.NestHelloResource'
                               ? 'Doorbell (1st gen, wired)'
-                              : objectKey.startsWith('DEVICE_') === true &&
-                                  PROTOBUF_RESOURCES.FLOODLIGHT.includes(typeName) === true
+                              : objectKey.startsWith('DEVICE_') === true && PROTOBUF_RESOURCES.FLOODLIGHT.includes(typeName) === true
                                 ? Object.values(raw?.value?.related_resources?.relatedResources ?? {}).some(
                                   (resource) =>
                                     resource?.resourceId?.resourceId?.startsWith('SERVICE_') === true &&
-                                    PROTOBUF_RESOURCES.FLOODLIGHT.includes(resource?.resourceTypeName?.resourceName) === true,
+                                      PROTOBUF_RESOURCES.FLOODLIGHT.includes(resource?.resourceTypeName?.resourceName) === true,
                                 ) === true
                                   ? 'Cam with Floodlight (1st gen, wired)'
                                   : 'Cam (2nd gen, battery)'
@@ -2144,20 +2128,6 @@ const CAMERA_FIELD_MAP = {
     },
   },
 
-  quiet_time_enabled: {
-    google: {
-      fields: ['quiet_time_settings'],
-      translate: ({ raw }) =>
-        Number.isFinite(Number(raw?.value?.quiet_time_settings?.quietTimeEnds?.seconds)) === true &&
-        Number(raw.value.quiet_time_settings.quietTimeEnds.seconds) !== 0 &&
-        Math.floor(Date.now() / 1000) < Number(raw.value.quiet_time_settings.quietTimeEnds.seconds),
-    },
-    nest: {
-      fields: [],
-      translate: () => false,
-    },
-  },
-
   camera_type: {
     google: {
       fields: ['device_identity'],
@@ -2313,7 +2283,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
         deviceOptions?.eveHistory !== undefined ? deviceOptions.eveHistory === true : config.options?.eveHistory === true;
       tempDevice.doorbellCooldown = parseDurationToSeconds(deviceOptions?.doorbellCooldown, { defaultValue: 60, min: 0, max: 300 });
       tempDevice.motionCooldown = parseDurationToSeconds(deviceOptions?.motionCooldown, { defaultValue: 60, min: 0, max: 300 });
-      tempDevice.chimeSwitch = deviceOptions?.chimeSwitch === true;
+      tempDevice.ignoreIndoorChime = deviceOptions?.ignoreIndoorChime === true;
       tempDevice.ffmpeg = {
         binary: config.options.ffmpeg.binary,
         valid: config.options.ffmpeg.valid === true,
@@ -2325,7 +2295,8 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
         transcode:
           (deviceOptions?.ffmpegTranscode === true || config.options?.ffmpegTranscode === true) && config.options.ffmpeg.valid === true,
       };
-      tempDevice.maxStreams = config.options?.hksv === true || deviceOptions?.hksv === true ? 1 : 2;
+      // Live-view capacity comes from normalized configuration, independently of HKSV recording.
+      tempDevice.maxStreams = config.options?.maxStreams ?? 2;
       tempDevice.logMotionEvents =
         deviceOptions?.logMotionEvents !== undefined
           ? deviceOptions.logMotionEvents === true

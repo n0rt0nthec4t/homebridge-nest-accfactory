@@ -1,5 +1,5 @@
 // Verify FFmpeg hardware discovery, capability queries, diagnostics, and session lifecycle.
-// Code version 2026.10.05
+// Code version 2026.10.10
 import assert from 'node:assert/strict';
 import child_process from 'node:child_process';
 import { Buffer } from 'node:buffer';
@@ -15,45 +15,40 @@ import FFmpeg from '../../src/ffmpeg.js';
 
 const spawnProcess = child_process.spawn;
 
-test('Raspberry Pi hardware selection uses accessible encoder nodes without extra FFmpeg calls', async (t) => {
+test('hardware selection requires encoded output and preserves Pi encoder-node discovery', async (t) => {
   let cases = [
-    { name: 'encoder at video11 without video0', nodes: { video11: 'bcm2835-codec-encode' }, expected: true },
-    { name: 'renumbered encoder', nodes: { video31: 'bcm2835-codec-encode' }, expected: true },
-    { name: 'camera and decoder only', nodes: { video0: 'unicam', video10: 'bcm2835-codec-decode' }, expected: false },
-    { name: 'image encoder only', nodes: { video0: 'bcm2835-codec-encode_image' }, expected: false },
-    { name: 'encoder inaccessible', nodes: { video11: 'bcm2835-codec-encode' }, denied: true, expected: false },
-    { name: 'missing sysfs on Pi', nodes: { video0: 'unicam' }, missingSysfs: true, expected: false },
-    { name: 'missing encoder in FFmpeg', nodes: { video11: 'bcm2835-codec-encode' }, compiled: false, expected: false },
-    { name: 'generic Linux retains existing check', nodes: { video0: 'generic' }, model: 'Generic board', expected: true },
-    { name: 'missing model retains existing check', nodes: { video0: 'generic' }, model: null, expected: true },
-    { name: 'Pi DRM nodes do not outrank V4L2', nodes: { video11: 'bcm2835-codec-encode' }, drm: true, expected: true },
-    { name: 'Pi DRM alone does not enable acceleration', nodes: {}, drm: true, expected: false },
-    { name: 'Pi missing sysfs does not fall back to DRM', nodes: {}, drm: true, missingSysfs: true, expected: false },
-    { name: 'generic Linux retains DRM priority', nodes: {}, drm: true, model: 'Generic board', codec: 'h264_nvenc' },
+    { name: 'encoder at video11 without video0', nodes: { video11: 'bcm2835-codec-encode' }, codec: 'h264_v4l2m2m' },
+    { name: 'renumbered encoder', nodes: { video31: 'bcm2835-codec-encode' }, codec: 'h264_v4l2m2m' },
+    { name: 'camera and decoder only', nodes: { video0: 'unicam', video10: 'bcm2835-codec-decode' } },
+    { name: 'image encoder only', nodes: { video0: 'bcm2835-codec-encode_image' } },
+    { name: 'encoder inaccessible', nodes: { video11: 'bcm2835-codec-encode' }, denied: true },
+    { name: 'missing sysfs on Pi', nodes: {}, missingSysfs: true },
+    { name: 'missing compiled encoder', nodes: { video11: 'bcm2835-codec-encode' }, compiled: false },
+    { name: 'generic Linux encoder metadata', nodes: { video31: 'generic-encoder' }, model: 'Generic', codec: 'h264_v4l2m2m' },
+    { name: 'generic camera is not encoder evidence', nodes: { video0: 'generic-camera' }, model: 'Generic' },
+    { name: 'missing model still identifies an encoder', nodes: { video31: 'generic-encoder' }, model: null, codec: 'h264_v4l2m2m' },
+    { name: 'Pi DRM never outranks the encoder', nodes: { video11: 'bcm2835-codec-encode' }, drm: true, codec: 'h264_v4l2m2m' },
+    { name: 'Pi DRM alone does not enable acceleration', nodes: {}, drm: true },
+    { name: 'generic DRM does not prove NVIDIA or QSV encoding', nodes: {}, drm: true, model: 'Generic', codec: 'h264_vaapi' },
+    { name: 'NVIDIA driver produces encoded output', nodes: {}, drm: true, model: 'Generic', codec: 'h264_nvenc' },
+    { name: 'driver encode failure keeps software available', nodes: { video11: 'bcm2835-codec-encode' }, failure: true },
   ];
-
   for (let scenario of cases) {
     await t.test(scenario.name, (t) => {
       t.mock.method(os, 'platform', () => 'linux');
-      t.mock.method(
-        fs,
-        'existsSync',
-        (file) =>
-          (file.startsWith('/dev/video') && file.slice(5) in scenario.nodes) || (scenario.drm === true && file.startsWith('/dev/dri')),
-      );
       t.mock.method(fs, 'readFileSync', (file) => {
         if (file === '/sys/firmware/devicetree/base/model' && scenario.model !== null) {
-          return scenario.model ?? 'Raspberry Pi 4 Model B Rev 1.4\0';
+          return scenario.model ?? 'Raspberry Pi 4 Model B';
         }
         let device = /^\/sys\/class\/video4linux\/(video\d+)\/name$/.exec(file)?.[1];
         if (device in scenario.nodes) {
-          return scenario.nodes[device] + '\n';
+          return scenario.nodes[device];
         }
         throw new Error('Missing metadata');
       });
       t.mock.method(fs, 'readdirSync', (file) => {
         if (file === '/dev/dri') {
-          return ['card0', 'renderD128'];
+          return scenario.drm === true ? ['card0', 'renderD129'] : [];
         }
         assert.equal(file, '/sys/class/video4linux');
         if (scenario.missingSysfs === true) {
@@ -63,37 +58,150 @@ test('Raspberry Pi hardware selection uses accessible encoder nodes without extr
       });
       t.mock.method(fs, 'accessSync', (file, mode) => {
         assert.equal(mode, fs.constants.R_OK | fs.constants.W_OK);
-        if (scenario.denied === true || !(file.slice(5) in scenario.nodes)) {
+        if (scenario.denied === true || (file.startsWith('/dev/dri/') === false && !(file.slice(5) in scenario.nodes))) {
           throw new Error('Device unavailable');
         }
       });
-      let spawn = t.mock.method(child_process, 'spawnSync', (binary, args) => {
-        assert.equal(binary, 'ffmpeg');
-        return {
-          status: 0,
-          stdout:
-            args[0] === '-version'
-              ? 'ffmpeg version 8.0 '
-              : scenario.compiled === false
-                ? ''
-                : ' V..... h264_v4l2m2m' + (scenario.drm === true ? '\n V..... h264_nvenc\n V..... h264_qsv\n V..... h264_vaapi' : ''),
-        };
-      });
-
-      let ffmpeg = new FFmpeg('ffmpeg');
-      assert.equal(ffmpeg.hardwareH264Codec, scenario.codec ?? (scenario.expected === true ? 'h264_v4l2m2m' : undefined));
-      assert.equal(ffmpeg.supportsHardwareH264, scenario.expected === true || scenario.codec !== undefined);
-      if (scenario.drm === true && scenario.model === undefined) {
-        for (let codec of ['h264_nvenc', 'h264_qsv', 'h264_vaapi']) {
-          assert.equal(ffmpeg.features[codec], false);
+      let probe = t.mock.method(child_process, 'spawnSync', (binary, args, options) => {
+        if (args[0] === '-version') {
+          return { status: 0, stdout: 'ffmpeg version 8.0 ' };
         }
+        if (args[0] === '-encoders') {
+          return {
+            status: 0,
+            stdout:
+              ' V..... libx264' +
+              (scenario.compiled === false
+                ? ''
+                : '\n V..... h264_v4l2m2m' + (scenario.drm === true ? '\n V..... h264_nvenc\n V..... h264_qsv\n V..... h264_vaapi' : '')),
+          };
+        }
+        if (args.includes('-frames:v') === true) {
+          assert.ok(options.timeout > 0 && options.timeout <= 2000);
+          assert.equal(options.killSignal, 'SIGKILL');
+          let codec = args[args.indexOf('-codec:v') + 1];
+          return { status: scenario.failure === true || codec !== scenario.codec ? 1 : 0, stdout: Buffer.from([0, 0, 0, 1, 0x67]) };
+        }
+        return { status: 0, stdout: '' };
+      });
+      let binary = 'ffmpeg-' + scenario.name.replace(/ /g, '-');
+      let ffmpeg = new FFmpeg(binary);
+      assert.equal(ffmpeg.hardwareH264Codec, scenario.codec);
+      assert.equal(ffmpeg.supportsHardwareH264, scenario.codec !== undefined);
+      assert.equal(ffmpeg.features.hardwareH264Codec, scenario.codec);
+      for (let codec of ['h264_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_v4l2m2m', 'h264_videotoolbox']) {
+        assert.equal(ffmpeg.features[codec], scenario.codec === codec);
       }
-      assert.deepEqual(
-        spawn.mock.calls.map((call) => call.arguments[1]),
-        [['-version'], ['-encoders'], ['-decoders'], ['-muxers'], ['-demuxers']],
-      );
+      assert.equal(ffmpeg.supportsEncoder('libx264'), true);
+      assert.equal(ffmpeg.getH264EncoderOptions(false).codec, 'libx264');
+      let original = ffmpeg.getH264EncoderOptions(true);
+      let changed = ffmpeg.getH264EncoderOptions(true);
+      changed.codec = 'changed';
+      changed.filter = 'changed';
+      changed.preset = 'changed';
+      changed.inputArguments.push('changed');
+      assert.deepEqual(ffmpeg.getH264EncoderOptions(true), original, 'Callers cannot mutate the selected configuration');
+      if (scenario.codec === 'h264_vaapi') {
+        let encoding = ffmpeg.getH264EncoderOptions(true);
+        assert.deepEqual(encoding.inputArguments, ['-vaapi_device', '/dev/dri/renderD129']);
+        assert.equal(encoding.filter, 'format=nv12,hwupload');
+        encoding.inputArguments.push('mutated');
+        assert.equal(ffmpeg.getH264EncoderOptions(true).inputArguments.length, 2);
+      }
+      if (scenario.codec === undefined) {
+        assert.equal(ffmpeg.getH264EncoderOptions(true).codec, 'libx264');
+      }
+      let calls = probe.mock.callCount();
+      let repeated = new FFmpeg(binary);
+      assert.equal(repeated.hardwareH264Codec, scenario.codec);
+      assert.deepEqual(repeated.getH264EncoderOptions(true), original, 'Returned options cannot mutate another camera manager');
+      assert.equal(probe.mock.callCount(), calls + 5, 'Camera managers must reuse hardware validation');
     });
   }
+});
+
+for (let platform of ['darwin', 'win32']) {
+  for (let outcome of ['success', 'driver failure', 'timeout', 'empty output']) {
+    test(platform + ' hardware validation: ' + outcome, (t) => {
+      t.mock.method(os, 'platform', () => platform);
+      let codec = platform === 'darwin' ? 'h264_videotoolbox' : 'h264_qsv';
+      t.mock.method(child_process, 'spawnSync', (binary, args) => {
+        if (args[0] === '-version') {
+          return { status: 0, stdout: 'ffmpeg version 8.0 ' };
+        }
+        if (args[0] === '-encoders') {
+          return { status: 0, stdout: ' V..... libx264\n V..... ' + codec };
+        }
+        if (args.includes('-frames:v') === true) {
+          return {
+            status: outcome === 'driver failure' ? 1 : 0,
+            error: outcome === 'timeout' ? new Error('ETIMEDOUT') : undefined,
+            stdout: outcome === 'empty output' ? Buffer.alloc(0) : Buffer.from([0, 0, 0, 1, 0x67]),
+          };
+        }
+        return { status: 0, stdout: '' };
+      });
+      let ffmpeg = new FFmpeg('ffmpeg-' + platform + '-' + outcome.replace(/ /g, '-'));
+      assert.equal(ffmpeg.hardwareH264Codec, outcome === 'success' ? codec : undefined);
+      assert.equal(ffmpeg.getH264EncoderOptions(true).codec, outcome === 'success' ? codec : 'libx264');
+    });
+  }
+}
+
+test('hardware validation cache is invalidated when the executable changes', (t) => {
+  t.mock.method(os, 'platform', () => 'darwin');
+  let revision = 1;
+  t.mock.method(fs, 'statSync', () => ({ size: revision, mtimeMs: revision, ino: 1 }));
+  let validations = 0;
+  t.mock.method(child_process, 'spawnSync', (binary, args) => {
+    if (args[0] === '-version') {
+      return { status: 0, stdout: 'ffmpeg version 8.0 ' };
+    }
+    if (args[0] === '-encoders') {
+      return { status: 0, stdout: ' V..... libx264\n V..... h264_videotoolbox' };
+    }
+    if (args.includes('-frames:v') === true) {
+      validations++;
+      return { status: revision === 1 ? 0 : 1, stdout: Buffer.from([0, 0, 0, 1, 0x67]) };
+    }
+    return { status: 0, stdout: '' };
+  });
+  assert.equal(new FFmpeg('ffmpeg-cache-revision').supportsHardwareH264, true);
+  assert.equal(new FFmpeg('ffmpeg-cache-revision').supportsHardwareH264, true);
+  assert.equal(validations, 1);
+  revision = 2;
+  assert.equal(new FFmpeg('ffmpeg-cache-revision').supportsHardwareH264, false);
+  assert.equal(new FFmpeg('ffmpeg-cache-revision').getH264EncoderOptions(true).codec, 'libx264');
+  assert.equal(validations, 2);
+});
+
+test('hardware validation stops at the total deadline and caches the software fallback', (t) => {
+  t.mock.method(os, 'platform', () => 'linux');
+  t.mock.method(fs, 'readFileSync', () => 'Generic');
+  t.mock.method(fs, 'readdirSync', (file) => (file === '/dev/dri' ? ['renderD128'] : []));
+  t.mock.method(fs, 'accessSync', () => {});
+  let elapsed = 0;
+  t.mock.method(Date, 'now', () => elapsed);
+  let codecs = [];
+  t.mock.method(child_process, 'spawnSync', (binary, args, options) => {
+    if (args[0] === '-version') {
+      return { status: 0, stdout: 'ffmpeg version 8.0 ' };
+    }
+    if (args[0] === '-encoders') {
+      return { status: 0, stdout: ' V..... libx264\n V..... h264_nvenc\n V..... h264_qsv\n V..... h264_vaapi' };
+    }
+    if (args.includes('-frames:v') === true) {
+      codecs.push(args[args.indexOf('-codec:v') + 1]);
+      assert.equal(options.timeout, 2000);
+      elapsed += options.timeout;
+      return { status: null, error: new Error('ETIMEDOUT'), stdout: Buffer.alloc(0) };
+    }
+    return { status: 0, stdout: '' };
+  });
+  assert.equal(new FFmpeg('ffmpeg-total-deadline').supportsHardwareH264, false);
+  assert.equal(new FFmpeg('ffmpeg-total-deadline').getH264EncoderOptions(true).codec, 'libx264');
+  assert.deepEqual(codecs, ['h264_nvenc', 'h264_qsv']);
+  assert.equal(elapsed, 4000);
 });
 
 // Mock binary probing and child processes so diagnostics tests do not depend on installed FFmpeg.

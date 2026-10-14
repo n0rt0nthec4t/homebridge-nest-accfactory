@@ -72,7 +72,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.THERMOSTAT;
-  static VERSION = '2026.05.21'; // Code version
+  static VERSION = '2026.10.14'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -329,7 +329,7 @@ export default class NestThermostat extends HomeKitDevice {
     this.#external = {};
   }
 
-  onUpdate(deviceData) {
+  async onUpdate(deviceData) {
     if (
       typeof deviceData !== 'object' ||
       deviceData?.constructor !== Object ||
@@ -443,7 +443,7 @@ export default class NestThermostat extends HomeKitDevice {
       } else {
         // Service exists, either adjust props or remove it
         if (deviceData.has_humidifier === true || deviceData.has_dehumidifier === true) {
-          // Adjust the validValues based on updated capabilities
+          // Retain numeric zero (automatic mode) while excluding capabilities explicitly disabled with false.
           this.humidifierDehumidifierService.getCharacteristic(this.hap.Characteristic.TargetHumidifierDehumidifierState).setProps({
             validValues: [
               deviceData.has_humidifier === true &&
@@ -451,7 +451,7 @@ export default class NestThermostat extends HomeKitDevice {
                 this.hap.Characteristic.TargetHumidifierDehumidifierState.HUMIDIFIER_OR_DEHUMIDIFIER,
               deviceData.has_humidifier === true && this.hap.Characteristic.TargetHumidifierDehumidifierState.HUMIDIFIER,
               deviceData.has_dehumidifier === true && this.hap.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER,
-            ].filter(Boolean),
+            ].filter((mode) => mode !== false),
           });
 
           if (deviceData.has_humidifier === true) {
@@ -630,17 +630,17 @@ export default class NestThermostat extends HomeKitDevice {
       historyEntry.target = { low: 0, high: 0 };
     }
 
-    // Update current state
+    // Await external controls in order; HomeKitDevice already serializes updates for this thermostat.
     if (hvacState === 'HEATING') {
       if (previousHvacState === 'COOLING' && typeof this.#external?.off === 'function') {
-        this.#external.off();
+        await this.#external.off();
       }
       if (
         (previousHvacState !== 'HEATING' || deviceData.target_temperature_low !== this.deviceData.target_temperature_low) &&
         typeof this.#external?.heat === 'function' &&
         deviceData.target_temperature_low !== undefined
       ) {
-        this.#external.heat(deviceData.target_temperature_low);
+        await this.#external.heat(deviceData.target_temperature_low);
       }
       this.thermostatService.updateCharacteristic(
         this.hap.Characteristic.CurrentHeatingCoolingState,
@@ -651,14 +651,14 @@ export default class NestThermostat extends HomeKitDevice {
 
     if (hvacState === 'COOLING') {
       if (previousHvacState === 'HEATING' && typeof this.#external?.off === 'function') {
-        this.#external.off();
+        await this.#external.off();
       }
       if (
         (previousHvacState !== 'COOLING' || deviceData.target_temperature_high !== this.deviceData.target_temperature_high) &&
         typeof this.#external?.cool === 'function' &&
         deviceData.target_temperature_high !== undefined
       ) {
-        this.#external.cool(deviceData.target_temperature_high);
+        await this.#external.cool(deviceData.target_temperature_high);
       }
       this.thermostatService.updateCharacteristic(
         this.hap.Characteristic.CurrentHeatingCoolingState,
@@ -669,10 +669,10 @@ export default class NestThermostat extends HomeKitDevice {
 
     if (hvacState === 'OFF') {
       if (previousHvacState === 'COOLING' && typeof this.#external?.off === 'function') {
-        this.#external.off();
+        await this.#external.off();
       }
       if (previousHvacState === 'HEATING' && typeof this.#external?.off === 'function') {
-        this.#external.off();
+        await this.#external.off();
       }
       this.thermostatService.updateCharacteristic(
         this.hap.Characteristic.CurrentHeatingCoolingState,
@@ -684,10 +684,10 @@ export default class NestThermostat extends HomeKitDevice {
     if (this.fanService !== undefined) {
       // fan status on or off
       if (this.deviceData.fan_state === false && deviceData.fan_state === true && typeof this.#external?.fan === 'function') {
-        this.#external.fan(0);
+        await this.#external.fan(0);
       }
       if (this.deviceData.fan_state === true && deviceData.fan_state === false && typeof this.#external?.off === 'function') {
-        this.#external.off();
+        await this.#external.off();
       }
 
       if (deviceData.fan_max_speed > 1 && deviceData.fan_timer_speed !== undefined) {
@@ -716,24 +716,24 @@ export default class NestThermostat extends HomeKitDevice {
         deviceData.humidifier_state === true &&
         typeof this.#external?.humidifier === 'function'
       ) {
-        this.#external.humidifier(0);
+        await this.#external.humidifier(0);
       }
       if (this.deviceData.humidifier_state === true && deviceData.humidifier_state === false && typeof this.#external?.off === 'function') {
-        this.#external.off();
+        await this.#external.off();
       }
       if (
         this.deviceData.dehumidifier_state === false &&
         deviceData.dehumidifier_state === true &&
         typeof this.#external?.dehumidifier === 'function'
       ) {
-        this.#external.dehumidifier(0);
+        await this.#external.dehumidifier(0);
       }
       if (
         this.deviceData.dehumidifier_state === true &&
         deviceData.dehumidifier_state === false &&
         typeof this.#external?.off === 'function'
       ) {
-        this.#external.off();
+        await this.#external.off();
       }
 
       this.humidifierDehumidifierService.updateCharacteristic(
@@ -1365,6 +1365,7 @@ export default class NestThermostat extends HomeKitDevice {
       },
     });
 
+    // Automatic mode is numeric zero; filter only disabled capabilities rather than falsy values.
     this.addCharacteristic(this.humidifierDehumidifierService, this.hap.Characteristic.TargetHumidifierDehumidifierState, {
       props: {
         validValues: [
@@ -1373,7 +1374,7 @@ export default class NestThermostat extends HomeKitDevice {
             this.hap.Characteristic.TargetHumidifierDehumidifierState.HUMIDIFIER_OR_DEHUMIDIFIER,
           hasHumidifier === true && this.hap.Characteristic.TargetHumidifierDehumidifierState.HUMIDIFIER,
           hasDehumidifier === true && this.hap.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER,
-        ].filter(Boolean),
+        ].filter((mode) => mode !== false),
       },
       initialValue:
         deviceData.humidifier_state === true && deviceData.dehumidifier_state === false

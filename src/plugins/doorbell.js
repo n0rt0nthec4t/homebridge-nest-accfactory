@@ -3,14 +3,12 @@
 //
 // HomeKit accessory implementation for Nest Doorbells.
 // Extends NestCamera to add doorbell-specific behaviour including
-// doorbell press handling and optional indoor chime control.
+// doorbell press handling and indoor chime notification preferences.
 //
 // Responsibilities:
 // - Extend camera functionality with doorbell event handling
 // - Process doorbell press events and trigger HomeKit doorbell service
-// - Manage indoor chime enable/disable via optional switch service
 // - Apply cooldown logic to prevent repeated doorbell triggers
-// - Synchronise chime state with HomeKit and upstream API
 //
 // Inherits from NestCamera:
 // - Video streaming (WebRTC / NexusTalk with HKSV support)
@@ -21,11 +19,9 @@
 //
 // Services:
 // - DoorbellController (via NestCamera)
-// - Switch (optional, for indoor chime control)
 //
 // Features:
 // - Doorbell press detection with cooldown protection
-// - Indoor chime control with HomeKit switch (optional)
 // - Two-way audio support
 // - Full HomeKit Secure Video support
 // - Eve Home activity history integration
@@ -33,7 +29,7 @@
 // Notes:
 // - Streaming and recording are handled entirely by NestCamera
 // - This module only adds doorbell-specific behaviour and services
-// - Doorbell press events may be suppressed if chime is disabled or quiet time is active
+// - Quiet Time always suppresses HomeKit rings; indoor chime suppression can be overridden
 //
 // Mark Hulskamp
 'use strict';
@@ -46,54 +42,21 @@ import { DEVICE_TYPE, TIMERS } from '../consts.js';
 
 export default class NestDoorbell extends NestCamera {
   static TYPE = DEVICE_TYPE.DOORBELL;
-  static VERSION = '2026.05.10'; // Code version
-
-  switchService = undefined; // HomeKit switch for enabling/disabling chime
+  static VERSION = '2026.10.06'; // Code version
 
   // Internal data only for this class
   #doorbellCooldownActive = false; // Flag to track if doorbell cooldown is active
 
   // Class functions
   onAdd() {
-    if (this.deviceData?.has_indoor_chime === true && this.deviceData?.chimeSwitch === true) {
-      // Add service to allow automation and enabling/disabling indoor chiming.
-      // This needs to be explicitly enabled via a configuration option for the device
-      this.switchService = this.addService(this.hap.Service.Switch, '', 1);
-
-      // Setup set callback for this switch service
-      this.addCharacteristic(this.switchService, this.hap.Characteristic.On, {
-        onSet: (value) => {
-          if (value !== this.deviceData.indoor_chime_enabled) {
-            // only change indoor chime status value if different than on-device
-            this.set({ uuid: this.deviceData.nest_google_device_uuid, indoor_chime_enabled: value });
-
-            this?.log?.info?.('Indoor chime on "%s" was turned %s', this.deviceData.description, value === true ? 'on' : 'off');
-          }
-        },
-        onGet: () => {
-          return this.deviceData.indoor_chime_enabled === true;
-        },
+    // Pre-0.4.4 cleanup
+    // Remove legacy chime switch from the Doorbell accessory
+    this.accessory.services
+      .filter((service) => service.UUID === this.hap.Service.Switch.UUID)
+      .forEach((service) => {
+        this.removeService(service);
       });
-
-      // Extra setup details for output
-      this.switchService !== undefined && this.postSetupDetail('Chime switch');
-    }
-    if (this.deviceData?.has_indoor_chime !== true || this.deviceData?.chimeSwitch !== true) {
-      // No longer required to have the switch service
-      // This is to handle Homebridge cached restored accessories and if configuration options have changed
-      this.switchService = this.accessory.getService(this.hap.Service.Switch);
-      if (this.switchService !== undefined) {
-        this.removeService(this.switchService);
-      }
-      this.switchService = undefined;
-    }
-  }
-
-  onRemove() {
-    if (this.switchService !== undefined) {
-      this.removeService(this.switchService);
-    }
-    this.switchService = undefined;
+    // End of pre-0.4.4 cleanup
   }
 
   onUpdate(deviceData) {
@@ -101,15 +64,8 @@ export default class NestDoorbell extends NestCamera {
       return;
     }
 
-    if (this.switchService !== undefined) {
-      // Update status of indoor chime enable/disable switch
-      this.switchService.updateCharacteristic(this.hap.Characteristic.On, deviceData.indoor_chime_enabled);
-    }
-
-    // Log indoor chime state changes
-    if (typeof deviceData?.indoor_chime_enabled === 'boolean' && deviceData.indoor_chime_enabled !== this.deviceData.indoor_chime_enabled) {
-      this?.log?.info?.('Indoor chime on "%s" turned %s', deviceData.description, deviceData.indoor_chime_enabled === true ? 'on' : 'off');
-    }
+    // Check expiry on every press because Observe may not send a delta when Quiet Time ends.
+    let quietTimeActive = deviceData.quiet_time_ends > Date.now() / 1000 ? true : false;
 
     for (const event of deviceData.events || []) {
       // Handle doorbell event, should always be handled first
@@ -122,12 +78,15 @@ export default class NestDoorbell extends NestCamera {
         });
         this.#doorbellCooldownActive = true;
 
-        if (deviceData.indoor_chime_enabled === false || deviceData.quiet_time_enabled === true) {
-          // Indoor chime is disabled or quiet time is enabled, so we won't 'ring' the doorbell
+        if (quietTimeActive === true) {
+          // Quiet Time suppresses HomeKit rings as well as upstream visitor announcements.
+          this?.log?.warn?.('Doorbell rung at "%s" but quiet time is active', deviceData.description);
+        }
+        if (quietTimeActive === false && deviceData.indoor_chime_enabled !== true && deviceData.ignoreIndoorChime !== true) {
           this?.log?.warn?.('Doorbell rung at "%s" but indoor chime is silenced', deviceData.description);
         }
-        if (deviceData.indoor_chime_enabled === true && deviceData.quiet_time_enabled === false) {
-          // Indoor chime is enabled and quiet time isn't enabled, so 'ring' the doorbell
+        if (quietTimeActive === false && (deviceData.indoor_chime_enabled === true || deviceData.ignoreIndoorChime === true)) {
+          // Ignore the physical chime preference only when explicitly configured; Quiet Time still takes precedence.
           this?.log?.info?.('Doorbell rung at "%s"', deviceData.description);
           this.controller.ringDoorbell();
         }
@@ -159,6 +118,17 @@ export default class NestDoorbell extends NestCamera {
 // - translate: converts raw -> final normalised value
 // - required: extends base camera required fields
 const EXTRA_FIELD_MAP = {
+  quiet_time_ends: {
+    google: {
+      fields: ['quiet_time_settings'],
+      translate: ({ raw }) => Number(raw?.value?.quiet_time_settings?.quietTimeEnds?.seconds ?? 0),
+    },
+    nest: {
+      fields: ['properties'],
+      translate: ({ raw }) => Number(raw?.value?.properties?.['doorbell.quiet_time.enabled_until'] ?? 0),
+    },
+  },
+
   has_indoor_chime: {
     required: true,
     google: {

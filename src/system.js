@@ -39,7 +39,7 @@
 // - Uses shared protobuf helpers for schema/type loading and traversal
 // - Creates and updates HomeKitDevice-based instances for supported device types
 //
-// Code version 2026.10.05
+// Code version 2026.10.14
 // Mark Hulskamp
 'use strict';
 
@@ -965,6 +965,9 @@ export default class NestAccfactory {
 
                   trackedDevice.source = newSource;
                   trackedDevice.nest_google_device_uuid = resourceId;
+                } else {
+                  // Rejected sources must not overwrite accessory state or its cloud ID used for SET commands.
+                  continue;
                 }
               }
 
