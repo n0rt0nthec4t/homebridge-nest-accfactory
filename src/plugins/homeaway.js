@@ -3,12 +3,12 @@
 //
 // Virtual HomeKit accessory representing Nest structure home/away status.
 // Provides a single occupancy sensor that reflects whether the structure
-// is currently marked as Home or Away by upstream Nest / Google APIs.
+// is currently marked as Home or Away by the protobuf API.
 //
 // Responsibilities:
 // - Create a virtual Home/Away accessory per structure/home
 // - Expose structure occupancy state via HomeKit OccupancySensor service
-// - Normalise Nest and Google home/away state into a unified HomeKit model
+// - Translate protobuf structure mode into HomeKit occupancy
 // - Update HomeKit occupancy status when upstream structure mode changes
 //
 // Services:
@@ -17,7 +17,7 @@
 // Features:
 // - Structure-level virtual accessory (not tied to a physical Nest device)
 // - Real-time HomeKit characteristic updates
-// - Supports both Nest and Google APIs
+// - Uses protobuf structure data only
 // - Stable synthetic serial number derived from structure identity
 //
 // Notes:
@@ -25,12 +25,12 @@
 // - One Home/Away accessory is created per structure/home
 // - Occupancy detected = structure is Home
 // - Occupancy not detected = structure is Away
-// - Google and Nest API data are both supported and normalised
+// - REST structure data is ignored
 //
 // Data Translation:
 // - Raw data is mapped using HOMEAWAY_FIELD_MAP
 // - processRawData() builds virtual devices from structure-level data
-// - Nest and Google sources are normalised into a unified HomeKit model
+// - Protobuf structure data is normalised into a HomeKit model
 // - Serial number is derived from structure ID with a virtual device type prefix
 //
 // Mark Hulskamp
@@ -46,7 +46,7 @@ import { DATA_SOURCE, DEVICE_TYPE, NESTLABS_MAC_PREFIX } from '../consts.js';
 
 export default class NestHomeAway extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.HOMEAWAY;
-  static VERSION = '2026.05.10'; // Code version
+  static VERSION = '2026.10.15'; // Code version
 
   occupancyService = undefined;
 
@@ -73,6 +73,15 @@ export default class NestHomeAway extends HomeKitDevice {
         ? this.hap.Characteristic.OccupancyDetected.OCCUPANCY_DETECTED
         : this.hap.Characteristic.OccupancyDetected.OCCUPANCY_NOT_DETECTED,
     );
+
+    // Log away/home state changes
+    if (typeof deviceData?.occupancy === 'boolean' && deviceData.occupancy !== this.deviceData.occupancy) {
+      this?.log?.info?.(
+        'Home/Away on "%s" changed to "%s"',
+        deviceData.description,
+        deviceData.occupancy === true ? 'Home' : 'Away',
+      );
+    }
   }
 }
 
@@ -86,17 +95,14 @@ const HOMEAWAY_FIELD_MAP = {
   serialNumber: {
     required: true,
     google: {
-      fields: ['structure_info'],
+      // Use the legacy REST structure ID supplied by protobuf to preserve the existing synthetic serial number.
+      // Include it on every delta so mode-only changes can reach the tracked accessory.
+      fields: [],
       translate: ({ raw }) =>
         typeof raw?.value?.structure_info?.rtsStructureId === 'string' && raw.value.structure_info.rtsStructureId.trim() !== ''
           ? NESTLABS_MAC_PREFIX +
             crc24(DEVICE_TYPE.HOMEAWAY.toUpperCase() + ':' + raw.value.structure_info.rtsStructureId.trim().toUpperCase()).toUpperCase()
           : undefined,
-    },
-    nest: {
-      fields: [],
-      translate: ({ objectKey }) =>
-        NESTLABS_MAC_PREFIX + crc24(DEVICE_TYPE.HOMEAWAY.toUpperCase() + ':' + objectKey.toUpperCase()).toUpperCase(),
     },
   },
 
@@ -106,19 +112,11 @@ const HOMEAWAY_FIELD_MAP = {
       fields: [],
       translate: ({ objectKey }) => objectKey,
     },
-    nest: {
-      fields: [],
-      translate: ({ objectKey }) => objectKey,
-    },
   },
 
   nest_google_home_uuid: {
     required: true,
     google: {
-      fields: [],
-      translate: ({ objectKey }) => objectKey,
-    },
-    nest: {
       fields: [],
       translate: ({ objectKey }) => objectKey,
     },
@@ -131,9 +129,7 @@ const HOMEAWAY_FIELD_MAP = {
       HomeKitDevice.makeValidHKName(
         typeof values?.google === 'string' && values.google.trim() !== ''
           ? values.google.trim()
-          : typeof values?.nest === 'string' && values.nest.trim() !== ''
-            ? values.nest.trim()
-            : 'unknown description',
+          : 'unknown description',
       ),
     google: {
       fields: ['structure_location', 'structure_info'],
@@ -145,15 +141,6 @@ const HOMEAWAY_FIELD_MAP = {
             ? String(raw.value.structure_info.name).trim()
             : undefined,
     },
-    nest: {
-      fields: ['city', 'state', 'name'],
-      translate: ({ raw }) =>
-        String(raw?.value?.city ?? '').trim() !== '' && String(raw?.value?.state ?? '').trim() !== ''
-          ? String(raw.value.city).trim() + ' - ' + String(raw.value.state).trim()
-          : String(raw?.value?.name ?? '').trim() !== ''
-            ? String(raw.value.name).trim()
-            : undefined,
-    },
   },
 
   // Core required home/away fields
@@ -161,11 +148,13 @@ const HOMEAWAY_FIELD_MAP = {
     required: true,
     google: {
       fields: ['structure_mode'],
-      translate: ({ raw }) => raw?.value?.structure_mode?.structureMode === 'STRUCTURE_MODE_HOME',
-    },
-    nest: {
-      fields: ['away'],
-      translate: ({ raw }) => raw?.value?.away === false,
+      // Missing and unspecified modes are not evidence that the home is Away.
+      translate: ({ raw }) => {
+        let mode = raw?.value?.structure_mode?.structureMode;
+        return ['STRUCTURE_MODE_HOME', 'STRUCTURE_MODE_AWAY', 'STRUCTURE_MODE_SLEEP', 'STRUCTURE_MODE_VACATION'].includes(mode) === true
+          ? mode === 'STRUCTURE_MODE_HOME'
+          : undefined;
+      },
     },
   },
 };
@@ -188,15 +177,14 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
   let devices = {};
 
   Object.entries(rawData)
-    .filter(([key]) => key.startsWith('structure.') === true || key.startsWith('STRUCTURE_') === true)
+    .filter(([key, value]) => key.startsWith('STRUCTURE_') === true && value?.source === DATA_SOURCE.GOOGLE)
     .forEach(([object_key, value]) => {
       try {
         // Map raw structure data into our normalised home/away schema
         let mappedResult = buildMappedObject(
           HOMEAWAY_FIELD_MAP,
           createMappingContext(rawData, object_key, {
-            nest: value?.source === DATA_SOURCE.NEST ? value : undefined,
-            google: value?.source === DATA_SOURCE.GOOGLE ? value : undefined,
+            google: value,
           }),
           changedData instanceof Map ? changedData.get(object_key)?.fields : undefined,
         );

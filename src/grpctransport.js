@@ -718,11 +718,7 @@ export default class GrpcTransport {
                 messageLower.includes('deadline') === true ||
                 messageLower.includes('timeout') === true)));
 
-        if (
-          result.status !== undefined &&
-          result.status !== GrpcTransport.STATUS.OK &&
-          expectedObserveEnd !== true
-        ) {
+        if (result.status !== undefined && result.status !== GrpcTransport.STATUS.OK && expectedObserveEnd !== true) {
           let errorText = typeof result.error === 'string' && result.error !== '' ? ' error="' + result.error + '"' : '';
           this.log?.debug?.(
             'gRPC stream closed for "%s/%s" with status=%s code="%s" message="%s"%s frames=%d',

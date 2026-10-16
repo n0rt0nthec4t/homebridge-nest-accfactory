@@ -21,7 +21,7 @@ let timerModule =
       'export function setTimeout(...args) { return timers.setTimeout(...args); } ' +
       'export function clearTimeout(...args) { return timers.clearTimeout(...args); }',
   );
-let location = new URL('../../src/connections.js', import.meta.url);
+let location = new URL('../src/connections.js', import.meta.url);
 let source = await readFile(location, 'utf8');
 source = source.replace(/from '([^']+)'/g, (match, specifier) => {
   let target =

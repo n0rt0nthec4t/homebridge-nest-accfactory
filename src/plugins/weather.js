@@ -19,7 +19,7 @@
 // - EveAirPressureSensor (optional, when supported by HAP)
 //
 // Features:
-// - Periodic polling of upstream weather data (Nest / Google APIs)
+// - Periodic polling of the Nest REST weather forecast endpoint
 // - Real-time HomeKit characteristic updates
 // - Eve Home custom characteristics (forecast, condition, wind, sunrise/sunset)
 // - Temperature normalisation and unit handling
@@ -29,12 +29,12 @@
 // - This is a virtual device (not a physical Nest device)
 // - One weather accessory is created per structure/home
 // - Requires both location and weather data to be available
-// - Google and Nest API data are both supported and normalised
+// - Protobuf supplies structure identity and location; weather readings still use Nest REST
 //
 // Data Translation:
 // - Raw data is mapped using WEATHER_FIELD_MAP
 // - processRawData() builds virtual devices from structure-level data
-// - Nest and Google sources are normalised into a unified HomeKit model
+// - Only protobuf structures are used for accessory discovery and configuration
 // - Serial number is derived from structure ID for consistent deduplication
 //
 // Mark Hulskamp
@@ -50,7 +50,7 @@ import { DATA_SOURCE, DEVICE_TYPE, MAX_ELEVATION, MIN_ELEVATION, NESTLABS_MAC_PR
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.WEATHER;
-  static VERSION = '2026.05.10'; // Code version
+  static VERSION = '2026.10.15'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -237,17 +237,14 @@ const WEATHER_FIELD_MAP = {
   serialNumber: {
     required: true,
     google: {
-      fields: ['structure_info'],
+      // Use the legacy REST structure ID supplied by protobuf to preserve the existing synthetic serial number.
+      // Include it on every delta so weather-only changes can reach the tracked accessory.
+      fields: [],
       translate: ({ raw }) =>
         typeof raw?.value?.structure_info?.rtsStructureId === 'string' && raw.value.structure_info.rtsStructureId.trim() !== ''
           ? NESTLABS_MAC_PREFIX +
             crc24(DEVICE_TYPE.WEATHER.toUpperCase() + ':' + raw.value.structure_info.rtsStructureId.trim().toUpperCase()).toUpperCase()
           : undefined,
-    },
-    nest: {
-      fields: [],
-      translate: ({ objectKey }) =>
-        NESTLABS_MAC_PREFIX + crc24(DEVICE_TYPE.WEATHER.toUpperCase() + ':' + objectKey.toUpperCase()).toUpperCase(),
     },
   },
 
@@ -257,19 +254,11 @@ const WEATHER_FIELD_MAP = {
       fields: [],
       translate: ({ objectKey }) => objectKey,
     },
-    nest: {
-      fields: [],
-      translate: ({ objectKey }) => objectKey,
-    },
   },
 
   nest_google_home_uuid: {
     required: true,
     google: {
-      fields: [],
-      translate: ({ objectKey }) => objectKey,
-    },
-    nest: {
       fields: [],
       translate: ({ objectKey }) => objectKey,
     },
@@ -282,9 +271,7 @@ const WEATHER_FIELD_MAP = {
       HomeKitDevice.makeValidHKName(
         typeof values?.google === 'string' && values.google.trim() !== ''
           ? values.google.trim()
-          : typeof values?.nest === 'string' && values.nest.trim() !== ''
-            ? values.nest.trim()
-            : 'unknown description',
+          : 'unknown description',
       ),
     google: {
       fields: ['structure_location', 'structure_info'],
@@ -296,28 +283,12 @@ const WEATHER_FIELD_MAP = {
             ? String(raw.value.structure_info.name).trim()
             : undefined,
     },
-    nest: {
-      fields: ['city', 'state', 'name'],
-      translate: ({ raw }) =>
-        String(raw?.value?.city ?? '').trim() !== '' && String(raw?.value?.state ?? '').trim() !== ''
-          ? String(raw.value.city).trim() + ' - ' + String(raw.value.state).trim()
-          : String(raw?.value?.name ?? '').trim() !== ''
-            ? String(raw.value.name).trim()
-            : undefined,
-    },
   },
 
   // Core required weather fields
   current_temperature: {
     required: true,
     google: {
-      fields: ['weather'],
-      translate: ({ raw }) =>
-        Number.isFinite(Number(raw?.value?.weather?.current_temperature)) === true
-          ? adjustTemperature(Number(raw.value.weather.current_temperature), 'C', 'C', true)
-          : undefined,
-    },
-    nest: {
       fields: ['weather'],
       translate: ({ raw }) =>
         Number.isFinite(Number(raw?.value?.weather?.current_temperature)) === true
@@ -333,11 +304,6 @@ const WEATHER_FIELD_MAP = {
       translate: ({ raw }) =>
         Number.isFinite(Number(raw?.value?.weather?.current_humidity)) === true ? Number(raw.value.weather.current_humidity) : undefined,
     },
-    nest: {
-      fields: ['weather'],
-      translate: ({ raw }) =>
-        Number.isFinite(Number(raw?.value?.weather?.current_humidity)) === true ? Number(raw.value.weather.current_humidity) : undefined,
-    },
   },
 
   // Optional weather detail fields
@@ -346,19 +312,10 @@ const WEATHER_FIELD_MAP = {
       fields: ['weather'],
       translate: ({ raw }) => ((raw?.value?.weather?.condition?.trim() ?? '') !== '' ? raw.value.weather.condition.trim() : undefined),
     },
-    nest: {
-      fields: ['weather'],
-      translate: ({ raw }) => ((raw?.value?.weather?.condition?.trim() ?? '') !== '' ? raw.value.weather.condition.trim() : undefined),
-    },
   },
 
   wind_direction: {
     google: {
-      fields: ['weather'],
-      translate: ({ raw }) =>
-        (raw?.value?.weather?.wind_direction?.trim() ?? '') !== '' ? raw.value.weather.wind_direction.trim() : undefined,
-    },
-    nest: {
       fields: ['weather'],
       translate: ({ raw }) =>
         (raw?.value?.weather?.wind_direction?.trim() ?? '') !== '' ? raw.value.weather.wind_direction.trim() : undefined,
@@ -371,20 +328,10 @@ const WEATHER_FIELD_MAP = {
       translate: ({ raw }) =>
         Number.isFinite(Number(raw?.value?.weather?.wind_speed)) === true ? Number(raw.value.weather.wind_speed) : undefined,
     },
-    nest: {
-      fields: ['weather'],
-      translate: ({ raw }) =>
-        Number.isFinite(Number(raw?.value?.weather?.wind_speed)) === true ? Number(raw.value.weather.wind_speed) : undefined,
-    },
   },
 
   sunrise: {
     google: {
-      fields: ['weather'],
-      translate: ({ raw }) =>
-        Number.isFinite(Number(raw?.value?.weather?.sunrise)) === true ? Number(raw.value.weather.sunrise) : undefined,
-    },
-    nest: {
       fields: ['weather'],
       translate: ({ raw }) =>
         Number.isFinite(Number(raw?.value?.weather?.sunrise)) === true ? Number(raw.value.weather.sunrise) : undefined,
@@ -397,11 +344,6 @@ const WEATHER_FIELD_MAP = {
       translate: ({ raw }) =>
         Number.isFinite(Number(raw?.value?.weather?.sunset)) === true ? Number(raw.value.weather.sunset) : undefined,
     },
-    nest: {
-      fields: ['weather'],
-      translate: ({ raw }) =>
-        Number.isFinite(Number(raw?.value?.weather?.sunset)) === true ? Number(raw.value.weather.sunset) : undefined,
-    },
   },
 
   station: {
@@ -409,18 +351,10 @@ const WEATHER_FIELD_MAP = {
       fields: ['weather'],
       translate: ({ raw }) => ((raw?.value?.weather?.station?.trim() ?? '') !== '' ? raw.value.weather.station.trim() : undefined),
     },
-    nest: {
-      fields: ['weather'],
-      translate: ({ raw }) => ((raw?.value?.weather?.station?.trim() ?? '') !== '' ? raw.value.weather.station.trim() : undefined),
-    },
   },
 
   forecast: {
     google: {
-      fields: ['weather'],
-      translate: ({ raw }) => ((raw?.value?.weather?.forecast?.trim() ?? '') !== '' ? raw.value.weather.forecast.trim() : undefined),
-    },
-    nest: {
       fields: ['weather'],
       translate: ({ raw }) => ((raw?.value?.weather?.forecast?.trim() ?? '') !== '' ? raw.value.weather.forecast.trim() : undefined),
     },
@@ -445,17 +379,24 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
   let devices = {};
 
   Object.entries(rawData)
-    .filter(([key]) => key.startsWith('structure.') === true || key.startsWith('STRUCTURE_') === true)
+    .filter(([key, value]) => key.startsWith('STRUCTURE_') === true && value?.source === DATA_SOURCE.GOOGLE)
     .forEach(([object_key, value]) => {
       try {
-        // Map raw structure data into our normalised weather schema
+        if (changedData instanceof Map) {
+          let fields = changedData.get(object_key)?.fields;
+          if (fields instanceof Set !== true ||
+            ['structure_info', 'structure_location', 'weather'].some((field) => fields.has(field)) === false) {
+            return;
+          }
+        }
+
+        // Map the cached structure so identity, location and weather can arrive in separate Observe messages.
         let mappedResult = buildMappedObject(
           WEATHER_FIELD_MAP,
           createMappingContext(rawData, object_key, {
-            nest: value?.source === DATA_SOURCE.NEST ? value : undefined,
-            google: value?.source === DATA_SOURCE.GOOGLE ? value : undefined,
+            google: value,
           }),
-          changedData instanceof Map ? changedData.get(object_key)?.fields : undefined,
+          new Set(Object.keys(value?.value ?? {})),
         );
 
         let serialNumber = mappedResult?.data?.serialNumber;

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildMappedObject, createMappingContext, mergeMappedObjects } from '../../src/translator.js';
+import { buildMappedObject, createMappingContext, mergeMappedObjects } from '../src/translator.js';
 
 const FIELD_MAP = {
   online: {

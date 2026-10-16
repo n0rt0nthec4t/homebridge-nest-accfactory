@@ -5,12 +5,12 @@ import { createRequire } from 'node:module';
 import test from 'node:test';
 import { URL } from 'node:url';
 import { setImmediate } from 'node:timers/promises';
-import { DATA_SOURCE } from '../../src/consts.js';
+import { DATA_SOURCE } from '../src/consts.js';
 
 let require = createRequire(import.meta.url);
 let hap = require('@homebridge/hap-nodejs');
 let parent = 'data:text/javascript,' + encodeURIComponent('export default class { constructor(data) { this.deviceData = data; } }');
-let location = new URL('../../src/plugins/thermostat.js', import.meta.url);
+let location = new URL('../src/plugins/thermostat.js', import.meta.url);
 let source = (await readFile(location, 'utf8')).replace(/from '([^']+)'/g, (match, specifier) => {
   return (
     'from ' +
@@ -24,7 +24,7 @@ source = source.replaceAll('#setupHumidifierDehumidifier', 'setupHumidityForTest
 let { default: Thermostat, processRawData } = await import('data:text/javascript,' + encodeURIComponent(source));
 
 for (let firstSource of [DATA_SOURCE.NEST, DATA_SOURCE.GOOGLE]) {
-  test('thermostat mapper selects the changed source with raw data arriving first from ' + firstSource, () => {
+  test('thermostat mapper ignores REST with raw data arriving first from ' + firstSource, () => {
     let nest = ['device.nest', { source: DATA_SOURCE.NEST, value: { serial_number: 'SERIAL', backplate_temperature: 19 } }];
     let google = [
       'DEVICE_GOOGLE',
@@ -46,15 +46,37 @@ for (let firstSource of [DATA_SOURCE.NEST, DATA_SOURCE.GOOGLE]) {
       'where.home': { value: {} },
       STRUCTURE_HOME: { value: {} },
     };
-    for (let [resource, field, temperature] of [
-      ['DEVICE_GOOGLE', 'current_temperature', 21],
-      ['device.nest', 'backplate_temperature', 19],
-    ]) {
-      let mapped = processRawData(undefined, raw, { options: {} }, undefined, new Map([[resource, { fields: new Set([field]) }]]));
-      assert.equal(mapped.SERIAL.full, false);
-      assert.equal(mapped.SERIAL.data.nest_google_device_uuid, resource);
-      assert.equal(mapped.SERIAL.data.current_temperature, temperature);
-    }
+    let mapped = processRawData(
+      undefined,
+      raw,
+      { options: {} },
+      undefined,
+      new Map([['DEVICE_GOOGLE', { fields: new Set(['current_temperature']) }]]),
+    );
+    assert.equal(mapped.SERIAL.full, false);
+    assert.equal(mapped.SERIAL.data.nest_google_device_uuid, 'DEVICE_GOOGLE');
+    assert.equal(mapped.SERIAL.data.current_temperature, 21);
+    assert.deepEqual(
+      processRawData(
+        undefined,
+        raw,
+        { options: {} },
+        undefined,
+        new Map([['device.nest', { fields: new Set(['backplate_temperature']) }]]),
+      ),
+      {},
+    );
+    delete raw.DEVICE_GOOGLE;
+    assert.deepEqual(
+      processRawData(
+        undefined,
+        raw,
+        { options: {} },
+        undefined,
+        new Map([['device.nest', { fields: new Set(['backplate_temperature']) }]]),
+      ),
+      {},
+    );
   });
 }
 

@@ -27,7 +27,7 @@
 // - Imported throughout the codebase for consistency and reuse
 // - Changes here may affect multiple subsystems (devices, streaming, APIs)
 //
-// Code version 2026.09.05
+// Code version 2026.10.16
 // Mark Hulskamp
 'use strict';
 
@@ -106,26 +106,19 @@ export const NEST_API_BUCKETS = [
   'buckets',
   'delayed_topaz',
   'demand_response',
-  'device',
   'device_alert_dialog',
   'geofence_info',
-  'kryptonite',
-  'link',
   'message',
   'message_center',
   'metadata',
   'occupancy',
   'quartz',
   'safety',
-  'rcs_settings',
   'safety_summary',
-  'schedule',
-  'shared',
   'structure',
   'structure_metadata',
   'topaz',
   'topaz_resource',
-  'track',
   'trip',
   'tuneups',
   'user',

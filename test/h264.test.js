@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import test from 'node:test';
 
-import H264 from '../../src/h264.js';
+import H264 from '../src/h264.js';
 
 const START_CODE = Buffer.from([0x00, 0x00, 0x00, 0x01]);
 

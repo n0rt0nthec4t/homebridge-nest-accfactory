@@ -6,10 +6,10 @@ import { setImmediate } from 'node:timers/promises';
 import { URL } from 'node:url';
 
 // Preserve the runtime import layout while replacing only the flattened shared-module path.
-let location = new URL('../../src/plugins/daikinsystem.mjs', import.meta.url);
+let location = new URL('../src/plugins/daikinsystem.mjs', import.meta.url);
 let source = (await readFile(location, 'utf8')).replace(
   '../fetchWrapper.js',
-  new URL('../../src/fetchWrapper/fetchWrapper.js', import.meta.url).href,
+  new URL('../src/fetchWrapper/fetchWrapper.js', import.meta.url).href,
 );
 let { default: createDaikin } = await import('data:text/javascript,' + encodeURIComponent(source));
 

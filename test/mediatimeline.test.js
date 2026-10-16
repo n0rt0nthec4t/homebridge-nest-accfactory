@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import MediaTimeline from '../../src/mediatimeline.js';
+import MediaTimeline from '../src/mediatimeline.js';
 
 test('MediaTimeline indexes mixed media and keyframes', () => {
   let timeline = new MediaTimeline(10, 4, 4);

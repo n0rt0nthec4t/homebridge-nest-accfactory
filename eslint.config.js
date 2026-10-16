@@ -1,5 +1,7 @@
+// Configure lint rules and Node.js globals for the project's ES modules.
 import stylistic from '@stylistic/eslint-plugin';
 import parserTs from '@typescript-eslint/parser';
+import globals from 'globals';
 
 export default [{
   ignores: ['dist'],
@@ -10,9 +12,7 @@ export default [{
     parser: parserTs,
     ecmaVersion: 'latest',
     sourceType: 'module',
-    globals: {
-      structuredClone: 'readonly',
-    },
+    globals: globals.nodeBuiltin,
   },
   rules: {
     '@stylistic/semi': ['warn'],

@@ -8,7 +8,7 @@ import {
   parseDurationToSeconds,
   processSoftwareVersion,
   scaleValue,
-} from '../../src/utils.js';
+} from '../src/utils.js';
 
 test('adjustTemperature converts and applies HomeKit rounding', () => {
   assert.equal(adjustTemperature(68, 'F', 'C', false), 20);

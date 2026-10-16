@@ -20,29 +20,29 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - Homebridge 2 users must update to **Homebridge 2.4.0 or newer**
 - Added Node.js 26 beta support when using Homebridge 2.4.0 or newer; Homebridge 1 users should continue using Node.js 22 or 24
 - Removed the HomeKit chime switch; manage the chime in Nest/Google Home. Set `ignoreIndoorChime` to `true` if you want HomeKit doorbell alerts while the indoor chime is off. Quiet Time still silences HomeKit alerts.
+- Home/Away, Weather, Thermostats, Temperature sensors and Heat Links now require the Google API to be enabled; Nest REST API support for these devices has been removed
 
 ### 🛠️ Fixes
 
+- Fixed Home/Away status not updating in the Home app or incorrectly showing Away during startup
+- Fixed weather accessories sometimes failing to appear during startup
 - Fixed standalone Nest Cam battery devices being identified as wired floodlight cameras
 - Fixed hardware video acceleration not being detected on some Raspberry Pi systems [@pace8](https://github.com/pace8)
-- Fixed Raspberry Pi systems sometimes selecting an incompatible hardware encoder [@pace8](https://github.com/pace8)
-- Fixed Raspberry Pi hardware encoding failing to start for some HomeKit video formats [@pace8](https://github.com/pace8)
+- Fixed Raspberry Pi systems sometimes choosing an unsupported video encoder [@pace8](https://github.com/pace8)
+- Fixed Raspberry Pi camera streaming failing to start with some video settings [@pace8](https://github.com/pace8)
 - Fixed Raspberry Pi HomeKit Secure Video recordings completing successfully but not appearing or playing in the Home app [@pace8](https://github.com/pace8)
-- Fixed intermittent Raspberry Pi 4 HomeKit Secure Video recording timeouts caused by V4L2 encoder capture-buffer stalls [@pace8](https://github.com/pace8)
+- Fixed intermittent HomeKit Secure Video recording timeouts on Raspberry Pi 4 [@pace8](https://github.com/pace8)
 
 ### 📹 Camera Streaming Improvements
 
 - Improved HomeKit Secure Video recording compatibility across software and hardware encoders
 - Improved live-view startup time for cameras connected through Google Home
 - Improved live-stream recovery when video packets are damaged or incomplete
-- Reduced camera-stream processing overhead
-- Reduced background diagnostic work when support dumps are disabled
 
 ### 🔁 Maintenance
 
-- Restructured the internal HomeKit compatibility layer to preserve existing HAP behaviour while preparing the shared accessory lifecycle for optional Homebridge Matter support
-- Moved common HTTP request handling into the shared `fetchWrapper` component
-- Updated supporting components and development dependencies
+- Updated HomeKit support while retaining compatibility with existing accessories
+- Updated dependencies
 
 ## v0.4.3 (2026/08/11)
 

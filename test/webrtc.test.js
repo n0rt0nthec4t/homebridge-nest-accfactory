@@ -5,8 +5,8 @@ import { readFile } from 'node:fs/promises';
 import { setImmediate } from 'node:timers/promises';
 import { URL } from 'node:url';
 import test from 'node:test';
-import GrpcTransport from '../../src/grpctransport.js';
-import StreamTransport from '../../src/streamtransport.js';
+import GrpcTransport from '../src/grpctransport.js';
+import StreamTransport from '../src/streamtransport.js';
 
 // Replace external boundaries, keeping the real WebRTC and shared transport implementations.
 let peerModule =
@@ -32,7 +32,7 @@ let replacements = {
   './streamer.js': 'data:text/javascript,export default { MEDIA_TYPE: { AUDIO: "audio", VIDEO: "video" } };',
   'node:timers': timerModule,
 };
-let location = new URL('../../src/webrtc.js', import.meta.url);
+let location = new URL('../src/webrtc.js', import.meta.url);
 let source = await readFile(location, 'utf8');
 source = source.replace(/from '([^']+)'/g, (match, specifier) => {
   let target = replacements[specifier] ?? (specifier.startsWith('.') === true ? new URL(specifier, location).href : specifier);

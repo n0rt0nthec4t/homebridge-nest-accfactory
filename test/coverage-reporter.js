@@ -5,11 +5,6 @@ import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 
-/**
- * Supplement the standard test reporter with a production-source inventory.
- * @param {AsyncIterable<{type: string, data: {summary?: {files: {path: string}[]}}}>} events Test runner events.
- * @returns {AsyncGenerator<string>} Coverage scope and modules absent from file-backed measurements.
- */
 export default async function* coverageScope(events) {
   for await (let event of events) {
     if (event.type !== 'test:coverage') {

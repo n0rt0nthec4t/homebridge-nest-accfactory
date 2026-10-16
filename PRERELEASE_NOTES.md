@@ -4,6 +4,32 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.4-beta.8 (2026/10/16)
+
+### Changed
+
+- Stop requesting retired thermostat, sensor and Heat Link REST buckets and ignore unrequested REST updates
+- Removed Nest REST API support for thermostats, temperature sensors and Heat Links; these devices now require the Google API
+- Log Home/Away state changes as Home or Away
+- Weather accessories now use protobuf structure discovery only, preserving existing serial identities and retaining Nest REST forecast polling
+- Home/Away accessories now use protobuf structure data only; REST-only connections no longer provide Home/Away updates
+- Preserve Home/Away occupancy until a recognised protobuf structure mode is available
+- Moved Nest/Google API support-dump formatting and redaction into `supportdump.js`
+- Exclude shared submodules from `npm run format`, while retaining their lint and test coverage
+- Flatten project tests into `test/` and update test and coverage discovery
+- Use the `globals` development dependency for ESLint's Node.js ES module globals
+
+### Security
+
+- Redact credentials and personal details from API support dumps, retain consistent aliases for device/home references, and bound diagnostic collection and output
+
+### Fixed
+
+- Refresh temperature sensor active status when its associated thermostat changes sensor selection
+- Initialise weather accessories when protobuf identity, location and forecast data arrive separately, and retain identity on weather-only updates
+- Retain Home/Away identity on protobuf mode-only updates so HomeKit receives occupancy changes
+- Keep known protobuf structure-mode, reason and actor-method enums readable in support dumps while retaining identifier redaction
+
 ## v0.4.4-beta.7 (2026/10/14)
 
 ### Changed

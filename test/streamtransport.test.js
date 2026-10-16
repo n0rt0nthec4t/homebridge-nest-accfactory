@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import StreamTransport from '../../src/streamtransport.js';
+import StreamTransport from '../src/streamtransport.js';
 
 test('StreamTransport keeps sequential RTP groups sorted without rescanning', () => {
   let transport = new StreamTransport();

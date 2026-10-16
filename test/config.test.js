@@ -8,7 +8,7 @@ import path from 'node:path';
 import process from 'node:process';
 import test from 'node:test';
 import { URL } from 'node:url';
-import { processConfig } from '../../src/config.js';
+import { processConfig } from '../src/config.js';
 
 for (let mode of [0o600, 0o640, 0o400]) {
   for (let existing of [false, true]) {
@@ -128,7 +128,7 @@ test('missing, null and malformed options receive defaults while valid settings 
 
 test('maxStreams preserves integer counts from one to four and defaults invalid counts', async (t) => {
   t.mock.method(child_process, 'spawnSync', () => ({ error: new Error('No test FFmpeg') }));
-  let schema = JSON.parse(await readFile(new URL('../../config.schema.json', import.meta.url), 'utf8'));
+  let schema = JSON.parse(await readFile(new URL('../config.schema.json', import.meta.url), 'utf8'));
   assert.deepEqual(schema.schema.properties.options.properties.maxStreams, { type: 'integer', default: 2, minimum: 1, maximum: 4 });
   for (let [value, expected] of [
     [1, 1],

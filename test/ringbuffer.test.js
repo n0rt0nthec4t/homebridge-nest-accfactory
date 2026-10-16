@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import RingBuffer from '../../src/ringbuffer.js';
+import RingBuffer from '../src/ringbuffer.js';
 
 test('RingBuffer grows while preserving order and logical indexes', () => {
   let buffer = new RingBuffer(10, 2, 4);

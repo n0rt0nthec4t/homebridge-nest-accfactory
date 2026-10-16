@@ -33,6 +33,8 @@ Based on this, these models are expected to stop functioning with this Homebridg
 
 The accessory supports connections using a Nest account AND/OR a Google (migrated Nest account) account.
 
+Thermostats, temperature sensors and Heat Links require the Google API (protobuf) to be enabled. Nest REST API support for these devices has been removed in v0.4.4.
+
 ## Configuration
 
 ### Obtaining an **access token** for Nest Accounts
@@ -150,7 +152,9 @@ The following options are available in the `config.json` `"options"` object. The
 | ffmpegTranscode    | Enable video transcoding for camera(s) and doorbell(s) (higher CPU usage)                    | false          |
 | logMotionEvents    | Enable logging of motion events for camera(s), doorbell(s) and Nest Protect device(s)        | true           |
 | maxStreams         | Maximum simultaneous live view streams per camera (integer from 1 to 4)                       | 2              |
-| supportDump        | Enable Support Dump logging of raw Nest and Google API data                                  | false          |
+| supportDump        | Enable redacted Nest/Google API support dumps and streaming diagnostics                      | false          |
+
+API support-dump blocks redact credentials, personal details, network addresses and camera URLs. Device and home identifiers use consistent aliases within a plugin run. Collection and output are bounded; empty delta updates produce no dump. Normal plugin logs and streaming debug messages can still contain device names and identifiers.
 
 #### devices
 

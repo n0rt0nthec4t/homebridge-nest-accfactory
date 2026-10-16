@@ -39,7 +39,7 @@
 // - Uses shared protobuf helpers for schema/type loading and traversal
 // - Creates and updates HomeKitDevice-based instances for supported device types
 //
-// Code version 2026.10.14
+// Code version 2026.10.16
 // Mark Hulskamp
 'use strict';
 
@@ -60,6 +60,7 @@ import { processConfig } from './config.js';
 import { fetchWrapper } from './fetchWrapper.js';
 import { adjustTemperature, scaleValue } from './utils.js';
 import { getProtoTypes } from './protobuf.js';
+import { createSupportDump } from './supportdump.js';
 
 // Define constants
 import {
@@ -90,6 +91,7 @@ export default class NestAccfactory {
   #rawData = {}; // Cached copy of data from both Nest and Google APIs
   #trackedDevices = new Map(); // Devices we've created, keyed by serial number
   #deviceModules = undefined; // No loaded device support modules to start
+  #supportDumpWriter = undefined; // Diagnostic writer and aliases, created only when enabled
 
   constructor(log, config, api) {
     this.log = log;
@@ -155,6 +157,7 @@ export default class NestAccfactory {
       // Cleanup internal data
       this.#trackedDevices.clear();
       this.#rawData = {};
+      this.#supportDumpWriter = undefined;
       this.#connections = undefined;
       this.#deviceModules?.clear?.();
       this.cachedAccessories = [];
@@ -268,8 +271,10 @@ export default class NestAccfactory {
       subscribeJSONData = { objects: [] };
       subscribeJSONData.objects.push(
         ...Object.entries(this.#rawData)
-          // eslint-disable-next-line no-unused-vars
-          .filter(([key, value]) => value.source === DATA_SOURCE.NEST && value.connection === uuid && value?.injected !== true)
+          .filter(([key, value]) =>
+            value.source === DATA_SOURCE.NEST && value.connection === uuid && value?.injected !== true &&
+            NEST_API_BUCKETS.includes(key.split('.')[0]) === true,
+          )
           .map(([key, value]) => ({
             object_key: key,
             object_revision: value.object_revision,
@@ -319,6 +324,10 @@ export default class NestAccfactory {
 
         for (let object of objects) {
           let objectKey = object?.object_key;
+          // The server may return unrequested buckets; keep them out of the cache and later subscriptions.
+          if (typeof objectKey !== 'string' || NEST_API_BUCKETS.includes(objectKey.split('.')[0]) !== true) {
+            continue;
+          }
           let incomingValue = typeof object?.value === 'object' && object.value !== null ? { ...object.value } : {};
           let existingEntry = this.#rawData?.[objectKey];
           let existingValue = typeof existingEntry?.value === 'object' && existingEntry.value !== null ? existingEntry.value : {};
@@ -399,8 +408,6 @@ export default class NestAccfactory {
                   // Object existed previously but is no longer referenced, so treat as removed
                   if (
                     childObjectKey.startsWith('structure.') === true ||
-                    childObjectKey.startsWith('device.') === true ||
-                    childObjectKey.startsWith('kryptonite.') === true ||
                     childObjectKey.startsWith('topaz.') === true ||
                     childObjectKey.startsWith('quartz.') === true
                   ) {
@@ -715,102 +722,10 @@ export default class NestAccfactory {
   async #processData(uuid, changedData = undefined) {
     let connection = this.#connections?.get(uuid);
 
-    const dumpSupportData = (source, changedData = undefined) => {
-      let sourceInfo =
-        source === DATA_SOURCE.GOOGLE ? { name: 'Google API' } : source === DATA_SOURCE.NEST ? { name: 'Nest API' } : undefined;
-      let didLogAny = false;
-      let isDelta = changedData instanceof Map === true && changedData.size !== 0;
-
-      // Validate we should attempt a support dump for this connection/source
-      if (
-        this?.config?.options?.supportDump !== true ||
-        typeof uuid !== 'string' ||
-        uuid.trim() === '' ||
-        typeof connection !== 'object' ||
-        connection === null ||
-        typeof sourceInfo !== 'object'
-      ) {
-        return;
-      }
-
-      // Iterate raw data directly and decide at object/field level what to output
-      Object.entries(this.#rawData).forEach(([objectKey, data]) => {
-        let changedFields = isDelta === true ? changedData.get(objectKey)?.fields : undefined;
-        let loggedObject = false;
-
-        // Only process objects for this source/connection with valid value payload
-        if (
-          data?.source !== source ||
-          data?.connection !== uuid ||
-          typeof data?.value !== 'object' ||
-          data.value === null ||
-          Object.keys(data.value).length === 0
-        ) {
-          return;
-        }
-
-        // In delta mode, skip objects that were not part of this update
-        if (isDelta === true && changedFields instanceof Set !== true) {
-          return;
-        }
-
-        Object.entries(data.value).forEach(([key, value]) => {
-          // In delta mode, only output fields that were part of this update
-          if (isDelta === true && changedFields.has(key) !== true) {
-            return;
-          }
-
-          // Lazily open object and print header only when we actually output something
-          if (loggedObject === false) {
-            if (didLogAny === false) {
-              this?.log?.info?.(
-                '%s support dump for %s data will be logged below for troubleshooting purposes.',
-                isDelta === true ? 'Changed' : 'Full',
-                sourceInfo.name,
-              );
-            }
-
-            this?.log?.info?.('{');
-            this?.log?.info?.('  "%s": {', objectKey);
-
-            loggedObject = true;
-            didLogAny = true;
-          }
-
-          // Pretty-print nested objects
-          if (typeof value === 'object' && value !== null) {
-            this?.log?.info?.('  %s:', key);
-
-            String(JSON.stringify(value, null, 2))
-              .split('\n')
-              .forEach((line) => {
-                this?.log?.info?.('    %s', line);
-              });
-
-            return;
-          }
-
-          // Primitive values
-          this?.log?.info?.('  %s: %j', key, value);
-        });
-
-        // Close object if we logged any fields
-        if (loggedObject === true) {
-          this?.log?.info?.('  }');
-          this?.log?.info?.('}');
-        }
-      });
-
-      // Footer only if something was actually logged
-      if (didLogAny === true) {
-        this?.log?.info?.('End of support dump for %s data.', sourceInfo.name);
-      }
-    };
-
-    // First run logs a full baseline per source/connection.
-    // Later runs log only the changed fields for changed objects in this cycle.
-    dumpSupportData(DATA_SOURCE.NEST, changedData);
-    dumpSupportData(DATA_SOURCE.GOOGLE, changedData);
+    if (this.config?.options?.supportDump === true && typeof connection === 'object' && connection !== null) {
+      this.#supportDumpWriter ??= createSupportDump(this.log);
+      this.#supportDumpWriter(this.#rawData, uuid, changedData);
+    }
 
     // Process the raw data through each of the device modules to get the latest device details and states
     for (let [deviceType, deviceModule] of this.#deviceModules) {
@@ -1441,177 +1356,8 @@ export default class NestAccfactory {
           }
 
           if (nest_google_device_uuid.startsWith('quartz.') === false) {
-            // set values on other Nest devices besides cameras/doorbells
+            // Retain Nest REST controls for Protect devices.
             let subscribeJSONData = { objects: [] };
-
-            if (
-              key === 'active_sensor' &&
-              typeof value === 'boolean' &&
-              typeof this.#rawData?.['rcs_settings.' + this.#rawData?.[nest_google_device_uuid]?.value?.associated_thermostat.split('.')[1]]
-                ?.value?.active_rcs_sensors === 'object' &&
-              nest_google_device_uuid.startsWith('kryptonite.') === true
-            ) {
-              // Set active temperature sensor for associated thermostat
-              subscribeJSONData.objects.push({
-                object_key: 'rcs_settings.' + this.#rawData[nest_google_device_uuid].value.associated_thermostat.split('.')[1],
-                op: 'MERGE',
-                value:
-                  value === true
-                    ? { active_rcs_sensors: [nest_google_device_uuid], rcs_control_setting: 'OVERRIDE' }
-                    : { active_rcs_sensors: [], rcs_control_setting: 'OFF' },
-              });
-            }
-
-            if (
-              ['target_temperature', 'target_temperature_low', 'target_temperature_high'].includes(key) === true &&
-              Number.isFinite(Number(value)) === true &&
-              nest_google_device_uuid.startsWith('device.') === true
-            ) {
-              // Set temperatures on thermostat
-              subscribeJSONData.objects.push({
-                object_key: 'shared.' + nest_google_device_uuid.trim().split('.')[1],
-                op: 'MERGE',
-                value: { target_change_pending: true, [key]: Number(value) },
-              });
-            }
-
-            if (
-              key === 'hvac_mode' &&
-              ['off', 'cool', 'heat', 'range'].includes(value?.toLowerCase?.()) === true &&
-              nest_google_device_uuid.startsWith('device.') === true
-            ) {
-              // Set hvac mode on thermostat
-              subscribeJSONData.objects.push({
-                object_key: 'shared.' + nest_google_device_uuid.trim().split('.')[1],
-                op: 'MERGE',
-                value: { target_change_pending: true, target_temperature_type: value.toLowerCase() },
-              });
-            }
-
-            if (
-              key === 'fan_state' &&
-              typeof value === 'boolean' &&
-              Number.isFinite(Number(values?.fan_duration)) === true &&
-              nest_google_device_uuid.startsWith('device.') === true
-            ) {
-              // Set fan on/off on thermostat
-              // Duration also needs to be passed in
-              subscribeJSONData.objects.push({
-                object_key: nest_google_device_uuid,
-                op: 'MERGE',
-                value: {
-                  fan_state: value,
-                  fan_timer_timeout: value === true ? Number(values.fan_duration) + Math.floor(Date.now() / 1000) : 0,
-                },
-              });
-            }
-
-            if (
-              key === 'fan_timer_speed' &&
-              Number.isFinite(Number(value)) === true &&
-              nest_google_device_uuid.startsWith('device.') === true
-            ) {
-              // Set fan speed on thermostat
-              subscribeJSONData.objects.push({
-                object_key: nest_google_device_uuid,
-                op: 'MERGE',
-                value: { fan_timer_speed: value !== 0 ? 'stage' + value : 'stage1' },
-              });
-            }
-
-            if (
-              key === 'hot_water_boost_active' &&
-              typeof value?.state === 'boolean' &&
-              Number.isFinite(Number(value?.time)) === true &&
-              nest_google_device_uuid.startsWith('device.') === true &&
-              this.#rawData?.[nest_google_device_uuid]?.value?.has_hot_water_control === true
-            ) {
-              // Set hotwater boost time on heatlink (associated thermostat)
-              subscribeJSONData.objects.push({
-                object_key: nest_google_device_uuid,
-                op: 'MERGE',
-                value: {
-                  hot_water_boost_time_to_end: value.state === true ? Number(value.time) + Math.floor(Date.now() / 1000) : 0,
-                },
-              });
-            }
-
-            if (
-              key === 'hot_water_temperature' &&
-              Number.isFinite(Number(value)) === true &&
-              nest_google_device_uuid.startsWith('device.') === true &&
-              this.#rawData?.[nest_google_device_uuid]?.value?.has_hot_water_temperature === true
-            ) {
-              // Set hotwater temperature on heatlink (associated thermostat)
-              subscribeJSONData.objects.push({
-                object_key: nest_google_device_uuid,
-                op: 'MERGE',
-                value: {
-                  hot_water_temperature: Number(value),
-                },
-              });
-            }
-
-            if (key === 'temperature_lock' && typeof value === 'boolean' && nest_google_device_uuid.startsWith('device.') === true) {
-              // Set lock controls on thermostat
-              subscribeJSONData.objects.push({ object_key: nest_google_device_uuid, op: 'MERGE', value: { temperature_lock: value } });
-            }
-
-            if (
-              key === 'temperature_scale' &&
-              (value?.toUpperCase?.() === 'C' || value?.toUpperCase?.() === 'F') &&
-              nest_google_device_uuid.startsWith('device.') === true
-            ) {
-              // Set temperature scale on thermostat
-              subscribeJSONData.objects.push({
-                object_key: nest_google_device_uuid,
-                op: 'MERGE',
-                value: { temperature_scale: value.toUpperCase() },
-              });
-            }
-
-            if (
-              key === 'dehumidifier_state' &&
-              typeof value === 'boolean' &&
-              Number.isFinite(Number(values?.target_humidity_dehumidifier)) === true &&
-              nest_google_device_uuid.startsWith('device.') === true &&
-              this.#rawData?.[nest_google_device_uuid]?.value?.has_dehumidifier === true
-            ) {
-              // Set dehumidifier state on thermostat
-              subscribeJSONData.objects.push({
-                object_key: nest_google_device_uuid,
-                op: 'MERGE',
-                value: { target_humidity_enabled: value, target_humidity: Number(values.target_humidity_dehumidifier) },
-              });
-            }
-
-            if (
-              key === 'humidifier_state' &&
-              typeof value === 'boolean' &&
-              Number.isFinite(Number(values?.target_humidity_humidifier)) === true &&
-              nest_google_device_uuid.startsWith('device.') === true &&
-              this.#rawData?.[nest_google_device_uuid]?.value?.has_humidifier === true
-            ) {
-              // Set humidifier state on thermostat
-              subscribeJSONData.objects.push({
-                object_key: nest_google_device_uuid,
-                op: 'MERGE',
-                value: { target_humidity_enabled: value, target_humidity: Number(values.target_humidity_humidifier) },
-              });
-            }
-
-            if (
-              key === 'vacation_mode' &&
-              typeof value === 'boolean' &&
-              typeof this.#rawData?.['link.' + nest_google_device_uuid?.split('.')[1]]?.value?.structure === 'string'
-            ) {
-              // Set vacation mode on structure associated with thermostat
-              subscribeJSONData.objects.push({
-                object_key: this.#rawData['link.' + nest_google_device_uuid.split('.')[1]].value.structure,
-                op: 'MERGE',
-                value: { vacation_mode: value },
-              });
-            }
 
             if (key === 'ntp_green_led_enable' && typeof value === 'boolean' && nest_google_device_uuid.startsWith('topaz.') === true) {
               // Set night time promise Led status on Protect

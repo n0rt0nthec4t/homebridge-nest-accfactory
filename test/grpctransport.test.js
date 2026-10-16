@@ -6,8 +6,8 @@ import http2 from 'node:http2';
 import { fileURLToPath, URL } from 'node:url';
 import test from 'node:test';
 
-import GrpcTransport from '../../src/grpctransport.js';
-import { getProtoRoot } from '../../src/protobuf.js';
+import GrpcTransport from '../src/grpctransport.js';
+import { getProtoRoot } from '../src/protobuf.js';
 
 test('gRPC failures clean up only the request and preserve the pooled connection', async (t) => {
   for (let failure of ['clone', 'encode', 'write', 'stream']) {
@@ -25,7 +25,9 @@ test('gRPC failures clean up only the request and preserve the pooled connection
         let request = new EventEmitter();
         request.cork = request.uncork = () => {};
         request.write = () => {
-          if (failure === 'write') throw new Error('Write failed');
+          if (failure === 'write') {
+            throw new Error('Write failed');
+          }
         };
         request.end = () => globalThis.queueMicrotask(() => request.emit('error', new Error('Stream failed')));
         request.destroy = () => {
@@ -36,7 +38,7 @@ test('gRPC failures clean up only the request and preserve the pooled connection
       };
       t.mock.method(http2, 'connect', () => session);
       let transport = new GrpcTransport({
-        protoPath: fileURLToPath(new URL('../../src/protobuf/root.proto', import.meta.url)),
+        protoPath: fileURLToPath(new URL('../src/protobuf/root.proto', import.meta.url)),
         endpointHost: 'https://grpc-cleanup-test.invalid',
         getAuthHeader: () => 'test',
       });
@@ -56,7 +58,7 @@ test('gRPC failures clean up only the request and preserve the pooled connection
 });
 
 test('gRPC response buffering and terminal status handling', async (t) => {
-  let protoPath = fileURLToPath(new URL('../../src/protobuf/root.proto', import.meta.url));
+  let protoPath = fileURLToPath(new URL('../src/protobuf/root.proto', import.meta.url));
   let responseType = getProtoRoot(protoPath).lookupType('nestlabs.gateway.v1.SendCommandResponse');
   let expected = { resourceRequest: { resourceId: 'x'.repeat(20000) } };
   let payload = responseType.encode(responseType.fromObject(expected)).finish();

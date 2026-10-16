@@ -6,10 +6,10 @@ import { readFile } from 'node:fs/promises';
 import tls from 'node:tls';
 import { fileURLToPath, URL } from 'node:url';
 import test from 'node:test';
-import { getProtoRoot } from '../../src/protobuf.js';
+import { getProtoRoot } from '../src/protobuf.js';
 
 // Streamer is used only for media type constants here; avoid its Homebridge imports.
-let location = new URL('../../src/nexustalk.js', import.meta.url);
+let location = new URL('../src/nexustalk.js', import.meta.url);
 let source = await readFile(location, 'utf8');
 // Named timer imports otherwise retain the originals before per-test timer mocks activate.
 let timerModule =
@@ -31,7 +31,7 @@ source = source.replace(/from '([^']+)'/g, (match, specifier) => {
   return 'from ' + JSON.stringify(target);
 });
 let { default: NexusTalk } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
-let root = getProtoRoot(fileURLToPath(new URL('../../src/protobuf/nest/nexustalk.proto', import.meta.url)));
+let root = getProtoRoot(fileURLToPath(new URL('../src/protobuf/nest/nexustalk.proto', import.meta.url)));
 
 function packet(id, type, value = {}) {
   let message = type === undefined ? Buffer.alloc(0) : root.lookupType('nest.nexustalk.v1.' + type);

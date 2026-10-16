@@ -4,9 +4,10 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { URL } from 'node:url';
 import test from 'node:test';
-import { DATA_SOURCE, DEVICE_TYPE } from '../../src/consts.js';
+import { DATA_SOURCE, DEVICE_TYPE } from '../src/consts.js';
+import { createSupportDump } from '../src/supportdump.js';
 
-let source = await readFile(new URL('../../src/system.js', import.meta.url), 'utf8');
+let source = await readFile(new URL('../src/system.js', import.meta.url), 'utf8');
 
 let processDataBegin = source.indexOf('  async #processData(uuid, changedData = undefined) {');
 let processDataEnd = source.indexOf('  async #set(', processDataBegin);
@@ -21,9 +22,10 @@ let createDataHost = new Function(
   'deviceModules',
   'rawData',
   'getDeviceHKCategory',
+  'createSupportDump',
   'return new class {' +
     '#connections = new Map([["nest-account", { name: "Nest" }], ["google-account", { name: "Google" }]]);' +
-    '#deviceModules = deviceModules; #rawData = rawData; #trackedDevices = new Map();' +
+    '#deviceModules = deviceModules; #rawData = rawData; #trackedDevices = new Map(); #supportDumpWriter;' +
     'config = { options: {} }; api = {}; cachedAccessories = []; writes = [];' +
     'async #set(...args) { this.writes.push(args); } async #get() {}' +
     'run() { return this.#processData("google-account"); }' +
@@ -67,9 +69,10 @@ function setupDataProcessing(type) {
       }
     },
   };
-  let host = createDataHost(homeKit, DATA_SOURCE, DEVICE_TYPE, modules, raw, () => 1);
+  let host = createDataHost(homeKit, DATA_SOURCE, DEVICE_TYPE, modules, raw, () => 1, createSupportDump);
   return {
     host,
+    raw,
     updates,
     update: async (source, temperature, full = false) => {
       mapped.SERIAL = {
@@ -89,7 +92,36 @@ function setupDataProcessing(type) {
   };
 }
 
-for (let type of [DEVICE_TYPE.THERMOSTAT, DEVICE_TYPE.PROTECT, DEVICE_TYPE.TEMPSENSOR, DEVICE_TYPE.HOMEAWAY]) {
+test('disabled support dumps do not inspect raw payloads during device updates', async () => {
+  let flow = setupDataProcessing(DEVICE_TYPE.THERMOSTAT);
+  let reads = 0;
+  Object.defineProperty(flow.raw['device.nest'], 'value', {
+    get() {
+      reads++;
+      throw new Error('Diagnostic payload read');
+    },
+  });
+  await flow.update(DATA_SOURCE.NEST, 20, true);
+  assert.equal(reads, 0);
+  assert.equal(flow.data().current_temperature, 20);
+});
+
+test('system routes enabled API dumps through redaction without changing accessory data', async () => {
+  let flow = setupDataProcessing(DEVICE_TYPE.THERMOSTAT);
+  let lines = [];
+  flow.host.config.options.supportDump = true;
+  flow.host.log = { info: (...args) => lines.push(args.join(' ')), warn: () => assert.fail('Unexpected support-dump warning') };
+  flow.raw['device.nest'].connection = 'google-account';
+  flow.raw['device.nest'].value = { access_token: 'Private Account Token', serial_number: 'PRIVATE_SERIAL0001', temperature: 20 };
+  await flow.update(DATA_SOURCE.NEST, 20, true);
+  assert.equal(lines.join('\n').includes('Private Account Token'), false);
+  assert.equal(lines.join('\n').includes('PRIVATE_SERIAL0001'), false);
+  assert.equal(lines.join('\n').includes('**REDACTED_'), true);
+  assert.equal(flow.raw['device.nest'].value.access_token, 'Private Account Token');
+  assert.equal(flow.data().nest_google_device_uuid, 'device.nest');
+});
+
+for (let type of [DEVICE_TYPE.THERMOSTAT, DEVICE_TYPE.PROTECT, DEVICE_TYPE.TEMPSENSOR]) {
   for (let initialSource of [DATA_SOURCE.NEST, DATA_SOURCE.GOOGLE]) {
     test(type + ' retains Google state and SET routing after either source arrives first: ' + initialSource, async () => {
       let flow = setupDataProcessing(type);

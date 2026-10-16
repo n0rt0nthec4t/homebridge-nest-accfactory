@@ -1,5 +1,5 @@
 // Verify FFmpeg hardware discovery, capability queries, diagnostics, and session lifecycle.
-// Code version 2026.10.10
+// Code version 2026.10.15
 import assert from 'node:assert/strict';
 import child_process from 'node:child_process';
 import { Buffer } from 'node:buffer';
@@ -11,7 +11,7 @@ import timers from 'node:timers';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
-import FFmpeg from '../../src/ffmpeg.js';
+import FFmpeg from '../src/ffmpeg.js';
 
 const spawnProcess = child_process.spawn;
 

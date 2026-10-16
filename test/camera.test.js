@@ -1,5 +1,5 @@
 // Verify camera cleanup uses managed FFmpeg completion without Homebridge, media backends or network sockets.
-// Code version 2026.10.14
+// Code version 2026.10.15
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import child_process from 'node:child_process';
@@ -10,9 +10,9 @@ import { PassThrough } from 'node:stream';
 import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
 import { URL } from 'node:url';
-import FFmpeg from '../../src/ffmpeg.js';
-import { processConfig } from '../../src/config.js';
-import { DATA_SOURCE } from '../../src/consts.js';
+import FFmpeg from '../src/ffmpeg.js';
+import { processConfig } from '../src/config.js';
+import { DATA_SOURCE } from '../src/consts.js';
 
 // Replace runtime boundaries while exercising the complete camera implementation and real FFmpeg manager.
 let baseModule =
@@ -36,7 +36,7 @@ let replacements = {
   '../nexustalk.js': 'data:text/javascript,export default class {}',
   '../webrtc.js': 'data:text/javascript,export default class {}',
 };
-let location = new URL('../../src/plugins/camera.js', import.meta.url);
+let location = new URL('../src/plugins/camera.js', import.meta.url);
 let source = await readFile(location, 'utf8');
 source = source.replace(/from '([^']+)'/g, (match, specifier) => {
   let target = replacements[specifier] ?? (specifier.startsWith('.') === true ? new URL(specifier, location).href : specifier);
@@ -80,11 +80,7 @@ test('Nest and Google cameras default to two live viewers and forward configured
     let changed = new Map([[resource, { fields: new Set(Object.keys(value)) }]]);
     for (let maxStreams of [undefined, 1, 2, 3, 4]) {
       for (let hksv of [false, true]) {
-        let config = processConfig(
-          { options: { maxStreams, hksv }, devices: [{ serialNumber: 'CAMERA', hksv }] },
-          log,
-          {},
-        );
+        let config = processConfig({ options: { maxStreams, hksv }, devices: [{ serialNumber: 'CAMERA', hksv }] }, log, {});
         let result = processRawData(log, raw, config, undefined, changed).CAMERA;
         assert.equal(result?.full, true, source + ' fixture must produce a complete camera');
         assert.equal(result.data.maxStreams, maxStreams ?? 2);

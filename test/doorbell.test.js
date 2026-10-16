@@ -4,7 +4,7 @@ import { Buffer } from 'node:buffer';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { URL } from 'node:url';
-import { TIMERS } from '../../src/consts.js';
+import { TIMERS } from '../src/consts.js';
 
 // Replace only the camera boundary so the real doorbell hooks and field map run unchanged.
 let cameraModule =
@@ -13,7 +13,7 @@ let cameraModule =
     'export default class { constructor(data) { this.deviceData = data; } }' +
       'export function processRawData(log, raw, config, type, changed, map) { return map; }',
   );
-let location = new URL('../../src/plugins/doorbell.js', import.meta.url);
+let location = new URL('../src/plugins/doorbell.js', import.meta.url);
 let source = (await readFile(location, 'utf8')).replace(/from '([^']+)'/g, (match, specifier) => {
   return 'from ' + JSON.stringify(specifier === './camera.js' ? cameraModule : new URL(specifier, location).href);
 });
