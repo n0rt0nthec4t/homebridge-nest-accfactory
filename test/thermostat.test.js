@@ -1,14 +1,12 @@
 // Verify humidifier capability changes preserve automatic mode and existing service identity.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
+import hap from './helpers/homebridge-hap.js';
 import test from 'node:test';
 import { URL } from 'node:url';
 import { setImmediate } from 'node:timers/promises';
 import { DATA_SOURCE } from '../src/consts.js';
 
-let require = createRequire(import.meta.url);
-let hap = require('@homebridge/hap-nodejs');
 let parent = 'data:text/javascript,' + encodeURIComponent('export default class { constructor(data) { this.deviceData = data; } }');
 let location = new URL('../src/plugins/thermostat.js', import.meta.url);
 let source = (await readFile(location, 'utf8')).replace(/from '([^']+)'/g, (match, specifier) => {

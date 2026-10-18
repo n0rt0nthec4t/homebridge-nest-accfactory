@@ -2,7 +2,7 @@
 // Temporary plugin fixtures isolate invalid modules without changing the production registry.
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
-import { createRequire } from 'node:module';
+import hap from './helpers/homebridge-hap.js';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -14,7 +14,6 @@ import { DEVICE_TYPE, DEVICE_CATEGORY_MAP } from '../src/consts.js';
 let { default: registerPlatform } = await importSource(new URL('../src/index.js', import.meta.url));
 let { loadDeviceModules, getDeviceHKCategory } = await importSource(new URL('../src/devices.js', import.meta.url));
 let { default: Platform } = await importSource(new URL('../src/system.js', import.meta.url));
-let hap = createRequire(import.meta.url)('@homebridge/hap-nodejs');
 let log = { debug() {}, info() {}, warn() {}, error() {}, success() {} };
 
 for (let api of [undefined, null, {}, { registerPlatform: true }]) {

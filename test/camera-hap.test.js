@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import childProcess from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
+import hap from './helpers/homebridge-hap.js';
 import test from 'node:test';
 import { setImmediate } from 'node:timers/promises';
 import HomeKitDevice from '../src/HomeKitDevice/HomeKitDevice.js';
@@ -12,7 +12,6 @@ import FFmpeg from '../src/ffmpeg.js';
 import { TIMERS } from '../src/consts.js';
 import { importSource } from './helpers/import-source.js';
 
-let hap = createRequire(import.meta.url)('@homebridge/hap-nodejs');
 let C = hap.Characteristic;
 let transport =
   'data:text/javascript,' +

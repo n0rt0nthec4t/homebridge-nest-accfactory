@@ -2,7 +2,7 @@
 // Tests feed Observe/subscribe messages and exercise public device SET/GET routes without exposing private methods.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
+import hap from './homebridge-hap.js';
 import { setImmediate } from 'node:timers/promises';
 import HomeKitDevice from '../../src/HomeKitDevice/HomeKitDevice.js';
 import { DATA_SOURCE } from '../../src/consts.js';
@@ -17,7 +17,6 @@ let source = (await readFile(location, 'utf8'))
   .replace('from \'node:timers\'', 'from ' + JSON.stringify(boundary));
 let { default: Platform } = await importSource(location, source);
 let { default: Connections } = await importSource(new URL('../../src/connections.js', import.meta.url));
-let hap = createRequire(import.meta.url)('@homebridge/hap-nodejs');
 HomeKitDevice.PLUGIN_NAME = 'platform-harness';
 HomeKitDevice.PLATFORM_NAME = 'Fixture';
 let complete = () => ({ status: 0, data: [{ traitOperations: [{ progress: 'COMPLETE', status: { code: 0 } }] }] });

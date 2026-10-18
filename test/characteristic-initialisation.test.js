@@ -2,11 +2,10 @@
 import assert from 'node:assert/strict';
 import { importSource } from './helpers/import-source.js';
 import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
+import hap from './helpers/homebridge-hap.js';
 import test from 'node:test';
 import HomeKitDevice from '../src/HomeKitDevice/HomeKitDevice.js';
 
-let hap = createRequire(import.meta.url)('@homebridge/hap-nodejs');
 let classes = {};
 for (let name of ['thermostat', 'heatlink']) {
   let location = new URL('../src/plugins/' + name + '.js', import.meta.url);

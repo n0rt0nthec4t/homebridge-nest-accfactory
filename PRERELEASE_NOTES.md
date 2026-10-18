@@ -13,6 +13,8 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
 ### Fixed
 
+- Run accessory and platform tests with the HAP dependency supplied by either Homebridge 1.x or 2.x
+
 - Keep thermostat humidity state reads consistent with published Inactive updates when humidification and dehumidification are off
 
 - Ignore track and RTP callbacks from retired WebRTC peers so replacement sessions keep their own audio and decoder state

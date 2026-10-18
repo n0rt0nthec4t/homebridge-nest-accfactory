@@ -1,7 +1,7 @@
 // Exercise normalised device updates through the real lifecycle and real HAP services.
 // Matrices cover upstream transitions independently of HomeKit writes and retain cached identity.
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
+import hap from './helpers/homebridge-hap.js';
 import test from 'node:test';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -11,7 +11,6 @@ import { importSource } from './helpers/import-source.js';
 import HomeKitDevice from '../src/HomeKitDevice/HomeKitDevice.js';
 import { LOW_BATTERY_LEVEL } from '../src/consts.js';
 
-let hap = createRequire(import.meta.url)('@homebridge/hap-nodejs');
 let C = hap.Characteristic;
 let classes = {};
 for (let name of ['thermostat', 'heatlink', 'lock', 'protect', 'tempsensor', 'homeaway', 'weather', 'floodlight']) {

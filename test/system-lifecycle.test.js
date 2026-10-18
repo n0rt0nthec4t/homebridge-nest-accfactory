@@ -1,12 +1,11 @@
 // Drive discovery decisions, cached identity and account/source ownership through the public platform lifecycle.
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
+import hap from './helpers/homebridge-hap.js';
 import test from 'node:test';
 import HomeKitDevice from '../src/HomeKitDevice/HomeKitDevice.js';
 import { DATA_SOURCE, DEVICE_TYPE } from '../src/consts.js';
 import { platformHarness } from './helpers/platform-harness.js';
 
-let hap = createRequire(import.meta.url)('@homebridge/hap-nodejs');
 let data = {
   serialNumber: 'FIXTURE',
   manufacturer: 'Nest',

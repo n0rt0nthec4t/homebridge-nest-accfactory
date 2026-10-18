@@ -1,7 +1,7 @@
 // Follow Google Observe -> cache -> mapper -> accessory -> HAP, and HomeKit SET -> cloud -> commit.
 // Only account authorisation and remote gRPC are replaced; platform and device code stay file-backed.
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
+import hap from './helpers/homebridge-hap.js';
 import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
 import { importSource } from './helpers/import-source.js';
@@ -10,7 +10,6 @@ import HomeKitDevice from '../src/HomeKitDevice/HomeKitDevice.js';
 let { default: Platform } = await importSource(new URL('../src/system.js', import.meta.url));
 let { default: Connections } = await importSource(new URL('../src/connections.js', import.meta.url));
 let { default: Thermostat } = await importSource(new URL('../src/plugins/thermostat.js', import.meta.url));
-let hap = createRequire(import.meta.url)('@homebridge/hap-nodejs');
 HomeKitDevice.PLUGIN_NAME = 'cloud-flow-test';
 HomeKitDevice.PLATFORM_NAME = 'CloudFlow';
 let nextSerial = 0;
