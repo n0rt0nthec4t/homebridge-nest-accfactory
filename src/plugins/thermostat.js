@@ -48,7 +48,7 @@
 
 // Define nodejs module requirements
 import path from 'node:path';
-import fs from 'node:fs';
+import fs from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
 // Define our modules
@@ -72,7 +72,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.THERMOSTAT;
-  static VERSION = '2026.10.15'; // Code version
+  static VERSION = '2026.10.19'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -103,29 +103,6 @@ export default class NestThermostat extends HomeKitDevice {
 
     // Setup set characteristics
 
-    // Patch to avoid characteristic errors when setting initial property ranges
-    this.hap.Characteristic.TargetTemperature.prototype.getDefaultValue = () => {
-      return THERMOSTAT_MIN_TEMPERATURE; // start at minimum target temperature
-    };
-    this.hap.Characteristic.HeatingThresholdTemperature.prototype.getDefaultValue = () => {
-      return THERMOSTAT_MIN_TEMPERATURE; // start at minimum heating threshold
-    };
-    this.hap.Characteristic.CoolingThresholdTemperature.prototype.getDefaultValue = () => {
-      return THERMOSTAT_MAX_TEMPERATURE; // start at maximum cooling threshold
-    };
-    if (this.deviceData?.has_humidifier === true || this.deviceData?.has_dehumidifier === true) {
-      // Set default value for TargetHumidifierDehumidifierState based on capabilities
-      this.hap.Characteristic.TargetHumidifierDehumidifierState.prototype.getDefaultValue = () => {
-        if (this.deviceData?.has_humidifier === true && this.deviceData?.has_dehumidifier === true) {
-          return this.hap.Characteristic.TargetHumidifierDehumidifierState.HUMIDIFIER_OR_DEHUMIDIFIER;
-        } else if (this.deviceData?.has_humidifier === true) {
-          return this.hap.Characteristic.TargetHumidifierDehumidifierState.HUMIDIFIER;
-        } else {
-          return this.hap.Characteristic.TargetHumidifierDehumidifierState.DEHUMIDIFIER;
-        }
-      };
-    }
-
     // Used to indicate active temperature if the thermostat is using its temperature sensor data
     // or an external temperature sensor ie: Nest Temperature Sensor
     this.addCharacteristic(this.thermostatService, this.hap.Characteristic.StatusActive);
@@ -151,7 +128,7 @@ export default class NestThermostat extends HomeKitDevice {
 
     this.addCharacteristic(this.thermostatService, this.hap.Characteristic.TemperatureDisplayUnits, {
       onSet: (value) => {
-        this.setDisplayUnit(value);
+        return this.setDisplayUnit(value);
       },
       onGet: () => {
         return this.deviceData.temperature_scale.toUpperCase() === 'C'
@@ -173,8 +150,10 @@ export default class NestThermostat extends HomeKitDevice {
         minValue: THERMOSTAT_MIN_TEMPERATURE,
         maxValue: THERMOSTAT_MAX_TEMPERATURE,
       },
+      // The shared helper applies bounds before validating this instance's initial value.
+      initialValue: this.getTemperature(this.hap.Characteristic.TargetTemperature) ?? THERMOSTAT_MIN_TEMPERATURE,
       onSet: (value) => {
-        this.setTemperature(this.hap.Characteristic.TargetTemperature, value);
+        return this.setTemperature(this.hap.Characteristic.TargetTemperature, value);
       },
       onGet: () => {
         return this.getTemperature(this.hap.Characteristic.TargetTemperature);
@@ -187,8 +166,9 @@ export default class NestThermostat extends HomeKitDevice {
         minValue: THERMOSTAT_MIN_TEMPERATURE,
         maxValue: THERMOSTAT_MAX_TEMPERATURE,
       },
+      initialValue: this.getTemperature(this.hap.Characteristic.CoolingThresholdTemperature) ?? THERMOSTAT_MAX_TEMPERATURE,
       onSet: (value) => {
-        this.setTemperature(this.hap.Characteristic.CoolingThresholdTemperature, value);
+        return this.setTemperature(this.hap.Characteristic.CoolingThresholdTemperature, value);
       },
       onGet: () => {
         return this.getTemperature(this.hap.Characteristic.CoolingThresholdTemperature);
@@ -201,8 +181,9 @@ export default class NestThermostat extends HomeKitDevice {
         minValue: THERMOSTAT_MIN_TEMPERATURE,
         maxValue: THERMOSTAT_MAX_TEMPERATURE,
       },
+      initialValue: this.getTemperature(this.hap.Characteristic.HeatingThresholdTemperature) ?? THERMOSTAT_MIN_TEMPERATURE,
       onSet: (value) => {
-        this.setTemperature(this.hap.Characteristic.HeatingThresholdTemperature, value);
+        return this.setTemperature(this.hap.Characteristic.HeatingThresholdTemperature, value);
       },
       onGet: () => {
         return this.getTemperature(this.hap.Characteristic.HeatingThresholdTemperature);
@@ -226,7 +207,7 @@ export default class NestThermostat extends HomeKitDevice {
                 : [this.hap.Characteristic.TargetHeatingCoolingState.OFF],
       },
       onSet: (value) => {
-        this.setMode(value);
+        return this.setMode(value);
       },
       onGet: () => {
         return this.getMode();
@@ -617,8 +598,8 @@ export default class NestThermostat extends HomeKitDevice {
       historyEntry.target = { low: deviceData.target_temperature_low ?? 0, high: deviceData.target_temperature_high ?? 0 };
     }
 
-    if (deviceData.can_cool === false && deviceData.can_heat === false && hvacMode === 'OFF') {
-      // off mode
+    if (hvacMode === 'OFF') {
+      // Switching off does not remove heating/cooling capabilities; always publish the reported target mode.
       if (deviceData.target_temperature !== undefined) {
         this.thermostatService.updateCharacteristic(this.hap.Characteristic.TargetTemperature, deviceData.target_temperature);
       }
@@ -1361,7 +1342,7 @@ export default class NestThermostat extends HomeKitDevice {
           return this.hap.Characteristic.CurrentHumidifierDehumidifierState.DEHUMIDIFYING;
         }
 
-        return this.hap.Characteristic.CurrentHumidifierDehumidifierState.IDLE;
+        return this.hap.Characteristic.CurrentHumidifierDehumidifierState.INACTIVE;
       },
     });
 
@@ -1430,7 +1411,7 @@ export default class NestThermostat extends HomeKitDevice {
       initialValue:
         Number.isFinite(Number(deviceData.target_humidity_humidifier)) === true ? Number(deviceData.target_humidity_humidifier) : null,
       onSet: (value) => {
-        this.setHumidifierDehumidifierThreshold(this.hap.Characteristic.RelativeHumidityHumidifierThreshold, value);
+        return this.setHumidifierDehumidifierThreshold(this.hap.Characteristic.RelativeHumidityHumidifierThreshold, value);
       },
       onGet: () => {
         return Number.isFinite(Number(this.deviceData.target_humidity_humidifier)) === true
@@ -1445,7 +1426,7 @@ export default class NestThermostat extends HomeKitDevice {
       initialValue:
         Number.isFinite(Number(deviceData.target_humidity_dehumidifier)) === true ? Number(deviceData.target_humidity_dehumidifier) : null,
       onSet: (value) => {
-        this.setHumidifierDehumidifierThreshold(this.hap.Characteristic.RelativeHumidityDehumidifierThreshold, value);
+        return this.setHumidifierDehumidifierThreshold(this.hap.Characteristic.RelativeHumidityDehumidifierThreshold, value);
       },
       onGet: () => {
         return Number.isFinite(Number(this.deviceData.target_humidity_dehumidifier)) === true
@@ -2208,6 +2189,12 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
     )
     .forEach(([object_key, value]) => {
       try {
+        // Parent data may arrive after the thermostat; unrelated deltas need no remapping.
+        let resourceKeys = [object_key, value?.value?.device_info?.pairerId?.resourceId];
+        if (changedData instanceof Map && resourceKeys.some((key) => changedData.has(key)) === false) {
+          return;
+        }
+
         // Wait until the protobuf thermostat and its home are ready.
         if (
           value?.value?.configuration_done?.deviceReady !== true ||
@@ -2216,13 +2203,13 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
           return;
         }
 
-        // Map raw device data into our normalised thermostat schema
+        // Build a complete candidate from cached traits, independently of Observe message grouping.
         let mappedResult = buildMappedObject(
           THERMOSTAT_FIELD_MAP,
           createMappingContext(rawData, object_key, {
             google: value,
           }),
-          changedData instanceof Map ? changedData.get(object_key)?.fields : undefined,
+          new Set(Object.keys(value?.value ?? {})),
         );
 
         // Apply thermostat-specific post-map adjustments

@@ -4,6 +4,43 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.4-beta.9 (2026/10/18)
+
+### Changed
+
+- Updated HomeKitDevice to `2026.10.18`, HomeKitHistory to `2026.10.18`, fetchWrapper to `2026.10.17`, `eslint` to `10.13.0`, and `werift` to `0.25.1`
+- Expand device, cloud-to-HomeKit and streaming regression tests; measure every source module and enforce per-module coverage floors during checks and publishing
+
+### Fixed
+
+- Keep thermostat humidity state reads consistent with published Inactive updates when humidification and dehumidification are off
+
+- Ignore track and RTP callbacks from retired WebRTC peers so replacement sessions keep their own audio and decoder state
+
+- Settle pending NexusTalk connection attempts when the socket closes before the TLS handshake
+
+- Prevent late WebRTC talkback START responses from sending old audio or deferred STOP requests into replacement sessions
+
+- Preserve NexusTalk Google authentication mode across partial identity or host updates without new credentials
+
+- Preserve WebRTC media readiness when ICE connection events arrive after the first decodable keyframe
+
+- Prevent late WebRTC device lookup and SDP completion from reopening stopped streams or installing duplicate timers on replacement sessions
+- Honour full Nest data refreshes after topology changes instead of overwriting them with incremental subscriptions
+- Reauthorise Google accounts when Observe reports expired credentials, and prevent retired Observe transports from publishing stale data, removing accessories, restarting loops or invalidating refreshed credentials
+
+- Treat the default NexusTalk playback-end reason as a normal stop instead of reconnecting as though playback failed
+
+- Allow WebRTC sources to reopen after a requested close while live or recording outputs remain attached
+- Restore `.js` fallback when a thermostat external-control module is configured without a file extension
+- Respect live and recording output backpressure across scheduler ticks so blocked pipes do not keep accumulating media
+- Reflect thermostat Off changes from the Nest app in HomeKit while retaining heating and cooling capabilities
+- Prevent failed Nest REST and Google commands from committing requested device values; reject SET requests when the connection or Google command transport is unavailable
+- Return asynchronous thermostat setter results to HomeKit so command failures reach its error handling
+- Refresh camera, doorbell and floodlight credentials only from the account owning their selected Nest/Google resource
+- Discover Home/Away, thermostats, Heat Links, Protects, locks and camera-family accessories from cached fields when required data or parent resources arrive separately
+- Initialise thermostat and Heat Link characteristic values within their device ranges without changing shared HAP defaults for other accessories
+
 ## v0.4.4-beta.8 (2026/10/16)
 
 ### Changed

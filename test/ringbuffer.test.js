@@ -1,3 +1,4 @@
+// Verify bounded ring storage, logical indexes and retained-reference cleanup across wraparound.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -51,4 +52,39 @@ test('RingBuffer clear resets retained state and indexing', () => {
   assert.equal(buffer.startIndex, 100);
   assert.equal(buffer.tailIndex, 100);
   assert.equal(buffer.at(20), undefined);
+});
+
+test('RingBuffer rejects invalid offsets and shifts without changing retained order', () => {
+  let buffer = new RingBuffer(10, 2, 2);
+  buffer.push('a');
+  buffer.push('b');
+  assert.equal(buffer.full, true);
+  for (let invalid of [-1, 0.5, NaN, undefined]) {
+    assert.equal(buffer.physicalOffset(invalid), -1);
+    assert.equal(buffer.getByOffset(invalid), undefined);
+    assert.equal(buffer.at(invalid), undefined);
+    assert.equal(buffer.shift(invalid), false);
+  }
+  assert.equal(buffer.shift(0), false);
+  assert.equal(buffer.getByOffset(2), undefined);
+  assert.deepEqual([...buffer], ['a', 'b']);
+});
+test('RingBuffer releases retained references when an oversized shift empties wrapped storage', () => {
+  let buffer = new RingBuffer(10, 3, 3);
+  for (let value of ['a', 'b', 'c']) {
+    buffer.push(value);
+  }
+  buffer.shift(2);
+  buffer.push('d');
+  buffer.push('e');
+  assert.equal(buffer.shift(100, 50), true);
+  assert.equal(buffer.empty, true);
+  assert.equal(buffer.startIndex, 50);
+  assert.equal(
+    buffer.items.every((value) => value === undefined),
+    true,
+  );
+  assert.equal(buffer.full, false);
+  buffer.push('new');
+  assert.equal(buffer.at(50), 'new');
 });

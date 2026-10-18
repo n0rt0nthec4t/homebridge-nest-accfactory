@@ -46,7 +46,7 @@ import { DATA_SOURCE, DEVICE_TYPE, NESTLABS_MAC_PREFIX } from '../consts.js';
 
 export default class NestHomeAway extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.HOMEAWAY;
-  static VERSION = '2026.10.15'; // Code version
+  static VERSION = '2026.10.18'; // Code version
 
   occupancyService = undefined;
 
@@ -76,11 +76,7 @@ export default class NestHomeAway extends HomeKitDevice {
 
     // Log away/home state changes
     if (typeof deviceData?.occupancy === 'boolean' && deviceData.occupancy !== this.deviceData.occupancy) {
-      this?.log?.info?.(
-        'Home/Away on "%s" changed to "%s"',
-        deviceData.description,
-        deviceData.occupancy === true ? 'Home' : 'Away',
-      );
+      this?.log?.info?.('Home/Away on "%s" changed to "%s"', deviceData.description, deviceData.occupancy === true ? 'Home' : 'Away');
     }
   }
 }
@@ -127,9 +123,7 @@ const HOMEAWAY_FIELD_MAP = {
     required: true,
     merge: ({ values }) =>
       HomeKitDevice.makeValidHKName(
-        typeof values?.google === 'string' && values.google.trim() !== ''
-          ? values.google.trim()
-          : 'unknown description',
+        typeof values?.google === 'string' && values.google.trim() !== '' ? values.google.trim() : 'unknown description',
       ),
     google: {
       fields: ['structure_location', 'structure_info'],
@@ -180,13 +174,17 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
     .filter(([key, value]) => key.startsWith('STRUCTURE_') === true && value?.source === DATA_SOURCE.GOOGLE)
     .forEach(([object_key, value]) => {
       try {
-        // Map raw structure data into our normalised home/away schema
+        if (changedData instanceof Map && changedData.has(object_key) === false) {
+          return;
+        }
+
+        // Required traits may arrive separately; map the affected structure from its complete cache.
         let mappedResult = buildMappedObject(
           HOMEAWAY_FIELD_MAP,
           createMappingContext(rawData, object_key, {
             google: value,
           }),
-          changedData instanceof Map ? changedData.get(object_key)?.fields : undefined,
+          new Set(Object.keys(value?.value ?? {})),
         );
 
         let serialNumber = mappedResult?.data?.serialNumber;

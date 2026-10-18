@@ -1,6 +1,6 @@
 // Verify chime override, Quiet Time precedence, cooldown and retired switch cleanup without media or network services.
 import assert from 'node:assert/strict';
-import { Buffer } from 'node:buffer';
+import { importSource } from './helpers/import-source.js';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { URL } from 'node:url';
@@ -17,7 +17,7 @@ let location = new URL('../src/plugins/doorbell.js', import.meta.url);
 let source = (await readFile(location, 'utf8')).replace(/from '([^']+)'/g, (match, specifier) => {
   return 'from ' + JSON.stringify(specifier === './camera.js' ? cameraModule : new URL(specifier, location).href);
 });
-let { default: Doorbell, processRawData } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
+let { default: Doorbell, processRawData } = await importSource(location, source);
 
 function setup(t, data = {}, cached = new Map()) {
   let doorbell = new Doorbell({

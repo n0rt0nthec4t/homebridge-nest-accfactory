@@ -39,7 +39,7 @@
 // - Uses shared protobuf helpers for schema/type loading and traversal
 // - Creates and updates HomeKitDevice-based instances for supported device types
 //
-// Code version 2026.10.16
+// Code version 2026.10.19
 // Mark Hulskamp
 'use strict';
 
@@ -55,6 +55,7 @@ import { URL } from 'node:url';
 // Import our modules
 import HomeKitDevice from './HomeKitDevice.js';
 import Connections from './connections.js';
+import GrpcTransport from './grpctransport.js';
 import { loadDeviceModules, getDeviceHKCategory } from './devices.js';
 import { processConfig } from './config.js';
 import { fetchWrapper } from './fetchWrapper.js';
@@ -208,6 +209,11 @@ export default class NestAccfactory {
             continue;
           }
 
+          // Refresh credentials only for cameras whose selected resource belongs to this account.
+          if (this.#rawData?.[trackedDevice.nest_google_device_uuid]?.connection !== uuid) {
+            continue;
+          }
+
           try {
             // Send an update message onto the device so it can update its api access details if needed.
             await HomeKitDevice.message(trackedDevice.uuid, HomeKitDevice.UPDATE, {
@@ -267,13 +273,16 @@ export default class NestAccfactory {
 
     // We have data stored from this Nest API, so setup read using known object
     // We exclude any data source other than from Nest API and also any injected data
-    if (firstRun === false || fullRead === false) {
+    if (firstRun === false && fullRead === false) {
       subscribeJSONData = { objects: [] };
       subscribeJSONData.objects.push(
         ...Object.entries(this.#rawData)
-          .filter(([key, value]) =>
-            value.source === DATA_SOURCE.NEST && value.connection === uuid && value?.injected !== true &&
-            NEST_API_BUCKETS.includes(key.split('.')[0]) === true,
+          .filter(
+            ([key, value]) =>
+              value.source === DATA_SOURCE.NEST &&
+              value.connection === uuid &&
+              value?.injected !== true &&
+              NEST_API_BUCKETS.includes(key.split('.')[0]) === true,
           )
           .map(([key, value]) => ({
             object_key: key,
@@ -551,13 +560,20 @@ export default class NestAccfactory {
       return;
     }
 
-    connection.grpcTransport
+    let grpcTransport = connection.grpcTransport;
+    grpcTransport
       .observe(
         'nestlabs.gateway.v2.',
         'GatewayService',
         'Observe',
         { stateTypes: ['CONFIRMED', 'ACCEPTED'], traitTypeParams: observeTraitsList },
         async (message) => {
+          // A released Observe stream can still finish a queued callback.
+          // Only the active account transport may mutate the cache or remove accessories.
+          if (this.#connections?.get(uuid) !== connection || connection.grpcTransport !== grpcTransport || connection.authorised !== true) {
+            return;
+          }
+
           let observeResponses = Array.isArray(message?.observeResponse) === true ? message.observeResponse : [message].filter(Boolean);
           let changedData = new Map(); // Map of resourceId to { fields: Set(...) } for processing after the loop
 
@@ -689,6 +705,18 @@ export default class NestAccfactory {
       .then((result) => {
         // gRPC failures normally resolve with a status rather than reject.
         observeFailed = result.status !== 0;
+
+        // Expired/revoked credentials need account reauthentication, not another
+        // Observe request with the same token. A retired transport must not
+        // invalidate credentials installed by a refresh while it was closing.
+        if (
+          result.status === GrpcTransport.STATUS.UNAUTHENTICATED &&
+          this.#connections?.get(uuid) === connection &&
+          connection.grpcTransport === grpcTransport &&
+          connection.authorised === true
+        ) {
+          this.#connections?.markUnauthorised?.(uuid, 'google-api-' + result.status);
+        }
       })
       .catch((error) => {
         observeFailed = true;
@@ -701,7 +729,7 @@ export default class NestAccfactory {
       })
       .finally(() => {
         // Only continue the observe loop if this exact connection is still active and authorised.
-        if (this.#connections?.get(uuid) === connection && connection.authorised === true) {
+        if (this.#connections?.get(uuid) === connection && connection.grpcTransport === grpcTransport && connection.authorised === true) {
           let observeDelay = API_STREAM_LOOP_INTERVAL;
 
           if (observeFailed === true) {
@@ -912,9 +940,14 @@ export default class NestAccfactory {
       connection === null ||
       connection.authorised !== true
     ) {
-      return;
+      throw new Error('SET requires an available authorised device connection');
     }
 
+    if (this.#rawData[nest_google_device_uuid].source === DATA_SOURCE.GOOGLE && connection.grpcTransport === undefined) {
+      throw new Error('Google command transport is unavailable');
+    }
+
+    let failures = [];
     for (let [key, value] of Object.entries(values)) {
       try {
         if (key === 'uuid') {
@@ -1300,8 +1333,9 @@ export default class NestAccfactory {
               batchUpdateStateRequest: updatedTraits,
             });
             let commandResponse = Array.isArray(grpcResult?.data) === true ? grpcResult.data[0] : undefined;
-            if (commandResponse?.traitOperations?.[0]?.progress !== 'COMPLETE') {
-              this?.log?.debug?.('Google API had error updating traits for device uuid "%s"', nest_google_device_uuid);
+            let operation = commandResponse?.traitOperations?.[0];
+            if (grpcResult?.status !== 0 || operation?.progress !== 'COMPLETE' || (operation?.status?.code ?? 0) !== 0) {
+              throw new Error('Google API rejected setting "' + key + '"');
             }
           }
 
@@ -1309,12 +1343,9 @@ export default class NestAccfactory {
           for (let command of commandTraits ?? []) {
             let grpcResult = await connection.grpcTransport.command('nestlabs.gateway.v1.', 'ResourceApi', 'SendCommand', command);
             let commandResponse = Array.isArray(grpcResult?.data) === true ? grpcResult.data[0] : undefined;
-            if (commandResponse?.traitOperations?.[0]?.progress !== 'COMPLETE') {
-              this?.log?.debug?.(
-                'Google API had error setting "%s" for device uuid "%s"',
-                command?.resourceCommands?.[0]?.traitLabel,
-                nest_google_device_uuid,
-              );
+            let operation = commandResponse?.traitOperations?.[0];
+            if (grpcResult?.status !== 0 || operation?.progress !== 'COMPLETE' || (operation?.status?.code ?? 0) !== 0) {
+              throw new Error('Google API rejected setting "' + key + '"');
             }
           }
         }
@@ -1391,6 +1422,7 @@ export default class NestAccfactory {
           }
         }
       } catch (error) {
+        failures.push(error);
         this?.log?.debug?.(
           'Failed processing set request for key "%s" on device uuid "%s". Error was "%s"',
           key,
@@ -1398,6 +1430,12 @@ export default class NestAccfactory {
           typeof error?.message === 'string' ? error.message : String(error),
         );
       }
+    }
+
+    // Preserve attempts for remaining fields, but prevent SET from committing a partially accepted request.
+    // Upstream updates reconcile fields that reached the cloud before another field failed.
+    if (failures.length > 0) {
+      throw new AggregateError(failures, 'One or more device settings were rejected');
     }
   }
 

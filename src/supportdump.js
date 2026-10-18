@@ -48,7 +48,8 @@ const MAX_OUTPUT_CHARACTERS = 65536;
 // Retain retired REST prefixes for private references even though they are no longer requested.
 // A prefixed resource and its bare serial must still share an alias.
 const RESOURCE_PREFIX = new RegExp(
-  '^(?:' + [...NEST_API_BUCKETS, 'device', 'shared', 'track', 'link', 'rcs_settings', 'kryptonite', 'schedule'].join('|') +
+  '^(?:' +
+    [...NEST_API_BUCKETS, 'device', 'shared', 'track', 'link', 'rcs_settings', 'kryptonite', 'schedule'].join('|') +
     ')\\.|^(?:DEVICE|STRUCTURE|SERVICE|USER|RESOURCE)_',
 );
 

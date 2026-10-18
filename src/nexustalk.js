@@ -44,7 +44,7 @@
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.05.18
+// Code version 2026.10.19
 // Mark Hulskamp
 'use strict';
 
@@ -260,6 +260,10 @@ export default class NexusTalk extends StreamTransport {
         socket.on('close', () => {
           let reconnectHost = undefined;
 
+          // Requested close may happen before TLS emits its handshake callback.
+          // Settle open() so callers are not left waiting on a socket that has ended.
+          resolve();
+
           if (this.#socket !== socket) {
             return;
           }
@@ -404,7 +408,9 @@ export default class NexusTalk extends StreamTransport {
     newUuid = typeof options?.uuid === 'string' && options.uuid !== '' ? options.uuid : undefined;
     newHost = typeof options?.host === 'string' && options.host !== '' ? options.host : undefined;
     newToken = typeof options?.apiAccess?.token === 'string' && options.apiAccess.token !== '' ? options.apiAccess.token : undefined;
-    newGoogleAuth = typeof options?.apiAccess?.oauth2 === 'string' && options.apiAccess.oauth2 !== '';
+    if (typeof options?.apiAccess === 'object' && options.apiAccess !== null) {
+      newGoogleAuth = typeof options.apiAccess.oauth2 === 'string' && options.apiAccess.oauth2 !== '';
+    }
 
     // Update device UUID if supplied. Used for logging, reconnects and transport identity.
     if (typeof newUuid === 'string') {
@@ -423,7 +429,8 @@ export default class NexusTalk extends StreamTransport {
 
     // Update authentication mode.
     // Google OAuth availability determines whether Google auth is used.
-    if (this.useGoogleAuth !== newGoogleAuth) {
+    // Partial identity/host updates leave the existing authentication mode intact.
+    if (typeof newGoogleAuth === 'boolean' && this.useGoogleAuth !== newGoogleAuth) {
       this.useGoogleAuth = newGoogleAuth;
     }
 
@@ -998,7 +1005,9 @@ export default class NexusTalk extends StreamTransport {
     // would otherwise be lost if the stream ends without a newer timestamp arriving.
     this.#flushPendingVideo(this.#channels.video);
 
-    if (this.#sessionId !== undefined && decodedMessage.reason === 'USER_ENDED_SESSION') {
+    // Protobuf omits the zero-valued USER_ENDED_SESSION enum from JSON when
+    // the sender leaves it at its default. Treat that as a normal end too.
+    if (this.#sessionId !== undefined && (decodedMessage.reason ?? 'USER_ENDED_SESSION') === 'USER_ENDED_SESSION') {
       // Normal playback ended ie: when we stopped playback.
       this?.log?.debug?.('Playback ended on "%s"', this.#host);
 

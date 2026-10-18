@@ -1,5 +1,6 @@
 // Verify independent Daikin state, power-off parameters and failure recovery with mocked HTTP.
 import assert from 'node:assert/strict';
+import { importSource } from './helpers/import-source.js';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { setImmediate } from 'node:timers/promises';
@@ -11,7 +12,7 @@ let source = (await readFile(location, 'utf8')).replace(
   '../fetchWrapper.js',
   new URL('../src/fetchWrapper/fetchWrapper.js', import.meta.url).href,
 );
-let { default: createDaikin } = await import('data:text/javascript,' + encodeURIComponent(source));
+let { default: createDaikin } = await importSource(location, source);
 
 for (let [mode, value, temperature, humidity] of [
   ['fan', 50, '--', '--'],

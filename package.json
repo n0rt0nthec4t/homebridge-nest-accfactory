@@ -2,7 +2,7 @@
     "name": "homebridge-nest-accfactory",
     "displayName": "Nest Accfactory",
     "type": "module",
-    "version": "0.4.4-beta.8",
+    "version": "0.4.4-beta.9",
     "description": "Homebridge support for Nest/Google devices including HomeKit Secure Video (HKSV) support for doorbells and cameras",
     "author": "n0rt0nthec4t",
     "license": "Apache-2.0",
@@ -52,9 +52,9 @@
         "lint": "eslint \"src/**/*.{js,mjs}\" \"test/**/*.js\" --max-warnings=20",
         "test": "node --test \"test/*.test.js\" \"src/HomeKitDevice/*.test.js\" \"src/HomeKitHistory/*.test.js\" \"src/fetchWrapper/*.test.js\"",
         "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=\"src/**\" --test-coverage-exclude=\"**/*.test.js\" --test-reporter=spec --test-reporter=./test/coverage-reporter.js --test-reporter-destination=stdout --test-reporter-destination=stdout \"test/*.test.js\" \"src/HomeKitDevice/*.test.js\" \"src/HomeKitHistory/*.test.js\" \"src/fetchWrapper/*.test.js\"",
-        "check": "npm run lint && npm test && npm run build",
+        "check": "npm run lint && npm run test:coverage && npm run build",
         "build": "npm run clean && copyfiles -u 1 src/*.js dist && copyfiles -u 2 src/HomeKitDevice/HomeKitDevice.js dist && copyfiles -u 2 src/HomeKitHistory/HomeKitHistory.js dist && copyfiles -u 2 src/fetchWrapper/fetchWrapper.js dist && copyfiles -u 1 src/res/*.h264 dist && copyfiles -u 1 src/res/*.jpg dist && copyfiles -u 1 'src/protobuf/**/*.proto' dist && copyfiles -u 1 src/plugins/*.js dist && copyfiles -u 1 src/plugins/*.mjs dist",
-        "prepublishOnly": "npm run format && npm run lint && npm test && npm run build"
+        "prepublishOnly": "npm run format && npm run lint && npm run test:coverage && npm run build"
     },
     "devDependencies": {
         "@eslint/js": "^10.0.1",
@@ -62,7 +62,7 @@
         "@types/node": "^26.6.5",
         "@typescript-eslint/parser": "^8.71.2",
         "copyfiles": "^2.4.1",
-        "eslint": "^10.12.0",
+        "eslint": "^10.13.0",
         "globals": "^17.13.0",
         "homebridge": "^1.11.4 || ^2.4.0",
         "prettier": "^3.9.10",
@@ -73,6 +73,6 @@
         "@evan/opus": "^1.0.3",
         "chalk": "^6.0.1",
         "protobufjs": "^8.8.1",
-        "werift": "^0.25.0"
+        "werift": "^0.25.1"
     }
 }

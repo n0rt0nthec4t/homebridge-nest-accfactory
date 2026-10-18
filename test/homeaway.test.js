@@ -1,5 +1,6 @@
 // Verify protobuf-only Home/Away discovery, stable identity and occupancy updates without starting Homebridge.
 import assert from 'node:assert/strict';
+import { importSource } from './helpers/import-source.js';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { URL } from 'node:url';
@@ -11,7 +12,7 @@ let parent = 'data:text/javascript,' + encodeURIComponent('export default class 
 let source = (await readFile(location, 'utf8')).replace(/from '([^']+)'/g, (match, specifier) => {
   return 'from ' + JSON.stringify(specifier === '../HomeKitDevice.js' ? parent : new URL(specifier, location).href);
 });
-let { default: HomeAway, processRawData } = await import('data:text/javascript,' + encodeURIComponent(source));
+let { default: HomeAway, processRawData } = await importSource(location, source);
 let changed = new Map([['STRUCTURE_HOME', { fields: new Set(['structure_info', 'structure_mode']) }]]);
 
 function structure(mode) {
@@ -29,7 +30,10 @@ test('Home/Away ignores REST structures regardless of arrival order and preserve
   let google = ['STRUCTURE_HOME', structure('STRUCTURE_MODE_AWAY')];
   let serial = NESTLABS_MAC_PREFIX + crc24(DEVICE_TYPE.HOMEAWAY.toUpperCase() + ':STRUCTURE.HOME').toUpperCase();
   assert.deepEqual(processRawData(undefined, Object.fromEntries([rest]), { options: {} }, undefined, changed), {});
-  for (let entries of [[rest, google], [google, rest]]) {
+  for (let entries of [
+    [rest, google],
+    [google, rest],
+  ]) {
     let devices = processRawData(undefined, Object.fromEntries(entries), { options: {} }, undefined, changed);
     assert.deepEqual(Object.keys(devices), [serial]);
     assert.equal(devices[serial].full, true);
@@ -66,13 +70,21 @@ test('Home/Away mode-only deltas retain identity and update HomeKit despite acti
       structureMode: 'STRUCTURE_MODE_' + mode,
       occupancy: { activity: 'ACTIVITY_ACTIVE', presence: 'PRESENCE_UNAVAILABLE' },
     };
-    let delta = processRawData(undefined, raw, { options: {} }, undefined,
-      new Map([['STRUCTURE_HOME', { fields: new Set(['structure_mode']) }]]));
+    let delta = processRawData(
+      undefined,
+      raw,
+      { options: {} },
+      undefined,
+      new Map([['STRUCTURE_HOME', { fields: new Set(['structure_mode']) }]]),
+    );
     assert.deepEqual(Object.keys(delta), [serial]);
-    assert.equal(delta[serial].full, false);
+    assert.equal(delta[serial].full, true, 'mode-only updates reuse the cached discovery fields');
     HomeAway.prototype.onUpdate.call(target, { ...initial[serial].data, ...delta[serial].data });
   }
-  assert.deepEqual(updates.map((args) => args[1]), [0, 1]);
+  assert.deepEqual(
+    updates.map((args) => args[1]),
+    [0, 1],
+  );
 });
 
 test('Home/Away publishes the translated occupancy supplied by the lifecycle', () => {
@@ -84,5 +96,8 @@ test('Home/Away publishes the translated occupancy supplied by the lifecycle', (
   };
   HomeAway.prototype.onUpdate.call(target, { occupancy: true });
   HomeAway.prototype.onUpdate.call(target, { occupancy: false });
-  assert.deepEqual(updates.map((args) => args[1]), [1, 0]);
+  assert.deepEqual(
+    updates.map((args) => args[1]),
+    [1, 0],
+  );
 });

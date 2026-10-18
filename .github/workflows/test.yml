@@ -11,7 +11,17 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node: [22, 24, 26]
+        include:
+          - node: 22
+            homebridge: 1.11.4
+          - node: 22
+            homebridge: 2.4.0
+          - node: 24
+            homebridge: 1.11.4
+          - node: 24
+            homebridge: 2.4.0
+          - node: 26
+            homebridge: 2.4.0
 
     steps:
       - uses: actions/checkout@v5
@@ -24,4 +34,10 @@ jobs:
           cache: npm
 
       - run: npm ci
+      - run: npm install --no-save --package-lock=false homebridge@${{ matrix.homebridge }}
       - run: npm run check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-node-${{ matrix.node }}-homebridge-${{ matrix.homebridge }}
+          path: coverage/summary.json

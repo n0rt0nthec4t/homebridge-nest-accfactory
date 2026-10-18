@@ -23,6 +23,26 @@ let source = (await readFile(location, 'utf8')).replace(/from '([^']+)'/g, (matc
 source = source.replaceAll('#setupHumidifierDehumidifier', 'setupHumidityForTest').replaceAll('#external', 'externalForTest');
 let { default: Thermostat, processRawData } = await import('data:text/javascript,' + encodeURIComponent(source));
 
+test('thermostat callbacks propagate asynchronous failures through the HAP write boundary', async () => {
+  // Exercise the registered callback bodies without running unrelated accessory setup.
+  let callbacks = [...source.matchAll(/onSet: \(value\) => \{\s*((?:return )?this\.(set\w+)\([^;]+\);)\s*\}/g)].filter((match) =>
+    ['setDisplayUnit', 'setTemperature', 'setMode', 'setHumidifierDehumidifierThreshold'].includes(match[2]),
+  );
+  assert.equal(callbacks.length, 7);
+  for (let [, body, method] of callbacks) {
+    let pending = Promise.withResolvers();
+    let target = { hap, [method]: () => pending.promise };
+    let characteristic = new hap.Characteristic.TargetTemperature();
+    let initial = characteristic.value;
+    characteristic.onSet(new Function('value', body).bind(target));
+    let rejected = assert.rejects(characteristic.handleSetRequest(25));
+    pending.reject(new hap.HapStatusError(hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE));
+    await rejected;
+    assert.equal(characteristic.statusCode, hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+    assert.equal(characteristic.value, initial);
+  }
+});
+
 for (let firstSource of [DATA_SOURCE.NEST, DATA_SOURCE.GOOGLE]) {
   test('thermostat mapper ignores REST with raw data arriving first from ' + firstSource, () => {
     let nest = ['device.nest', { source: DATA_SOURCE.NEST, value: { serial_number: 'SERIAL', backplate_temperature: 19 } }];

@@ -11,3 +11,4 @@ dist*
 *.opus
 *.aac
 *.mp4
+coverage/

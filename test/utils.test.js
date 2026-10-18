@@ -1,3 +1,4 @@
+// Verify normalisation, range conversion, identity and naming helpers with malformed and boundary inputs.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -56,4 +57,39 @@ test('buildDeviceDescription avoids repeating an existing location', () => {
 
   assert.equal(buildDeviceDescription({}, raw), 'Front Door Camera');
   assert.equal(buildDeviceDescription({}, { value: {} }), 'unknown description');
+});
+
+test('temperature conversion rejects unsupported units and retains numeric strings and same-unit precision', () => {
+  for (let units of [
+    [undefined, 'C'],
+    ['C', 'K'],
+    ['K', 'F'],
+  ]) {
+    assert.equal(adjustTemperature(20, ...units), undefined);
+  }
+  assert.equal(adjustTemperature('20.25', 'c', 'c', false), 20.25);
+  assert.equal(adjustTemperature(68.2, 'f', 'f', false), 68.2);
+});
+test('scaling rejects every non-numeric input position', () => {
+  for (let index = 0; index < 5; index++) {
+    let values = [5, 0, 10, 0, 100];
+    values[index] = 'bad';
+    assert.equal(scaleValue(...values), undefined);
+  }
+});
+test('duration parsing applies lower bounds and preserves missing-value defaults', () => {
+  assert.equal(parseDurationToSeconds('1 second', { min: 30 }), 30);
+  assert.equal(parseDurationToSeconds('2 hours 3 minutes 4 seconds'), 7384);
+  assert.equal(parseDurationToSeconds('bad'), null);
+  for (let input of [undefined, null, '']) {
+    assert.equal(parseDurationToSeconds(input, { defaultValue: 15 }), 15);
+  }
+});
+test('software versions pad short versions and fail closed on strings without numbers', () => {
+  assert.equal(processSoftwareVersion('1.2'), '1.2.0');
+  assert.equal(processSoftwareVersion('release'), '0.0.0');
+  assert.equal(processSoftwareVersion(''), '0.0.0');
+});
+test('device description uses a known location even when the cloud label is absent', () => {
+  assert.equal(buildDeviceDescription({}, { value: { device_located_settings: { fixtureNameLabel: { literal: 'Kitchen' } } } }), 'Kitchen');
 });

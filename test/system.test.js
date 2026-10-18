@@ -6,8 +6,86 @@ import { URL } from 'node:url';
 import test from 'node:test';
 import { DATA_SOURCE, DEVICE_TYPE } from '../src/consts.js';
 import { createSupportDump } from '../src/supportdump.js';
+import GrpcTransport from '../src/grpctransport.js';
 
 let source = await readFile(new URL('../src/system.js', import.meta.url), 'utf8');
+
+let connectionsBegin = source.indexOf('  #createConnections() {');
+let connectionsEnd = source.indexOf('  async #subscribeNestAPI(', connectionsBegin);
+assert.ok(connectionsBegin !== -1 && connectionsEnd > connectionsBegin, 'Connection callback boundaries must exist');
+
+// Capture the production authorisation callback while isolating cloud ingestion and device delivery.
+let createAuthHost = new Function(
+  'trackedDevices',
+  'rawData',
+  'HomeKitDevice',
+  'DEVICE_TYPE',
+  'const Connections = { fromConfig: (config, options) => options };' +
+    'return new class {' +
+    '#trackedDevices = trackedDevices; #rawData = rawData; config = {}; starts = [];' +
+    'async #subscribeNestAPI(uuid) { this.starts.push(["nest", uuid]); }' +
+    'async #observeGoogleAPI(uuid) { this.starts.push(["google", uuid]); }' +
+    'callback() { return this.#createConnections().onAuthorised; }' +
+    source.slice(connectionsBegin, connectionsEnd) +
+    '};',
+);
+
+test('account authorisation and refresh update only owned camera-family credentials', async () => {
+  let tracked = new Map();
+  let raw = {};
+  for (let account of ['account-A', 'account-B']) {
+    for (let type of [DEVICE_TYPE.CAMERA, DEVICE_TYPE.DOORBELL, DEVICE_TYPE.FLOODLIGHT, DEVICE_TYPE.THERMOSTAT]) {
+      let id = account + '-' + type;
+      tracked.set(id, { uuid: id, type, nest_google_device_uuid: id });
+      raw[id] = { connection: account };
+    }
+  }
+  tracked.set('missing', { uuid: 'missing', type: DEVICE_TYPE.CAMERA, nest_google_device_uuid: 'removed' });
+  let updates = [];
+  let host = createAuthHost(tracked, raw, { UPDATE: 'UPDATE', message: async (...args) => updates.push(args) }, DEVICE_TYPE);
+  for (let wasAuthorised of [false, true]) {
+    for (let account of ['account-A', 'account-B']) {
+      updates.length = 0;
+      let cameraAuth = { token: account + '-new-token' };
+      await host.callback()(account, { cameraAuth }, { wasAuthorised });
+      assert.deepEqual(
+        updates,
+        [DEVICE_TYPE.CAMERA, DEVICE_TYPE.DOORBELL, DEVICE_TYPE.FLOODLIGHT].map((type) => [
+          account + '-' + type,
+          'UPDATE',
+          { apiAccess: cameraAuth },
+        ]),
+      );
+    }
+  }
+  assert.deepEqual(host.starts, [
+    ['nest', 'account-A'],
+    ['google', 'account-A'],
+    ['nest', 'account-B'],
+    ['google', 'account-B'],
+  ]);
+});
+
+test('camera credential refresh follows the selected resource after Nest/Google source switches', async () => {
+  let tracked = new Map([['camera', { uuid: 'camera', type: DEVICE_TYPE.CAMERA, nest_google_device_uuid: 'quartz.camera' }]]);
+  let raw = { 'quartz.camera': { connection: 'nest-account' }, DEVICE_CAMERA: { connection: 'google-account' } };
+  let updates = [];
+  let host = createAuthHost(tracked, raw, { UPDATE: 'UPDATE', message: async (...args) => updates.push(args) }, DEVICE_TYPE);
+  let refresh = host.callback();
+  for (let [resource, owner] of [
+    ['quartz.camera', 'nest-account'],
+    ['DEVICE_CAMERA', 'google-account'],
+    ['quartz.camera', 'nest-account'],
+  ]) {
+    tracked.get('camera').nest_google_device_uuid = resource;
+    for (let account of ['nest-account', 'google-account']) {
+      updates.length = 0;
+      let cameraAuth = { token: account + '-token' };
+      await refresh(account, { cameraAuth }, { wasAuthorised: true });
+      assert.deepEqual(updates, owner === account ? [['camera', 'UPDATE', { apiAccess: cameraAuth }]] : []);
+    }
+  }
+});
 
 let processDataBegin = source.indexOf('  async #processData(uuid, changedData = undefined) {');
 let processDataEnd = source.indexOf('  async #set(', processDataBegin);
@@ -178,6 +256,7 @@ let createHost = new Function(
   'setTimeout',
   'clearTimeout',
   'path',
+  'GrpcTransport',
   constants.join('\n') +
     '\n' +
     'const __dirname = "."; const ACCOUNT_TYPE = { GOOGLE: "google", NEST: "nest" };\n' +
@@ -189,7 +268,7 @@ let createHost = new Function(
     '  async #getLocationWeather() {}\n' +
     '  run() { return this.#observeGoogleAPI("account"); }\n' +
     '  replace(value) { this.#connections.set("account", value); }\n' +
-    source.slice(begin, end).replace('    connection.grpcTransport\n', '    return connection.grpcTransport\n') +
+    source.slice(begin, end).replace('    grpcTransport\n', '    return grpcTransport\n') +
     '};',
 );
 
@@ -218,6 +297,7 @@ function setup() {
     },
     (timer) => cleared.push(timer),
     path,
+    GrpcTransport,
   );
   return { host, connection, pending, timers, cleared, calls };
 }

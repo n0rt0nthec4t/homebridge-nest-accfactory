@@ -54,7 +54,7 @@ import { DATA_SOURCE, DEVICE_TYPE, PROTOBUF_RESOURCES, LOW_BATTERY_LEVEL } from 
 
 export default class NestLock extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.LOCK;
-  static VERSION = '2026.05.10'; // Code version
+  static VERSION = '2026.10.18'; // Code version
 
   // Define lock bolt states
   static STATE = {
@@ -497,6 +497,12 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
     )
     .forEach(([object_key, value]) => {
       try {
+        // Revisit cached lock traits when the device or its home changes, including late parent discovery.
+        let resourceKeys = [object_key, value?.value?.device_info?.pairerId?.resourceId];
+        if (changedData instanceof Map && resourceKeys.some((key) => changedData.has(key)) === false) {
+          return;
+        }
+
         // Only process valid Google lock devices that are ready and linked to a known home object
         if (
           value?.source !== DATA_SOURCE.GOOGLE ||
@@ -506,13 +512,13 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
           return;
         }
 
-        // Map raw device data into our normalised lock schema
+        // Required lock traits need not arrive in the same Observe message.
         let mappedResult = buildMappedObject(
           LOCK_FIELD_MAP,
           createMappingContext(rawData, object_key, {
             google: value,
           }),
-          changedData instanceof Map ? changedData.get(object_key)?.fields : undefined,
+          new Set(Object.keys(value?.value ?? {})),
         );
 
         let serialNumber = mappedResult?.data?.serialNumber;

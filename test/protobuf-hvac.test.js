@@ -1,5 +1,6 @@
 // Verify protobuf-only Heat Link and temperature sensor discovery, identity and related-state updates.
 import assert from 'node:assert/strict';
+import { importSource } from './helpers/import-source.js';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { URL } from 'node:url';
@@ -12,7 +13,7 @@ async function loadMapper(name) {
   let source = (await readFile(location, 'utf8')).replace(/from '([^']+)'/g, (match, specifier) => {
     return 'from ' + JSON.stringify(specifier === '../HomeKitDevice.js' ? parent : new URL(specifier, location).href);
   });
-  return (await import('data:text/javascript,' + encodeURIComponent(source))).processRawData;
+  return (await importSource(location, source)).processRawData;
 }
 
 let heatlink = await loadMapper('heatlink');
@@ -80,7 +81,7 @@ test('Heat Link uses protobuf thermostat identity and supports hot-water-only de
     undefined,
     new Map([['DEVICE_THERMOSTAT', { fields: new Set(['hot_water_settings']) }]]),
   );
-  assert.equal(result.HEATLINK_SERIAL.full, false);
+  assert.equal(result.HEATLINK_SERIAL.full, true, 'hot-water-only updates reuse cached thermostat traits');
   assert.equal(result.HEATLINK_SERIAL.data.hot_water_boost_active, true);
   delete raw.DEVICE_THERMOSTAT;
   assert.deepEqual(
@@ -157,7 +158,7 @@ test('thermostat and Heat Link commands use protobuf while retired REST commands
     grpcTransport: {
       command: async (...args) => {
         grpc.push(args);
-        return { data: [{ traitOperations: [{ progress: 'COMPLETE' }] }] };
+        return { status: 0, data: [{ traitOperations: [{ progress: 'COMPLETE' }] }] };
       },
     },
   };
@@ -179,3 +180,76 @@ test('thermostat and Heat Link commands use protobuf while retired REST commands
   assert.equal(rest.length, 1);
   assert.equal(JSON.parse(rest[0][3]).objects[0].object_key, 'topaz.PROTECT');
 });
+
+for (let [product, model] of [
+  ['KR1', 'Temperature Sensor (1st gen)'],
+  ['KRX', 'Temperature Sensor (2nd gen)'],
+  ['UNKNOWN', 'Temperature Sensor (unknown)'],
+]) {
+  test('protobuf sensor model identity: ' + product, () => {
+    let raw = rawData();
+    raw.DEVICE_SENSOR.value.device_identity.productIdDescription.literal = product;
+    assert.equal(tempsensor(undefined, raw, { options: {} }).SENSOR_SERIAL.data.model, model);
+  });
+}
+for (let [age, online] of [
+  [0, true],
+  [14399, true],
+  [14400, false],
+  [14401, false],
+]) {
+  test('protobuf sensor beacon age ' + age + ' controls availability independently of temperature', (context) => {
+    context.mock.timers.enable({ apis: ['Date'], now: 2000000000000 });
+    let raw = rawData();
+    raw.DEVICE_SENSOR.value.last_updated_beacon.lastBeaconTime.seconds = String(2000000000 - age);
+    let data = tempsensor(undefined, raw, { options: {} }).SENSOR_SERIAL.data;
+    assert.equal(data.online, online);
+    assert.equal(data.current_temperature, 21);
+  });
+}
+for (let [voltage, expected] of [
+  [2.4, 0],
+  [2.5, 0],
+  [2.85, 50],
+  [3.2, 100],
+  [3.5, 100],
+]) {
+  test('protobuf sensor voltage bounds: ' + voltage, () => {
+    let raw = rawData();
+    raw.DEVICE_SENSOR.value.battery.assessedVoltage.value = voltage;
+    assert.equal(tempsensor(undefined, raw, { options: {} }).SENSOR_SERIAL.data.battery_level, expected);
+  });
+}
+for (let field of ['battery', 'current_temperature', 'device_identity']) {
+  test('protobuf sensor waits for usable required ' + field, () => {
+    let raw = rawData();
+    delete raw.DEVICE_SENSOR.value[field];
+    assert.deepEqual(tempsensor(undefined, raw, { options: {} }), {});
+  });
+}
+for (let [plugin, home, device, excluded] of [
+  [false, undefined, undefined, false],
+  [true, undefined, undefined, true],
+  [true, false, undefined, false],
+  [false, true, undefined, true],
+  [true, true, false, false],
+  [false, false, true, true],
+]) {
+  test('protobuf sensor exclusion precedence: ' + plugin + '/' + home + '/' + device, () => {
+    let raw = rawData();
+    let data = tempsensor(undefined, raw, {
+      options: { exclude: plugin, eveHistory: false },
+      homes: [{ google_home_uuid: 'structure_home', exclude: home }],
+      devices: [{ serialNumber: 'sensor_serial', exclude: device, eveHistory: true }],
+    }).SENSOR_SERIAL.data;
+    assert.equal(data.excluded, excluded);
+    assert.equal(data.eveHistory, true);
+  });
+}
+for (let association of [null, {}, { deviceId: { resourceId: '' } }, { deviceId: { resourceId: 'MISSING' } }]) {
+  test('protobuf sensor ignores invalid parent association ' + JSON.stringify(association), () => {
+    let raw = rawData();
+    raw.DEVICE_THERMOSTAT.value.remote_comfort_sensing_settings.associatedRcsSensors = [association];
+    assert.deepEqual(tempsensor(undefined, raw, { options: {} }), {});
+  });
+}

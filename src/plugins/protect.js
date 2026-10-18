@@ -59,7 +59,7 @@ function hasSafetySummaryFailure(raw, failureType) {
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.PROTECT;
-  static VERSION = '2026.05.11'; // Code version
+  static VERSION = '2026.10.18'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -667,6 +667,21 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
     )
     .forEach(([object_key, value]) => {
       try {
+        // REST state also depends on its home, location, self-test and connectivity buckets.
+        let resourceKeys =
+          value?.source === DATA_SOURCE.NEST
+            ? [
+                object_key,
+                'where.' + value?.value?.structure_id,
+                'safety.' + value?.value?.structure_id,
+                'structure.' + value?.value?.structure_id,
+                'widget_track.' + value?.value?.thread_mac_address?.toUpperCase?.(),
+              ]
+            : [object_key, value?.value?.device_info?.pairerId?.resourceId];
+        if (changedData instanceof Map && resourceKeys.some((key) => changedData.has(key)) === false) {
+          return;
+        }
+
         // Only process valid Google or Nest Protect resources
         if (
           (value?.source !== DATA_SOURCE.GOOGLE && value?.source !== DATA_SOURCE.NEST) ||
@@ -681,14 +696,14 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
           return;
         }
 
-        // Map raw device data into our normalised protect schema
+        // Build a complete candidate from cached fields for either source, including split startup data.
         let mappedResult = buildMappedObject(
           PROTECT_FIELD_MAP,
           createMappingContext(rawData, object_key, {
             nest: value?.source === DATA_SOURCE.NEST ? value : undefined,
             google: value?.source === DATA_SOURCE.GOOGLE ? value : undefined,
           }),
-          changedData instanceof Map ? changedData.get(object_key)?.fields : undefined,
+          new Set(Object.keys(value?.value ?? {})),
         );
 
         let serialNumber = mappedResult?.data?.serialNumber;

@@ -269,9 +269,7 @@ const WEATHER_FIELD_MAP = {
     required: true,
     merge: ({ values }) =>
       HomeKitDevice.makeValidHKName(
-        typeof values?.google === 'string' && values.google.trim() !== ''
-          ? values.google.trim()
-          : 'unknown description',
+        typeof values?.google === 'string' && values.google.trim() !== '' ? values.google.trim() : 'unknown description',
       ),
     google: {
       fields: ['structure_location', 'structure_info'],
@@ -384,8 +382,10 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
       try {
         if (changedData instanceof Map) {
           let fields = changedData.get(object_key)?.fields;
-          if (fields instanceof Set !== true ||
-            ['structure_info', 'structure_location', 'weather'].some((field) => fields.has(field)) === false) {
+          if (
+            fields instanceof Set !== true ||
+            ['structure_info', 'structure_location', 'weather'].some((field) => fields.has(field)) === false
+          ) {
             return;
           }
         }

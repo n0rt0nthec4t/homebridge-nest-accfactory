@@ -1,11 +1,12 @@
 // Verify FFmpeg hardware discovery, capability queries, diagnostics, and session lifecycle.
-// Code version 2026.10.15
+// Code version 2026.10.19
 import assert from 'node:assert/strict';
 import child_process from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import process from 'node:process';
 import timers from 'node:timers';
 import { PassThrough } from 'node:stream';
@@ -693,4 +694,198 @@ test('inaccessible DRM metadata disables QSV without failing construction or sof
   assert.equal(ffmpeg.hasMinimumSupport({ encoders: ['libx264'] }), true);
   assert.equal(ffmpeg.supportsHardwareH264, false);
   assert.equal(ffmpeg.hardwareH264Codec, undefined);
+});
+
+for (let platform of ['darwin', 'linux', 'win32']) {
+  for (let location of ['directory', 'executable', 'home directory']) {
+    test('binary resolution uses the configured ' + location + ' on ' + platform, (context) => {
+      context.mock.method(os, 'platform', () => platform);
+      context.mock.method(os, 'homedir', () => path.resolve('/fixture/home'));
+      let name = platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+      let input = location === 'home directory' ? '~/media-tools' : location === 'directory' ? '/fixture/tools///' : '/fixture/bin/' + name;
+      let directory = path.resolve(location === 'home directory' ? '/fixture/home/media-tools' : '/fixture/tools');
+      let expected = location === 'executable' ? path.resolve('/fixture/bin/' + name) : path.join(directory, name);
+      context.mock.method(fs, 'existsSync', (file) => file === directory || file === expected);
+      context.mock.method(fs, 'statSync', (file) => ({ isDirectory: () => file === directory }));
+      let probes = context.mock.method(child_process, 'spawnSync', () => ({ status: 0, stdout: 'ffmpeg version 7.1 ' }));
+      let ffmpeg = new FFmpeg(input);
+      assert.equal(ffmpeg.binary, expected);
+      assert.equal(ffmpeg.version, '7.1');
+      assert.equal(
+        probes.mock.calls.every((call) => call.arguments[0] === expected),
+        true,
+      );
+    });
+  }
+}
+
+for (let [platform, existing] of [
+  ['darwin', '/opt/homebrew/bin/ffmpeg'],
+  ['linux', '/usr/bin/ffmpeg'],
+  ['win32', 'C:\\ffmpeg\\bin'],
+]) {
+  test('default binary discovery selects an existing installation on ' + platform, (context) => {
+    context.mock.method(os, 'platform', () => platform);
+    let expected = platform === 'win32' ? path.join(existing, 'ffmpeg.exe') : existing;
+    context.mock.method(fs, 'existsSync', (file) => file === expected);
+    let probe = context.mock.method(child_process, 'spawnSync', () => ({ status: 0, stdout: 'ffmpeg version 8.0 ' }));
+    let ffmpeg = new FFmpeg();
+    assert.equal(ffmpeg.binary, expected);
+    assert.equal(ffmpeg.version, '8.0');
+    assert.equal(probe.mock.calls[0].arguments[0], expected);
+  });
+}
+
+for (let platform of ['darwin', 'win32']) {
+  test('default binary discovery uses PATH when no installation is found on ' + platform, (context) => {
+    context.mock.method(os, 'platform', () => platform);
+    context.mock.method(fs, 'existsSync', () => false);
+    let probe = context.mock.method(child_process, 'spawnSync', () => ({ error: new Error('Fixture PATH executable unavailable') }));
+    let ffmpeg = new FFmpeg();
+    assert.equal(ffmpeg.binary, platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+    assert.equal(ffmpeg.version, undefined);
+    assert.equal(probe.mock.callCount(), 1);
+  });
+}
+
+test('missing explicit executable skips probes and cannot advertise required codec support', (context) => {
+  context.mock.method(fs, 'existsSync', () => false);
+  let probe = context.mock.method(child_process, 'spawnSync', () => assert.fail('missing binary must not be executed'));
+  let ffmpeg = new FFmpeg('/fixture/missing/ffmpeg');
+  assert.equal(ffmpeg.version, undefined);
+  assert.equal(ffmpeg.hasMinimumSupport(), false);
+  assert.equal(ffmpeg.supportsHardwareH264, false);
+  assert.equal(probe.mock.callCount(), 0);
+});
+
+for (let result of [
+  { status: 1, stdout: 'ffmpeg version 8.0 ' },
+  { status: 0, stdout: null },
+  { status: 0, stdout: 'unrecognised version' },
+]) {
+  test('unusable version probe cannot establish minimum support: ' + JSON.stringify(result), (context) => {
+    context.mock.method(child_process, 'spawnSync', () => result);
+    let ffmpeg = new FFmpeg('fixture-invalid-version');
+    assert.equal(ffmpeg.version, undefined);
+    assert.equal(ffmpeg.hasMinimumSupport({ encoders: ['libx264'] }), false);
+    assert.equal(ffmpeg.supportsHardwareH264, false);
+  });
+}
+
+for (let command of ['-encoders', '-decoders', '-muxers', '-demuxers']) {
+  for (let result of [{ error: new Error('Fixture feature probe failed') }, { status: 1 }, { status: 0, stdout: null }]) {
+    test('failed ' + command + ' query isolates unavailable features: ' + String(result.status ?? result.error.message), (context) => {
+      context.mock.method(child_process, 'spawnSync', (binary, args) =>
+        args[0] === command
+          ? result
+          : {
+              status: 0,
+              stdout: {
+                '-version': 'ffmpeg version 8.0 ',
+                '-encoders': ' V..... libx264',
+                '-decoders': ' A..... libspeex',
+                '-muxers': ' E mp4',
+                '-demuxers': ' D mov',
+              }[args[0]],
+            },
+      );
+      let ffmpeg = new FFmpeg('fixture-feature-query');
+      assert.equal(ffmpeg.version, '8.0');
+      assert.equal(ffmpeg.supportsEncoder('libx264'), command !== '-encoders');
+      assert.equal(ffmpeg.supportsDecoder('libspeex'), command !== '-decoders');
+      assert.equal(ffmpeg.supportsMuxer('mp4'), command !== '-muxers');
+      assert.deepEqual(ffmpeg.features.demuxers, command === '-demuxers' ? [] : ['mov']);
+      assert.equal(ffmpeg.supportsHardwareH264, false);
+    });
+  }
+}
+
+test('process completion cancels scheduled forced termination', async (context) => {
+  let { ffmpeg } = createMockFFmpeg(context);
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  let session = ffmpeg.createSession('camera', 'timer-race', []);
+  session.process.emit('spawn');
+  session.kill();
+  session.process.emit('exit', 0, null);
+  session.process.emit('close', 0, null);
+  context.mock.timers.tick(2000);
+  assert.equal(session.process.kill.mock.callCount(), 1);
+  assert.equal((await session.finished).expected, true);
+  assert.deepEqual(ffmpeg.listSessions(), []);
+});
+
+test('hardware discovery rejects inaccessible render nodes and malformed video entries', (context) => {
+  context.mock.method(os, 'platform', () => 'linux');
+  context.mock.method(fs, 'readFileSync', (file) => {
+    if (file === '/sys/firmware/devicetree/base/model') {
+      return 'Generic board';
+    }
+    assert.equal(file, '/sys/class/video4linux/video31/name');
+    return 'camera capture';
+  });
+  context.mock.method(fs, 'readdirSync', (file) =>
+    file === '/dev/dri' ? ['card0', 'renderD128', 'renderD129'] : ['not-a-video-node', 'video31'],
+  );
+  context.mock.method(fs, 'accessSync', (file) => {
+    if (file === '/dev/dri/renderD128') {
+      throw Object.assign(new Error('Fixture permission denied'), { code: 'EACCES' });
+    }
+    assert.equal(file, '/dev/dri/renderD129');
+  });
+  let devices = [];
+  context.mock.method(child_process, 'spawnSync', (binary, args) => {
+    if (args.includes('-frames:v') === true) {
+      devices.push(args[args.indexOf('-qsv_device') + 1]);
+      return { status: 1, stdout: '' };
+    }
+    return {
+      status: 0,
+      stdout:
+        args[0] === '-version'
+          ? 'ffmpeg version 8.0 '
+          : args[0] === '-encoders'
+            ? ' V..... libx264\n V..... h264_qsv\n V..... h264_v4l2m2m'
+            : '',
+    };
+  });
+  let ffmpeg = new FFmpeg('fixture-rejected-hardware-nodes');
+  assert.deepEqual(devices, ['/dev/dri/renderD129']);
+  assert.equal(ffmpeg.supportsHardwareH264, false);
+  assert.equal(ffmpeg.getH264EncoderOptions(true).codec, 'libx264');
+});
+
+test('bounded hardware probe cache evicts old binaries while reusing recent validation', (context) => {
+  context.mock.method(os, 'platform', () => 'darwin');
+  context.mock.method(fs, 'statSync', () => {
+    throw new Error('Fixture bare command has no resolved metadata');
+  });
+  let validations = new Map();
+  context.mock.method(child_process, 'spawnSync', (binary, args) => {
+    if (args.includes('-frames:v') === true) {
+      validations.set(binary, (validations.get(binary) ?? 0) + 1);
+      return { status: 0, stdout: Buffer.from([0, 0, 0, 1, 0x67]) };
+    }
+    return {
+      status: 0,
+      stdout: args[0] === '-version' ? 'ffmpeg version 8.0 ' : args[0] === '-encoders' ? ' V..... libx264\n V..... h264_videotoolbox' : '',
+    };
+  });
+  for (let index = 0; index < 33; index++) {
+    assert.equal(new FFmpeg('fixture-cache-capacity-' + index).supportsHardwareH264, true);
+  }
+  assert.equal(new FFmpeg('fixture-cache-capacity-32').supportsHardwareH264, true);
+  assert.equal(validations.get('fixture-cache-capacity-32'), 1);
+  assert.equal(new FFmpeg('fixture-cache-capacity-0').supportsHardwareH264, true);
+  assert.equal(validations.get('fixture-cache-capacity-0'), 2);
+});
+
+test('build configuration flags are reported separately from available codecs', (context) => {
+  context.mock.method(child_process, 'spawnSync', (binary, args) => ({
+    status: 0,
+    stdout: args[0] === '-version' ? 'ffmpeg version 8.0 --enable-libx264 --enable-shared' : '',
+  }));
+  let ffmpeg = new FFmpeg('fixture-build-flags');
+  assert.deepEqual(ffmpeg.features.enabled, ['libx264', 'shared']);
+  assert.equal(ffmpeg.supportsEncoder('libx264'), false);
+  assert.equal(ffmpeg.hasMinimumSupport({ encoders: ['libx264'] }), false);
 });

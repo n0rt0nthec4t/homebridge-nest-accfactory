@@ -1,3 +1,4 @@
+// Verify Annex-B framing, decoder parameter sets and malformed H264 access-unit boundaries.
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import test from 'node:test';
@@ -51,4 +52,45 @@ test('H264 injects missing parameter sets into keyframes', () => {
 test('H264 rejects malformed SPS metadata', () => {
   assert.equal(H264.getSPSInfo(Buffer.from([0x67, 0x00])), undefined);
   assert.equal(H264.getSPSInfo(Buffer.from([0x65, 0x00, 0x00, 0x00])), undefined);
+});
+
+for (let first of [Buffer.from([0, 0, 1]), START_CODE]) {
+  for (let second of [Buffer.from([0, 0, 1]), START_CODE]) {
+    test('H264 parses consecutive NAL boundaries of lengths ' + first.length + '/' + second.length, () => {
+      let sps = Buffer.from([0x67, 1, 2]);
+      let pps = Buffer.from([0x68, 3, 4]);
+      let idr = Buffer.from([0x65, 5, 6]);
+      let data = Buffer.concat([first, sps, second, pps, first, idr, second]);
+      assert.deepEqual(
+        H264.getNALUnits(data).map((unit) => unit.data),
+        [sps, pps, idr],
+      );
+      assert.equal(H264.hasNAL(data, H264.NALUS.TYPES.IDR), true);
+      assert.equal(H264.hasNAL(data, H264.NALUS.TYPES.FU_A), false);
+    });
+  }
+}
+test('H264 ignores empty start-code boundaries and malformed access-unit parts', () => {
+  let idr = Buffer.from([0x65, 1]);
+  assert.deepEqual(H264.getNALUnits(Buffer.concat([START_CODE, START_CODE, idr, START_CODE])), [{ type: 5, data: idr }]);
+  for (let invalid of [null, undefined, {}, [], Buffer.alloc(0)]) {
+    assert.deepEqual(H264.getNALUnits(invalid), []);
+    assert.equal(H264.ensureAnnexB(invalid), undefined);
+    assert.equal(H264.buildAccessUnit(invalid), undefined);
+  }
+  assert.equal(H264.buildAccessUnit([null, Buffer.alloc(0)]), undefined);
+  let expected = Buffer.concat([START_CODE, idr]);
+  assert.deepEqual(H264.buildAccessUnit([null, Buffer.alloc(0), idr]).data, expected);
+  assert.equal(H264.buildAccessUnit([expected]).data, expected, 'an already complete access unit keeps its buffer');
+});
+test('H264 keyframe bootstrap keeps existing parameter sets without injecting duplicates', () => {
+  let sps = Buffer.from([0x67, 1]);
+  let pps = Buffer.from([0x68, 2]);
+  let idr = Buffer.from([0x65, 3]);
+  let frame = H264.buildAccessUnit([sps, pps, idr], { keyFrame: true, sps, pps });
+  assert.equal(frame.hasParameterSets, true);
+  assert.deepEqual(
+    H264.getNALUnits(frame.data).map((unit) => unit.data),
+    [sps, pps, idr],
+  );
 });

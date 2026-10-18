@@ -56,20 +56,12 @@ import {
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.HEATLINK;
-  static VERSION = '2026.10.15'; // Code version
+  static VERSION = '2026.10.18'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
 
   onAdd() {
-    // Patch to avoid characteristic errors when setting initial property ranges
-    this.hap.Characteristic.TargetTemperature.prototype.getDefaultValue = () => {
-      return this.deviceData.hotwaterMinTemp; // start at minimum heating threshold
-    };
-    this.hap.Characteristic.TargetHeatingCoolingState.prototype.getDefaultValue = () => {
-      return this.hap.Characteristic.TargetHeatingCoolingState.HEAT; // Only heating
-    };
-
     // If the heatlink supports hotwater temperature control
     // Setup the thermostat service if not already present on the accessory, and link it to the Eve app if configured to do so
     if (
@@ -282,7 +274,9 @@ export default class NestHeatlink extends HomeKitDevice {
         minValue: deviceData.hotwaterMinTemp,
         maxValue: deviceData.hotwaterMaxTemp,
       },
-      initialValue: deviceData.hot_water_temperature,
+      // A missing target reading must still initialise within this Heat Link's configured bounds.
+      initialValue:
+        Number.isFinite(deviceData.hot_water_temperature) === true ? deviceData.hot_water_temperature : deviceData.hotwaterMinTemp,
       onSet: (value) => {
         if (value !== this.deviceData.hot_water_temperature) {
           this.set({ uuid: this.deviceData.associated_thermostat, hot_water_temperature: value });
@@ -524,6 +518,12 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
     )
     .forEach(([object_key, value]) => {
       try {
+        // Revisit cached thermostat traits when the device or its home changes, including late parent discovery.
+        let resourceKeys = [object_key, value?.value?.device_info?.pairerId?.resourceId];
+        if (changedData instanceof Map && resourceKeys.some((key) => changedData.has(key)) === false) {
+          return;
+        }
+
         // Heat Link state and controls are supplied by the associated protobuf thermostat.
         if (
           value?.value?.configuration_done?.deviceReady !== true ||
@@ -537,13 +537,13 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
           return;
         }
 
-        // Map raw device data into our normalised heat link schema
+        // Required Heat Link traits need not arrive in the same Observe message.
         let mappedResult = buildMappedObject(
           HEATLINK_FIELD_MAP,
           createMappingContext(rawData, object_key, {
             google: value,
           }),
-          changedData instanceof Map ? changedData.get(object_key)?.fields : undefined,
+          new Set(Object.keys(value?.value ?? {})),
         );
 
         let serialNumber = mappedResult?.data?.serialNumber;

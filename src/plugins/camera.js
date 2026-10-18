@@ -88,7 +88,7 @@ const V4L2_RECORDING_CAPTURE_BUFFERS = 32;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.10.14'; // Code version
+  static VERSION = '2026.10.18'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -2353,6 +2353,16 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
     )
     .forEach(([object_key, value]) => {
       try {
+        // A late parent/location bucket can make cached camera traits ready for discovery.
+        let resourceKeys =
+          value?.source === DATA_SOURCE.NEST
+            ? [object_key, 'where.' + value?.value?.structure_id, 'structure.' + value?.value?.structure_id]
+            : [object_key, value?.value?.device_info?.pairerId?.resourceId];
+        if (changedData instanceof Map && resourceKeys.some((key) => changedData.has(key)) === false) {
+          return;
+        }
+
+        // Map the affected resource's complete cache so required traits can arrive in separate messages.
         let mappedResult;
 
         // Process Google API camera/doorbell/floodlight data
@@ -2369,7 +2379,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
             createMappingContext(rawData, object_key, {
               google: value,
             }),
-            changedData instanceof Map ? changedData.get(object_key)?.fields : undefined,
+            new Set(Object.keys(value?.value ?? {})),
           );
 
           storeMappedDevice(mappedResult);
@@ -2389,7 +2399,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
             createMappingContext(rawData, object_key, {
               nest: value,
             }),
-            changedData instanceof Map ? changedData.get(object_key)?.fields : undefined,
+            new Set(Object.keys(value?.value ?? {})),
           );
 
           storeMappedDevice(mappedResult);

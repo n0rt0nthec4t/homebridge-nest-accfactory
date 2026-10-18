@@ -67,7 +67,7 @@
 // - MediaTimeline owns retained buffer/index stats
 // - Streamer owns per-output write/drop/playout stats
 //
-// Code version 2026.10.10
+// Code version 2026.10.18
 // Mark Hulskamp
 'use strict';
 
@@ -1384,15 +1384,15 @@ export default class Streamer {
       dateNow = Date.now();
     }
 
-    this.#statsWrite(output, Streamer.MEDIA_TYPE.VIDEO, dateNow);
-
-    if (isH264 === true) {
-      outputVideo.write(H264.NALUS.START_CODE);
+    if (outputVideo.writableNeedDrain !== true) {
+      this.#statsWrite(output, Streamer.MEDIA_TYPE.VIDEO, dateNow);
+      if (isH264 === true) {
+        outputVideo.write(H264.NALUS.START_CODE);
+      }
+      outputVideo.write(fallbackFrame);
     }
 
-    outputVideo.write(fallbackFrame);
-
-    if (output.includeAudio === true && Buffer.isBuffer(this.#transport?.audio?.blank) === true) {
+    if (output.includeAudio === true && outputAudio.writableNeedDrain !== true && Buffer.isBuffer(this.#transport?.audio?.blank) === true) {
       this.#statsWrite(output, Streamer.MEDIA_TYPE.AUDIO, dateNow);
       outputAudio.write(this.#transport.audio.blank);
     }
@@ -1669,6 +1669,11 @@ export default class Streamer {
         dueVideoTime = dateNow;
         dueAudioTime = dateNow;
       }
+
+      // Backpressure persists between scheduler ticks. Keep blocked media in the bounded timeline
+      // until its output drains, while allowing the other media stream to continue independently.
+      dueVideo = dueVideo === true && outputVideo.writableNeedDrain !== true;
+      dueAudio = dueAudio === true && outputAudio?.writableNeedDrain !== true;
 
       if (dueVideo !== true && dueAudio !== true) {
         stopReason = 'not-due';

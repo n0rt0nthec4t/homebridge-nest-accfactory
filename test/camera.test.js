@@ -1,6 +1,7 @@
 // Verify camera cleanup uses managed FFmpeg completion without Homebridge, media backends or network sockets.
-// Code version 2026.10.15
+// Code version 2026.10.19
 import assert from 'node:assert/strict';
+import { importSource } from './helpers/import-source.js';
 import { Buffer } from 'node:buffer';
 import child_process from 'node:child_process';
 import dgram from 'node:dgram';
@@ -42,7 +43,7 @@ source = source.replace(/from '([^']+)'/g, (match, specifier) => {
   let target = replacements[specifier] ?? (specifier.startsWith('.') === true ? new URL(specifier, location).href : specifier);
   return 'from ' + JSON.stringify(target);
 });
-let { default: Camera, processRawData } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
+let { default: Camera, processRawData } = await importSource(location, source);
 
 test('Nest and Google cameras default to two live viewers and forward configured counts independently of HKSV', (t) => {
   t.mock.method(child_process, 'spawnSync', () => ({ error: new Error('Mock probe') }));
@@ -104,19 +105,23 @@ function setup(t) {
     return child;
   });
   let port = 10000;
+  let sockets = [];
   t.mock.method(dgram, 'createSocket', () => {
     let socket = new EventEmitter();
     let reserved = port++;
     socket.bind = (options, callback) => callback?.();
     socket.address = () => ({ port: reserved });
-    socket.close = (callback) => callback?.();
+    socket.close = t.mock.fn((callback) => callback?.());
+    socket.send = t.mock.fn();
+    sockets.push(socket);
     return socket;
   });
   let camera = new Camera(
     undefined,
     {
       hap: {
-        StreamRequestTypes: { START: 'start', STOP: 'stop' },
+        Characteristic: { MotionDetected: 'motion' },
+        StreamRequestTypes: { START: 'start', STOP: 'stop', RECONFIGURE: 'reconfigure' },
         CameraController: { generateSynchronisationSource: () => 42 },
         SRTPCryptoSuites: ['AES_CM_128_HMAC_SHA1_80'],
         H264Profile: { HIGH: 2, MAIN: 1 },
@@ -148,7 +153,7 @@ function setup(t) {
       child.emit('close', 0, null);
     }
   });
-  return { camera, processes, prepare, start, video };
+  return { camera, processes, prepare, start, video, sockets };
 }
 
 test('camera cleans up live source and HomeKit on failed FFmpeg spawn', async (t) => {
@@ -304,3 +309,203 @@ for (let codec of ['libx264', 'h264_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_v4l2
     assert.equal((await pending).done, true);
   });
 }
+
+for (let codec of ['opus', 'speex']) {
+  test('camera talkback ' + codec + ' routes RTP/RTCP and wires encoded audio through managed processes', async (context) => {
+    let { camera, processes, sockets, prepare, start, video } = setup(context);
+    camera.deviceData.audio_enabled = true;
+    camera.deviceData.has_speaker = true;
+    camera.deviceData.has_microphone = true;
+    camera.streamer.codecs = { audio: 'aac', talkback: codec };
+    camera.hap.AudioStreamingCodecType = { AAC_ELD: 'aac', OPUS: 'opus' };
+    context.mock.method(camera.ffmpeg, 'supportsEncoder', () => true);
+    let audio = new PassThrough();
+    let talkback = new PassThrough();
+    camera.message = context.mock.fn(async () => ({ video, audio, talkback }));
+    start.audio = { pt: 110, codec: 'aac', max_bit_rate: 24, packet_time: 20, sample_rate: 16, channel: 1 };
+    await camera.prepareStream(prepare, () => {});
+    await camera.handleStreamRequest(start, () => {});
+    assert.equal(processes.length, 2);
+    assert.equal(processes[1].args.includes(codec === 'opus' ? 'libopus' : 'libspeex'), true);
+    let splitter = sockets.find((socket) => socket.listenerCount('message') > 0 && socket !== sockets.at(-1));
+    assert.notEqual(splitter, undefined);
+    splitter.emit('message', Buffer.alloc(0));
+    splitter.emit('message', Buffer.from([0, 110]));
+    assert.equal(splitter.send.mock.callCount(), 0);
+    splitter.emit('message', Buffer.from([0x80, 110]));
+    assert.equal(splitter.send.mock.callCount(), 1);
+    splitter.emit('message', Buffer.from([0x80, 200]));
+    assert.equal(splitter.send.mock.callCount(), 3);
+    splitter.emit('message', Buffer.from([0x80, 50]));
+    assert.equal(splitter.send.mock.callCount(), 5);
+    let received = [];
+    talkback.on('data', (data) => received.push(data));
+    processes[1].stdout.write(Buffer.from([1, 2, 3]));
+    assert.deepEqual(received, [Buffer.from([1, 2, 3])]);
+    splitter.emit('error', new Error('Fixture splitter failure'));
+    assert.equal(splitter.close.mock.callCount(), 1);
+    await camera.handleStreamRequest({ sessionID: 'one', type: 'stop' });
+    assert.equal(camera.ffmpeg.hasSession(camera.uuid, 'one', 'live'), false);
+  });
+}
+
+test('camera RTCP feedback resets its watchdog and expiry follows the normal stop path', async (context) => {
+  let { camera, sockets, prepare, start } = setup(context);
+  let timers = [];
+  camera.addTimer = (...args) => timers.push(args);
+  await camera.prepareStream(prepare, () => {});
+  await camera.handleStreamRequest(start);
+  assert.equal(timers.at(-1)[0], 'live-rtcp-one');
+  assert.equal(timers.at(-1)[1].delay, 30000);
+  let socket = sockets.at(-1);
+  socket.emit('message', Buffer.alloc(0));
+  socket.emit('message', Buffer.from([0, 200, 0, 0]));
+  assert.equal(timers.length, 1);
+  socket.emit('message', Buffer.from([0x80, 201, 0, 0]));
+  assert.equal(timers.at(-1)[1].reset, true);
+  assert.equal(timers.at(-1)[1].delay, 10000);
+  socket.emit('error', new Error('Fixture RTCP listener failure'));
+  await camera.handleStreamRequest({ sessionID: 'one', type: 'reconfigure' });
+  await camera.onTimer({ timer: 'live-rtcp-one', sessionID: 'one' });
+  assert.equal(camera.controller.forceStopStreamingSession.mock.callCount(), 1);
+});
+
+function mp4Box(type, payload = Buffer.alloc(0)) {
+  let header = Buffer.alloc(8);
+  header.writeUInt32BE(payload.length + 8);
+  header.write(type, 4);
+  return Buffer.concat([header, payload]);
+}
+test('HKSV yields fragmented MP4 initialisation before media and stops a waiting generator on close', async (context) => {
+  let { camera, processes } = setup(context);
+  camera.updateRecordingConfiguration({
+    videoCodec: {
+      parameters: { profile: 0, level: 0, iFrameInterval: 4000, bitRate: 2000 },
+      resolution: [1280, 720, 30],
+    },
+  });
+  let recording = camera.handleRecordingStreamRequest('clip');
+  let initial = recording.next();
+  await setImmediate();
+  let init = Buffer.concat([mp4Box('ftyp', Buffer.from([1])), mp4Box('moov', Buffer.from([2]))]);
+  processes[0].stdout.write(init.subarray(0, 3));
+  processes[0].stdout.write(init.subarray(3));
+  assert.deepEqual((await initial).value, { data: init, isLast: false });
+  let next = recording.next();
+  let media = Buffer.concat([mp4Box('moof', Buffer.from([3])), mp4Box('mdat', Buffer.from([4, 5]))]);
+  processes[0].stdout.write(media);
+  assert.deepEqual((await next).value, { data: media, isLast: false });
+  let pending = recording.next();
+  await camera.closeRecordingStream('clip', camera.hap.HDSProtocolSpecificErrorReason.NORMAL);
+  assert.equal((await pending).done, true);
+  assert.equal(camera.ffmpeg.hasSession(camera.uuid, 'clip', 'record'), false);
+  processes[0].emit('exit', 0, null);
+  processes[0].emit('close', 0, null);
+  assert.deepEqual(camera.ffmpeg.listSessions(), []);
+});
+for (let unavailable of ['ffmpeg', 'source', 'configuration', 'motion']) {
+  test('HKSV declines recording without ' + unavailable, async (context) => {
+    let { camera, processes } = setup(context);
+    if (unavailable === 'ffmpeg') {
+      camera.ffmpeg = undefined;
+    }
+    if (unavailable === 'source') {
+      camera.streamer = undefined;
+    }
+    if (unavailable === 'motion') {
+      camera.motionService = { getCharacteristic: () => ({ value: false }) };
+    }
+    assert.equal((await camera.handleRecordingStreamRequest('unavailable').next()).done, true);
+    assert.equal(processes.length, 0);
+  });
+}
+
+for (let action of ['stop', 'replace']) {
+  test('live source completing after ' + action + ' cannot start an obsolete FFmpeg process', async (context) => {
+    let { camera, processes, prepare, start, video } = setup(context);
+    await camera.prepareStream(prepare, () => {});
+    let ready = Promise.withResolvers();
+    camera.message = context.mock.fn((type, message) => (message === 'start_live' ? ready.promise : Promise.resolve()));
+    let callback = context.mock.fn();
+    let starting = camera.handleStreamRequest(start, callback);
+    if (action === 'stop') {
+      await camera.handleStreamRequest({ sessionID: 'one', type: 'stop' });
+    } else {
+      await camera.prepareStream(prepare, () => {});
+    }
+    let stops = camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_live').length;
+    ready.resolve({ video });
+    await starting;
+    assert.equal(processes.length, 0);
+    assert.equal(callback.mock.callCount(), 1);
+    assert.equal(
+      camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_live').length,
+      stops + (action === 'stop' ? 1 : 0),
+      'late startup releases only an output with no replacement owner',
+    );
+    if (action === 'replace') {
+      camera.message = context.mock.fn(async () => ({ video }));
+      await camera.handleStreamRequest(start);
+      assert.equal(camera.ffmpeg.hasSession(camera.uuid, 'one', 'live'), true);
+    }
+  });
+}
+for (let unavailable of ['streamer', 'ffmpeg', 'session']) {
+  test('live startup without ' + unavailable + ' acknowledges without acquiring a source', async (context) => {
+    let { camera, processes, prepare, start } = setup(context);
+    if (unavailable !== 'session') {
+      await camera.prepareStream(prepare, () => {});
+    }
+    if (unavailable === 'streamer') {
+      camera.streamer = undefined;
+    }
+    if (unavailable === 'ffmpeg') {
+      camera.ffmpeg = undefined;
+    }
+    let callback = context.mock.fn();
+    await camera.handleStreamRequest(start, callback);
+    assert.equal(callback.mock.callCount(), 1);
+    assert.equal(camera.message.mock.callCount(), 0);
+    assert.equal(processes.length, 0);
+  });
+}
+
+for (let completion of ['error', 'exit']) {
+  test('unexpected talkback ' + completion + ' releases the live source, peer process and sockets', async (context) => {
+    let { camera, processes, sockets, prepare, start, video } = setup(context);
+    Object.assign(camera.deviceData, { audio_enabled: true, has_speaker: true, has_microphone: true });
+    camera.streamer.codecs = { audio: 'aac', talkback: 'opus' };
+    camera.hap.AudioStreamingCodecType = { AAC_ELD: 'aac', OPUS: 'opus' };
+    context.mock.method(camera.ffmpeg, 'supportsEncoder', () => true);
+    camera.message = context.mock.fn(async () => ({ video, audio: new PassThrough(), talkback: new PassThrough() }));
+    start.audio = { pt: 110, codec: 'opus', max_bit_rate: 24, packet_time: 20, sample_rate: 24, channel: 1 };
+    await camera.prepareStream(prepare, () => {});
+    await camera.handleStreamRequest(start);
+    if (completion === 'error') {
+      processes[1].emit('error', new Error('Fixture talkback failed'));
+    } else {
+      processes[1].emit('exit', 1, null);
+    }
+    processes[1].emit('close', 1, null);
+    await setImmediate();
+    assert.equal(camera.controller.forceStopStreamingSession.mock.callCount(), 1);
+    assert.equal(camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_live').length, 1);
+    assert.equal(processes[0].kill.mock.callCount(), 1);
+    assert.equal(camera.ffmpeg.hasSession(camera.uuid, 'one', 'live'), false);
+    assert.equal(sockets.filter((socket) => socket.listenerCount('message') > 0).length, 0);
+  });
+}
+test('unexpected HKSV completion wakes a waiting generator and releases the recording source', async (context) => {
+  let { camera, processes } = setup(context);
+  camera.updateRecordingConfiguration({
+    videoCodec: { parameters: { profile: 0, level: 0, iFrameInterval: 4000, bitRate: 2000 }, resolution: [1280, 720, 30] },
+  });
+  let recording = camera.handleRecordingStreamRequest('failed-clip');
+  let waiting = recording.next();
+  await setImmediate();
+  processes[0].emit('exit', 1, null);
+  processes[0].emit('close', 1, null);
+  assert.equal((await waiting).done, true);
+  assert.equal(camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_record').length, 1);
+  assert.deepEqual(camera.ffmpeg.listSessions(), []);
+});

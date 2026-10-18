@@ -94,28 +94,35 @@ test('full Nest and Google dumps redact private values and retain state and cros
 
 test('structure-mode enums remain readable while structure references and private fields stay redacted', () => {
   let output = capture();
-  output.dump({
-    STRUCTURE_PRIVATEHOME: {
-      connection: 'account',
-      source: DATA_SOURCE.GOOGLE,
-      value: {
-        structure_mode: {
-          structureMode: 'STRUCTURE_MODE_HOME',
-          activityAgnosticStructureMode: 'STRUCTURE_MODE_AWAY',
-          structureModeReason: 'STRUCTURE_MODE_REASON_EXPLICIT_INTENT',
-          actorMethod: 'STRUCTURE_MODE_ACTOR_METHOD_GOOGLE_HOME_APP',
-          occupancy: { activity: 'ACTIVITY_ACTIVE', presence: 'PRESENCE_UNAVAILABLE' },
-          resourceId: 'STRUCTURE_PRIVATEHOME',
-          otherReference: 'STRUCTURE_MODE_PRIVATEHOME',
-          access_token: 'STRUCTURE_MODE_HOME',
+  output.dump(
+    {
+      STRUCTURE_PRIVATEHOME: {
+        connection: 'account',
+        source: DATA_SOURCE.GOOGLE,
+        value: {
+          structure_mode: {
+            structureMode: 'STRUCTURE_MODE_HOME',
+            activityAgnosticStructureMode: 'STRUCTURE_MODE_AWAY',
+            structureModeReason: 'STRUCTURE_MODE_REASON_EXPLICIT_INTENT',
+            actorMethod: 'STRUCTURE_MODE_ACTOR_METHOD_GOOGLE_HOME_APP',
+            occupancy: { activity: 'ACTIVITY_ACTIVE', presence: 'PRESENCE_UNAVAILABLE' },
+            resourceId: 'STRUCTURE_PRIVATEHOME',
+            otherReference: 'STRUCTURE_MODE_PRIVATEHOME',
+            access_token: 'STRUCTURE_MODE_HOME',
+          },
         },
       },
     },
-  }, 'account');
+    'account',
+  );
   let text = output.lines.join('\n');
   for (let state of [
-    'STRUCTURE_MODE_HOME', 'STRUCTURE_MODE_AWAY', 'STRUCTURE_MODE_REASON_EXPLICIT_INTENT',
-    'STRUCTURE_MODE_ACTOR_METHOD_GOOGLE_HOME_APP', 'ACTIVITY_ACTIVE', 'PRESENCE_UNAVAILABLE',
+    'STRUCTURE_MODE_HOME',
+    'STRUCTURE_MODE_AWAY',
+    'STRUCTURE_MODE_REASON_EXPLICIT_INTENT',
+    'STRUCTURE_MODE_ACTOR_METHOD_GOOGLE_HOME_APP',
+    'ACTIVITY_ACTIVE',
+    'PRESENCE_UNAVAILABLE',
   ]) {
     assert.equal(text.includes(state), true, state);
   }

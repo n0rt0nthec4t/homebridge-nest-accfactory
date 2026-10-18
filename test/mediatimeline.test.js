@@ -1,3 +1,4 @@
+// Verify retained media lookup, cursor protection, capacity bounds and long-running index compaction.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -55,4 +56,80 @@ test('MediaTimeline reports capacity drops and resets cleanly', () => {
   assert.equal(timeline.empty, true);
   assert.equal(timeline.nextIndex, 20);
   assert.equal(timeline.stats.droppedItems, 0);
+});
+
+// Long-running timelines must retain valid lookup indexes after repeated ring wrap and index compaction.
+test('MediaTimeline preserves video, audio and keyframe indexes across repeated compaction', () => {
+  let timeline = new MediaTimeline(10, 16, 1024);
+  for (let cycle = 0; cycle < 4; cycle++) {
+    let start = timeline.nextIndex;
+    for (let index = 0; index < 600; index++) {
+      timeline.add({ type: index % 2 === 0 ? 'video' : 'audio', time: start + index, keyFrame: index % 2 === 0 });
+    }
+    assert.equal(timeline.trim(start + 512), 512);
+    assert.equal(timeline.nextVideoFrom(start).index, start + 512);
+    assert.equal(timeline.nextAudioFrom(start).index, start + 513);
+    assert.equal(timeline.nextKeyFrameFrom(start).index, start + 512);
+    assert.equal(timeline.stats.videoIndexes, 44);
+    assert.equal(timeline.stats.audioIndexes, 44);
+    assert.equal(timeline.stats.keyframeIndexes, 44);
+    assert.equal(timeline.trim(Infinity), 0, 'non-finite cutoffs cannot erase retained media');
+    assert.equal(timeline.trim(start + 600), 88);
+    assert.equal(timeline.empty, true);
+    assert.equal(timeline.nextVideoFrom(start), undefined);
+  }
+});
+test('MediaTimeline skips untimed metadata when finding the latest timestamp and trims it safely', () => {
+  let timeline = new MediaTimeline();
+  timeline.add({ type: 'meta' });
+  timeline.add({ type: 'audio', time: 100 });
+  timeline.add({ type: 'meta', time: NaN });
+  timeline.add({ type: 'meta' });
+  assert.equal(timeline.latestTime(), 100);
+  assert.equal(timeline.closestToTime(99).time, 100);
+  assert.equal(timeline.trim(100), 1);
+  assert.equal(timeline.first().time, 100);
+  assert.equal(timeline.trim(101), 3);
+  assert.equal(timeline.latestTime(), undefined);
+  assert.equal(timeline.last(), undefined);
+});
+test('MediaTimeline chooses the oldest valid output cursor and releases protection as viewers leave', () => {
+  let timeline = new MediaTimeline(10);
+  for (let index = 0; index < 5; index++) {
+    timeline.add({ type: 'video', time: index });
+  }
+  let outputs = new Map([
+    ['old', { cursor: 11 }],
+    ['new', { cursor: 14 }],
+    ['invalid', { cursor: '10' }],
+    ['expired', { cursor: 1 }],
+    ['missing', null],
+  ]);
+  assert.equal(timeline.protectedStart(outputs), 11);
+  assert.equal(timeline.trim(10, timeline.protectedStart(outputs)), 1);
+  outputs.delete('old');
+  assert.equal(timeline.protectedStart(outputs), 14);
+  assert.equal(timeline.trim(10, timeline.protectedStart(outputs)), 3);
+  assert.equal(timeline.size, 1);
+  assert.equal(timeline.protectedStart(new Map()), 15);
+  assert.equal(timeline.protectedStart(undefined), 15);
+});
+test('MediaTimeline rejects invalid lookup and media inputs without moving its logical index', () => {
+  let timeline = new MediaTimeline(-1);
+  for (let invalid of [undefined, null, 1, 'invalid']) {
+    assert.equal(timeline.add(invalid), undefined);
+    assert.equal(timeline.closestToTime(invalid), undefined);
+  }
+  assert.equal(timeline.nextIndex, 0);
+  assert.equal(timeline.trim(100), 0);
+  let item = { type: 'video', time: 10, keyFrame: true };
+  timeline.add(item);
+  assert.equal(timeline.get(-1), undefined);
+  assert.equal(timeline.get(1), undefined);
+  assert.equal(timeline.get(0.5), undefined);
+  assert.equal(timeline.nextVideoFrom(undefined), item);
+  assert.equal(timeline.nextKeyFrameFrom(-1), item);
+  assert.equal(timeline.nextAudioFrom(0), undefined);
+  timeline.clear(-1);
+  assert.equal(timeline.nextIndex, 0);
 });

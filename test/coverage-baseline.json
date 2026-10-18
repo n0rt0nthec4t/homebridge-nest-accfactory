@@ -1,0 +1,172 @@
+{
+  "src/HomeKitDevice/HomeKitDevice.js": {
+    "lines": 94,
+    "branches": 93,
+    "functions": 93
+  },
+  "src/HomeKitHistory/HomeKitHistory.js": {
+    "lines": 94,
+    "branches": 90,
+    "functions": 95
+  },
+  "src/config.js": {
+    "lines": 95,
+    "branches": 95,
+    "functions": 95
+  },
+  "src/connections.js": {
+    "lines": 94,
+    "branches": 93,
+    "functions": 95
+  },
+  "src/consts.js": {
+    "lines": 95,
+    "branches": 95,
+    "functions": 95
+  },
+  "src/devices.js": {
+    "lines": 95,
+    "branches": 95,
+    "functions": 95
+  },
+  "src/fetchWrapper/fetchWrapper.js": {
+    "lines": 93,
+    "branches": 91,
+    "functions": 95
+  },
+  "src/ffmpeg.js": {
+    "lines": 95,
+    "branches": 92,
+    "functions": 95
+  },
+  "src/grpctransport.js": {
+    "lines": 89,
+    "branches": 80,
+    "functions": 91
+  },
+  "src/h264.js": {
+    "lines": 94,
+    "branches": 94,
+    "functions": 95
+  },
+  "src/index.js": {
+    "lines": 95,
+    "branches": 95,
+    "functions": 95
+  },
+  "src/mediatimeline.js": {
+    "lines": 95,
+    "branches": 95,
+    "functions": 95
+  },
+  "src/nexustalk.js": {
+    "lines": 87,
+    "branches": 77,
+    "functions": 95
+  },
+  "src/plugins/camera.js": {
+    "lines": 89,
+    "branches": 75,
+    "functions": 88
+  },
+  "src/plugins/daikinsystem.mjs": {
+    "lines": 95,
+    "branches": 92,
+    "functions": 95
+  },
+  "src/plugins/doorbell.js": {
+    "lines": 92,
+    "branches": 75,
+    "functions": 95
+  },
+  "src/plugins/floodlight.js": {
+    "lines": 92,
+    "branches": 75,
+    "functions": 95
+  },
+  "src/plugins/heatlink.js": {
+    "lines": 91,
+    "branches": 78,
+    "functions": 95
+  },
+  "src/plugins/homeaway.js": {
+    "lines": 93,
+    "branches": 81,
+    "functions": 95
+  },
+  "src/plugins/lock.js": {
+    "lines": 92,
+    "branches": 77,
+    "functions": 95
+  },
+  "src/plugins/protect.js": {
+    "lines": 93,
+    "branches": 84,
+    "functions": 95
+  },
+  "src/plugins/tempsensor.js": {
+    "lines": 92,
+    "branches": 85,
+    "functions": 95
+  },
+  "src/plugins/thermostat.js": {
+    "lines": 91,
+    "branches": 81,
+    "functions": 88
+  },
+  "src/plugins/weather.js": {
+    "lines": 93,
+    "branches": 77,
+    "functions": 91
+  },
+  "src/protobuf.js": {
+    "lines": 95,
+    "branches": 92,
+    "functions": 95
+  },
+  "src/ringbuffer.js": {
+    "lines": 95,
+    "branches": 86,
+    "functions": 95
+  },
+  "src/rtph264.js": {
+    "lines": 94,
+    "branches": 93,
+    "functions": 95
+  },
+  "src/streamer.js": {
+    "lines": 87,
+    "branches": 74,
+    "functions": 84
+  },
+  "src/streamtransport.js": {
+    "lines": 92,
+    "branches": 84,
+    "functions": 86
+  },
+  "src/supportdump.js": {
+    "lines": 92,
+    "branches": 87,
+    "functions": 95
+  },
+  "src/system.js": {
+    "lines": 90,
+    "branches": 80,
+    "functions": 85
+  },
+  "src/translator.js": {
+    "lines": 95,
+    "branches": 91,
+    "functions": 95
+  },
+  "src/utils.js": {
+    "lines": 95,
+    "branches": 94,
+    "functions": 95
+  },
+  "src/webrtc.js": {
+    "lines": 84,
+    "branches": 74,
+    "functions": 91
+  }
+}

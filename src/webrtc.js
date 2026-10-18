@@ -50,7 +50,7 @@
 // - Output playout timing, catch-up, and live latency policy are owned by Streamer
 // - Incomplete keyframes and pathological access units are dropped/recovered locally rather than blocking the plugin process
 //
-// Code version 2026.09.29
+// Code version 2026.10.19
 // Mark Hulskamp
 'use strict';
 
@@ -190,7 +190,7 @@ export default class WebRTC extends StreamTransport {
 
     // open() can overlap with close() during fast stop/reopen cycles.
     // Abort if teardown happened while waiting for Google Home lookup.
-    if (this.#closeInProgress === true || this.#peerConnection !== undefined) {
+    if (this.connecting !== true || this.#closeInProgress === true || this.#peerConnection !== undefined) {
       return;
     }
 
@@ -337,12 +337,16 @@ export default class WebRTC extends StreamTransport {
 
     // Track subscription callbacks feed the media-specific assembly paths.
     // Audio is decoded and emitted as PCM; video is assembled into complete access units.
+    // Track and RTP callbacks retain their peer owner across asynchronous teardown.
     this.#audioTransceiver?.onTrack?.subscribe?.((track) => {
+      if (this.#peerConnection !== peerConnection) {
+        return;
+      }
       this.#handlePlaybackBegin(Streamer.MEDIA_TYPE.AUDIO);
 
       track.onReceiveRtp.subscribe((rtpPacket) => {
-        if (track.codec.payloadType !== RTP_OPUS_AUDIO_PAYLOAD_TYPE) {
-          // Not the payload type we expect for audio, so ignore
+        if (this.#peerConnection !== peerConnection || track.codec.payloadType !== RTP_OPUS_AUDIO_PAYLOAD_TYPE) {
+          // Ignore retired peers and unsupported audio payload types.
           return;
         }
 
@@ -351,11 +355,17 @@ export default class WebRTC extends StreamTransport {
     });
 
     this.#videoTransceiver?.onTrack?.subscribe?.((track) => {
+      if (this.#peerConnection !== peerConnection) {
+        return;
+      }
       this.#handlePlaybackBegin(Streamer.MEDIA_TYPE.VIDEO);
 
       track.onReceiveRtp.subscribe((rtpPacket) => {
-        if (track.codec.payloadType !== RTP_H264_VIDEO_PAYLOAD_TYPE && track.codec.payloadType !== RTP_H264_VIDEO_RTX_PAYLOAD_TYPE) {
-          // Not the payload types we expect for video, so ignore
+        if (
+          this.#peerConnection !== peerConnection ||
+          (track.codec.payloadType !== RTP_H264_VIDEO_PAYLOAD_TYPE && track.codec.payloadType !== RTP_H264_VIDEO_RTX_PAYLOAD_TYPE)
+        ) {
+          // Ignore retired peers and unsupported video payload types.
           return;
         }
 
@@ -382,9 +392,16 @@ export default class WebRTC extends StreamTransport {
       sdp: homeFoyerResponse.data[0].sdp,
     });
 
+    // SDP setup can finish after close or replacement. Only the current peer
+    // may subscribe to ICE changes and own the stream-extension timer.
+    if (this.#peerConnection !== peerConnection || this.#closeInProgress === true) {
+      return;
+    }
+
     // Monitor connection status. ICE "connected" means transport is ready,
     // not that media has actually started. Actual source readiness is promoted
-    // later on first video packet arrival.
+    // later on the first decodable keyframe. Subsequent ICE events must not
+    // downgrade an already media-ready source and stop downstream playout.
     peerConnection.iceConnectionStateChange.subscribe(() => {
       if (this.#peerConnection !== peerConnection) {
         return;
@@ -397,7 +414,7 @@ export default class WebRTC extends StreamTransport {
       let state = peerConnection?.iceConnectionState;
 
       if (state === 'connected' || state === 'completed' || state === 'checking') {
-        if (this.connected !== true) {
+        if (this.connected !== true && this.ready !== true) {
           this.setState(StreamTransport.STATE.CONNECTED, { sessionId: this.#streamId });
         }
         return;
@@ -549,7 +566,9 @@ export default class WebRTC extends StreamTransport {
         }
       }
 
-      if (this.hasConsumers() !== true && this.#reconnectPending !== true) {
+      // A requested source close is complete even when Streamer retains outputs for fallback video.
+      // Leaving CLOSING here prevents open() from reconnecting when the camera becomes available again.
+      if (this.#reconnectPending !== true) {
         this.setState(StreamTransport.STATE.CLOSED, { sessionId: closingStreamId });
       }
     } finally {
@@ -739,6 +758,12 @@ export default class WebRTC extends StreamTransport {
         });
 
         talk.starting = false;
+
+        // Teardown replaces the talkback state before a new peer can start.
+        // A late START response must not send old audio or a deferred STOP to its replacement.
+        if (this.#tracks.talkback !== talk) {
+          return;
+        }
 
         // Failed to enable talkback on the remote side.
         if (homeFoyerResponse?.status !== 0) {

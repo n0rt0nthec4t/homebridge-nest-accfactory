@@ -1,7 +1,7 @@
 // Exercise the actual camera timer hook through the shared lifecycle queue.
 // Media imports are isolated; GET routing, timer dispatch and UPDATE commits are real.
 import assert from 'node:assert/strict';
-import { Buffer } from 'node:buffer';
+import { importSource } from './helpers/import-source.js';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { URL } from 'node:url';
@@ -23,7 +23,7 @@ for (let name of ['camera']) {
               : specifier;
     return 'from ' + JSON.stringify(target);
   });
-  modules[name] = (await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'))).default;
+  modules[name] = (await importSource(location, source)).default;
 }
 
 HomeKitDevice.PLUGIN_NAME = 'timer-polling-test';
