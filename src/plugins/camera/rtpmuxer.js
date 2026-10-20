@@ -9,6 +9,7 @@
 // - Learn AAC configuration from source headers before publishing receiver SDP
 // - Preserve source media intervals using per-track RTP clocks
 // - Relate audio/video clocks through RTCP sender reports and a shared CNAME
+// - Build RTP/RTSP headers and codec payloads directly in final wire buffers
 // - Report per-track backpressure and retire packet delivery on close
 //
 // Streamer owns the shared buffer, output cursors, decoder bootstrap and pacing.
@@ -16,7 +17,7 @@
 // A loopback RTSP endpoint carries RTP/RTCP over TCP after the receiver's PLAY.
 // Tests may inject a synchronous packet sink instead of opening that endpoint.
 //
-// Code version 2026.10.20
+// Code version 2026.10.21
 // Mark Hulskamp
 'use strict';
 
@@ -583,7 +584,7 @@ export default class RTPMuxer {
         }
       } catch (error) {
         // A framing/configuration failure retires this receiver, preserving other
-        // live viewers and the independent HKSV pipe consumer.
+        // live viewers and the independent HKSV recording output.
         this.#fail(error);
         throw error;
       }
@@ -604,6 +605,13 @@ export default class RTPMuxer {
       return;
     }
     if (this.#output.writePacket === undefined && (this.#playing !== true || this.#socket.writableNeedDrain === true)) {
+      return;
+    }
+
+    // A scheduler tick is timestamped before processing its outputs. First media
+    // can start playback later in that same tick; wait for a current tick rather
+    // than reporting a time before playback began.
+    if (unixMs < this.#output.playbackEpochUnixMs) {
       return;
     }
 
@@ -661,52 +669,60 @@ export default class RTPMuxer {
   }
 
   #timestampFor(output, track, sourceMs) {
-    // Preserve source intervals independently of when retained frames are delivered.
+    // Preserve source intervals independently of delivery order. A late track
+    // can start before the shared epoch; unsigned conversion wraps that negative
+    // offset into its RTP clock without shifting the audio/video relationship.
     return (track.origin + Math.round(((sourceMs - output.epochMs) * track.rate) / 1000)) >>> 0;
   }
 
   #validateTime(output, track, timestamp) {
-    // Check progression per track, not across tracks: audio can be delivered
-    // before an older video frame, but one track must never reuse or reverse time.
+    // The shared epoch is a clock reference, not a lower bound. A track first
+    // observed later can carry earlier source time; only that track's own
+    // accepted timestamps determine whether presentation time went backwards.
     if (output.closed === true) {
       throw new Error('Output is closed');
     }
-    if (
-      Number.isFinite(timestamp) !== true ||
-      timestamp < output.epochMs ||
-      (track.lastTimestamp !== undefined && timestamp <= track.lastTimestamp)
-    ) {
+    if (Number.isFinite(timestamp) !== true || (track.lastTimestamp !== undefined && timestamp <= track.lastTimestamp)) {
       throw new RangeError('Expected increasing source presentation times');
     }
   }
 
-  #send(output, data, track, kind) {
-    if (output.closed === true) {
-      throw new Error('Output is closed');
-    }
+  #allocatePacket(output, track, kind, bytes) {
     try {
+      if (output.closed === true) {
+        throw new Error('Output is closed');
+      }
       if (output.writePacket !== undefined) {
-        if (output.writePacket(data, { track: track.name, kind }) === false) {
-          this.#blocked.add(track.name);
-        }
-      } else {
-        let pair = this.#channels.get(track.name);
-        if (this.#playing !== true || pair === undefined) {
-          throw new Error('RTP receiver has not completed PLAY');
-        }
-        if (data.length + 4 + this.queuedBytes() > MAX_PENDING_BYTES) {
-          throw new Error('RTP pending-delivery limit exceeded');
-        }
-        // RTSP interleaving wraps each RTP/RTCP packet in '$', channel and length.
-        // A false write means accepted but waiting for drain; do not retry this packet.
-        let framed = Buffer.allocUnsafe(4 + data.length);
-        framed[0] = 0x24;
-        framed[1] = pair[kind === 'rtp' ? 0 : 1];
-        framed.writeUInt16BE(data.length, 2);
-        data.copy(framed, 4);
-        if (this.#socket.write(framed) === false) {
-          this.#blocked.add(track.name);
-        }
+        return Buffer.allocUnsafe(bytes);
+      }
+
+      let pair = this.#channels.get(track.name);
+      if (this.#playing !== true || pair === undefined) {
+        throw new Error('RTP receiver has not completed PLAY');
+      }
+      if (bytes + 4 + this.queuedBytes() > MAX_PENDING_BYTES) {
+        throw new Error('RTP pending-delivery limit exceeded');
+      }
+
+      // Allocate the complete TCP wire packet before writing any payload. RTP
+      // and RTCP share the interleaved header; injected sinks receive bare packets.
+      let data = Buffer.allocUnsafe(4 + bytes);
+      data[0] = 0x24;
+      data[1] = pair[kind === 'rtp' ? 0 : 1];
+      data.writeUInt16BE(bytes, 2);
+      return data;
+    } catch (error) {
+      this.#fail(error);
+      throw error;
+    }
+  }
+
+  #send(output, data, track, kind) {
+    try {
+      // A false write means accepted but waiting for drain; never retry this packet.
+      let accepted = output.writePacket !== undefined ? output.writePacket(data, { track: track.name, kind }) : this.#socket.write(data);
+      if (accepted === false) {
+        this.#blocked.add(track.name);
       }
     } catch (error) {
       // A failed sink may already have received part of this access unit.
@@ -715,21 +731,40 @@ export default class RTPMuxer {
     }
   }
 
-  #packet(output, track, payload, timestamp, marker) {
+  #packet(output, track, payload, timestamp, marker, { start = 0, end = payload.length, format = undefined } = {}) {
+    let prefixBytes = format === 'fu-a' ? 2 : format === 'aac' ? 4 : 0;
+    let payloadBytes = prefixBytes + end - start;
+    let data = this.#allocatePacket(output, track, 'rtp', 12 + payloadBytes);
+    let offset = output.writePacket === undefined ? 4 : 0;
+
     // Fixed RTP v2 header, without CSRCs, extensions or padding.
-    let data = Buffer.allocUnsafe(12 + payload.length);
-    data[0] = 0x80;
-    data[1] = track.payloadType | (marker === true ? 0x80 : 0);
-    data.writeUInt16BE(track.sequence, 2);
+    data[offset] = 0x80;
+    data[offset + 1] = track.payloadType | (marker === true ? 0x80 : 0);
+    data.writeUInt16BE(track.sequence, offset + 2);
     track.sequence = (track.sequence + 1) & 0xffff;
-    data.writeUInt32BE(timestamp, 4);
-    data.writeUInt32BE(track.ssrc, 8);
-    payload.copy(data, 12);
+    data.writeUInt32BE(timestamp, offset + 4);
+    data.writeUInt32BE(track.ssrc, offset + 8);
+    offset += 12;
+
+    // Write codec payload headers into their final positions. FU-A replaces the
+    // original NAL header; AAC carries a 13-bit AU size and zero AU index.
+    if (format === 'fu-a') {
+      data[offset] = (payload[0] & 0xe0) | 28;
+      data[offset + 1] = (payload[0] & 0x1f) | (start === 1 ? 0x80 : 0) | (end === payload.length ? 0x40 : 0);
+    } else if (format === 'aac') {
+      data.writeUInt16BE(16, offset);
+      data.writeUInt16BE((end - start) << 3, offset + 2);
+    }
+    payload.copy(data, offset + prefixBytes, start, end);
+    if (format === 'l16') {
+      // Convert only the final payload to network byte order, leaving shared PCM unchanged.
+      data.subarray(offset).swap16();
+    }
     this.#send(output, data, track, 'rtp');
 
-    // Sender-report octets exclude the RTP header.
+    // Sender-report octets exclude RTP and RTSP headers, but include codec headers.
     track.packets = (track.packets + 1) >>> 0;
-    track.octets = (track.octets + payload.length) >>> 0;
+    track.octets = (track.octets + payloadBytes) >>> 0;
   }
 
   #writeVideo(output, { timestamp, nalUnits }) {
@@ -750,13 +785,11 @@ export default class RTPMuxer {
       // Only the final packet of the complete access unit carries the marker bit.
       for (let offset = 1; offset < nal.length;) {
         let end = Math.min(nal.length, offset + output.payloadBytes - 2);
-        let fragment = Buffer.allocUnsafe(2 + end - offset);
-        // FU-A replaces the original NAL header with an indicator and a header
-        // carrying its type plus start/end flags; the payload starts after that NAL byte.
-        fragment[0] = (nal[0] & 0xe0) | 28;
-        fragment[1] = (nal[0] & 0x1f) | (offset === 1 ? 0x80 : 0) | (end === nal.length ? 0x40 : 0);
-        nal.copy(fragment, 2, offset, end);
-        this.#packet(output, track, fragment, rtpTimestamp, lastNAL === true && end === nal.length);
+        this.#packet(output, track, nal, rtpTimestamp, lastNAL === true && end === nal.length, {
+          start: offset,
+          end,
+          format: 'fu-a',
+        });
         offset = end;
       }
     }
@@ -789,11 +822,11 @@ export default class RTPMuxer {
       let chunkBytes = Math.floor(output.payloadBytes / sampleBytes) * sampleBytes;
       track.lastTimestamp = timestamp;
       for (let offset = 0; offset < data.length; offset += chunkBytes) {
-        // L16 uses network byte order. Copy each chunk before swapping bytes
-        // so the shared retained PCM stays unchanged and channel groups stay intact.
-        let payload = Buffer.from(data.subarray(offset, offset + chunkBytes));
-        payload.swap16();
-        this.#packet(output, track, payload, (rtpTimestamp + offset / sampleBytes) >>> 0, false);
+        this.#packet(output, track, data, (rtpTimestamp + offset / sampleBytes) >>> 0, false, {
+          start: offset,
+          end: Math.min(data.length, offset + chunkBytes),
+          format: 'l16',
+        });
       }
     } else if (output.audio.codec === 'opus') {
       // Preserve the compressed Opus payload in one output RTP packet.
@@ -816,14 +849,8 @@ export default class RTPMuxer {
         throw new RangeError('AAC AU requires fragmentation');
       }
 
-      let payload = Buffer.allocUnsafe(4 + data.length);
-      // AU-headers-length is measured in bits. The following 16-bit AU header
-      // stores the byte length in its upper 13 bits and a zero AU index below it.
-      payload.writeUInt16BE(16, 0);
-      payload.writeUInt16BE(data.length << 3, 2);
-      data.copy(payload, 4);
       track.lastTimestamp = timestamp;
-      this.#packet(output, track, payload, rtpTimestamp, true);
+      this.#packet(output, track, data, rtpTimestamp, true, { format: 'aac' });
     }
   }
 
@@ -853,9 +880,11 @@ export default class RTPMuxer {
       // Build a compound RTCP sender report followed by an SDES CNAME chunk.
       // Audio and video share the NTP reference and CNAME while keeping separate SSRCs.
       // RTCP lengths count 32-bit words excluding each packet's first word.
-      // Zero-filled allocation supplies the SDES end marker and alignment padding.
+      // Zero-fill the report body for the SDES end marker and alignment padding.
       let sdesBytes = Math.ceil((4 + 4 + 2 + output.cname.length + 1) / 4) * 4;
-      let compound = Buffer.alloc(28 + sdesBytes);
+      let data = this.#allocatePacket(output, track, 'rtcp', 28 + sdesBytes);
+      let compound = output.writePacket === undefined ? data.subarray(4) : data;
+      compound.fill(0);
       compound[0] = 0x80;
       compound[1] = 200;
       compound.writeUInt16BE(6, 2);
@@ -872,7 +901,7 @@ export default class RTPMuxer {
       compound[36] = 1;
       compound[37] = output.cname.length;
       output.cname.copy(compound, 38);
-      this.#send(output, compound, track, 'rtcp');
+      this.#send(output, data, track, 'rtcp');
     }
   }
 

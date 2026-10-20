@@ -44,7 +44,7 @@
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.10.20
+// Code version 2026.10.21
 // Mark Hulskamp
 'use strict';
 
@@ -987,11 +987,6 @@ export default class NexusTalk extends StreamTransport {
       this.emitMedia({
         type: Streamer.MEDIA_TYPE.AUDIO,
         codec: this.audio.codec,
-        profile: this.audio.profile,
-        sampleRate: this.audio.sampleRate,
-        channels: this.audio.channels,
-        bitrate: this.audio.bitrate,
-        frameDuration: this.audio.frameDuration,
         timestamp: timestamp,
         keyFrame: false,
         data: data,
@@ -1449,8 +1444,6 @@ export default class NexusTalk extends StreamTransport {
       this.emitMedia({
         type: Streamer.MEDIA_TYPE.VIDEO,
         codec: this.video.codec,
-        profile: this.video.profile,
-        bitrate: this.video.bitrate,
         timestamp: pendingTimestamp,
         keyFrame: video.pendingKeyFrame,
         codecConfig: {

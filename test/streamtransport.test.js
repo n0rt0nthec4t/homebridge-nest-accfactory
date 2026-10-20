@@ -76,35 +76,67 @@ test('media health suppresses deltas, recovers via keyframes and falls back on a
   assert.equal(transport.resetMediaState('video').badWindowMs, 100);
   assert.deepEqual(transport.resetMediaState(), {});
 });
-test('isolated timestamp clamps stay harmless but repeated clamps count as bad media', (context) => {
+test('recovery counts only faults inside the configured rolling window', (context) => {
   context.mock.timers.enable({ apis: ['Date'], now: 100000 });
   let transport = new StreamTransport();
-  let state = transport.markMediaIssue('video', 'timestamp', { clamp: true });
-  assert.equal(state.badEvents, 0);
-  transport.markMediaIssue('video', 'timestamp', { clamp: true });
+  let state = transport.getMediaState('video', { badWindowMs: 100, unstableBadThreshold: 2 });
+  transport.markMediaIssue('video', 'loss');
   assert.equal(state.badEvents, 1);
-  context.mock.timers.tick(10000);
-  transport.markMediaFrame();
-  assert.equal(state.clampEvents, 0);
-  assert.equal(state.badEvents, 0);
+  context.mock.timers.tick(101);
+  transport.markMediaIssue('video', 'loss');
+  assert.equal(state.badEvents, 1);
+  assert.equal(state.state, StreamTransport.MEDIA_STATE.STABLE);
+  transport.markMediaIssue('video', 'incomplete-frame');
+  assert.equal(state.badEvents, 2);
+  assert.equal(state.state, StreamTransport.MEDIA_STATE.UNSTABLE);
 });
-test('media state backfills partial protocol state and bounds its expired event history', (context) => {
+test('media state starts complete and bounds its expired event history', (context) => {
   context.mock.timers.enable({ apis: ['Date'], now: 100000 });
   let transport = new StreamTransport();
   let state = transport.getMediaState();
-  for (let key of Object.keys(state)) {
-    delete state[key];
-  }
   assert.equal(transport.canAcceptMediaFrame(), true);
   assert.equal(state.state, StreamTransport.MEDIA_STATE.STABLE);
   for (let index = 0; index < 100; index++) {
-    transport.markMediaIssue('video', 'diagnostic', { bad: false });
+    transport.markMediaIssue('video', 'loss');
   }
   context.mock.timers.tick(10000);
   transport.markMediaFrame();
   assert.equal(state.events.length, 0);
   assert.equal(state.eventsStart, 0);
 });
+test('media recovery resets replace state, retain configured thresholds and isolate sessions', () => {
+  let transport = new StreamTransport();
+  let state = transport.getMediaState('video', { badWindowMs: 100, unstableBadThreshold: 1, recoveringCleanTarget: 3 });
+  let audio = transport.getMediaState('audio');
+  transport.markMediaIssue('video', 'loss');
+  assert.equal(state.state, StreamTransport.MEDIA_STATE.UNSTABLE);
+
+  let reset = transport.resetMediaState('video');
+  assert.notEqual(reset, state);
+  assert.equal(transport.getMediaState('audio'), audio);
+  assert.deepEqual(
+    reset,
+    new StreamTransport().getMediaState('video', {
+      badWindowMs: 100,
+      unstableBadThreshold: 1,
+      recoveringCleanTarget: 3,
+    }),
+  );
+  assert.equal(transport.canAcceptMediaFrame('video'), true);
+  transport.markMediaIssue('video', 'loss');
+  transport.markMediaFrame('video', { keyFrame: true });
+  assert.equal(reset.state, StreamTransport.MEDIA_STATE.RECOVERING);
+  transport.markMediaFrame('video');
+  assert.equal(reset.state, StreamTransport.MEDIA_STATE.STABLE);
+  assert.equal(reset.badEvents, 0);
+  assert.equal(reset.suppressDeltas, false);
+
+  transport.resetMediaState();
+  assert.notEqual(transport.getMediaState('video'), reset);
+  assert.notEqual(transport.getMediaState('audio'), audio);
+  assert.equal(transport.canAcceptMediaFrame('video'), true);
+});
+
 test('transport lifecycle publishes each state once and resets session-learned metadata on reconnect', () => {
   let states = [];
   let transport = new StreamTransport({ consumer: { active: () => true, state: (...args) => states.push(args) } });
@@ -139,8 +171,7 @@ test('transport metadata is learned from SPS and source timing without duplicate
   assert.equal(transport.video.width, 640);
   assert.equal(transport.video.height, 360);
   assert.equal(Math.round(transport.video.fps), 25);
-  assert.equal(frames[0].sequence, 0);
-  assert.equal(frames[2].sequence, 2);
+  assert.deepEqual(Object.keys(frames[0]).sort(), ['codec', 'data', 'keyFrame', 'timestamp', 'type']);
   assert.equal(logs.length, 1);
   transport.updateVideoMetadata({ width: 1280, height: 720, fps: 30 });
   assert.equal(logs.length, 2);
@@ -156,13 +187,10 @@ test('PCM metadata derives bitrate and audio gap counters from emitted frames', 
   transport.emitMedia({ type: 'audio', data: Buffer.from([1]), timestamp: 100000 });
   context.mock.timers.tick(200);
   transport.emitMedia({ type: 'audio', data: Buffer.from([2]), timestamp: 100200 });
-  assert.equal(frames[0].bitrate, 1536000);
+  assert.equal(transport.audio.bitrate, 1536000);
+  assert.deepEqual(Object.keys(frames[0]).sort(), ['codec', 'data', 'keyFrame', 'timestamp', 'type']);
   assert.equal(transport.stats.media.maxAudioGapMs, 200);
   assert.equal(transport.stats.media.largeAudioGaps, 1);
-  transport.recordAudioSilenceFill(20);
-  transport.recordAudioSilenceFill(-1);
-  assert.equal(transport.stats.media.audioSilenceFillFrames, 2);
-  assert.equal(transport.stats.media.audioSilenceFillMs, 20);
 });
 test('transport repairs diagnostic counters and contains failing consumer callbacks', async () => {
   let logs = [];
@@ -309,10 +337,6 @@ test('transport normalization preserves fractional source time and canonical cod
     frames.map((frame) => frame.timestamp),
     timestamps,
   );
-  assert.deepEqual(
-    frames.map((frame) => frame.sequence),
-    [0, 1, 2, 3],
-  );
   assert.equal(
     frames.every((frame) => frame.type === 'audio' && frame.codec === 'aac' && frame.data === data),
     true,
@@ -328,11 +352,91 @@ test('transport drops unresolved codecs and normalizes missing timing before emi
   assert.deepEqual(frames, []);
   assert.equal(transport.stats.media.audioFrames, 0);
   transport.audio.codec = ' OPUS ';
-  transport.emitMedia({ type: 'AUDIO', data, timestamp: NaN, sequence: 8 });
+  transport.emitMedia({ type: 'AUDIO', data, timestamp: NaN });
   transport.emitMedia({ type: 'audio', data, timestamp: 0.25 });
   assert.equal(frames[0].codec, 'opus');
   assert.equal(frames[0].timestamp, 100000);
-  assert.equal(frames[0].sequence, 8);
   assert.equal(frames[1].timestamp, 0.25);
-  assert.equal(frames[1].sequence, 0);
+});
+
+test('waiting video jitter checks only the oldest group without rebuilding the queue', (context) => {
+  let transport = new StreamTransport();
+  let jitter = transport.createJitterBuffer({ groupByTimestamp: true, maxPackets: 64 });
+  for (let index = 0; index < 16; index++) {
+    transport.pushJitterPacket(jitter, { rtpTimestamp: index * 3000, sequenceNumber: index });
+  }
+
+  let reads = context.mock.method(jitter.queue, 'getByOffset');
+  let clears = context.mock.method(jitter.queue, 'clear');
+  let pushes = context.mock.method(jitter.queue, 'push');
+  let head = jitter.queue.head;
+  for (let index = 0; index < 100; index++) {
+    assert.deepEqual(transport.releaseJitterGroups(jitter, { isComplete: () => false, canWait: () => true }), []);
+  }
+
+  assert.equal(reads.mock.callCount(), 100, 'one head inspection per attempt');
+  assert.equal(clears.mock.callCount(), 0, 'waiting must not clear retained groups');
+  assert.equal(pushes.mock.callCount(), 0, 'waiting must not reinsert retained groups');
+  assert.equal(jitter.queue.head, head);
+  assert.equal(jitter.queue.size, 16);
+  assert.equal(jitter.packetCount, 16);
+  assert.equal(jitter.groupIndex.size, 16);
+});
+
+test('video jitter reorders new timestamps after partial release across rollover', (context) => {
+  let transport = new StreamTransport();
+  let jitter = transport.createJitterBuffer({ groupByTimestamp: true, maxPackets: 16 });
+  for (let [sequenceNumber, rtpTimestamp] of [0xfffffff0, 20, 10].entries()) {
+    transport.pushJitterPacket(jitter, { rtpTimestamp, sequenceNumber });
+  }
+
+  assert.deepEqual(
+    transport.releaseJitterGroups(jitter, { maxGroups: 1 }).map((group) => group.rtpTimestamp),
+    [0xfffffff0],
+  );
+  assert.equal(jitter.packetCount, 2);
+  assert.equal(jitter.groupIndex.has(0xfffffff0), false);
+  transport.pushJitterPacket(jitter, { rtpTimestamp: 15, sequenceNumber: 3 });
+  assert.deepEqual(
+    transport.releaseJitterGroups(jitter, { maxGroups: 1 }).map((group) => group.rtpTimestamp),
+    [10],
+  );
+
+  let clears = context.mock.method(jitter.queue, 'clear');
+  assert.deepEqual(
+    transport.releaseJitterGroups(jitter, { force: true }).map((group) => group.rtpTimestamp),
+    [15, 20],
+  );
+  assert.equal(clears.mock.callCount(), 0, 'already ordered groups drain directly');
+  assert.equal(jitter.queue.size, 0);
+  assert.equal(jitter.packetCount, 0);
+  assert.equal(jitter.groupIndex.size, 0);
+  assert.equal(jitter.lastReleasedTimestamp, 20);
+});
+
+test('media statistics initialise and reset independently for each source', () => {
+  let first = new StreamTransport();
+  let second = new StreamTransport();
+  let initial = structuredClone(second.stats.media);
+  first.recordVideoDrop('loss');
+  first.recordVideoReorder('defers');
+  first.recordKeyframeRequest();
+  assert.deepEqual(second.stats.media, initial);
+  first.resetMediaStats();
+  assert.deepEqual(first.stats.media, initial);
+  assert.notEqual(first.stats.media, second.stats.media);
+  assert.notEqual(first.stats.media.videoDrops, second.stats.media.videoDrops);
+});
+
+test('slim frames retain source metadata learning and declared bitrate on the transport', () => {
+  let frames = [];
+  let transport = new StreamTransport({ consumer: { media: (frame) => frames.push(frame) } });
+  Object.assign(transport.video, { codec: 'h264', width: 320, height: 240, bitrate: 2000000 });
+  let data = H264.buildAccessUnit([sequenceParameterSet({ widthMbs: 80, heightMbs: 45 }), Buffer.from([0x65, 1])]).data;
+  transport.emitMedia({ type: 'video', data, keyFrame: true, timestamp: 100000 });
+  assert.equal(transport.video.width, 1280);
+  assert.equal(transport.video.height, 720);
+  assert.equal(transport.video.bitrate, 2000000);
+  assert.equal(frames[0].data, data);
+  assert.deepEqual(Object.keys(frames[0]).sort(), ['codec', 'data', 'keyFrame', 'timestamp', 'type']);
 });

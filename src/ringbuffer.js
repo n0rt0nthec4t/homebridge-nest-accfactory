@@ -23,12 +23,12 @@
 // using modulo arithmetic.
 //
 // Intended use:
-// - Timeline buffers
-// - RTP/media packet queues
+// - Ordered item buffers
+// - Bounded FIFO queues
 // - Jitter buffers
 // - Rolling history windows
 //
-// Code version 2026.05.17
+// Code version 2026.10.21
 // Mark Hulskamp
 'use strict';
 
@@ -130,7 +130,7 @@ export default class RingBuffer {
 
   at(logicalIndex) {
     // Resolve an item by logical index rather than offset.
-    // Useful for callers working with timeline indexes.
+    // Useful for callers retaining logical item indexes across front removals.
     if (Number.isInteger(logicalIndex) !== true || logicalIndex < this.startIndex || logicalIndex >= this.startIndex + this.size) {
       return undefined;
     }

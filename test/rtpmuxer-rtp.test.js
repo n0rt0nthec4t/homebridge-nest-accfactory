@@ -314,3 +314,59 @@ test('a shared source epoch preserves audio offset when audio is delivered befor
   }
   await output.close();
 });
+
+for (let firstTrack of ['video', 'audio']) {
+  test('a late first ' + (firstTrack === 'video' ? 'audio' : 'video') + ' frame can precede the shared RTP epoch', async (context) => {
+    let packets = [];
+    let output = new RTPMuxer({
+      audio: opus,
+      unixNow: () => 1700000000000,
+      writePacket: (data, metadata) => packets.push({ data, ...metadata }),
+    });
+    context.after(() => output.close());
+    let write = (track, timestamp) => {
+      if (track === 'video') {
+        output.writeVideo(Buffer.from([0x65, 1]), timestamp);
+      } else {
+        output.writeAudio(Buffer.from([0xf8, 0xff, 0xfe]), timestamp);
+      }
+    };
+    let lateTrack = firstTrack === 'video' ? 'audio' : 'video';
+    output.setSourceEpoch(100040);
+    write(firstTrack, 100040);
+    output.tick();
+    write(lateTrack, 100000);
+    write(lateTrack, 100020);
+    assert.throws(() => write(lateTrack, 100020), /increasing source/);
+    assert.throws(() => write(lateTrack, 99999), /increasing source/);
+    assert.throws(() => write(lateTrack, NaN), /source media time/);
+    assert.throws(() => write(lateTrack, Infinity), /source media time/);
+
+    for (let track of ['video', 'audio']) {
+      let media = packets.find((packet) => packet.kind === 'rtp' && packet.track === track).data;
+      let report = packets.find((packet) => packet.kind === 'rtcp' && packet.track === track).data;
+      let rate = track === 'video' ? 90000 : 48000;
+      // Signed modular differences retain the earlier track's negative offset.
+      assert.equal((media.readUInt32BE(4) - report.readUInt32BE(16)) | 0, track === firstTrack ? 0 : -0.04 * rate);
+    }
+  });
+}
+
+test('a scheduler tick captured before first media waits for the playback clock before reporting', async (context) => {
+  let now = 1700000000000;
+  let packets = [];
+  let output = new RTPMuxer({ unixNow: () => now, writePacket: (data, metadata) => packets.push({ data, ...metadata }) });
+  context.after(() => output.close());
+  let tickStart = now;
+  now += 2;
+  output.writeVideo(Buffer.from([0x65, 1]), 1000);
+  output.tick(tickStart);
+  assert.equal(packets.filter((packet) => packet.kind === 'rtcp').length, 0);
+  output.tick(now);
+  assert.equal(packets.filter((packet) => packet.kind === 'rtcp').length, 1);
+  output.writeVideo(Buffer.from([0x61, 1]), 1020);
+  output.tick(now - 1);
+  assert.equal(packets.filter((packet) => packet.kind === 'rtcp').length, 1);
+  output.tick(now + 1000);
+  assert.equal(packets.filter((packet) => packet.kind === 'rtcp').length, 2);
+});

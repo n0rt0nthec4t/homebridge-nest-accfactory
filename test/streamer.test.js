@@ -821,3 +821,101 @@ test('source frames arriving during acquisition configure the preparing output s
   assert.equal(hooks.instances[0].needsAudioConfig, false);
   assert.equal(streamer.isLiveStreaming(), true);
 });
+
+for (let firstTrack of ['video', 'audio']) {
+  test(
+    'late first ' + (firstTrack === 'video' ? 'audio' : 'video') + ' with earlier source time keeps live output and buffering running',
+    async (context) => {
+      context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+      let { streamer, transport } = setup(context);
+      await streamer.onMessage(Streamer.MESSAGE_TYPE.START_BUFFER);
+      await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'live', options: { includeAudio: true } });
+      let write = (track, timestamp) => {
+        if (track === 'video') {
+          addVideo(transport, timestamp);
+        } else {
+          transport.emitMedia({ type: 'audio', timestamp, data: Buffer.from([0xf8, 0xff, 0xfe]) });
+        }
+      };
+      write(firstTrack, 100040);
+      context.mock.timers.tick(10);
+      let muxer = hooks.instances[0];
+      assert.ok(media(muxer, firstTrack).length > 0);
+      let lateTrack = firstTrack === 'video' ? 'audio' : 'video';
+      write(lateTrack, 100000);
+      context.mock.timers.tick(100);
+      assert.equal(streamer.isLiveStreaming(), true);
+      assert.equal(streamer.isBuffering(), true);
+      assert.equal(media(muxer, lateTrack).length > 0, true);
+      assert.equal(
+        transport.calls.some(([type]) => type === 'close'),
+        false,
+      );
+    },
+  );
+}
+
+for (let type of [Streamer.STREAM_TYPE.LIVE, Streamer.STREAM_TYPE.RECORD]) {
+  test('regular ' + type + ' arrivals preserve fixed delivery pacing and RTP intervals', async (context) => {
+    context.mock.timers.enable({ apis: ['setInterval', 'setTimeout', 'Date'], now: 100000 });
+    let { streamer, transport } = setup(context);
+    await streamer.onMessage(type === Streamer.STREAM_TYPE.LIVE ? Streamer.MESSAGE_TYPE.START_LIVE : Streamer.MESSAGE_TYPE.START_RECORD, {
+      sessionID: 'fixed-pacing',
+    });
+    for (let index = 0; index < 12; index++) {
+      addVideo(transport, Date.now(), index === 0);
+      context.mock.timers.tick(40);
+    }
+
+    let muxer = hooks.instances[0];
+    let before = media(muxer).length;
+    // A future source frame must still wait after regular arrivals. Repeated
+    // deadline adjustments used to make live delivery progressively earlier.
+    addVideo(transport, Date.now() + 500, false);
+    context.mock.timers.tick(10);
+    assert.equal(media(muxer).length, before);
+    context.mock.timers.tick(400);
+    assert.equal(media(muxer).length, before + 1);
+    let times = media(muxer)
+      .filter(({ data }) => (data[1] & 0x80) !== 0)
+      .map(({ data }) => data.readUInt32BE(4));
+    assert.deepEqual(
+      times.slice(1).map((time, index) => (time - times[index]) >>> 0),
+      [...Array(11).fill(3600), 48600],
+    );
+  });
+}
+
+for (let diagnostics of [false, true]) {
+  test('shared queue diagnostics cover video-only output; enabled=' + diagnostics, async (context) => {
+    context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+    let logs = [];
+    let { streamer, transport } = setup(
+      context,
+      {},
+      { supportDump: diagnostics, log: { debug() {}, error() {}, success() {}, warn() {}, info: (...args) => logs.push(args) } },
+    );
+    await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'queue-diagnostics' });
+    let muxer = hooks.instances[0];
+    let queued = 0;
+    let query = context.mock.method(muxer, 'queuedBytes', () => queued);
+    hooks.send = (output, data, metadata) => {
+      if (metadata.kind === 'rtp') {
+        queued += data.length;
+      }
+      return true;
+    };
+    addVideo(transport);
+    context.mock.timers.tick(10);
+    assert.equal(queued > 0, true);
+    // The access-unit reservation queries once regardless of diagnostics.
+    assert.equal(query.mock.callCount(), diagnostics === true ? 2 : 1);
+    await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_LIVE, { sessionID: 'queue-diagnostics' });
+    let maximum = logs.find((entry) => entry[0].includes('"maxQueuedBytes"'));
+    assert.equal(maximum?.[1], diagnostics === true ? queued : undefined);
+    assert.equal(
+      logs.some((entry) => entry[0].includes('"maxAudioQueuedBytes"')),
+      false,
+    );
+  });
+}

@@ -746,23 +746,31 @@ test('ending and resuming talkback preserves the playback session and empty end 
   await flow.transport.sendAudio(Buffer.alloc(0));
   await flow.transport.sendAudio(Buffer.from([3, 4]));
   let packets = socket.writes.slice(before);
-  assert.deepEqual(packets.filter((entry, index) => index % 2 === 0).map((entry) => entry[0]), [102, 102, 102]);
+  assert.deepEqual(
+    packets.filter((entry, index) => index % 2 === 0).map((entry) => entry[0]),
+    [102, 102, 102],
+  );
   // Assert the wire bytes, since decoding supplies defaults even when the sender
   // incorrectly omits the empty payload or zero-valued SPEEX codec fields.
   let bodies = packets.filter((entry, index) => index % 2 === 1);
-  assert.deepEqual(bodies.map((data) => data.toString('hex')), [
-    '0a0201021007180020807d',
-    '0a001007180020807d',
-    '0a0203041007180020807d',
-  ]);
+  assert.deepEqual(
+    bodies.map((data) => data.toString('hex')),
+    ['0a0201021007180020807d', '0a001007180020807d', '0a0203041007180020807d'],
+  );
   assert.deepEqual(
     packets.filter((entry, index) => index % 2 === 0).map((header) => header.readUInt16BE(1)),
     bodies.map((data) => data.length),
   );
   let type = root.lookupType('nest.nexustalk.v1.AudioPayload');
   let decoded = bodies.map((data) => type.decode(data));
-  assert.deepEqual(decoded.map((message) => Buffer.from(message.payload)), [Buffer.from([1, 2]), Buffer.alloc(0), Buffer.from([3, 4])]);
-  assert.equal(decoded.every((message) => message.sessionId === 7 && message.codec === 0 && message.sampleRate === 16000), true);
+  assert.deepEqual(
+    decoded.map((message) => Buffer.from(message.payload)),
+    [Buffer.from([1, 2]), Buffer.alloc(0), Buffer.from([3, 4])],
+  );
+  assert.equal(
+    decoded.every((message) => message.sessionId === 7 && message.codec === 0 && message.sampleRate === 16000),
+    true,
+  );
   assert.equal(flow.transport.connected, true);
   assert.equal(socket.destroyed, false);
   assert.equal(flow.sockets.length, 1);

@@ -115,7 +115,7 @@ function pcm(timestamp) {
   return data;
 }
 
-for (const [rate, codec, audioCodec] of [
+for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack] of [
   [1, 'rawvideo', 'pcm-s16le'],
   [4, 'rawvideo', 'pcm-s16le'],
   [4, 'copy', 'pcm-s16le'],
@@ -125,11 +125,16 @@ for (const [rate, codec, audioCodec] of [
   [4, 'copy', 'aac'],
   [4, 'hksv', 'opus'],
   [4, 'hksv', 'aac'],
+  [4, 'copy', 'opus', -40, 'audio'],
+  [4, 'copy', 'opus', 40, 'video'],
+  [4, 'hksv', 'opus', -40, 'audio'],
+  [4, 'hksv', 'opus', 40, 'video'],
 ]) {
   test(
-    codec === 'hksv'
+    (codec === 'hksv'
       ? 'FFmpeg ' + audioCodec + ' RTP input produces decodable CFR H264/AAC fragmented MP4 at delivery rate ' + rate
-      : 'FFmpeg ' + codec + '/' + audioCodec + ' preserves VFR A/V with a 40 ms source offset at delivery rate ' + rate,
+      : 'FFmpeg ' + codec + '/' + audioCodec + ' preserves VFR A/V with a ' + audioOffset + ' ms source offset at delivery rate ' + rate) +
+      (lateTrack === undefined ? '' : ' with late first ' + lateTrack),
     { skip: binary === undefined ? 'Set FFMPEG_TEST_BINARY for real media checks' : false, timeout: 20000 },
     async (context) => {
       const video = videoFrames();
@@ -233,18 +238,23 @@ for (const [rate, codec, audioCodec] of [
       }));
       if (encodedAAC !== undefined) {
         for (let index = 0; index < encodedAAC.length; index++) {
-          events.push({ type: 'audio', data: encodedAAC[index], timestamp: 40 + (index * 1024 * 1000) / 48000 });
+          events.push({ type: 'audio', data: encodedAAC[index], timestamp: audioOffset + (index * 1024 * 1000) / 48000 });
         }
       } else {
-        for (let timestamp = 40; timestamp < 6000; timestamp += 20) {
+        for (let timestamp = audioOffset; timestamp < 6000; timestamp += 20) {
           let data = audioCodec === 'opus' ? opusSilence : pcm(timestamp);
           events.push({ type: 'audio', data, timestamp });
         }
       }
-      events.sort((left, right) => left.timestamp - right.timestamp || (left.type === 'video' ? -1 : 1));
+      // Delay one track's delivery without changing its source clock. Its first
+      // frame then arrives after the other track established a later RTP epoch.
+      for (let event of events) {
+        event.deliverAt = event.timestamp + (event.type === lateTrack ? 120 : 0);
+      }
+      events.sort((left, right) => left.deliverAt - right.deliverAt || (left.type === 'video' ? -1 : 1));
       const started = performance.now();
       for (const event of events) {
-        const due = started + event.timestamp / rate;
+        const due = started + event.deliverAt / rate;
         if (due > performance.now()) {
           await delay(Math.max(1, due - performance.now()));
         }
@@ -322,11 +332,22 @@ for (const [rate, codec, audioCodec] of [
       }
       assert.equal(decoded[0].length >= 70, true, 'Too few decoded video frames: ' + decoded[0].length);
       assert.equal(decoded[1].length > 200, true, 'Too few decoded audio packets: ' + decoded[1].length);
+      // FFmpeg can synthesize zero PTS for the first copied H264 frame when
+      // audio started first and video begins before the shared epoch. Check the
+      // established offset from the next video frame as well as ongoing timing;
+      // this receiver bootstrap behaviour is separate from rejecting the track.
+      let videoStart = lateTrack === 'video' ? decoded[0][1] - 0.1 : decoded[0][0];
       assert.equal(
-        Math.abs(decoded[1][0] - decoded[0][0] - 0.04) < 0.003,
+        Math.abs(decoded[1][0] - videoStart - audioOffset / 1000) < 0.003,
         true,
-        'Lost A/V offset: video=' + decoded[0][0] + ' audio=' + decoded[1][0],
+        'Lost A/V offset: video=' + videoStart + ' audio=' + decoded[1][0],
       );
+      if (lateTrack !== undefined) {
+        let sourceVideo = events.filter((event) => event.type === 'video');
+        for (let index = 1; index < decoded[0].length; index++) {
+          assert.equal(Math.abs(decoded[0][index] - videoStart - sourceVideo[index].timestamp / 1000) < 0.003, true);
+        }
+      }
       const deltas = decoded[0].slice(1).map((time, index) => time - decoded[0][index]);
       for (const duration of [0.05, 0.1]) {
         assert.equal(

@@ -435,6 +435,7 @@ test('WebRTC missing parameter sets suppress an IDR until a decodable keyframe a
   flow.emit(Buffer.from([0x65, 1]));
   assert.deepEqual(flow.media, []);
   assert.equal(flow.transport.ready, false);
+  assert.equal(flow.transport.stats.media.videoDrops['invalid-keyframe'], 1);
   flow.keyframe(3000);
   assert.equal(flow.media.length, 1);
   assert.equal(flow.transport.ready, true);
@@ -717,11 +718,12 @@ test('WebRTC preserves native ordered Opus payloads and source timing', async (c
   send(3, 1920);
   assert.equal(flow.transport.audio.codec, 'opus');
   assert.equal(flow.transport.audio.profile, undefined);
+  assert.equal(flow.transport.audio.sampleRate, 48000);
+  assert.equal(flow.transport.audio.channels, 2);
   assert.equal(flow.media.length, 2);
   for (const item of flow.media) {
     assert.equal(item.codec, 'opus');
-    assert.equal(item.sampleRate, 48000);
-    assert.equal(item.channels, 2);
+    assert.deepEqual(Object.keys(item).sort(), ['codec', 'data', 'keyFrame', 'timestamp', 'type']);
     assert.deepEqual(item.data, payload);
   }
   assert.equal(flow.media[1].timestamp - flow.media[0].timestamp, 20);
@@ -814,7 +816,7 @@ test('WebRTC concurrent closes send one talkback stop and one stream end', async
   assert.equal(flow.transport.closed, true);
 });
 for (let started of [false, true]) {
-  test('WebRTC discards an excessively slow IDR; already streaming=' + started, async (context) => {
+  test('WebRTC accepts a complete slow IDR; already streaming=' + started, async (context) => {
     let flow = await videoFlow(context);
     if (started === true) {
       flow.keyframe();
@@ -825,10 +827,12 @@ for (let started of [false, true]) {
     flow.emit(Buffer.from([0x7c, 0x85, 1]), 3000, false);
     context.mock.timers.tick(started === true ? 2600 : 4100);
     flow.emit(Buffer.from([0x7c, 0x45, 2]), 3000);
-    assert.equal(flow.media.length, before);
-    assert.equal(flow.transport.stats.media.videoDrops['shock-keyframe'], 1);
-    flow.keyframe(6000);
     assert.equal(flow.media.length, before + 1);
+    assert.equal(flow.media.at(-1).keyFrame, true);
+    assert.equal(flow.transport.ready, true);
+    assert.equal(flow.transport.stats.media.videoDrops['invalid-keyframe'], undefined);
+    flow.keyframe(6000);
+    assert.equal(flow.media.length, before + 2);
   });
 }
 for (let allowance of ['resolution', 'bitrate']) {

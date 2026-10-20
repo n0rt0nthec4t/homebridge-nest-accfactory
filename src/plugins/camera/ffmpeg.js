@@ -1,7 +1,7 @@
 // FFmpeg Session Manager
 // Part of homebridge-nest-accfactory
 //
-// Discovers and probes the FFmpeg binary once per instance, exposing version,
+// Shares successful binary capability discovery across instances, exposing version,
 // codec and format capabilities for camera and doorbell streaming. Hardware
 // selection requires a bounded encode probe, cached across managers for the same binary and discovered devices.
 // Callers build command arguments and handle HomeKit cleanup and logging.
@@ -21,7 +21,7 @@
 // - Keep expected EPIPE errors silent; retain and report other pipe errors through the caller's callback
 // - Tolerate missing or inaccessible DRM metadata during hardware detection
 //
-// Code version 2026.10.20
+// Code version 2026.10.21
 // Mark Hulskamp
 'use strict';
 
@@ -46,9 +46,11 @@ const BINARY_PROBE_TIMEOUT_MS = 2000;
 const HARDWARE_PROBE_TIMEOUT_MS = 2000;
 const HARDWARE_PROBE_BUDGET_MS = 4000;
 const HARDWARE_PROBE_CACHE_CAPACITY = 32;
+const CAPABILITY_CACHE_CAPACITY = 32;
 
 // FFmpeg object
 export default class FFmpeg extends EventEmitter {
+  static #capabilityCache = new Map(); // Binary discovery only; each manager receives its own feature arrays.
   static #hardwareProbeCache = new Map(); // Bounded process-local results; session ownership stays per manager.
 
   static SESSION_EVENT = {
@@ -537,6 +539,16 @@ export default class FFmpeg extends EventEmitter {
       return;
     }
 
+    let binaryMetadata = this.#getBinaryMetadata();
+    let identity = JSON.stringify(binaryMetadata);
+    let cached = FFmpeg.#capabilityCache.get(binaryMetadata?.[0]);
+    if (cached !== undefined && cached.identity === identity) {
+      this.#version = cached.version;
+      this.#features = structuredClone(cached.features);
+      this.#probeHardwareEncoder(binaryMetadata);
+      return;
+    }
+
     // Capability discovery is synchronous during setup, so a stalled binary must be forcibly bounded.
     let versionOutput = child_process.spawnSync(this.#binary, ['-version'], {
       env: process.env,
@@ -559,6 +571,9 @@ export default class FFmpeg extends EventEmitter {
     let enabledLibs = stdout.match(/--enable-[^\s]+/g) || [];
     this.#features.enabled = enabledLibs.map((f) => f.replace('--enable-', ''));
 
+    // Failed queries remain retryable rather than caching an incomplete capability set.
+    let complete = true;
+
     // Helper function to parse feature lists with different regex patterns
     const parseFeatures = (command, regex) => {
       let output = child_process.spawnSync(this.#binary, [command], {
@@ -567,7 +582,8 @@ export default class FFmpeg extends EventEmitter {
         killSignal: 'SIGKILL',
       });
 
-      if (output?.error !== undefined || output?.stdout === null || output.status !== 0) {
+      if (output?.error !== undefined || output?.stdout === null || output?.stdout === undefined || output.status !== 0) {
+        complete = false;
         return [];
       }
 
@@ -588,7 +604,45 @@ export default class FFmpeg extends EventEmitter {
     this.#features.muxers = parseFeatures('-muxers', /^\s*[E][A-Z.]*\s+([^\s]+)/);
     this.#features.demuxers = parseFeatures('-demuxers', /^\s*[D][A-Z.]*\s+([^\s]+)/);
 
-    this.#probeHardwareEncoder();
+    // Snapshot capabilities before hardware-specific flags are added. Discovery
+    // is synchronous, so another constructor cannot observe a partially filled entry.
+    if (binaryMetadata !== undefined && typeof this.#version === 'string' && complete === true) {
+      if (FFmpeg.#capabilityCache.has(binaryMetadata[0]) !== true && FFmpeg.#capabilityCache.size >= CAPABILITY_CACHE_CAPACITY) {
+        FFmpeg.#capabilityCache.delete(FFmpeg.#capabilityCache.keys().next().value);
+      }
+      FFmpeg.#capabilityCache.set(binaryMetadata[0], { identity, version: this.#version, features: structuredClone(this.#features) });
+    }
+    this.#probeHardwareEncoder(binaryMetadata);
+  }
+
+  #getBinaryMetadata() {
+    // Resolve bare commands using executable PATH entries, not merely the first
+    // existing filename. Without a verifiable identity, capability discovery is not cached.
+    try {
+      let executable = this.#binary;
+      if (executable.includes('/') === false && executable.includes('\\') === false) {
+        executable = (process.env.PATH ?? '')
+          .split(path.delimiter)
+          .map((directory) => path.resolve(directory, this.#binary))
+          .find((file) => {
+            try {
+              fs.accessSync(file, fs.constants.X_OK);
+              return fs.statSync(file).isFile() === true;
+            } catch {
+              return false;
+            }
+          });
+        if (executable === undefined) {
+          return undefined;
+        }
+      }
+      let stat = fs.statSync(executable);
+      return Number.isFinite(stat.size) === true && Number.isFinite(stat.mtimeMs) === true && Number.isFinite(stat.ino) === true
+        ? [executable, stat.size, stat.mtimeMs, stat.ino]
+        : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   #discoverHardwareEncoders() {
@@ -681,7 +735,7 @@ export default class FFmpeg extends EventEmitter {
   }
 
   // Validate an actual encode, rather than treating compiled encoders or graphics nodes as hardware evidence.
-  #probeHardwareEncoder() {
+  #probeHardwareEncoder(binaryMetadata) {
     let codecs = ['h264_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_v4l2m2m', 'h264_videotoolbox'];
     for (let codec of codecs) {
       this.#features[codec] = false;
@@ -696,26 +750,16 @@ export default class FFmpeg extends EventEmitter {
       return;
     }
 
-    // Recheck metadata on construction, but reuse successful and failed encode probes across camera managers.
-    // Binary metadata invalidates the result when an executable at the same path is replaced.
-    let binaryMetadata = undefined;
-    try {
-      let executable = this.#binary;
-      if (executable.includes('/') === false && executable.includes('\\') === false) {
-        executable =
-          (process.env.PATH ?? '')
-            .split(path.delimiter)
-            .map((directory) => path.resolve(directory, this.#binary))
-            .find((file) => fs.existsSync(file) === true) ?? executable;
-      }
-      let stat = fs.statSync(executable);
-      binaryMetadata = [executable, stat.size, stat.mtimeMs, stat.ino];
-    } catch {
-      // An unresolved command still has a stable process-local identity including PATH and parsed capabilities.
-      binaryMetadata = [this.#binary, process.env.PATH];
-    }
-
-    let cacheKey = JSON.stringify([binaryMetadata, platform, this.#version, this.#features.encoders, videoEncoder, candidates]);
+    // Hardware availability is cached separately from compiled capabilities.
+    // Unresolved commands retain the existing PATH-based hardware cache identity.
+    let cacheKey = JSON.stringify([
+      binaryMetadata ?? [this.#binary, process.env.PATH],
+      platform,
+      this.#version,
+      this.#features.encoders,
+      videoEncoder,
+      candidates,
+    ]);
     let selection = FFmpeg.#hardwareProbeCache.get(cacheKey);
 
     if (selection === undefined) {

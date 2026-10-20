@@ -1,6 +1,7 @@
 // Follow real GET dispatch to weather, camera history and snapshot request paths with deterministic cloud responses.
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
+import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
 import { platformHarness } from './helpers/platform-harness.js';
 import { DATA_SOURCE } from '../src/consts.js';
@@ -220,10 +221,17 @@ test('Google snapshot times out its Observe wait and fetches the previously avai
   };
   let request = flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true });
   await started.promise;
-  await Promise.resolve();
+  let replayed = flow.send('DEVICE_TEST', { upload_live_image: { liveImageUrl: 'https://image.invalid/cached.jpg' } });
+  await setImmediate();
+  assert.equal(flow.connection.snapshotWaiters.size, 1);
   context.mock.timers.tick(3000);
   assert.deepEqual((await request).camera_snapshot, Buffer.from([4]));
+  await replayed;
   assert.equal(flow.connection.snapshotWaiters.size, 0);
+  assert.equal(
+    flow.logs.some((args) => String(args[1]).includes('using the last available image')),
+    false,
+  );
 });
 
 test('overall snapshot timeout lets HomeKit continue when a cloud command never settles', async (context) => {
@@ -242,5 +250,79 @@ test('overall snapshot timeout lets HomeKit continue when a cloud command never 
   // Finish the late command too so its own cleanup can be verified independently of the outer timeout.
   pending.resolve({ status: 14 });
   await Promise.resolve();
+  assert.equal(flow.connection.snapshotWaiters.size, 0);
+});
+
+for (let [label, before, fresh] of [
+  [
+    'new timestamp at the same URL',
+    { liveImageUrl: 'https://image.invalid/old.jpg', timestamp: { seconds: 100, nanos: 100 } },
+    { liveImageUrl: 'https://image.invalid/old.jpg', timestamp: { seconds: 100, nanos: 101 } },
+  ],
+  [
+    'new timestamp and URL',
+    { liveImageUrl: 'https://image.invalid/old.jpg', timestamp: { seconds: 100, nanos: 100 } },
+    { liveImageUrl: 'https://image.invalid/new.jpg', timestamp: { seconds: 101 } },
+  ],
+  ['changed URL without timestamps', { liveImageUrl: 'https://image.invalid/old.jpg' }, { liveImageUrl: 'https://image.invalid/new.jpg' }],
+]) {
+  test('Google snapshot ignores stale Observe updates until ' + label, async (context) => {
+    context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 100000 });
+    let image = Buffer.from([8]);
+    let flow = await platformHarness(context, {
+      value: { device_info: { typeName: 'google.resource.SpencerResource' }, upload_live_image: before },
+      fetch: async () => ({ arrayBuffer: async () => image }),
+    });
+    let started = Promise.withResolvers();
+    flow.connection.grpcTransport.command = async () => {
+      started.resolve();
+      return { status: 0, data: [{ traitOperations: [{ progress: 'COMPLETE', event: { event: { status: 'STATUS_SUCCESSFUL' } } }] }] };
+    };
+    let request = flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true });
+    await started.promise;
+    let fetches = flow.requests.length;
+    let delivered = [];
+    let stale = [before, { liveImageUrl: '', timestamp: { seconds: 102 } }];
+    if (before.timestamp !== undefined) {
+      stale.push(
+        { liveImageUrl: 'https://image.invalid/replayed.jpg', timestamp: before.timestamp },
+        { liveImageUrl: 'https://image.invalid/older.jpg', timestamp: { seconds: 99 } },
+      );
+    }
+    for (let update of stale) {
+      delivered.push(flow.send('DEVICE_TEST', { upload_live_image: update }));
+      await setImmediate();
+      assert.equal(flow.connection.snapshotWaiters.size, 1, 'A stale or empty update must not finish the snapshot wait');
+      assert.equal(flow.requests.length, fetches, 'Do not fetch the cached image while a fresh update can still arrive');
+    }
+    delivered.push(flow.send('DEVICE_TEST', { upload_live_image: fresh }));
+    assert.deepEqual((await request).camera_snapshot, image);
+    await Promise.all(delivered);
+    assert.equal(flow.requests.at(-1)[1], fresh.liveImageUrl);
+    assert.equal(flow.connection.snapshotWaiters.size, 0);
+  });
+}
+
+test('connection cleanup can release a snapshot freshness waiter without an image update', async (context) => {
+  let image = Buffer.from([3]);
+  let flow = await platformHarness(context, {
+    value: {
+      device_info: { typeName: 'google.resource.SpencerResource' },
+      upload_live_image: { liveImageUrl: 'https://image.invalid/cached.jpg', timestamp: { seconds: 100 } },
+    },
+    fetch: async () => ({ arrayBuffer: async () => image }),
+  });
+  let started = Promise.withResolvers();
+  flow.connection.grpcTransport.command = async () => {
+    started.resolve();
+    return { status: 0, data: [{ traitOperations: [{ progress: 'COMPLETE', event: { event: { status: 'STATUS_SUCCESSFUL' } } }] }] };
+  };
+  let request = flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true });
+  await started.promise;
+  for (let waiter of flow.connection.snapshotWaiters.keys()) {
+    waiter();
+  }
+  flow.connection.snapshotWaiters.clear();
+  assert.deepEqual((await request).camera_snapshot, image);
   assert.equal(flow.connection.snapshotWaiters.size, 0);
 });

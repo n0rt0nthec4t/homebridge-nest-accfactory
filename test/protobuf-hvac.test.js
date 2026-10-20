@@ -137,13 +137,13 @@ let createCommandHost = new Function(
   'USER_AGENT',
   'URL',
   'return new class { #rawData = raw; #connections = new Map([["account", connection]]);' +
-    'log = { debug: (...args) => { throw new Error(args.join(" ")); } };' +
+    'errors = []; log = { debug: (...args) => this.errors.push(args) };' +
     'run(id, values) { return this.#set("account", id, values); }' +
     systemSource.slice(setBegin, setEnd) +
     '};',
 );
 
-test('thermostat and Heat Link commands use protobuf while retired REST commands are ignored and Protect remains supported', async () => {
+test('thermostat and Heat Link commands use protobuf while retired REST commands reject and Protect remains supported', async () => {
   let raw = rawData();
   raw.DEVICE_THERMOSTAT.value.eco_mode_state = { ecoMode: 'ECO_MODE_INACTIVE' };
   raw.DEVICE_THERMOSTAT.value.target_temperature_settings = {
@@ -173,9 +173,15 @@ test('thermostat and Heat Link commands use protobuf while retired REST commands
   assert.equal(temperature.traitRequest.resourceId, 'DEVICE_THERMOSTAT');
   assert.equal(temperature.state.value.targetTemperature.heatingTarget.value, 22);
   assert.equal(grpc[1][3].batchUpdateStateRequest[0].traitRequest.traitLabel, 'hot_water_settings');
-  await host.run('device.LEGACY', { target_temperature: 22, hot_water_boost_active: { state: true, time: 1800 } });
-  await host.run('kryptonite.LEGACY_SENSOR', { active_sensor: true });
+  assert.deepEqual(host.errors, []);
+  await assert.rejects(
+    host.run('device.LEGACY', { target_temperature: 22, hot_water_boost_active: { state: true, time: 1800 } }),
+    AggregateError,
+  );
+  await assert.rejects(host.run('kryptonite.LEGACY_SENSOR', { active_sensor: true }), AggregateError);
+  assert.equal(host.errors.length, 3, 'Each retired setting is rejected without restoring a REST route');
   assert.equal(rest.length, 0);
+  assert.equal(grpc.length, 2);
   await host.run('topaz.PROTECT', { ntp_green_led_enable: true });
   assert.equal(rest.length, 1);
   assert.equal(JSON.parse(rest[0][3]).objects[0].object_key, 'topaz.PROTECT');

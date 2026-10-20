@@ -50,7 +50,7 @@
 // - Output playout timing, catch-up, and live latency policy are owned by Streamer
 // - Incomplete keyframes and pathological access units are dropped/recovered locally rather than blocking the plugin process
 //
-// Code version 2026.10.20
+// Code version 2026.10.21
 // Mark Hulskamp
 'use strict';
 
@@ -85,7 +85,7 @@ const RTP_H264_VIDEO_PAYLOAD_TYPE = 98; // H.264 video payload type
 const RTP_H264_VIDEO_RTX_PAYLOAD_TYPE = 99; // H.264 RTX payload type for retransmissions
 const RTP_OPUS_AUDIO_PAYLOAD_TYPE = 111; // Opus audio payload type
 const GOOGLE_HOME_FOYER_PREFIX = 'google.internal.home.foyer.v1.';
-const KEYFRAME_MAX_ASSEMBLY_MS = 2500; // Drop pathological keyframes assembled too slowly
+const KEYFRAME_MAX_ASSEMBLY_MS = 2500; // Expire incomplete keyframes during established playback
 const KEYFRAME_STARTUP_MAX_ASSEMBLY_MS = 4000; // First decodable keyframe may be slow while WebRTC starts
 const KEYFRAME_BLOCKING_MAX_ASSEMBLY_MS = 900; // Do not let one broken IDR block newer timestamp groups for seconds
 const KEYFRAME_DEFAULT_BYTES = 2 * 1024 * 1024; // Startup allowance before source resolution/bitrate is known
@@ -1604,8 +1604,6 @@ export default class WebRTC extends StreamTransport {
     let deltaTicks = 0;
     let deltaMs = 0;
     let accessUnit = undefined;
-    let keyframeAssemblyMs = undefined;
-    let keyframeAssemblyLimitMs = KEYFRAME_MAX_ASSEMBLY_MS;
     let keyframeByteLimit = this.#keyframeByteLimit();
     let keyframeHasParameterSets = false;
     let recoveringDeltaProbe = false;
@@ -1748,32 +1746,22 @@ export default class WebRTC extends StreamTransport {
       return;
     }
 
-    // Keyframe shock absorber:
-    // avoid emitting giant/slow IDRs that tend to land as visible jumps.
+    // A complete IDR remains usable after slow delivery. Validate decoder
+    // configuration and size here; incomplete-frame expiry belongs to jitter release.
     if (pendingKeyFrame === true) {
-      keyframeAssemblyMs = typeof pendingFirstPacketTime === 'number' ? now - pendingFirstPacketTime : undefined;
-      keyframeAssemblyLimitMs =
-        typeof videoRtp.lastTimestamp === 'number' || this.ready === true ? KEYFRAME_MAX_ASSEMBLY_MS : KEYFRAME_STARTUP_MAX_ASSEMBLY_MS;
-
-      if (
-        keyframeHasParameterSets !== true ||
-        (Number.isFinite(keyframeAssemblyMs) === true && keyframeAssemblyMs > keyframeAssemblyLimitMs) ||
-        data.length > keyframeByteLimit
-      ) {
-        this.recordVideoDrop('shock-keyframe');
+      if (keyframeHasParameterSets !== true || data.length > keyframeByteLimit) {
+        this.recordVideoDrop('invalid-keyframe');
 
         this?.log?.debug?.(
-          'Dropping shock keyframe for uuid "%s": rtpTs=%s bytes=%s assemblyMs=%s hasParameterSets=%s (limits: bytes<=%s assemblyMs<=%s)',
+          'Dropping invalid keyframe for uuid "%s": rtpTs=%s bytes=%s hasParameterSets=%s limitBytes=%s',
           this.uuid,
           pendingRtpTimestamp,
           data.length,
-          keyframeAssemblyMs,
           keyframeHasParameterSets === true ? 'true' : 'false',
           keyframeByteLimit,
-          keyframeAssemblyLimitMs,
         );
 
-        this.#requestVideoRecovery('shock-keyframe');
+        this.#requestVideoRecovery('invalid-keyframe');
         this.#resetPendingVideoFrame();
         return;
       }
@@ -1858,8 +1846,6 @@ export default class WebRTC extends StreamTransport {
     this.emitMedia({
       type: Streamer.MEDIA_TYPE.VIDEO,
       codec: this.video.codec,
-      profile: typeof this.video?.profile === 'string' ? this.video.profile : undefined,
-      bitrate: Number.isFinite(this.video?.bitrate) === true && this.video.bitrate > 0 ? this.video.bitrate : undefined,
       timestamp: pendingTimestamp,
       keyFrame: pendingKeyFrame === true,
       codecConfig: {
@@ -2092,11 +2078,6 @@ export default class WebRTC extends StreamTransport {
     this.emitMedia({
       type: Streamer.MEDIA_TYPE.AUDIO,
       codec: this.audio.codec,
-      profile: this.audio.profile,
-      sampleRate: this.audio.sampleRate,
-      channels: this.audio.channels,
-      bitrate: Number.isFinite(this.audio?.bitrate) === true && this.audio.bitrate > 0 ? this.audio.bitrate : undefined,
-      frameDuration: this.audio.frameDuration,
       timestamp: timestamp,
       keyFrame: false,
       data: payload,

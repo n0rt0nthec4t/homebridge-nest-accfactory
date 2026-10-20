@@ -206,17 +206,202 @@ for (let unavailable of ['account', 'authorisation', 'transport', 'resource']) {
   });
 }
 
-for (let value of [undefined, null, 'true', 0, 1]) {
-  test('Eco command rejects non-boolean input: ' + value, async (context) => {
+for (let value of [undefined, null, true, false, 0, 1, 'unknown', 'ECO_MODE_MANUAL_ECO', 'INVALID', '__proto__', 'constructor']) {
+  test('Eco command rejects unsupported mode: ' + value, async (context) => {
     let flow = await platformHarness(context, { value: traits });
-    await assert.rejects(flow.device.set({ uuid: 'DEVICE_TEST', eco_mode_enabled: value }), AggregateError);
+    await assert.rejects(flow.device.set({ uuid: 'DEVICE_TEST', eco_mode: value }), AggregateError);
     assert.deepEqual(flow.commands, []);
   });
 }
 for (let ecoMode of [undefined, null, 'ECO_MODE_UNSPECIFIED', 'ECO_MODE_UNKNOWN']) {
-  test('Eco command rejects unavailable state: ' + ecoMode, async (context) => {
+  test('Eco command can request a valid mode before recognised Observe state: ' + ecoMode, async (context) => {
     let flow = await platformHarness(context, { value: { eco_mode_state: { ecoMode } } });
-    await assert.rejects(flow.device.set({ uuid: 'DEVICE_TEST', eco_mode_enabled: true }), AggregateError);
+    await flow.device.set({ uuid: 'DEVICE_TEST', eco_mode: 'manual' });
+    assert.equal(flow.commands.length, 1);
+    assert.equal(flow.commands[0][3].resourceCommands[0].command.value.ecoMode, 'ECO_MODE_MANUAL_ECO');
+    assert.equal(flow.raw.DEVICE_TEST.value.eco_mode_state.ecoMode, ecoMode, 'SET leaves the raw Observe cache unchanged');
+  });
+}
+
+for (let key of [
+  'hvac_mode',
+  'temperature_scale',
+  'temperature_lock',
+  'streaming_enabled',
+  'audio_enabled',
+  'indoor_chime_enabled',
+  'light_enabled',
+  'bolt_lock',
+  'vacation_mode',
+  'humidifier_state',
+  'dehumidifier_state',
+  'active_sensor',
+]) {
+  test('unsupported value cannot silently succeed for ' + key, async (context) => {
+    let flow = await platformHarness(context, { value: traits });
+    await assert.rejects(flow.device.set({ uuid: 'DEVICE_TEST', [key]: 'invalid' }), AggregateError);
     assert.deepEqual(flow.commands, []);
   });
 }
+for (let key of [
+  'target_temperature',
+  'target_temperature_low',
+  'target_temperature_high',
+  'fan_timer_speed',
+  'light_brightness',
+  'hot_water_temperature',
+  'auto_relock_duration',
+  'target_humidity_humidifier',
+  'target_humidity_dehumidifier',
+]) {
+  for (let value of [null, true, '', ' ', [], {}, Infinity, 'invalid']) {
+    test('numeric SET rejects nonnumeric input for ' + key + ': ' + JSON.stringify(value), async (context) => {
+      let flow = await platformHarness(context, { value: traits });
+      await assert.rejects(flow.device.set({ uuid: 'DEVICE_TEST', [key]: value }), AggregateError);
+      assert.deepEqual(flow.commands, []);
+    });
+  }
+}
+for (let [values, raw] of [
+  [{ softwareVersion: 'changed' }, traits],
+  [{ statusled_brightness: 1 }, traits],
+  [{ irled_enabled: 'auto_on' }, traits],
+  [{ active_sensor: true }, traits],
+  [{ light_enabled: true }, { ...traits, related_resources: {} }],
+  [{ vacation_mode: true }, { ...traits, device_info: {} }],
+  [{ hot_water_boost_active: { state: true } }, { ...traits, hvac_equipment_capabilities: {} }],
+  [{ hot_water_temperature: 60 }, { ...traits, hvac_equipment_capabilities: {} }],
+  [{ humidifier_state: true }, { ...traits, hvac_equipment_capabilities: {} }],
+  [{ dehumidifier_state: true }, { ...traits, hvac_equipment_capabilities: {} }],
+  [{ target_humidity_humidifier: 50 }, { ...traits, hvac_equipment_capabilities: {} }],
+  [{ target_humidity_dehumidifier: 50 }, { ...traits, hvac_equipment_capabilities: {} }],
+]) {
+  test('unavailable setting rejects without a command: ' + JSON.stringify(values), async (context) => {
+    let flow = await platformHarness(context, { value: raw });
+    let before = structuredClone(flow.device.deviceData);
+    await assert.rejects(flow.device.set({ uuid: 'DEVICE_TEST', ...values }), AggregateError);
+    assert.deepEqual(flow.commands, []);
+    assert.deepEqual(flow.device.deviceData, before);
+  });
+}
+for (let values of [
+  { fan_duration: 60 },
+  { fan_state: true },
+  { fan_state: true, fan_duration: null },
+  { fan_duration: -1, fan_state: true },
+  { fan_state: true, fan_duration: 60, fan_timer_speed: 'invalid' },
+  { fan_timer_speed: 4, fan_duration: 60, fan_state: true },
+  { fan_timer_speed: 1.5 },
+  { light_brightness: 101 },
+  { auto_relock_duration: -1 },
+  { target_humidity_humidifier: 101 },
+  { target_humidity_dehumidifier: -1 },
+  { hot_water_boost_active: null },
+  { hot_water_boost_active: {} },
+  { hot_water_boost_active: { state: 'on' } },
+  { hot_water_boost_active: { state: true, time: 'invalid' } },
+  { hot_water_boost_active: { state: true, time: -1 } },
+]) {
+  test('invalid compound or out-of-range SET rejects: ' + JSON.stringify(values), async (context) => {
+    let flow = await platformHarness(context, { value: traits });
+    await assert.rejects(flow.device.set({ uuid: 'DEVICE_TEST', ...values }), AggregateError);
+    assert.deepEqual(flow.commands, []);
+  });
+}
+for (let values of [
+  { fan_duration: 60, fan_timer_speed: 3, fan_state: true },
+  { fan_timer_speed: 3, fan_state: true, fan_duration: 60 },
+  { fan_state: true, fan_duration: '60', fan_timer_speed: '3' },
+]) {
+  test('fan companion fields remain valid in any order: ' + JSON.stringify(values), async (context) => {
+    context.mock.timers.enable({ apis: ['Date'], now: 100000 });
+    let flow = await platformHarness(context, { value: traits });
+    await flow.device.set({ uuid: 'DEVICE_TEST', ...values });
+    assert.equal(flow.commands.length, 1);
+    let state = flow.commands[0][3].batchUpdateStateRequest[0].state.value;
+    assert.equal(state.timerEnd.seconds, 160);
+    assert.equal(state.timerSpeed, 'FAN_SPEED_SETTING_STAGE3');
+  });
+}
+for (let [id, values] of [
+  ['quartz.TEST', { softwareVersion: 'changed' }],
+  ['quartz.TEST', { streaming_enabled: 'yes' }],
+  ['quartz.TEST', { audio_enabled: null }],
+  ['quartz.TEST', { indoor_chime_enabled: 1 }],
+  ['quartz.TEST', { statusled_brightness: 2 }],
+  ['quartz.TEST', { irled_enabled: 'invalid' }],
+  ['topaz.TEST', { ntp_green_led_enable: 'yes' }],
+  ['topaz.TEST', { audio_enabled: true }],
+]) {
+  test('unsupported REST SET rejects before HTTP: ' + JSON.stringify(values), async (context) => {
+    let flow = await platformHarness(context, { source: DATA_SOURCE.NEST, id, value: {} });
+    let requests = flow.requests.length;
+    let before = structuredClone(flow.device.deviceData);
+    await assert.rejects(flow.device.set({ uuid: id, ...values }), AggregateError);
+    assert.equal(flow.requests.length, requests);
+    assert.deepEqual(flow.device.deviceData, before);
+  });
+}
+test('a rejected field prevents local SET commit while other valid fields are still attempted', async (context) => {
+  let flow = await platformHarness(context, { value: traits });
+  flow.device.deviceData.hvac_mode = 'heat';
+  flow.device.deviceData.temperature_scale = 'C';
+  await assert.rejects(flow.device.set({ uuid: 'DEVICE_TEST', hvac_mode: 'invalid', temperature_scale: 'F' }), AggregateError);
+  assert.equal(flow.commands.length, 1);
+  assert.equal(flow.device.deviceData.hvac_mode, 'heat');
+  assert.equal(flow.device.deviceData.temperature_scale, 'C');
+});
+
+for (let [key, state] of [
+  ['target_temperature_high', { target_temperature_settings: { targetTemperature: { setpointType: 'SET_POINT_TYPE_HEAT' } } }],
+  ['target_temperature_low', { target_temperature_settings: { targetTemperature: { setpointType: 'SET_POINT_TYPE_COOL' } } }],
+  ['target_temperature', { target_temperature_settings: { targetTemperature: { setpointType: 'SET_POINT_TYPE_UNSPECIFIED' } } }],
+  [
+    'target_temperature_high',
+    { eco_mode_state: { ecoMode: 'ECO_MODE_MANUAL_ECO' }, eco_mode_settings: { ecoTemperatureHeat: { enabled: true } } },
+  ],
+  [
+    'target_temperature_low',
+    { eco_mode_state: { ecoMode: 'ECO_MODE_MANUAL_ECO' }, eco_mode_settings: { ecoTemperatureCool: { enabled: true } } },
+  ],
+  [
+    'target_temperature',
+    {
+      eco_mode_state: { ecoMode: 'ECO_MODE_MANUAL_ECO' },
+      eco_mode_settings: { ecoTemperatureHeat: { enabled: true }, ecoTemperatureCool: { enabled: true } },
+    },
+  ],
+]) {
+  test('temperature SET rejects an unavailable target: ' + key + ' ' + JSON.stringify(state), async (context) => {
+    let flow = await platformHarness(context, { value: { ...traits, ...state } });
+    await assert.rejects(flow.device.set({ uuid: 'DEVICE_TEST', [key]: 22 }), AggregateError);
+    assert.deepEqual(flow.commands, []);
+  });
+}
+for (let [values, label, expected] of [
+  [
+    { target_temperature: '21.5' },
+    'target_temperature_settings',
+    { targetTemperature: { heatingTarget: { value: 21.5 }, coolingTarget: { value: 21.5 } } },
+  ],
+  [{ fan_timer_speed: '0' }, 'fan_control_settings', { timerSpeed: 'FAN_SPEED_SETTING_STAGE2' }],
+  [{ auto_relock_duration: '120' }, 'bolt_lock_settings', { autoRelockDuration: { seconds: 120 } }],
+  [{ hot_water_temperature: '60' }, 'hot_water_settings', { temperature: { value: 60 } }],
+]) {
+  test('valid numeric-string SET remains supported: ' + JSON.stringify(values), async (context) => {
+    let flow = await platformHarness(context, { value: traits });
+    await flow.device.set({ uuid: 'DEVICE_TEST', ...values });
+    assert.equal(flow.commands.length, 1);
+    let update = flow.commands[0][3].batchUpdateStateRequest[0];
+    assert.equal(update.traitRequest.traitLabel, label);
+    assert.partialDeepStrictEqual(update.state.value, expected);
+  });
+}
+test('REST rejects prototype property names instead of treating them as mapped settings', async (context) => {
+  let flow = await platformHarness(context, { source: DATA_SOURCE.NEST, id: 'quartz.TEST', value: {} });
+  let requests = flow.requests.length;
+  for (let key of ['toString', '__proto__']) {
+    await assert.rejects(flow.device.set({ uuid: 'quartz.TEST', [key]: true }));
+  }
+  assert.equal(flow.requests.length, requests);
+});

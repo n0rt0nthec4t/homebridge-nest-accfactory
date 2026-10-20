@@ -1,5 +1,5 @@
 // Verify FFmpeg hardware discovery, capability queries, diagnostics, and session lifecycle.
-// Code version 2026.10.20
+// Code version 2026.10.21
 import assert from 'node:assert/strict';
 import child_process from 'node:child_process';
 import { Buffer } from 'node:buffer';
@@ -169,7 +169,8 @@ for (let platform of ['darwin', 'win32']) {
 test('hardware validation cache is invalidated when the executable changes', (t) => {
   t.mock.method(os, 'platform', () => 'darwin');
   let revision = 1;
-  t.mock.method(fs, 'statSync', () => ({ size: revision, mtimeMs: revision, ino: 1 }));
+  t.mock.method(fs, 'existsSync', () => true);
+  t.mock.method(fs, 'statSync', () => ({ isDirectory: () => false, size: revision, mtimeMs: revision, ino: 1 }));
   let validations = 0;
   t.mock.method(child_process, 'spawnSync', (binary, args) => {
     if (args[0] === '-version') {
@@ -184,12 +185,12 @@ test('hardware validation cache is invalidated when the executable changes', (t)
     }
     return { status: 0, stdout: '' };
   });
-  assert.equal(new FFmpeg('ffmpeg-cache-revision').supportsHardwareH264, true);
-  assert.equal(new FFmpeg('ffmpeg-cache-revision').supportsHardwareH264, true);
+  assert.equal(new FFmpeg('/fixture/cache-revision/ffmpeg').supportsHardwareH264, true);
+  assert.equal(new FFmpeg('/fixture/cache-revision/ffmpeg').supportsHardwareH264, true);
   assert.equal(validations, 1);
   revision = 2;
-  assert.equal(new FFmpeg('ffmpeg-cache-revision').supportsHardwareH264, false);
-  assert.equal(new FFmpeg('ffmpeg-cache-revision').getH264EncoderOptions(true).codec, 'libx264');
+  assert.equal(new FFmpeg('/fixture/cache-revision/ffmpeg').supportsHardwareH264, false);
+  assert.equal(new FFmpeg('/fixture/cache-revision/ffmpeg').getH264EncoderOptions(true).codec, 'libx264');
   assert.equal(validations, 2);
 });
 
@@ -1171,4 +1172,111 @@ test('invalid pipe mappings are rejected before spawning and independent starts 
     processFor(session).emit('close', 0, null);
     await session.finished;
   }
+});
+
+function capabilityBinary(context) {
+  let directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ffmpeg-capabilities-'));
+  let binary = path.join(directory, 'ffmpeg');
+  fs.writeFileSync(binary, 'fixture', { mode: 0o755 });
+  context.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  return binary;
+}
+
+function capabilityProbe(binary, args) {
+  return {
+    status: 0,
+    stdout: {
+      '-version': 'ffmpeg version 8.0 --enable-libx264',
+      '-encoders': ' V..... libx264',
+      '-decoders': ' V..... h264',
+      '-muxers': ' E mp4',
+      '-demuxers': ' D mov',
+    }[args[0]],
+  };
+}
+
+test('camera managers share successful discovery while keeping feature arrays independent', (context) => {
+  let binary = capabilityBinary(context);
+  let probes = context.mock.method(child_process, 'spawnSync', capabilityProbe);
+  let first = new FFmpeg(binary);
+  let expected = structuredClone(first.features);
+  first.features.encoders.push('mutated');
+  first.features.enabled.push('mutated');
+  let second = new FFmpeg(binary);
+  assert.equal(probes.mock.callCount(), 5);
+  assert.equal(second.version, '8.0');
+  assert.deepEqual(second.features, expected);
+  second.features.decoders.push('mutated');
+  assert.deepEqual(new FFmpeg(binary).features, expected);
+  assert.equal(probes.mock.callCount(), 5);
+});
+
+test('capability discovery separates executables and invalidates replaced files', (context) => {
+  let first = capabilityBinary(context);
+  let second = capabilityBinary(context);
+  let probes = context.mock.method(child_process, 'spawnSync', capabilityProbe);
+  new FFmpeg(first);
+  new FFmpeg(second);
+  assert.equal(probes.mock.callCount(), 10);
+  fs.writeFileSync(first, 'replaced fixture executable');
+  new FFmpeg(first);
+  assert.equal(probes.mock.callCount(), 15);
+  new FFmpeg(first);
+  new FFmpeg(second);
+  assert.equal(probes.mock.callCount(), 15);
+});
+
+for (let failedCommand of ['-version', '-encoders']) {
+  test('failed discovery remains retryable: ' + failedCommand, (context) => {
+    let binary = capabilityBinary(context);
+    let fail = true;
+    let probes = context.mock.method(child_process, 'spawnSync', (binary, args) =>
+      fail === true && args[0] === failedCommand ? { status: 1, stdout: null } : capabilityProbe(binary, args),
+    );
+    new FFmpeg(binary);
+    fail = false;
+    let recovered = new FFmpeg(binary);
+    assert.equal(recovered.supportsEncoder('libx264'), true);
+    assert.equal(probes.mock.callCount(), failedCommand === '-version' ? 6 : 10);
+    let count = probes.mock.callCount();
+    new FFmpeg(binary);
+    assert.equal(probes.mock.callCount(), count);
+  });
+}
+
+test('capability cache follows PATH changes and skips nonexecutable shadow files', (context) => {
+  let shadow = capabilityBinary(context);
+  fs.chmodSync(shadow, 0o644);
+  let first = capabilityBinary(context);
+  let second = capabilityBinary(context);
+  let originalPath = process.env.PATH;
+  context.after(() => {
+    if (originalPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = originalPath;
+    }
+  });
+  let probes = context.mock.method(child_process, 'spawnSync', capabilityProbe);
+  process.env.PATH = path.dirname(shadow) + path.delimiter + path.dirname(first);
+  new FFmpeg('ffmpeg');
+  fs.writeFileSync(shadow, 'changed nonexecutable shadow');
+  new FFmpeg('ffmpeg');
+  assert.equal(probes.mock.callCount(), 5);
+  process.env.PATH = path.dirname(second);
+  new FFmpeg('ffmpeg');
+  assert.equal(probes.mock.callCount(), 10);
+});
+
+test('capability cache stays bounded across distinct executable paths', (context) => {
+  let binaries = Array.from({ length: 33 }, () => capabilityBinary(context));
+  let probes = context.mock.method(child_process, 'spawnSync', capabilityProbe);
+  for (let binary of binaries) {
+    new FFmpeg(binary);
+  }
+  assert.equal(probes.mock.callCount(), 165);
+  new FFmpeg(binaries.at(-1));
+  assert.equal(probes.mock.callCount(), 165);
+  new FFmpeg(binaries[0]);
+  assert.equal(probes.mock.callCount(), 170);
 });

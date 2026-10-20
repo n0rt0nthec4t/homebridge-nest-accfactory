@@ -4,11 +4,32 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.4.5-alpha.1 (2026/10/20)
+## v0.4.5-alpha.2 (2026/10/21)
 
 ### Added
 
-- Thermostat Eco state translation and per-device Google API commands to enable manual Eco or disable Eco
+- Thermostat Eco state and per-device commands using `off`, `manual` and `auto`, with `unknown` for unavailable state [#350](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/pull/350) [@jakemike1](https://github.com/jakemike1)
+
+### Changed
+
+- Use fixed live/recording delivery pacing while preserving RTP timestamps, prebuffer catch-up and backpressure handling
+- Reduce camera packet copying, jitter-queue rebuilding and repeated frame bookkeeping; report shared TCP queue usage in support dumps
+- Reuse FFmpeg capability discovery across cameras using the same unchanged binary, avoiding repeated startup probes
+
+### Fixed
+
+- Prevent live-view startup failures when the first audio/video frames arrive out of timestamp order or playback starts during a scheduler tick
+- Accept complete, valid WebRTC keyframes after slow delivery while retaining incomplete-frame expiry and decoder safety checks
+- Wait for newer Google snapshot updates before falling back to the last available image, and remove repetitive fallback logging
+- Reject invalid or unsupported device settings instead of reporting successful writes for values never sent to the device
+
+### Testing
+
+- Automated coverage includes RTP timing, slow keyframes, snapshots, concurrent outputs and real FFmpeg live-copy/HKSV output
+- Further local testing is needed for long live views, reconnects and HKSV recording A/V sync; recording sync remains under investigation
+- Automatic Eco requests are covered by command-routing tests but have not been verified on a physical thermostat
+
+## v0.4.5-alpha.1 (2026/10/20)
 
 ### Changed
 

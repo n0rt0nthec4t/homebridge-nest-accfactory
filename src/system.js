@@ -39,7 +39,7 @@
 // - Uses shared protobuf helpers for schema/type loading and traversal
 // - Creates and updates HomeKitDevice-based instances for supported device types
 //
-// Code version 2026.10.20
+// Code version 2026.10.21
 // Mark Hulskamp
 'use strict';
 
@@ -683,13 +683,12 @@ export default class NestAccfactory {
                   );
                 }
 
-                // We have an update for a camera live image trait
-                // so we'll trigger any waiting snapshot requests to process this new image data
+                // Each snapshot request decides whether this update is newer
+                // than its starting image. Replayed traits must not end its wait.
                 if (traitLabel === 'upload_live_image' && connection.snapshotWaiters instanceof Map) {
                   for (let [waiter, deviceId] of connection.snapshotWaiters) {
-                    if (deviceId === resourceId) {
+                    if (deviceId === resourceId && waiter(patchValues) !== false) {
                       connection.snapshotWaiters.delete(waiter);
-                      waiter();
                     }
                   }
                 }
@@ -930,6 +929,24 @@ export default class NestAccfactory {
       nanos: (milliseconds % 1000) * 1e6,
     });
 
+    // Preserve numeric-string callers, but do not coerce null, booleans,
+    // blank strings or objects into accepted device settings.
+    let isNumeric = (input, { type = 'number', min = -Infinity, max = Infinity } = {}) => {
+      if (typeof input !== 'number' && (typeof input !== 'string' || input.trim() === '')) {
+        return false;
+      }
+
+      // Validation leaves the caller's value unchanged; payloads still convert
+      // accepted numeric strings to the number required by the API.
+      let number = Number(input);
+      return (
+        Number.isFinite(number) === true &&
+        (type === 'number' || (type === 'integer' && Number.isInteger(number) === true)) &&
+        number >= min &&
+        number <= max
+      );
+    };
+
     let connection = this.#connections?.get(uuid);
 
     if (
@@ -955,7 +972,15 @@ export default class NestAccfactory {
           continue;
         }
 
+        let handled = false;
+
         if (this.#rawData?.[nest_google_device_uuid]?.source === DATA_SOURCE.GOOGLE && connection.grpcTransport !== undefined) {
+          // The fan-state command consumes these fields together, regardless of
+          // property order. Invalid companions prevent that command being built.
+          if (['fan_duration', 'fan_timer_speed'].includes(key) === true && Object.hasOwn(values, 'fan_state') === true) {
+            continue;
+          }
+
           let updatedTraits = [];
           let commandTraits = [];
 
@@ -1011,18 +1036,15 @@ export default class NestAccfactory {
             ];
           };
 
-          // Keep Eco commands separate from eco_mode, which is supplied by Observe updates.
-          if (key === 'eco_mode_enabled') {
-            if (
-              typeof value !== 'boolean' ||
-              ['ECO_MODE_INACTIVE', 'ECO_MODE_MANUAL_ECO', 'ECO_MODE_AUTO_ECO'].includes(
-                this.#rawData[nest_google_device_uuid].value?.eco_mode_state?.ecoMode,
-              ) === false
-            ) {
-              throw new Error('Eco mode requires a boolean and a recognised thermostat Eco state');
-            }
+          // Match the translated Eco state contract. SET commits accepted values
+          // locally; Observe later reconciles the thermostat's actual state.
+          if (key === 'eco_mode' && typeof value === 'string' && ['OFF', 'MANUAL', 'AUTO'].includes(value.toUpperCase()) === true) {
             setCommandTrait('eco_mode_state', 'type.nestlabs.com/nest.trait.hvac.EcoModeStateTrait.EcoModeChangeRequest', {
-              ecoMode: value === true ? 'ECO_MODE_MANUAL_ECO' : 'ECO_MODE_INACTIVE',
+              ecoMode: {
+                OFF: 'ECO_MODE_INACTIVE',
+                MANUAL: 'ECO_MODE_MANUAL_ECO',
+                AUTO: 'ECO_MODE_AUTO_ECO',
+              }[value.toUpperCase()],
               ecoModeActor: {
                 method: 'HVAC_ACTOR_METHOD_IOS',
                 originator: { resourceId: nest_google_device_uuid },
@@ -1033,28 +1055,29 @@ export default class NestAccfactory {
           }
 
           if (
-            (key === 'hvac_mode' && ['OFF', 'COOL', 'HEAT', 'RANGE'].includes(value?.toUpperCase?.())) ||
+            (key === 'hvac_mode' && typeof value === 'string' && ['OFF', 'COOL', 'HEAT', 'RANGE'].includes(value.toUpperCase()) === true) ||
             (['target_temperature', 'target_temperature_low', 'target_temperature_high'].includes(key) === true &&
               this.#rawData?.[nest_google_device_uuid]?.value?.eco_mode_state?.ecoMode === 'ECO_MODE_INACTIVE' &&
-              Number.isFinite(Number(value)) === true)
+              isNumeric(value) === true)
           ) {
             // Set either the 'mode' and/or non-eco temperatures on the target thermostat
             setUpdateTrait('target_temperature_settings', 'type.nestlabs.com/nest.trait.hvac.TargetTemperatureSettingsTrait');
 
-            if (
-              (key === 'target_temperature_low' || key === 'target_temperature') &&
-              (updateElement.state.value.targetTemperature.setpointType === 'SET_POINT_TYPE_HEAT' ||
-                updateElement.state.value.targetTemperature.setpointType === 'SET_POINT_TYPE_RANGE')
-            ) {
-              // Changing heating target temperature
+            let setpointType = updateElement.state.value.targetTemperature?.setpointType;
+            let setHeatingTarget =
+              ['target_temperature_low', 'target_temperature'].includes(key) === true &&
+              ['SET_POINT_TYPE_HEAT', 'SET_POINT_TYPE_RANGE'].includes(setpointType) === true;
+            let setCoolingTarget =
+              ['target_temperature_high', 'target_temperature'].includes(key) === true &&
+              ['SET_POINT_TYPE_COOL', 'SET_POINT_TYPE_RANGE'].includes(setpointType) === true;
+            // Do not report success for an actor-only update to the wrong target.
+            if (key !== 'hvac_mode' && setHeatingTarget !== true && setCoolingTarget !== true) {
+              throw new Error('Temperature setting "' + key + '" is unavailable in the current mode');
+            }
+            if (setHeatingTarget === true) {
               updateElement.state.value.targetTemperature.heatingTarget = { value: Number(value) };
             }
-            if (
-              (key === 'target_temperature_high' || key === 'target_temperature') &&
-              (updateElement.state.value.targetTemperature.setpointType === 'SET_POINT_TYPE_COOL' ||
-                updateElement.state.value.targetTemperature.setpointType === 'SET_POINT_TYPE_RANGE')
-            ) {
-              // Changing cooling target temperature
+            if (setCoolingTarget === true) {
               updateElement.state.value.targetTemperature.coolingTarget = { value: Number(value) };
             }
 
@@ -1078,36 +1101,33 @@ export default class NestAccfactory {
           if (
             ['target_temperature', 'target_temperature_low', 'target_temperature_high'].includes(key) === true &&
             this.#rawData?.[nest_google_device_uuid]?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE' &&
-            Number.isFinite(Number(value)) === true
+            isNumeric(value) === true
           ) {
             // Set eco mode temperatures on the target thermostat
             setUpdateTrait('eco_mode_settings', 'type.nestlabs.com/nest.trait.hvac.EcoModeSettingsTrait');
 
-            updateElement.state.value.ecoTemperatureHeat.value.value =
-              updateElement.state.value.ecoTemperatureHeat.enabled === true &&
-              updateElement.state.value.ecoTemperatureCool.enabled === false
-                ? Number(value)
-                : updateElement.state.value.ecoTemperatureHeat.value.value;
-            updateElement.state.value.ecoTemperatureCool.value.value =
-              updateElement.state.value.ecoTemperatureHeat.enabled === false &&
-              updateElement.state.value.ecoTemperatureCool.enabled === true
-                ? Number(value)
-                : updateElement.state.value.ecoTemperatureCool.value.value;
-            updateElement.state.value.ecoTemperatureHeat.value.value =
-              updateElement.state.value.ecoTemperatureHeat.enabled === true &&
-              updateElement.state.value.ecoTemperatureCool.enabled === true &&
-              key === 'target_temperature_low'
-                ? Number(value)
-                : updateElement.state.value.ecoTemperatureHeat.value.value;
-            updateElement.state.value.ecoTemperatureCool.value.value =
-              updateElement.state.value.ecoTemperatureHeat.enabled === true &&
-              updateElement.state.value.ecoTemperatureCool.enabled === true &&
-              key === 'target_temperature_high'
-                ? Number(value)
-                : updateElement.state.value.ecoTemperatureCool.value.value;
+            let heatEnabled = updateElement.state.value.ecoTemperatureHeat?.enabled === true;
+            let coolEnabled = updateElement.state.value.ecoTemperatureCool?.enabled === true;
+            let setHeatingTarget =
+              heatEnabled === true &&
+              ['target_temperature', 'target_temperature_low'].includes(key) === true &&
+              (coolEnabled !== true || key === 'target_temperature_low');
+            let setCoolingTarget =
+              coolEnabled === true &&
+              ['target_temperature', 'target_temperature_high'].includes(key) === true &&
+              (heatEnabled !== true || key === 'target_temperature_high');
+            if (setHeatingTarget !== true && setCoolingTarget !== true) {
+              throw new Error('Temperature setting "' + key + '" is unavailable in the current Eco mode');
+            }
+            if (setHeatingTarget === true) {
+              updateElement.state.value.ecoTemperatureHeat.value = { value: Number(value) };
+            }
+            if (setCoolingTarget === true) {
+              updateElement.state.value.ecoTemperatureCool.value = { value: Number(value) };
+            }
           }
 
-          if (key === 'temperature_scale' && (value?.toUpperCase?.() === 'C' || value?.toUpperCase?.() === 'F')) {
+          if (key === 'temperature_scale' && typeof value === 'string' && ['C', 'F'].includes(value.toUpperCase()) === true) {
             // Set the temperature scale on the target thermostat
             setUpdateTrait('display_settings', 'type.nestlabs.com/nest.trait.hvac.DisplaySettingsTrait', undefined, {
               temperatureScale: value.toUpperCase() === 'F' ? 'TEMPERATURE_SCALE_F' : 'TEMPERATURE_SCALE_C',
@@ -1121,36 +1141,31 @@ export default class NestAccfactory {
             });
           }
 
-          if (key === 'fan_state' && typeof value === 'boolean' && Number.isFinite(Number(values?.fan_duration)) === true) {
+          if (
+            key === 'fan_state' &&
+            typeof value === 'boolean' &&
+            isNumeric(values.fan_duration, { min: 0 }) === true &&
+            (values.fan_timer_speed === undefined || isNumeric(values.fan_timer_speed, { type: 'integer', min: 0, max: 3 }) === true)
+          ) {
             // Set fan mode on the target thermostat, including runtime if turning on
             setUpdateTrait('fan_control_settings', 'type.nestlabs.com/nest.trait.hvac.FanControlSettingsTrait');
             updateElement.state.value.timerEnd = value === true ? timestamp(Date.now() + Number(values.fan_duration) * 1000) : timestamp(0);
             if (values?.fan_timer_speed !== undefined) {
               // We have a value to set fan speed also, so handle here as combined setting
               updateElement.state.value.timerSpeed =
-                values?.fan_timer_speed !== 0
-                  ? 'FAN_SPEED_SETTING_STAGE' + values?.fan_timer_speed
+                Number(values.fan_timer_speed) !== 0
+                  ? 'FAN_SPEED_SETTING_STAGE' + Number(values.fan_timer_speed)
                   : this.#rawData[nest_google_device_uuid].value.fan_control_settings.timerSpeed;
             }
           }
 
-          if (key === 'fan_timer_speed' && Number.isFinite(Number(value)) === true && values?.fan_state === undefined) {
+          if (key === 'fan_timer_speed' && isNumeric(value, { type: 'integer', min: 0, max: 3 }) === true) {
             // Set fan speed on the target thermostat only if we're not changing fan on/off state also
             setUpdateTrait('fan_control_settings', 'type.nestlabs.com/nest.trait.hvac.FanControlSettingsTrait');
             updateElement.state.value.timerSpeed =
-              value !== 0
-                ? 'FAN_SPEED_SETTING_STAGE' + value
+              Number(value) !== 0
+                ? 'FAN_SPEED_SETTING_STAGE' + Number(value)
                 : this.#rawData[nest_google_device_uuid].value.fan_control_settings.timerSpeed;
-          }
-
-          if (key === 'statusled_brightness' && Number.isFinite(Number(value)) === true) {
-            // 0
-            // 1
-          }
-
-          if (key === 'irled_enabled' && typeof value === 'string') {
-            // 'auto_on'
-            // 'always_off'
           }
 
           if (key === 'streaming_enabled' && typeof value === 'boolean') {
@@ -1195,7 +1210,7 @@ export default class NestAccfactory {
             }
           }
 
-          if (key === 'light_brightness' && Number.isFinite(Number(value)) === true) {
+          if (key === 'light_brightness' && isNumeric(value, { min: 0, max: 100 }) === true) {
             // Set light brightness on supported camera devices. Needs to be scaled to 0-10 for the API
             setUpdateTrait('floodlight_settings', 'type.nestlabs.com/google.trait.product.camera.FloodlightSettingsTrait', undefined, {
               brightness: scaleValue(Number(value), 0, 100, 0, 10),
@@ -1224,26 +1239,29 @@ export default class NestAccfactory {
           if (
             key === 'hot_water_boost_active' &&
             typeof value === 'object' &&
+            value !== null &&
+            typeof value.state === 'boolean' &&
+            (value.time === undefined || isNumeric(value.time, { min: 0 }) === true) &&
             this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasHotWaterControl === true
           ) {
             // Turn hotwater boost heating on/off
             setUpdateTrait('hot_water_settings', 'type.nestlabs.com/nest.trait.hvac.HotWaterSettingsTrait');
 
-            let boostTime = Number.isFinite(Number(value?.time)) === true ? Number(value.time) : 30 * 60;
+            let boostTime = value.time === undefined ? 30 * 60 : Number(value.time);
 
             updateElement.state.value.boostTimerEnd = value?.state === true ? timestamp(Date.now() + boostTime * 1000) : timestamp(0);
           }
 
           if (
             key === 'hot_water_temperature' &&
-            Number.isFinite(Number(value)) === true &&
+            isNumeric(value) === true &&
             this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasHotWaterTemperature === true
           ) {
             // Set hotwater boiler temperature
             setUpdateTrait('hot_water_settings', 'type.nestlabs.com/nest.trait.hvac.HotWaterSettingsTrait');
             updateElement.state.value.temperature = {
               ...(updateElement.state.value.temperature ?? {}),
-              value: value,
+              value: Number(value),
             };
           }
 
@@ -1259,7 +1277,7 @@ export default class NestAccfactory {
             });
           }
 
-          if (key === 'auto_relock_duration' && Number.isFinite(Number(value)) === true) {
+          if (key === 'auto_relock_duration' && isNumeric(value, { type: 'integer', min: 0 }) === true) {
             // Set lock auto-relock duration
             setUpdateTrait('bolt_lock_settings', 'type.nestlabs.com/weave.trait.security.BoltLockSettingsTrait');
             updateElement.state.value.autoRelockDuration = {
@@ -1303,7 +1321,7 @@ export default class NestAccfactory {
 
           if (
             key === 'target_humidity_dehumidifier' &&
-            Number.isFinite(Number(value)) === true &&
+            isNumeric(value, { min: 0, max: 100 }) === true &&
             this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasDehumidifier === true
           ) {
             // Set dehumidifier target humidity on the target thermostat
@@ -1329,7 +1347,7 @@ export default class NestAccfactory {
 
           if (
             key === 'target_humidity_humidifier' &&
-            Number.isFinite(Number(value)) === true &&
+            isNumeric(value, { min: 0, max: 100 }) === true &&
             this.#rawData?.[nest_google_device_uuid]?.value?.hvac_equipment_capabilities?.hasHumidifier === true
           ) {
             // Set humidifier target humidity on the target thermostat
@@ -1369,19 +1387,30 @@ export default class NestAccfactory {
               throw new Error('Google API rejected setting "' + key + '"');
             }
           }
+          handled = updatedTraits.length > 0 || commandTraits.length > 0;
         }
 
         if (this.#rawData?.[nest_google_device_uuid]?.source === DATA_SOURCE.NEST) {
           if (nest_google_device_uuid.startsWith('quartz.') === true) {
             // Set value on Nest Camera/Doorbell
-            let mappedKey =
-              {
-                indoor_chime_enabled: 'doorbell.indoor_chime.enabled',
-                statusled_brightness: 'statusled.brightness',
-                irled_enabled: 'irled.state',
-                streaming_enabled: 'streaming.enabled',
-                audio_enabled: 'audio.enabled',
-              }[key] ?? key;
+            let mappedKey = {
+              indoor_chime_enabled: 'doorbell.indoor_chime.enabled',
+              statusled_brightness: 'statusled.brightness',
+              irled_enabled: 'irled.state',
+              streaming_enabled: 'streaming.enabled',
+              audio_enabled: 'audio.enabled',
+            }[key];
+
+            // Only expose the camera controls implemented by the plugin. Do not
+            // send unknown keys or malformed values through the REST endpoint.
+            if (
+              typeof mappedKey !== 'string' ||
+              (['indoor_chime_enabled', 'streaming_enabled', 'audio_enabled'].includes(key) === true && typeof value !== 'boolean') ||
+              (key === 'statusled_brightness' && isNumeric(value, { type: 'integer', min: 0, max: 1 }) !== true) ||
+              (key === 'irled_enabled' && ['auto_on', 'always_off'].includes(value) === false)
+            ) {
+              throw new Error('Invalid or unsupported setting "' + key + '" for this device');
+            }
 
             let response = await fetchWrapper(
               fetchWrapper.POST,
@@ -1405,6 +1434,7 @@ export default class NestAccfactory {
             if (data?.status !== 0) {
               throw new Error('Nest API camera update failed');
             }
+            handled = true;
           }
 
           if (nest_google_device_uuid.startsWith('quartz.') === false) {
@@ -1439,8 +1469,14 @@ export default class NestAccfactory {
               if (Array.isArray(data?.objects) === false || data.objects.length === 0) {
                 throw new Error('Nest API property update failed');
               }
+              handled = true;
             }
           }
+        }
+        // An unmatched key/value is a rejected SET, not a successful no-op.
+        // This keeps HomeKitDevice from committing values never sent upstream.
+        if (handled !== true) {
+          throw new Error('Invalid or unsupported setting "' + key + '" for this device');
         }
       } catch (error) {
         failures.push(error);
@@ -1632,8 +1668,26 @@ export default class NestAccfactory {
       let latestUploadLiveImage = beforeRequestUploadLiveImage;
       let latestUrl = beforeRequestUrl;
 
-      // Key by request callback so overlapping snapshots for one device remain independent.
-      let { promise: waitForSnapshotUpdate, resolve: waiter } = Promise.withResolvers();
+      // Key by request callback so overlapping snapshots remain independent.
+      let { promise: waitForSnapshotUpdate, resolve: resolveSnapshotUpdate } = Promise.withResolvers();
+      let waiter = (image = undefined) => {
+        // Connection cleanup calls without an image to release pending requests.
+        if (image !== undefined) {
+          let before = beforeRequestUploadLiveImage.timestamp;
+          let current = image.timestamp;
+          // Prefer capture time, including nanoseconds, over URL changes: Google
+          // can reuse a URL for a new image or replay a URL with an old timestamp.
+          let newer =
+            Number.isFinite(before?.seconds) === true && Number.isFinite(current?.seconds) === true
+              ? current.seconds > before.seconds || (current.seconds === before.seconds && (current.nanos ?? 0) > (before.nanos ?? 0))
+              : image.liveImageUrl !== beforeRequestUrl;
+          if ((image.liveImageUrl ?? '') === '' || newer !== true) {
+            return false;
+          }
+        }
+        resolveSnapshotUpdate();
+        return true;
+      };
       connection.snapshotWaiters.set(waiter, nest_google_device_uuid);
 
       // Ask Google to refresh the live image

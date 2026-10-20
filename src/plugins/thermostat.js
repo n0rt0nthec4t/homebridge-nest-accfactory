@@ -72,7 +72,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.THERMOSTAT;
-  static VERSION = '2026.10.19'; // Code version
+  static VERSION = '2026.10.21'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -1895,8 +1895,20 @@ const THERMOSTAT_FIELD_MAP = {
   // HVAC mode / setpoint fields
   eco_mode: {
     google: {
-      fields: ['eco_mode_state'],
-      translate: ({ raw }) => raw?.value?.eco_mode_state?.ecoMode ?? 'ECO_MODE_UNSPECIFIED',
+      // Expose unknown during startup too, before the Eco trait is available.
+      fields: [],
+      translate: ({ raw }) => {
+        switch (raw?.value?.eco_mode_state?.ecoMode) {
+          case 'ECO_MODE_INACTIVE':
+            return 'off';
+          case 'ECO_MODE_MANUAL_ECO':
+            return 'manual';
+          case 'ECO_MODE_AUTO_ECO':
+            return 'auto';
+          default:
+            return 'unknown';
+        }
+      },
     },
   },
 

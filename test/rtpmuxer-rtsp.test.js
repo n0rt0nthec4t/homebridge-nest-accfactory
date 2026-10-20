@@ -297,3 +297,57 @@ test('closing an output while AAC configuration is pending releases the receiver
   assert.equal(output.closed, true);
   assert.equal(output.needsAudioConfig, false);
 });
+
+test('fragmented H264 uses one wire allocation per packet and preserves RTCP counters', { timeout: 5000 }, async (context) => {
+  let now = 1700000000000;
+  let output = new RTPMuxer({ includeAudio: false, maxPacketBytes: 64, unixNow: () => now });
+  let client = await connect(context, output);
+  await play(client, output);
+  output.writeVideo(Buffer.from([0x65, 1]), 0);
+  await waitFor(() => client.packets.length === 2);
+  client.packets.length = 0;
+
+  let nal = Buffer.alloc(205, 0x33);
+  nal[0] = 0x65;
+  // Observe synchronous packet construction only, excluding socket/test setup.
+  let allocations = context.mock.method(Buffer, 'allocUnsafe');
+  let copies = context.mock.method(Buffer.prototype, 'copy');
+  output.writeVideo(nal, 100);
+  let copyCount = copies.mock.callCount();
+  copies.mock.restore();
+  let sizes = allocations.mock.calls.map((call) => call.arguments[0]);
+  allocations.mock.restore();
+  assert.deepEqual(sizes, [68, 68, 68, 68, 22], 'one final RTSP/RTP buffer per FU-A fragment');
+  assert.equal(copyCount, 5, 'one payload copy directly into each final wire packet');
+
+  await waitFor(() => client.packets.length === 5);
+  let packets = client.packets.map((packet) => packet.data);
+  assert.equal(
+    client.packets.every((packet) => packet.channel === 4),
+    true,
+  );
+  assert.deepEqual(
+    packets.map((packet) => (packet[1] & 0x80) !== 0),
+    [false, false, false, false, true],
+  );
+  assert.equal(packets[0][13] & 0x80, 0x80);
+  assert.equal(packets.at(-1)[13] & 0x40, 0x40);
+  assert.deepEqual(
+    Buffer.concat([Buffer.from([(packets[0][12] & 0xe0) | (packets[0][13] & 31)]), ...packets.map((packet) => packet.subarray(14))]),
+    nal,
+  );
+  for (let index = 1; index < packets.length; index++) {
+    assert.equal(packets[index].readUInt16BE(2), (packets[index - 1].readUInt16BE(2) + 1) & 0xffff);
+    assert.equal(packets[index].readUInt32BE(4), packets[0].readUInt32BE(4));
+    assert.equal(packets[index].readUInt32BE(8), packets[0].readUInt32BE(8));
+  }
+
+  now += 1000;
+  output.tick(now);
+  await waitFor(() => client.packets.length === 6);
+  let report = client.packets.at(-1);
+  assert.equal(report.channel, 5);
+  assert.equal(report.data[1], 200);
+  assert.equal(report.data.readUInt32BE(20), 6);
+  assert.equal(report.data.readUInt32BE(24), 216, 'octets include FU-A headers, excluding RTP and RTSP framing');
+});
