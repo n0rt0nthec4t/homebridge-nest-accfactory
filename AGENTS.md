@@ -181,6 +181,18 @@ Performance changes should not weaken decoder recovery or stream correctness.
 
 Do not describe a streaming change as a performance improvement unless there is evidence supporting that claim.
 
+## Native HomeKit Functionality
+
+Follow the [native HomeKit functionality policy in CONTRIBUTING.md](CONTRIBUTING.md#native-homekit-functionality) when implementing or reviewing device functionality.
+
+Only expose device functionality through HomeKit services and characteristics that accurately represent its purpose. Prefer standard HomeKit representations; custom characteristics may be considered where they provide a meaningful and accurate representation of device-specific functionality.
+
+Do not create artificial switches, outlets, lights, or other unrelated services to work around missing native HomeKit functionality. Do not repurpose standard HomeKit characteristics or their defined values to represent unrelated device functionality.
+
+Where no appropriate HomeKit representation exists, do not expose the functionality through an unrelated service or characteristic. Making a workaround optional or disabled by default does not make it acceptable.
+
+Treat this as an intentional project design constraint, not a missing feature to work around.
+
 ## Device Plugins
 
 Device plugins own interpretation and behaviour specific to their Nest/Google device type.

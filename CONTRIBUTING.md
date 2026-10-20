@@ -28,6 +28,22 @@ Run `npm run check` before submitting a change. Generated coverage reports remai
 
 Tests use Node's built-in test runner. Network, process, filesystem and clock boundaries are isolated where needed; the automated suite does not require live account credentials or camera hardware.
 
+## Native HomeKit functionality
+
+This project exposes device functionality through HomeKit services and characteristics that accurately represent its purpose. Standard HomeKit representations are preferred, while custom characteristics may be considered where they provide a meaningful and accurate representation of device-specific functionality. It does not aim to expose every feature available in the Nest or Google apps.
+
+Custom characteristics must accurately represent the underlying device capability and use appropriate identifiers, data types, permissions and values.
+
+Where no appropriate HomeKit representation exists, do not expose the functionality through an unrelated service or characteristic:
+
+- Do not create artificial switches, outlets, lights or other unrelated services to work around missing native HomeKit functionality.
+- Do not repurpose standard HomeKit characteristics or their defined values to represent unrelated device functionality.
+- Making a workaround optional, configurable or disabled by default does not exempt it from this policy.
+
+Functionality without an appropriate HomeKit representation should remain in the Nest or Google app.
+
+This is an intentional project design constraint, not a missing feature to work around. Feature requests and pull requests must follow this policy; proposals that depend on these accessory workarounds may be rejected.
+
 ## Making changes
 
 - Keep each fix focused on the demonstrated problem. Avoid unrelated refactoring or formatting.

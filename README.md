@@ -59,7 +59,7 @@ Google Accounts require an **"issueToken"** and **"cookie"**, which are unique t
 1. Open Safari in a **Private Window**  
 2. Enable the **Develop Menu** (Safari ▸ Settings ▸ Advanced ▸ check *Show features for web developers*)  
 3. Open **Develop ▸ Show Web Inspector**, then select the **Network** tab  
-4. Ensure **Preserve Log** is checked  
+4. Ensure **Preserve Log** or **Preserve Requests** is checked  
 5. In the filter box, type **issueToken**  
 6. Go to [home.nest.com](https://home.nest.com) and click **Sign in with Google**  
 7. After login, click the **iframerpc** network request  
