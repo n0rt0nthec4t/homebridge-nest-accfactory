@@ -16,7 +16,7 @@ for (let name of ['camera', 'doorbell', 'floodlight', 'thermostat', 'heatlink', 
         ? base
         : specifier === './camera.js'
           ? modules.get('camera').url
-          : ['../streamer.js', '../nexustalk.js', '../webrtc.js'].includes(specifier) === true
+          : ['./camera/streamer.js', './camera/nexustalk.js', './camera/webrtc.js'].includes(specifier) === true
               ? 'data:text/javascript,export default class {}'
               : specifier.startsWith('.') === true
                 ? new URL(specifier, location).href

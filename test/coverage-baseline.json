@@ -34,7 +34,7 @@
     "branches": 91,
     "functions": 95
   },
-  "src/ffmpeg.js": {
+  "src/plugins/camera/ffmpeg.js": {
     "lines": 95,
     "branches": 92,
     "functions": 95
@@ -44,7 +44,7 @@
     "branches": 80,
     "functions": 91
   },
-  "src/h264.js": {
+  "src/plugins/camera/h264.js": {
     "lines": 94,
     "branches": 94,
     "functions": 95
@@ -54,12 +54,12 @@
     "branches": 95,
     "functions": 95
   },
-  "src/mediatimeline.js": {
+  "src/plugins/camera/mediatimeline.js": {
     "lines": 95,
     "branches": 95,
     "functions": 95
   },
-  "src/nexustalk.js": {
+  "src/plugins/camera/nexustalk.js": {
     "lines": 87,
     "branches": 77,
     "functions": 95
@@ -129,17 +129,17 @@
     "branches": 86,
     "functions": 95
   },
-  "src/rtph264.js": {
-    "lines": 94,
-    "branches": 93,
-    "functions": 95
-  },
-  "src/streamer.js": {
+  "src/plugins/camera/streamer.js": {
     "lines": 87,
     "branches": 74,
     "functions": 84
   },
-  "src/streamtransport.js": {
+  "src/plugins/camera/talkback.js": {
+    "lines": 95,
+    "branches": 90,
+    "functions": 100
+  },
+  "src/plugins/camera/streamtransport.js": {
     "lines": 92,
     "branches": 84,
     "functions": 86
@@ -164,7 +164,7 @@
     "branches": 94,
     "functions": 95
   },
-  "src/webrtc.js": {
+  "src/plugins/camera/webrtc.js": {
     "lines": 84,
     "branches": 74,
     "functions": 91

@@ -11,6 +11,7 @@
 // - Preserve a single ordered media timeline
 // - Avoid duplicated video/audio buffers
 // - Provide O(log n) media-specific lookup via indexed search
+// - Track retained Buffer payload lengths without scanning the timeline
 // - Maintain stable logical indexes during trimming
 // - Keep retention and timeline ordering consistent across all media
 //
@@ -36,12 +37,15 @@
 // - Retains timeline-based A/V ordering
 // - Minimal memory overhead from lightweight indexes
 //
-// Code version 2026.05.18
+// Code version 2026.10.20
 // Mark Hulskamp
 'use strict';
 
+// Define nodejs module requirements
+import { Buffer } from 'node:buffer';
+
 // Import our modules
-import RingBuffer from './ringbuffer.js';
+import RingBuffer from '../../ringbuffer.js';
 
 // Define constants
 const MEDIA_TIMELINE_DEFAULT_CAPACITY = 1024;
@@ -65,6 +69,7 @@ export default class MediaTimeline {
 
   #trimmedItems = 0; // Total items removed by retention trimming
   #droppedItems = 0; // Total items rejected because retained capacity was full
+  #retainedBytes = 0; // Sum of retained Buffer payload lengths, excluding metadata
 
   constructor(startIndex = 0, capacity = MEDIA_TIMELINE_DEFAULT_CAPACITY, maxCapacity = MEDIA_TIMELINE_MAX_CAPACITY) {
     // Initialise the logical item index.
@@ -115,6 +120,7 @@ export default class MediaTimeline {
       keyframeIndexes: this.#keyframeIndexes.length - this.#keyframeIndexOffset,
       trimmedItems: this.#trimmedItems,
       droppedItems: this.#droppedItems,
+      retainedBytes: this.#retainedBytes,
     };
   }
 
@@ -136,6 +142,7 @@ export default class MediaTimeline {
 
     this.#trimmedItems = 0;
     this.#droppedItems = 0;
+    this.#retainedBytes = 0;
   }
 
   add(item) {
@@ -166,6 +173,9 @@ export default class MediaTimeline {
     if (item.type === MEDIA_TIMELINE_TYPE_AUDIO) {
       this.#audioIndexes.push(item.index);
     }
+
+    // Count accepted payload lengths only; rejected items do not occupy the ring.
+    this.#retainedBytes += Buffer.isBuffer(item.data) === true ? item.data.length : 0;
 
     // Advance only after the item was accepted.
     this.#itemIndex++;
@@ -237,6 +247,7 @@ export default class MediaTimeline {
 
   trim(cutoffTime, protectedIndex = undefined) {
     let trimCount = 0;
+    let trimBytes = 0;
     let item = undefined;
     let protectedOffset = -1;
 
@@ -260,6 +271,7 @@ export default class MediaTimeline {
 
       // Untimed items cannot be retained by age, so allow them to be trimmed.
       if (typeof item?.time !== 'number') {
+        trimBytes += Buffer.isBuffer(item?.data) === true ? item.data.length : 0;
         trimCount++;
         continue;
       }
@@ -268,6 +280,7 @@ export default class MediaTimeline {
         break;
       }
 
+      trimBytes += Buffer.isBuffer(item?.data) === true ? item.data.length : 0;
       trimCount++;
     }
 
@@ -277,6 +290,7 @@ export default class MediaTimeline {
 
     // Trim the shared buffer.
     this.#buffer.shift(trimCount, this.#itemIndex);
+    this.#retainedBytes -= trimBytes;
     this.#trimmedItems += trimCount;
 
     // Move index heads forward without Array.shift().

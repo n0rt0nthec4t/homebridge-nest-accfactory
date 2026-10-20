@@ -7,8 +7,8 @@ import { setImmediate } from 'node:timers/promises';
 import { URL } from 'node:url';
 import test from 'node:test';
 import GrpcTransport from '../src/grpctransport.js';
-import StreamTransport from '../src/streamtransport.js';
-import H264 from '../src/h264.js';
+import StreamTransport from '../src/plugins/camera/streamtransport.js';
+import H264 from '../src/plugins/camera/h264.js';
 import { sequenceParameterSet } from './helpers/h264-fixtures.js';
 
 // Replace external boundaries, keeping the real WebRTC and shared transport implementations.
@@ -44,7 +44,7 @@ let replacements = {
   './streamer.js': 'data:text/javascript,export default { MEDIA_TYPE: { AUDIO: "audio", VIDEO: "video" } };',
   'node:timers': timerModule,
 };
-let location = new URL('../src/webrtc.js', import.meta.url);
+let location = new URL('../src/plugins/camera/webrtc.js', import.meta.url);
 let source = await readFile(location, 'utf8');
 source = source.replace(/from '([^']+)'/g, (match, specifier) => {
   let target = replacements[specifier] ?? (specifier.startsWith('.') === true ? new URL(specifier, location).href : specifier);
@@ -1071,3 +1071,20 @@ for (let kind of ['audio', 'video']) {
     assert.equal(flow.transport.ready, false);
   });
 }
+
+test('WebRTC a retired extension failure cannot close its replacement peer', async (context) => {
+  let pending = Promise.withResolvers();
+  let flow = setup(context, { extend: () => pending.promise });
+  await flow.transport.open();
+  flow.transport.setState(StreamTransport.STATE.READY);
+  context.mock.timers.tick(30000);
+  await setImmediate();
+  assert.equal(flow.calls('JoinStream').filter((entry) => entry.command === 'extend').length, 1);
+  await flow.transport.close();
+  await flow.transport.open();
+  let replacement = flow.peers.at(-1);
+  pending.resolve({ status: 14 });
+  await setImmediate();
+  assert.equal(replacement.closed, 0);
+  assert.equal(flow.transport.closed, false);
+});

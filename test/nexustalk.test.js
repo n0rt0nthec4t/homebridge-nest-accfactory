@@ -11,7 +11,7 @@ import { setImmediate } from 'node:timers/promises';
 import { getProtoRoot, getProtoType } from '../src/protobuf.js';
 
 // Streamer is used only for media type constants here; avoid its Homebridge imports.
-let location = new URL('../src/nexustalk.js', import.meta.url);
+let location = new URL('../src/plugins/camera/nexustalk.js', import.meta.url);
 let source = await readFile(location, 'utf8');
 // Schema loading can fail independently of TLS; keep real protobuf encoding for available types.
 let schemaModule =
@@ -34,7 +34,7 @@ source = source.replace(/from '([^']+)'/g, (match, specifier) => {
   let target =
     specifier === './streamer.js'
       ? 'data:text/javascript,export default { MEDIA_TYPE: { AUDIO: "audio", VIDEO: "video" } };'
-      : specifier === './protobuf.js'
+      : specifier === '../../protobuf.js'
         ? schemaModule
         : specifier === 'node:timers'
           ? timerModule
@@ -735,4 +735,57 @@ test('NexusTalk absent video clock metadata cannot make timestamps non-finite', 
   await flow.transport.close();
   assert.equal(flow.media[0].timestamp, 100000);
   assert.equal(Number.isFinite(flow.media[0].timestamp), true);
+});
+
+test('ending and resuming talkback preserves the playback session and empty end marker', async (context) => {
+  let flow = setup(context);
+  let socket = await open(flow);
+  begin(socket);
+  let before = socket.writes.length;
+  await flow.transport.sendAudio(Buffer.from([1, 2]));
+  await flow.transport.sendAudio(Buffer.alloc(0));
+  await flow.transport.sendAudio(Buffer.from([3, 4]));
+  let packets = socket.writes.slice(before);
+  assert.deepEqual(packets.filter((entry, index) => index % 2 === 0).map((entry) => entry[0]), [102, 102, 102]);
+  // Assert the wire bytes, since decoding supplies defaults even when the sender
+  // incorrectly omits the empty payload or zero-valued SPEEX codec fields.
+  let bodies = packets.filter((entry, index) => index % 2 === 1);
+  assert.deepEqual(bodies.map((data) => data.toString('hex')), [
+    '0a0201021007180020807d',
+    '0a001007180020807d',
+    '0a0203041007180020807d',
+  ]);
+  assert.deepEqual(
+    packets.filter((entry, index) => index % 2 === 0).map((header) => header.readUInt16BE(1)),
+    bodies.map((data) => data.length),
+  );
+  let type = root.lookupType('nest.nexustalk.v1.AudioPayload');
+  let decoded = bodies.map((data) => type.decode(data));
+  assert.deepEqual(decoded.map((message) => Buffer.from(message.payload)), [Buffer.from([1, 2]), Buffer.alloc(0), Buffer.from([3, 4])]);
+  assert.equal(decoded.every((message) => message.sessionId === 7 && message.codec === 0 && message.sampleRate === 16000), true);
+  assert.equal(flow.transport.connected, true);
+  assert.equal(socket.destroyed, false);
+  assert.equal(flow.sockets.length, 1);
+});
+
+test('talkback idle and peer-end diagnostics identify event ordering without exposing audio', async (context) => {
+  let debug = [];
+  let flow = setup(context, { log: { debug: (...args) => debug.push(args) } });
+  let socket = await open(flow);
+  begin(socket);
+  await flow.transport.sendAudio(Buffer.from([1, 2]));
+  await flow.transport.sendAudio(Buffer.alloc(0));
+  socket.emit('end');
+  let trace = debug.filter((args) => args[0].includes('idle marker') === true || args[0].includes('remote endpoint ended') === true);
+  assert.equal(trace.length, 2);
+  assert.match(trace[0][0], /idle marker/);
+  assert.deepEqual(trace[0].slice(1), ['camera.test', 7]);
+  assert.match(trace[1][0], /remote endpoint ended/);
+  assert.deepEqual(trace[1].slice(1), ['camera.test', false, true]);
+  assert.equal(socket.destroyed, false);
+  socket.emit('close');
+  assert.equal(flow.sockets.length, 2);
+  socket.emit('end');
+  assert.equal(debug.filter((args) => args[0].includes('remote endpoint ended') === true).length, 1);
+  flow.sockets[1].handshake();
 });

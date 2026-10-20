@@ -44,7 +44,7 @@
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.10.19
+// Code version 2026.10.20
 // Mark Hulskamp
 'use strict';
 
@@ -58,12 +58,12 @@ import crypto from 'crypto';
 // Define our modules
 import Streamer from './streamer.js';
 import StreamTransport from './streamtransport.js';
-import RingBuffer from './ringbuffer.js';
+import RingBuffer from '../../ringbuffer.js';
 import H264 from './h264.js';
-import { getProtoType } from './protobuf.js';
+import { getProtoType } from '../../protobuf.js';
 
 // Define constants
-import { USER_AGENT, __dirname } from './consts.js';
+import { USER_AGENT, __dirname } from '../../consts.js';
 
 const PING_INTERVAL = 15000; // Ping interval to Nexus server while stream active
 const STALLED_TIMEOUT = 10000; // Time with no playback packets before stream is considered stalled
@@ -246,7 +246,17 @@ export default class NexusTalk extends StreamTransport {
         });
 
         socket.on('end', () => {
-          // Do nothing. The socket close handler owns terminal state/reconnect handling.
+          if (this.#socket !== socket) {
+            return;
+          }
+          // Distinguish a peer-ended TLS stream from local HomeKit shutdown.
+          // The close handler still owns terminal state and reconnect decisions.
+          this?.log?.debug?.(
+            'NexusTalk remote endpoint ended connection for uuid "%s": closing=%s activeConsumers=%s',
+            this.uuid,
+            this.closing === true,
+            this.hasConsumers() === true,
+          );
         });
 
         socket.on('data', (data) => {
@@ -485,6 +495,11 @@ export default class NexusTalk extends StreamTransport {
       return;
     }
 
+    if (talkingBuffer.length === 0) {
+      // An empty payload is the existing NexusTalk end-of-talk marker, rather
+      // than a playback stop. Log its ordering without exposing audio contents.
+      this?.log?.debug?.('NexusTalk talkback idle marker for uuid "%s" with session ID "%s"', this.uuid, this.#sessionId);
+    }
     this.#sendMessage(MEDIA_TYPE.AUDIO_PAYLOAD, encodedData);
   }
 

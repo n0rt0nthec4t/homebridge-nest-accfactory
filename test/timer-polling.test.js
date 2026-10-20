@@ -16,7 +16,7 @@ for (let name of ['camera']) {
     let target =
       specifier === '../HomeKitDevice.js'
         ? new URL('../src/HomeKitDevice/HomeKitDevice.js', import.meta.url).href
-        : ['../streamer.js', '../nexustalk.js', '../webrtc.js', '../ffmpeg.js'].includes(specifier) === true
+        : ['./camera/streamer.js', './camera/nexustalk.js', './camera/webrtc.js', './camera/ffmpeg.js'].includes(specifier) === true
             ? 'data:text/javascript,export default class {}'
             : specifier.startsWith('.') === true
               ? new URL(specifier, location).href

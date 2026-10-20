@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import test from 'node:test';
-import RtpH264 from '../src/rtph264.js';
+import H264 from '../src/plugins/camera/h264.js';
 
 for (let [label, payload, expected] of [
   ['missing', undefined, [false, false, false, false]],
@@ -18,7 +18,7 @@ for (let [label, payload, expected] of [
   ['STAP-A truncated NAL', Buffer.from([0x78, 0, 4, 0x65]), [false, false, false, false]],
 ]) {
   test('RTP payload inspection: ' + label, () => {
-    let info = RtpH264.getPayloadInfo(payload);
+    let info = H264.getPayloadInfo(payload);
     assert.deepEqual([info.hasKeyFrame, info.hasFragmentedNal, info.hasFragmentStart, info.hasFragmentEnd], expected);
   });
 }
@@ -28,7 +28,7 @@ for (let marker of [true, false]) {
       for (let gap of [true, false]) {
         test('fragment completeness: marker=' + marker + ', start=' + start + ', end=' + end + ', gap=' + gap, () => {
           assert.equal(
-            RtpH264.isTimestampGroupComplete(
+            H264.isTimestampGroupComplete(
               {
                 markerSeen: marker,
                 hasFragmentedNal: true,
@@ -45,10 +45,10 @@ for (let marker of [true, false]) {
   }
 }
 test('non-fragmented groups require a marker and invalid groups cannot be complete', () => {
-  assert.equal(RtpH264.isTimestampGroupComplete({ markerSeen: true }), true);
-  assert.equal(RtpH264.isTimestampGroupComplete({ markerSeen: false }), false);
-  assert.equal(RtpH264.isTimestampGroupComplete(null), false);
-  assert.equal(RtpH264.isTimestampGroupComplete(undefined), false);
+  assert.equal(H264.isTimestampGroupComplete({ markerSeen: true }), true);
+  assert.equal(H264.isTimestampGroupComplete({ markerSeen: false }), false);
+  assert.equal(H264.isTimestampGroupComplete(null), false);
+  assert.equal(H264.isTimestampGroupComplete(undefined), false);
 });
 for (let [first, mask] of [
   [10, 0xffff],
@@ -57,7 +57,7 @@ for (let [first, mask] of [
 ]) {
   test('FU-A reconstruction preserves Annex-B bytes across sequence ' + first, () => {
     let state = {};
-    let start = RtpH264.acceptFuA(state, Buffer.from([0x7c, 0x85, 1, 2]), {
+    let start = H264.acceptFuA(state, Buffer.from([0x7c, 0x85, 1, 2]), {
       sequenceNumber: first,
       rtpTimestamp: 100,
       receivedAt: 1,
@@ -65,7 +65,7 @@ for (let [first, mask] of [
     });
     assert.equal(start.ok, true);
     assert.equal(start.complete, false);
-    let result = RtpH264.acceptFuA(state, Buffer.from([0x7c, 0x45, 3, 4]), {
+    let result = H264.acceptFuA(state, Buffer.from([0x7c, 0x45, 3, 4]), {
       sequenceNumber: (first + 1) & mask,
       rtpTimestamp: 100,
       receivedAt: 2,
@@ -88,9 +88,9 @@ for (let [label, payload, context, reason] of [
 ]) {
   test('FU-A rejects ' + label + ' and a subsequent start recovers', () => {
     let state = {};
-    RtpH264.acceptFuA(state, Buffer.from([0x7c, 0x85, 1]), { rtpTimestamp: 100, sequenceNumber: 10 });
-    assert.equal(RtpH264.acceptFuA(state, payload, context).reason, reason);
-    let result = RtpH264.acceptFuA(state, Buffer.from([0x7c, 0xc5, 9]), { rtpTimestamp: 200, sequenceNumber: 20 });
+    H264.acceptFuA(state, Buffer.from([0x7c, 0x85, 1]), { rtpTimestamp: 100, sequenceNumber: 10 });
+    assert.equal(H264.acceptFuA(state, payload, context).reason, reason);
+    let result = H264.acceptFuA(state, Buffer.from([0x7c, 0xc5, 9]), { rtpTimestamp: 200, sequenceNumber: 20 });
     assert.equal(result.complete, true);
     assert.equal(result.interrupted, true);
     assert.deepEqual(result.data, Buffer.from([0, 0, 0, 1, 0x65, 9]));
@@ -99,9 +99,9 @@ for (let [label, payload, context, reason] of [
 }
 test('fragment reset preserves transport-owned recovery fields', () => {
   let state = { recovery: true, fuParts: [Buffer.from([1])], fuBytes: 1 };
-  RtpH264.resetFragmentState(state);
+  H264.resetFragmentState(state);
   assert.equal(state.recovery, true);
   assert.equal(state.fuBytes, 0);
-  assert.doesNotThrow(() => RtpH264.resetFragmentState(null));
-  assert.equal(RtpH264.acceptFuA(null, Buffer.from([0x7c, 0x85, 1])).reason, 'invalid');
+  assert.doesNotThrow(() => H264.resetFragmentState(null));
+  assert.equal(H264.acceptFuA(null, Buffer.from([0x7c, 0x85, 1])).reason, 'invalid');
 });

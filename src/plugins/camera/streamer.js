@@ -67,7 +67,7 @@
 // - MediaTimeline owns retained buffer/index stats
 // - Streamer owns per-output write/drop/playout stats
 //
-// Code version 2026.10.18
+// Code version 2026.10.20
 // Mark Hulskamp
 'use strict';
 
@@ -79,13 +79,13 @@ import path from 'node:path';
 import { PassThrough } from 'stream';
 
 // Define our modules
-import HomeKitDevice from './HomeKitDevice.js';
+import HomeKitDevice from '../../HomeKitDevice.js';
 import MediaTimeline from './mediatimeline.js';
 import StreamTransport from './streamtransport.js';
 import H264 from './h264.js';
 
 // Define constants
-import { TIMERS, RESOURCE_FRAMES, RESOURCE_PATH, LOG_LEVELS, __dirname } from './consts.js';
+import { TIMERS, RESOURCE_FRAMES, RESOURCE_PATH, LOG_LEVELS, __dirname } from '../../consts.js';
 
 const MAX_BUFFERED_ITEMS_PER_OUTPUT_PER_TICK = 20; // Prevent one output starving others
 const STREAM_FRAME_INTERVAL = 1000 / 30; // 30fps approx

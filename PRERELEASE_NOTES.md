@@ -4,6 +4,28 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.4-beta.10 (2026/10/19)
+
+### Changed
+
+- Move HomeKit return-audio RTP/RTCP socket routing into the camera Talkback module, preserving packet forwarding and FFmpeg process ownership
+
+- Group camera streaming, transport, codec and FFmpeg modules under `plugins/camera/`, retaining the camera plugin entry point and existing media behaviour
+- Replace `rimraf` and `copyfiles` with native Node.js clean and build scripts
+- Consolidate FFmpeg process control into `start()`, exact process handles and terminal instance shutdown; attach media pipes at startup and publish lifecycle notifications through EventEmitter
+- Track retained media payload bytes in MediaTimeline statistics without changing buffering or output behaviour
+- Consolidate H264 byte parsing and RTP payload reconstruction in the shared H264 module, preserving WebRTC receive behaviour
+
+### Fixed
+
+- Fix a regression introduced by a protobuf library update that caused NexusTalk to reconnect when talking stopped, restoring explicit end-of-talk payload and SPEEX codec fields
+- Ignore delayed WebRTC stream-extension failures from retired sessions so they cannot close replacement streams
+- Keep retired HKSV generators tied to their original FFmpeg process when session keys are reused
+- Release failed recording input setups automatically and prevent delayed process completion from stopping replacement recordings
+- Avoid repeated forced FFmpeg termination signals and bound binary capability probes with timeouts
+- Include retained FFmpeg diagnostics when talkback stops unexpectedly, including exits with code zero
+- Keep the HomeKit talkback receiver waiting while the microphone is idle instead of timing out and closing live view
+
 ## v0.4.4-beta.9 (2026/10/18)
 
 ### Changed

@@ -50,7 +50,7 @@
 // - Output playout timing, catch-up, and live latency policy are owned by Streamer
 // - Incomplete keyframes and pathological access units are dropped/recovered locally rather than blocking the plugin process
 //
-// Code version 2026.10.19
+// Code version 2026.10.20
 // Mark Hulskamp
 'use strict';
 
@@ -67,12 +67,11 @@ import crypto from 'node:crypto';
 // Define our modules
 import Streamer from './streamer.js';
 import StreamTransport from './streamtransport.js';
-import GrpcTransport from './grpctransport.js';
+import GrpcTransport from '../../grpctransport.js';
 import H264 from './h264.js';
-import RtpH264 from './rtph264.js';
 
 // Define constants
-import { USER_AGENT, __dirname } from './consts.js';
+import { USER_AGENT, __dirname } from '../../consts.js';
 
 const EXTEND_INTERVAL = 30000; // Send extend command to Google Home Foyer every this period for active streams
 const GOOGLE_HOME_FOYER_REQUEST_TIMEOUT = 15000; // Client-side timeout for Google Home Foyer gRPC requests
@@ -450,6 +449,11 @@ export default class WebRTC extends StreamTransport {
             deviceId: this.uuid,
             streamId: this.#streamId,
           });
+
+          // A delayed reply belongs to the peer that issued it, never its replacement.
+          if (this.#peerConnection !== peerConnection || this.closing === true || this.closed === true) {
+            return;
+          }
 
           if (extendResponse?.data?.[0]?.streamExtensionStatus !== 'STATUS_STREAM_EXTENDED') {
             this?.log?.debug?.('Error occurred while requesting stream extension for uuid "%s"', this.uuid);
@@ -1022,7 +1026,7 @@ export default class WebRTC extends StreamTransport {
       isComplete: (entry) => {
         groupAgeMs = now - (entry?.firstReceivedAt || now);
 
-        return RtpH264.isTimestampGroupComplete(entry, this.sortJitterGroupPackets(jitter, entry));
+        return H264.isTimestampGroupComplete(entry, this.sortJitterGroupPackets(jitter, entry));
       },
       canWait: (entry) => {
         groupAgeMs = now - (entry?.firstReceivedAt || now);
@@ -1045,7 +1049,7 @@ export default class WebRTC extends StreamTransport {
     })) {
       groupAgeMs = now - (group?.firstReceivedAt || now);
 
-      if (RtpH264.isTimestampGroupComplete(group, this.sortJitterGroupPackets(jitter, group)) !== true) {
+      if (H264.isTimestampGroupComplete(group, this.sortJitterGroupPackets(jitter, group)) !== true) {
         jitter.lastReleasedTimestamp = group.rtpTimestamp;
         this.recordVideoDrop(group?.hasKeyFrame === true ? 'jitter-keyframe-incomplete' : 'jitter-frame-incomplete');
 
@@ -1229,7 +1233,7 @@ export default class WebRTC extends StreamTransport {
         return;
       }
 
-      payloadInfo = RtpH264.getPayloadInfo(payload);
+      payloadInfo = H264.getPayloadInfo(payload);
 
       if (learnedPrimarySsrc === true && this.ready !== true && payloadInfo.hasKeyFrame !== true) {
         this.#requestVideoKeyframe();
@@ -1447,7 +1451,7 @@ export default class WebRTC extends StreamTransport {
 
     // FU-A carries one large NAL unit split across multiple RTP packets
     if (nalType === H264.NALUS.TYPES.FU_A) {
-      fuResult = RtpH264.acceptFuA(h264, payload, {
+      fuResult = H264.acceptFuA(h264, payload, {
         sequenceNumber: sequenceNumber,
         rtpTimestamp: rtpTimestamp,
         receivedAt: packetReceivedAt,
@@ -1568,7 +1572,7 @@ export default class WebRTC extends StreamTransport {
       return;
     }
 
-    RtpH264.resetFragmentState(h264);
+    H264.resetFragmentState(h264);
   }
 
   #resetPendingVideoFrame() {

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import MediaTimeline from '../src/mediatimeline.js';
+import MediaTimeline from '../src/plugins/camera/mediatimeline.js';
 
 test('MediaTimeline indexes mixed media and keyframes', () => {
   let timeline = new MediaTimeline(10, 4, 4);
@@ -132,4 +132,32 @@ test('MediaTimeline rejects invalid lookup and media inputs without moving its l
   assert.equal(timeline.nextAudioFrom(0), undefined);
   timeline.clear(-1);
   assert.equal(timeline.nextIndex, 0);
+});
+
+test('MediaTimeline accounts for accepted payloads across protected trims, wrapped storage and clear', () => {
+  let timeline = new MediaTimeline(0, 3, 3);
+
+  assert.equal(timeline.stats.retainedBytes, 0);
+  timeline.add({ type: 'video', time: 100, data: Buffer.alloc(4) });
+  timeline.add({ type: 'audio', time: 200, data: Buffer.alloc(6) });
+  timeline.add({ type: 'meta' });
+  assert.equal(timeline.stats.retainedBytes, 10);
+
+  assert.equal(timeline.add({ type: 'audio', time: 300, data: Buffer.alloc(8) }), undefined);
+  assert.equal(timeline.stats.retainedBytes, 10, 'capacity rejection must not count payload bytes');
+  assert.equal(timeline.trim(400, 1), 1);
+  assert.equal(timeline.stats.retainedBytes, 6, 'protected payload remains counted');
+
+  timeline.add({ type: 'video', time: 300, data: Buffer.alloc(8) });
+  assert.equal(timeline.stats.retainedBytes, 14, 'wrapped storage counts the new payload once');
+  assert.equal(timeline.trim(250), 2);
+  assert.equal(timeline.stats.retainedBytes, 8, 'untimed metadata contributes no payload bytes');
+
+  timeline.clear(20);
+  assert.equal(timeline.stats.retainedBytes, 0);
+  timeline.add({ type: 'meta', data: Buffer.alloc(5) });
+  timeline.add({ type: 'meta', data: 'not a Buffer' });
+  assert.equal(timeline.stats.retainedBytes, 5);
+  assert.equal(timeline.trim(1), 2);
+  assert.equal(timeline.stats.retainedBytes, 0, 'trimming untimed payloads releases their byte count');
 });

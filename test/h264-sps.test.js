@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import test from 'node:test';
-import H264 from '../src/h264.js';
+import H264 from '../src/plugins/camera/h264.js';
 import { sequenceParameterSet } from './helpers/h264-fixtures.js';
 
 for (let profile of [66, 77, 100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135]) {

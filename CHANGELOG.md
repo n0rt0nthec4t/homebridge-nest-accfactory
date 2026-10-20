@@ -11,38 +11,54 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - Motion sensing on wired Nest Protect devices may report incorrect states due to recent firmware changes
 - Video from Google Home-hosted streams may be slow to start up
 
-## v0.4.4 (Unreleased)
+## v0.4.4 (2026/10/20)
 
 ### ⚠️ Compatibility Changes
 
-- Camera and doorbell users must now use **FFmpeg 7.1 or newer**; FFmpeg 6.x and 7.0 are no longer supported
-- FFmpeg must still include the video and audio codecs required by the plugin
-- Homebridge 2 users must update to **Homebridge 2.4.0 or newer**
-- Added Node.js 26 beta support when using Homebridge 2.4.0 or newer; Homebridge 1 users should continue using Node.js 22 or 24
-- Removed the HomeKit chime switch; manage the chime in Nest/Google Home. Set `ignoreIndoorChime` to `true` if you want HomeKit doorbell alerts while the indoor chime is off. Quiet Time still silences HomeKit alerts.
-- Home/Away, Weather, Thermostats, Temperature sensors and Heat Links now require the Google API to be enabled; Nest REST API support for these devices has been removed
+- Cameras and doorbells now require **FFmpeg 7.1 or newer**, including the video and audio codecs required by the plugin
+- Homebridge 2 users must update to **Homebridge 2.4.0 or newer**; Homebridge 1.x remains supported on Node.js 22 and 24
+- Added Node.js 26 beta support when using Homebridge 2.4.0 or newer
+- Home/Away, Weather, Thermostats, Temperature Sensors and Heat Links now require the Google API to be enabled; Nest REST-only accounts no longer provide these accessories. Weather forecasts continue to use Nest REST polling
+- Removed the HomeKit chime switch and the `chimeSwitch` option; configure the indoor chime and Quiet Time in Nest/Google Home instead
 
-### 🛠️ Fixes
+### 📹 Cameras and Doorbells
 
-- Fixed Home/Away status not updating in the Home app or incorrectly showing Away during startup
-- Fixed weather accessories sometimes failing to appear during startup
+- Fixed a regression caused by a protobuf library update that reconnected NexusTalk cameras when two-way talk ended
+- Fixed live view closing when the HomeKit microphone was idle, improving two-way audio availability before and between conversations
+- Improved live-view startup time for cameras connected through Google Home and recovery after damaged or incomplete video packets
+- Improved cleanup after failed or interrupted streams and recordings, preventing delayed callbacks from stopping replacement sessions or reopening streams after they were closed
+- Improved HomeKit Secure Video recording startup and compatibility across software and hardware encoders
+- Fixed Raspberry Pi hardware encoder detection and selection, including systems where the encoder is not `/dev/video0`; unavailable or unusable hardware encoders fall back to software encoding [@pace8](https://github.com/pace8)
+- Fixed Raspberry Pi streaming failures with some video settings, recordings that would not appear or play in the Home app, and intermittent Raspberry Pi 4 HKSV timeouts [@pace8](https://github.com/pace8)
+- Restored camera off/on control through the Home app recording settings after a camera was switched off in the Nest app [#345](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issues/345) [@go-faustino](https://github.com/go-faustino)
 - Fixed standalone Nest Cam battery devices being identified as wired floodlight cameras
-- Fixed hardware video acceleration not being detected on some Raspberry Pi systems [@pace8](https://github.com/pace8)
-- Fixed Raspberry Pi systems sometimes choosing an unsupported video encoder [@pace8](https://github.com/pace8)
-- Fixed Raspberry Pi camera streaming failing to start with some video settings [@pace8](https://github.com/pace8)
-- Fixed Raspberry Pi HomeKit Secure Video recordings completing successfully but not appearing or playing in the Home app [@pace8](https://github.com/pace8)
-- Fixed intermittent HomeKit Secure Video recording timeouts on Raspberry Pi 4 [@pace8](https://github.com/pace8)
+- Restored camera activity polling and corrected Google camera event handling, including vehicle and package events
+- Default to two simultaneous live viewers per camera; `maxStreams` supports one to four viewers independently of HKSV recording
+- Added `ignoreIndoorChime` to allow HomeKit doorbell alerts while the indoor chime is disabled. It defaults to `false`; Quiet Time continues to silence HomeKit doorbell alerts
 
-### 📹 Camera Streaming Improvements
+### 🏠 Accessories and Controls
 
-- Improved HomeKit Secure Video recording compatibility across software and hardware encoders
-- Improved live-view startup time for cameras connected through Google Home
-- Improved live-stream recovery when video packets are damaged or incomplete
+- Fixed Home/Away status failing to update in the Home app or incorrectly showing Away during startup
+- Fixed weather accessories sometimes failing to appear during startup and restored regular weather updates
+- Improved accessory discovery when device details arrive across separate updates, including thermostats, Heat Links, Protects, locks and cameras
+- Fixed thermostat Off changes made in the Nest app not appearing correctly in HomeKit
+- Fixed thermostat humidity controls and readings when heating/cooling was off or humidifier and dehumidifier capabilities changed
+- Fixed temperature sensor active status not updating when the thermostat selected a different sensor
+- Corrected fan and hot-water timer deadlines and initial thermostat and Heat Link values
+- Improved external Daikin thermostat controls, including switching fan or dehumidifier operation off and keeping controls independent across multiple thermostats
+- Failed device commands now report errors instead of updating the plugin's saved state as though the change succeeded
+
+### 🔐 Reliability and Privacy
+
+- Improved account reauthorisation, reconnect handling and shutdown so retired connections cannot restart background work or overwrite current device state
+- Improved handling of Nest and Google updates so incomplete or rejected Nest data does not overwrite the preferred Google device state
+- Improved support-dump redaction for credentials and personal details, and limited diagnostic collection and output
+- Preserved configuration file permissions during legacy migration and restricted access to backups containing credentials
 
 ### 🔁 Maintenance
 
-- Updated HomeKit support while retaining compatibility with existing accessories
-- Updated dependencies
+- Updated HomeKit support and dependencies while retaining existing accessory identities and Eve history compatibility
+- Improved stream failure diagnostics and expanded automated regression coverage
 
 ## v0.4.3 (2026/08/11)
 

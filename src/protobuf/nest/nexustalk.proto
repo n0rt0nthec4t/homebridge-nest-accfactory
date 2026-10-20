@@ -173,9 +173,11 @@ message StopPlayback {
 }
 
 message AudioPayload {
-    bytes payload = 1;
+    // NexusTalk needs explicit presence for the empty end-of-talk payload and
+    // zero-valued SPEEX codec. Keep these on the wire when protobuf omits defaults.
+    optional bytes payload = 1;
     uint32 sessionId = 2;
-    CodecType codec = 3;
+    optional CodecType codec = 3;
     uint32 sampleRate = 4;
     uint32 latencyMeasureTag = 5;
 }

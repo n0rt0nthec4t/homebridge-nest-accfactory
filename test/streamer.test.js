@@ -5,10 +5,10 @@ import { readFile } from 'node:fs/promises';
 import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
 import { importSource } from './helpers/import-source.js';
-import StreamTransport from '../src/streamtransport.js';
+import StreamTransport from '../src/plugins/camera/streamtransport.js';
 
 // Forward timer calls to Node's per-test fake clock while preserving the production source bytes.
-let location = new URL('../src/streamer.js', import.meta.url);
+let location = new URL('../src/plugins/camera/streamer.js', import.meta.url);
 let timers =
   'data:text/javascript,' +
   encodeURIComponent(

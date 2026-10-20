@@ -2,10 +2,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Buffer } from 'node:buffer';
-import H264 from '../src/h264.js';
+import H264 from '../src/plugins/camera/h264.js';
 import { sequenceParameterSet } from './helpers/h264-fixtures.js';
 
-import StreamTransport from '../src/streamtransport.js';
+import StreamTransport from '../src/plugins/camera/streamtransport.js';
 
 test('StreamTransport keeps sequential RTP groups sorted without rescanning', () => {
   let transport = new StreamTransport();

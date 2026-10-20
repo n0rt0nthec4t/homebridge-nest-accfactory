@@ -26,7 +26,7 @@
 // - FFmpeg validation determines availability of camera streaming and HKSV recording
 // - Used during plugin startup before any device initialisation
 //
-// Code version 2026.10.15
+// Code version 2026.10.20
 // Mark Hulskamp
 'use strict';
 
@@ -37,7 +37,7 @@ import fs from 'node:fs';
 import chalk from 'chalk';
 
 // Import our modules
-import FFmpeg from './ffmpeg.js';
+import FFmpeg from './plugins/camera/ffmpeg.js';
 
 // Define constants
 import { FFMPEG_VERSION } from './consts.js';

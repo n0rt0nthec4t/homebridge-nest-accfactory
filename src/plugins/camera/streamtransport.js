@@ -66,7 +66,7 @@
 // - CLOSING
 // - CLOSED
 //
-// Code version 2026.08.20
+// Code version 2026.10.20
 // Mark Hulskamp
 'use strict';
 
@@ -74,7 +74,7 @@
 import { Buffer } from 'node:buffer';
 
 import H264 from './h264.js';
-import RingBuffer from './ringbuffer.js';
+import RingBuffer from '../../ringbuffer.js';
 
 const VIDEO_FPS_LOG_CHANGE_THRESHOLD = 5; // Minimum rounded FPS change before logging updated stream media
 const RTP_SEQUENCE_WRAP = 0x10000; // Default 16-bit RTP sequence wrap value

@@ -8,7 +8,7 @@ import hap from './helpers/homebridge-hap.js';
 import test from 'node:test';
 import { setImmediate } from 'node:timers/promises';
 import HomeKitDevice from '../src/HomeKitDevice/HomeKitDevice.js';
-import FFmpeg from '../src/ffmpeg.js';
+import FFmpeg from '../src/plugins/camera/ffmpeg.js';
 import { TIMERS } from '../src/consts.js';
 import { importSource } from './helpers/import-source.js';
 
@@ -17,7 +17,7 @@ let transport =
   'data:text/javascript,' +
   encodeURIComponent(
     'import StreamTransport from ' +
-      JSON.stringify(new URL('../src/streamtransport.js', import.meta.url).href) +
+      JSON.stringify(new URL('../src/plugins/camera/streamtransport.js', import.meta.url).href) +
       ';' +
       'export default class extends StreamTransport {' +
       'async doOpen() { this.setState(StreamTransport.STATE.READY); }' +
@@ -25,7 +25,7 @@ let transport =
   );
 let location = new URL('../src/plugins/camera.js', import.meta.url);
 let source = (await readFile(location, 'utf8')).replace(
-  /from '(\.\.\/(?:webrtc|nexustalk)\.js)'/g,
+  /from '(\.\/camera\/(?:webrtc|nexustalk)\.js)'/g,
   () => 'from ' + JSON.stringify(transport),
 );
 let classes = { camera: (await importSource(location, source)).default };
