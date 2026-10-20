@@ -233,3 +233,73 @@ test('retained Nest REST ingestion creates Protect and ignores retired thermosta
   assert.equal(protect.smokeService.getCharacteristic(hap.Characteristic.SmokeDetected).value, 0);
   assert.equal(protect.smokeService.getCharacteristic(hap.Characteristic.StatusActive).value, true);
 });
+
+test('Eco translation follows Observe state, including missing and unknown values', async (context) => {
+  let flow = await setup(context);
+  delete flow.values.eco_mode_state;
+  await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
+  assert.equal(flow.device.deviceData.eco_mode, undefined, 'Eco state is absent until its first Observe update');
+  for (let mode of ['ECO_MODE_INACTIVE', 'ECO_MODE_MANUAL_ECO', 'ECO_MODE_AUTO_ECO', null, 'ECO_MODE_UNKNOWN', 'ECO_MODE_INACTIVE']) {
+    await flow.send([trait('DEVICE_THERMOSTAT', 'eco_mode_state', { ecoMode: mode })]);
+    assert.equal(flow.device.deviceData.eco_mode, mode ?? 'ECO_MODE_UNSPECIFIED');
+  }
+  assert.deepEqual(flow.commands, []);
+});
+
+test('Eco commands target one thermostat and leave reported state to Observe', async (context) => {
+  let flow = await setup(context);
+  await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
+  for (let [value, mode] of [
+    [true, 'ECO_MODE_MANUAL_ECO'],
+    [false, 'ECO_MODE_INACTIVE'],
+  ]) {
+    let previous = flow.device.deviceData.eco_mode;
+    await flow.device.set({ uuid: 'DEVICE_THERMOSTAT', eco_mode_enabled: value });
+    let [namespace, api, method, request] = flow.commands.at(-1);
+    assert.deepEqual([namespace, api, method], ['nestlabs.gateway.v1.', 'ResourceApi', 'SendCommand']);
+    assert.equal(request.resourceRequest.resourceId, 'DEVICE_THERMOSTAT');
+    assert.equal(request.resourceCommands.length, 1);
+    let command = request.resourceCommands[0];
+    assert.equal(command.traitLabel, 'eco_mode_state');
+    assert.equal(command.command.type_url, 'type.nestlabs.com/nest.trait.hvac.EcoModeStateTrait.EcoModeChangeRequest');
+    assert.equal(command.command.value.ecoMode, mode);
+    assert.equal(command.command.value.setAll, false);
+    assert.equal(command.command.value.ecoModeActor.method, 'HVAC_ACTOR_METHOD_IOS');
+    assert.equal(command.command.value.ecoModeActor.originator.resourceId, 'DEVICE_THERMOSTAT');
+    assert.equal(flow.device.deviceData.eco_mode, previous, 'SET must not manufacture observed Eco state');
+    assert.equal(flow.device.deviceData.eco_mode_enabled, undefined);
+    await flow.send([trait('DEVICE_THERMOSTAT', 'eco_mode_state', { ecoMode: mode })]);
+    assert.equal(flow.device.deviceData.eco_mode, mode);
+  }
+  await flow.send([trait('DEVICE_THERMOSTAT', 'eco_mode_state', { ecoMode: 'ECO_MODE_AUTO_ECO' })]);
+  await flow.device.set({ uuid: 'DEVICE_THERMOSTAT', eco_mode_enabled: false });
+  assert.equal(flow.commands.at(-1)[3].resourceCommands[0].command.value.ecoMode, 'ECO_MODE_INACTIVE');
+  assert.equal(flow.device.deviceData.eco_mode, 'ECO_MODE_AUTO_ECO');
+  await flow.send([trait('DEVICE_THERMOSTAT', 'eco_mode_state', { ecoMode: 'ECO_MODE_INACTIVE' })]);
+  assert.equal(flow.device.deviceData.eco_mode, 'ECO_MODE_INACTIVE');
+  assert.equal(flow.commands.length, 3, 'Observe changes must not send commands');
+  assert.equal(flow.device.deviceData.target_temperature_low, 20);
+  assert.equal(flow.device.deviceData.target_temperature_high, 24);
+});
+
+test('Eco command failures preserve reported state and allow a subsequent command', async (context) => {
+  let flow = await setup(context);
+  await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
+  let command = flow.connection.grpcTransport.command;
+  for (let response of [
+    { status: 14 },
+    { status: 0, data: [] },
+    { status: 0, data: [{ traitOperations: [{ progress: 'PENDING' }] }] },
+    { status: 0, data: [{ traitOperations: [{ progress: 'COMPLETE', status: { code: 7 } }] }] },
+  ]) {
+    flow.connection.grpcTransport.command = async () => response;
+    await assert.rejects(flow.device.set({ uuid: 'DEVICE_THERMOSTAT', eco_mode_enabled: true }), AggregateError);
+    assert.equal(flow.device.deviceData.eco_mode, 'ECO_MODE_INACTIVE');
+  }
+  flow.connection.grpcTransport.command = command;
+  await flow.device.set({ uuid: 'DEVICE_THERMOSTAT', eco_mode_enabled: true });
+  assert.equal(flow.commands.length, 1);
+  assert.equal(flow.device.deviceData.eco_mode, 'ECO_MODE_INACTIVE');
+  await flow.send([trait('DEVICE_THERMOSTAT', 'eco_mode_state', { ecoMode: 'ECO_MODE_MANUAL_ECO' })]);
+  assert.equal(flow.device.deviceData.eco_mode, 'ECO_MODE_MANUAL_ECO');
+});

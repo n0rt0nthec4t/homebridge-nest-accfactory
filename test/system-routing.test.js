@@ -205,3 +205,18 @@ for (let unavailable of ['account', 'authorisation', 'transport', 'resource']) {
     assert.deepEqual(flow.commands, []);
   });
 }
+
+for (let value of [undefined, null, 'true', 0, 1]) {
+  test('Eco command rejects non-boolean input: ' + value, async (context) => {
+    let flow = await platformHarness(context, { value: traits });
+    await assert.rejects(flow.device.set({ uuid: 'DEVICE_TEST', eco_mode_enabled: value }), AggregateError);
+    assert.deepEqual(flow.commands, []);
+  });
+}
+for (let ecoMode of [undefined, null, 'ECO_MODE_UNSPECIFIED', 'ECO_MODE_UNKNOWN']) {
+  test('Eco command rejects unavailable state: ' + ecoMode, async (context) => {
+    let flow = await platformHarness(context, { value: { eco_mode_state: { ecoMode } } });
+    await assert.rejects(flow.device.set({ uuid: 'DEVICE_TEST', eco_mode_enabled: true }), AggregateError);
+    assert.deepEqual(flow.commands, []);
+  });
+}

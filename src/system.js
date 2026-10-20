@@ -39,7 +39,7 @@
 // - Uses shared protobuf helpers for schema/type loading and traversal
 // - Creates and updates HomeKitDevice-based instances for supported device types
 //
-// Code version 2026.10.19
+// Code version 2026.10.20
 // Mark Hulskamp
 'use strict';
 
@@ -1010,6 +1010,27 @@ export default class NestAccfactory {
               },
             ];
           };
+
+          // Keep Eco commands separate from eco_mode, which is supplied by Observe updates.
+          if (key === 'eco_mode_enabled') {
+            if (
+              typeof value !== 'boolean' ||
+              ['ECO_MODE_INACTIVE', 'ECO_MODE_MANUAL_ECO', 'ECO_MODE_AUTO_ECO'].includes(
+                this.#rawData[nest_google_device_uuid].value?.eco_mode_state?.ecoMode,
+              ) === false
+            ) {
+              throw new Error('Eco mode requires a boolean and a recognised thermostat Eco state');
+            }
+            setCommandTrait('eco_mode_state', 'type.nestlabs.com/nest.trait.hvac.EcoModeStateTrait.EcoModeChangeRequest', {
+              ecoMode: value === true ? 'ECO_MODE_MANUAL_ECO' : 'ECO_MODE_INACTIVE',
+              ecoModeActor: {
+                method: 'HVAC_ACTOR_METHOD_IOS',
+                originator: { resourceId: nest_google_device_uuid },
+                timeOfAction: timestamp(Date.now()),
+              },
+              setAll: false,
+            });
+          }
 
           if (
             (key === 'hvac_mode' && ['OFF', 'COOL', 'HEAT', 'RANGE'].includes(value?.toUpperCase?.())) ||
