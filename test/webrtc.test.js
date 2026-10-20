@@ -1,4 +1,4 @@
-// Exercise WebRTC signalling and lifecycle without network access or native media codecs.
+// Exercise WebRTC signalling and lifecycle without network access; native audio remains compressed.
 import assert from 'node:assert/strict';
 import { importSource } from './helpers/import-source.js';
 import { Buffer } from 'node:buffer';
@@ -24,12 +24,6 @@ let peerModule =
       'export function useAudioLevelIndication() { return {}; }',
   );
 let { runtime } = await import(peerModule);
-let decoderModule =
-  'data:text/javascript,' +
-  encodeURIComponent(
-    'export const decoder = { decode: (payload) => payload }; export class Decoder { decode(payload) { return decoder.decode(payload); } }',
-  );
-let { decoder } = await import(decoderModule);
 let timerModule =
   'data:text/javascript,' +
   encodeURIComponent(
@@ -40,7 +34,6 @@ let timerModule =
   );
 let replacements = {
   werift: peerModule,
-  '@evan/opus': decoderModule,
   './streamer.js': 'data:text/javascript,export default { MEDIA_TYPE: { AUDIO: "audio", VIDEO: "video" } };',
   'node:timers': timerModule,
 };
@@ -706,41 +699,33 @@ test('WebRTC health suppresses unstable deltas and restores them after an accept
   assert.equal(health.suppressDeltas, false);
   assert.equal(flow.media.at(-1).keyFrame, false);
 });
-for (let result of ['uint8array', 'empty', 'exception']) {
-  test('WebRTC Opus decoder ' + result + ' preserves subsequent audio recovery', async (context) => {
-    let flow = setup(context);
-    await flow.transport.open();
-    context.after(() => {
-      decoder.decode = (payload) => payload;
+test('WebRTC preserves native ordered Opus payloads and source timing', async (context) => {
+  const flow = setup(context);
+  await flow.transport.open();
+  const track = { codec: { payloadType: 111 }, onReceiveRtp: event() };
+  flow.peers[0].transceivers.find((entry) => entry.kind === 'audio').onTrack.emit(track);
+  const payload = Buffer.from([0xf8, 0xff, 0xfe]);
+  const send = (sequenceNumber, timestamp) =>
+    track.onReceiveRtp.emit({
+      header: { sequenceNumber, timestamp, payloadType: 111, ssrc: 7 },
+      payload,
     });
-    let track = { codec: { payloadType: 111 }, onReceiveRtp: event() };
-    flow.peers[0].transceivers.find((entry) => entry.kind === 'audio').onTrack.emit(track);
-    decoder.decode = context.mock.fn(() => {
-      if (result === 'exception') {
-        throw new Error('Fixture decoder failure');
-      }
-      return result === 'empty' ? Buffer.alloc(0) : new Uint8Array([8, 9]);
-    });
-    let send = (sequenceNumber, timestamp) =>
-      track.onReceiveRtp.emit({
-        header: { sequenceNumber, timestamp, payloadType: 111, ssrc: 7 },
-        payload: Buffer.from([1, 2]),
-      });
-    send(1, 0);
-    context.mock.timers.tick(60);
-    send(2, 960);
-    assert.equal(decoder.decode.mock.callCount(), 1, 'the next packet drains the aged jitter entry');
-    assert.equal(flow.media.length, result === 'uint8array' ? 1 : 0);
-    if (result === 'uint8array') {
-      assert.deepEqual(flow.media[0].data, Buffer.from([8, 9]));
-    }
-    decoder.decode = (payload) => payload;
-    context.mock.timers.tick(60);
-    send(3, 1920);
-    assert.deepEqual(flow.media.at(-1).data, Buffer.from([1, 2]));
-    assert.equal(flow.media.at(-1).type, 'audio');
-  });
-}
+  send(1, 0);
+  context.mock.timers.tick(60);
+  send(2, 960);
+  context.mock.timers.tick(60);
+  send(3, 1920);
+  assert.equal(flow.transport.audio.codec, 'opus');
+  assert.equal(flow.transport.audio.profile, undefined);
+  assert.equal(flow.media.length, 2);
+  for (const item of flow.media) {
+    assert.equal(item.codec, 'opus');
+    assert.equal(item.sampleRate, 48000);
+    assert.equal(item.channels, 2);
+    assert.deepEqual(item.data, payload);
+  }
+  assert.equal(flow.media[1].timestamp - flow.media[0].timestamp, 20);
+});
 
 // Close can finish before a pending signalling operation returns. Its continuation must stay stale.
 test('WebRTC close during device lookup prevents a late lookup from opening a peer', async (context) => {
@@ -1009,7 +994,7 @@ test('WebRTC a retired track event cannot reset decoder state on the replacement
   assert.equal(flow.media.length, 2);
   assert.equal(flow.media.at(-1).keyFrame, false);
 });
-test('WebRTC RTP from a retired audio track cannot enter the replacement decoder', async (context) => {
+test('WebRTC RTP from a retired audio track cannot enter the replacement audio pipeline', async (context) => {
   let flow = setup(context);
   await flow.transport.open();
   let old = { codec: { payloadType: 111 }, onReceiveRtp: event() };

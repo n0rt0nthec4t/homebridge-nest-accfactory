@@ -4,6 +4,33 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.5-alpha.1 (2026/10/20)
+
+### Changed
+
+- Replace separate raw video/audio inputs to FFmpeg with timestamped RTP over a local RTSP connection for WebRTC and NexusTalk live streams and HomeKit Secure Video recordings
+- Preserve source audio/video timing through the FFmpeg input, including variable frame-rate changes and playback of buffered footage
+- Pass WebRTC audio to FFmpeg as native Opus instead of decoding it to PCM in the plugin
+- Remove the `@evan/opus` dependency; FFmpeg now handles the required Opus decoding
+- Read NexusTalk AAC settings from the incoming audio headers and carry the audio alongside video through the same RTP connection
+- Remove the raw-pipe output backend; Streamer now manages an independent RTP output for each viewer or recording, sharing source buffering while retaining prebuffer playback, pacing, decoder startup and session cleanup
+- Normalize incoming media once in StreamTransport before Streamer retains and schedules it, removing duplicate codec, timestamp and sequence fallback handling
+- Track preparing and active stream outputs in one registry, sharing setup promises and retaining exact ownership through cancellation, replacement and shutdown
+- Consolidate pending and running HKSV recording ownership into one registry, preserving cancellation and exact-process generator ownership
+- Define shared encoder tuning in FFmpeg while retaining separate live-stream and recording output settings
+- Simplify Streamer playback policy access and state commits while retaining per-output pacing and local playback state until each processing tick completes
+
+Live video still follows the configured copy/transcoding setting. HKSV continues to encode H264 and AAC-LC using HomeKit's recording settings.
+
+### Fixed
+
+- Preserve fractional source timestamps and recovery intervals until RTP clock conversion, keeping AAC sample spacing and fractional video frame rates accurate
+
+### Testing
+
+- Initial local live-view testing is positive for both WebRTC and NexusTalk; automated FFmpeg tests cover source timing and playable fragmented MP4 output
+- Further device testing is needed for HKSV prebuffer contents, longer recordings, concurrent viewing, reconnects and hardware encoders; a fix for VFR-related HKSV TIMEOUT cancellations is not yet established
+
 ## v0.4.4-beta.10 (2026/10/19)
 
 ### Changed

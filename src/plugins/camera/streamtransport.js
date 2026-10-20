@@ -55,7 +55,8 @@
 //
 // Media metadata:
 // - updateVideoMetadata() stores and rate-limits video metadata logging
-// - emitMedia() normalises codec, timing, sequence, audio, and video metadata
+// - emitMedia() validates and normalises codec, sequence, audio, and video metadata
+// - Finite source timestamps retain sub-millisecond precision through retention
 // - H264 SPS metadata can be learned from complete emitted video frames
 //
 // Typical transport lifecycle states:
@@ -818,7 +819,7 @@ export default class StreamTransport {
     // Timestamps are source media time; Streamer later maps them onto output playout time.
     codec =
       typeof media.codec === 'string' && media.codec.trim() !== ''
-        ? media.codec.toLowerCase()
+        ? media.codec
         : mediaType === 'video'
           ? this.video.codec
           : mediaType === 'audio'
@@ -829,14 +830,23 @@ export default class StreamTransport {
                 ? StreamTransport.CODEC_TYPE.META
                 : undefined;
 
+    // Publish one canonical frame contract. Streamer consumes this metadata
+    // directly, so missing/invalid codecs must not reach retention or statistics.
+    if (typeof codec !== 'string' || codec.trim() === '') {
+      return;
+    }
+    codec = codec.trim().toLowerCase();
+
     if (typeof this.#mediaSequences?.[mediaType] !== 'number') {
       this.#mediaSequences[mediaType] = 0;
     }
 
     media.type = mediaType;
-    media.codec = typeof codec === 'string' && codec.trim() !== '' ? codec : media.codec;
+    media.codec = codec;
     media.sequence = Number.isFinite(media.sequence) === true ? media.sequence : this.#mediaSequences[mediaType]++;
-    media.timestamp = Number.isFinite(media.timestamp) === true ? Math.round(media.timestamp) : now;
+    // Keep fractional milliseconds from source sample clocks. RTPMuxer performs
+    // the final integer tick conversion; earlier rounding changes AAC AU spacing.
+    media.timestamp = Number.isFinite(media.timestamp) === true ? media.timestamp : now;
     media.keyFrame = media.keyFrame === true;
 
     if (mediaType === 'video') {

@@ -141,7 +141,7 @@ function setup(t) {
   camera.controller = { forceStopStreamingSession: t.mock.fn() };
   camera.log = { error: t.mock.fn() };
   let video = new PassThrough();
-  camera.message = t.mock.fn(async () => ({ video }));
+  camera.message = t.mock.fn(async () => ({ video, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/record' } }));
   let crypto = { port: 1234, srtpCryptoSuite: 0, srtp_key: Buffer.alloc(16), srtp_salt: Buffer.alloc(14) };
   let prepare = {
     sessionID: 'one',
@@ -214,7 +214,7 @@ test('late completion after requested stop cannot tear down a replacement live s
   assert.equal(camera.log.error.mock.callCount(), 0);
 });
 
-test('recording startup failure releases source output that becomes ready after completion', async (t) => {
+test('recording close during RTP preparation releases a late source without spawning FFmpeg', async (t) => {
   let { camera, handles, processes, video } = setup(t);
   camera.updateRecordingConfiguration({
     videoCodec: {
@@ -225,9 +225,9 @@ test('recording startup failure releases source output that becomes ready after 
   let ready = Promise.withResolvers();
   camera.message = t.mock.fn((type, message) => (message === 'start_record' ? ready.promise : Promise.resolve()));
   let next = camera.handleRecordingStreamRequest('recording').next();
-  processes[0].emit('error', new Error('ENOENT'));
-  processes[0].emit('close', -2, null);
-  ready.resolve({ video });
+  await camera.closeRecordingStream('recording', 0);
+  assert.equal(processes.length, 0);
+  ready.resolve({ video, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/record' } });
   assert.equal((await next).done, true);
   assert.equal(
     camera.message.mock.calls.some((call) => call.arguments[1] === 'stop_record'),
@@ -245,7 +245,9 @@ test('replacement created during failure cleanup survives the awaited source shu
   await camera.prepareStream(prepare, () => {});
   await camera.handleStreamRequest(start, () => {});
   let stopped = Promise.withResolvers();
-  camera.message = t.mock.fn((type, message) => (message === 'stop_live' ? stopped.promise : Promise.resolve({ video })));
+  camera.message = t.mock.fn((type, message) =>
+    message === 'stop_live' ? stopped.promise : Promise.resolve({ video, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/record' } }),
+  );
   processes[0].emit('exit', 1, null);
   processes[0].emit('close', 1, null);
   await camera.prepareStream(prepare, () => {});
@@ -293,6 +295,14 @@ for (let codec of ['libx264', 'h264_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_v4l2
             : [],
       filter: codec === 'h264_vaapi' ? 'format=nv12,hwupload' : codec === 'h264_qsv' ? 'format=nv12' : 'format=yuv420p',
       preset: codec === 'h264_nvenc' ? 'p4' : ['libx264', 'h264_qsv'].includes(codec) === true ? 'veryfast' : undefined,
+      outputArguments: {
+        libx264: ['-preset', 'veryfast', '-bf', '0'],
+        h264_nvenc: ['-preset', 'p4', '-bf', '0', '-tune', 'll', '-zerolatency', '1'],
+        h264_qsv: ['-preset', 'veryfast', '-bf', '0'],
+        h264_vaapi: [],
+        h264_v4l2m2m: ['-bf:v', '0'],
+        h264_videotoolbox: ['-realtime', 'true'],
+      }[codec],
     };
     t.mock.method(camera.ffmpeg, 'getH264EncoderOptions', () => encoding);
     camera.deviceData.ffmpeg = { hwaccel: true, transcode: true };
@@ -320,6 +330,13 @@ for (let codec of ['libx264', 'h264_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_v4l2
         assert.equal(args.includes('-preset'), false);
       }
       assert.equal(args[args.indexOf('-profile:v') + 1], codec === 'h264_v4l2m2m' ? '77' : 'main');
+      if (encoding.outputArguments.length > 0) {
+        let position = args.indexOf(encoding.outputArguments[0]);
+        assert.ok(position > args.indexOf('-i'));
+        assert.deepEqual(args.slice(position, position + encoding.outputArguments.length), encoding.outputArguments);
+      }
+      assert.equal(args.includes('-level:v'), codec !== 'h264_v4l2m2m');
+      assert.equal(args.includes('-num_capture_buffers'), codec === 'h264_v4l2m2m' && index === 1);
     }
     assert.equal(processes.length, 2);
     await camera.closeRecordingStream('recording');
@@ -338,7 +355,7 @@ for (let codec of ['opus', 'speex']) {
     context.mock.method(camera.ffmpeg, 'supportsEncoder', () => true);
     let audio = new PassThrough();
     let talkback = new PassThrough();
-    camera.message = context.mock.fn(async () => ({ video, audio, talkback }));
+    camera.message = context.mock.fn(async () => ({ video, audio, talkback, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/live' } }));
     start.audio = { pt: 110, codec: 'aac', max_bit_rate: 24, packet_time: 20, sample_rate: 16, channel: 1 };
     await camera.prepareStream(prepare, () => {});
     await camera.handleStreamRequest(start, () => {});
@@ -461,7 +478,7 @@ for (let action of ['stop', 'replace']) {
       await camera.prepareStream(prepare, () => {});
     }
     let stops = camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_live').length;
-    ready.resolve({ video });
+    ready.resolve({ video, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/record' } });
     await starting;
     assert.equal(processes.length, 0);
     assert.equal(callback.mock.callCount(), 1);
@@ -471,7 +488,7 @@ for (let action of ['stop', 'replace']) {
       'late startup releases only an output with no replacement owner',
     );
     if (action === 'replace') {
-      camera.message = context.mock.fn(async () => ({ video }));
+      camera.message = context.mock.fn(async () => ({ video, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/record' } }));
       await camera.handleStreamRequest(start);
       assert.equal(handles.at(-1).active, true);
     }
@@ -504,7 +521,12 @@ for (let completion of ['error', 'exit', 'clean-exit']) {
     camera.streamer.codecs = { audio: 'aac', talkback: 'opus' };
     camera.hap.AudioStreamingCodecType = { AAC_ELD: 'aac', OPUS: 'opus' };
     context.mock.method(camera.ffmpeg, 'supportsEncoder', () => true);
-    camera.message = context.mock.fn(async () => ({ video, audio: new PassThrough(), talkback: new PassThrough() }));
+    camera.message = context.mock.fn(async () => ({
+      video,
+      audio: new PassThrough(),
+      talkback: new PassThrough(),
+      input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/live' },
+    }));
     start.audio = { pt: 110, codec: 'opus', max_bit_rate: 24, packet_time: 20, sample_rate: 24, channel: 1 };
     await camera.prepareStream(prepare, () => {});
     await camera.handleStreamRequest(start);
@@ -568,8 +590,8 @@ test('unexpected HKSV completion wakes a waiting generator and releases the reco
   );
 });
 
-test('HKSV input acquisition failure is terminated by FFmpeg without waiting for a HomeKit close', async (context) => {
-  let { camera, processes, handles } = setup(context);
+test('HKSV RTP acquisition failure releases its source without spawning FFmpeg', async (context) => {
+  let { camera, processes } = setup(context);
   camera.updateRecordingConfiguration({
     videoCodec: { parameters: { profile: 0, level: 0, iFrameInterval: 4000, bitRate: 2000 }, resolution: [1280, 720, 30] },
   });
@@ -580,13 +602,7 @@ test('HKSV input acquisition failure is terminated by FFmpeg without waiting for
     }
   });
   await assert.rejects(camera.handleRecordingStreamRequest('source-failure').next(), (caught) => caught === error);
-  await setImmediate();
-  assert.equal(handles[0].active, false);
-  assert.equal(processes[0].kill.mock.callCount(), 1);
-  processes[0].emit('exit', null, 'SIGKILL');
-  processes[0].emit('close', null, 'SIGKILL');
-  assert.equal((await handles[0].finished).expected, false);
-  await setImmediate();
+  assert.equal(processes.length, 0);
   assert.equal(camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_record').length, 1);
 });
 
@@ -599,7 +615,9 @@ test('late recording completion cannot stop a replacement created during source 
   let firstNext = first.next();
   await setImmediate();
   let stopping = Promise.withResolvers();
-  camera.message = context.mock.fn((type, message) => (message === 'stop_record' ? stopping.promise : Promise.resolve({ video })));
+  camera.message = context.mock.fn((type, message) =>
+    message === 'stop_record' ? stopping.promise : Promise.resolve({ video, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/record' } }),
+  );
   processes[0].emit('exit', 1, null);
   processes[0].emit('close', 1, null);
   assert.equal((await firstNext).done, true);
@@ -615,4 +633,182 @@ test('late recording completion cannot stop a replacement created during source 
   processes[1].emit('exit', null, 'SIGKILL');
   processes[1].emit('close', null, 'SIGKILL');
   await handles[1].finished;
+});
+
+for (let sourceCodec of ['pcm', 'opus', 'aac']) {
+  for (let codec of ['aac', 'opus']) {
+    test('RTP ' + sourceCodec + ' live input maps both tracks and preserves the ' + codec + ' HomeKit encoder', async (context) => {
+      const { camera, processes, prepare, start } = setup(context);
+      camera.deviceData.audio_enabled = true;
+      camera.streamer.codecs = { audio: sourceCodec };
+      camera.hap.AudioStreamingCodecType = { AAC_ELD: 'aac', OPUS: 'opus' };
+      start.audio = { pt: 110, codec, max_bit_rate: 24, packet_time: 20, sample_rate: 16, channel: 1 };
+      camera.message = context.mock.fn(async () => ({
+        video: null,
+        audio: null,
+        talkback: null,
+        input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/owned-session' },
+      }));
+      await camera.prepareStream(prepare, () => {});
+      await camera.handleStreamRequest(start, () => {});
+      const args = processes[0].args;
+      assert.equal(args[args.indexOf('-fflags') + 1], sourceCodec === 'aac' ? '+discardcorrupt+genpts' : '+discardcorrupt+genpts+nofillin');
+      assert.equal(args.includes('-copyts'), true);
+      assert.equal(args[args.indexOf('-rtsp_transport') + 1], 'tcp');
+      assert.equal(args[args.indexOf('-i') + 1], 'rtsp://127.0.0.1:12345/owned-session');
+      assert.equal(args.includes('0:a:0'), true);
+      assert.equal(args.includes('1:a:0'), false);
+      assert.equal(args.includes('-use_wallclock_as_timestamps'), false);
+      assert.equal(args.includes('pipe:3'), false);
+      assert.equal(args.includes('pipe:0'), false);
+      assert.equal(args.includes(codec === 'aac' ? 'libfdk_aac' : 'libopus'), true);
+      assert.equal(camera.ffmpeg.start.mock.calls[0].arguments[0].inputs, undefined);
+      await camera.handleStreamRequest({ sessionID: 'one', type: 'stop' });
+      assert.equal(
+        camera.message.mock.calls.some((call) => call.arguments[1] === 'stop_live'),
+        true,
+      );
+    });
+  }
+}
+
+for (let sourceCodec of ['opus', 'aac']) {
+  test('HKSV ' + sourceCodec + ' source uses RTP input and preserves recording transcoding', async (context) => {
+    const { camera, processes } = setup(context);
+    camera.deviceData.audio_enabled = true;
+    camera.streamer.codecs = { audio: sourceCodec };
+    camera.hap.Characteristic.RecordingAudioActive = { ENABLE: 1 };
+    camera.controller.recordingManagement = {
+      recordingManagementService: { getCharacteristic: () => ({ value: 1 }) },
+    };
+    camera.updateRecordingConfiguration({
+      videoCodec: { parameters: { profile: 0, level: 0, iFrameInterval: 4000, bitRate: 2000 }, resolution: [1280, 720, 30] },
+    });
+    const recording = camera.handleRecordingStreamRequest('native-audio');
+    const waiting = recording.next();
+    await setImmediate();
+    const args = processes[0].args;
+    assert.equal(args[args.indexOf('-rtsp_transport') + 1], 'tcp');
+    assert.equal(args.includes('s16le'), false);
+    assert.equal(args.includes('pipe:3'), false);
+    assert.equal(args.includes('0:a:0'), true);
+    assert.equal(args.includes('-copyts'), true);
+    assert.equal(args.includes('aac_low'), true);
+    assert.equal(args[args.indexOf('-codec:v') + 1], 'libx264');
+    assert.equal(args[args.indexOf('-fps_mode') + 1], 'cfr');
+    assert.equal(args[args.indexOf('-g:v') + 1], '120');
+    assert.equal(args.includes('frag_keyframe+empty_moov+delay_moov+default_base_moof'), true);
+    assert.equal(args.includes('pipe:0'), false);
+    assert.equal(args[args.indexOf('-fflags') + 1], sourceCodec === 'aac' ? '+discardcorrupt+genpts' : '+discardcorrupt+genpts+nofillin');
+    await camera.closeRecordingStream('native-audio');
+    await waiting;
+  });
+}
+
+test('late RTP preparation cannot stop a replacement recording with the same id', async (context) => {
+  let { camera, handles } = setup(context);
+  camera.updateRecordingConfiguration({
+    videoCodec: { parameters: { profile: 0, level: 0, iFrameInterval: 4000, bitRate: 2000 }, resolution: [1280, 720, 30] },
+  });
+  let ready = Promise.withResolvers();
+  let starts = 0;
+  camera.message = context.mock.fn(async (type, message) => {
+    if (message === 'start_record') {
+      if (starts++ === 0) {
+        return ready.promise;
+      }
+      return { input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/replacement' } };
+    }
+  });
+  let first = camera.handleRecordingStreamRequest('pending').next();
+  await camera.closeRecordingStream('pending', 0);
+  let second = camera.handleRecordingStreamRequest('pending').next();
+  await setImmediate();
+  ready.resolve({ input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/old' } });
+  assert.equal((await first).done, true);
+  assert.equal(handles.length, 1);
+  assert.equal(handles[0].active, true);
+  assert.equal(camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_record').length, 1);
+  await camera.closeRecordingStream('pending', 0);
+  assert.equal((await second).done, true);
+});
+
+test('recording process creation failure releases the prepared RTP output', async (context) => {
+  let { camera } = setup(context);
+  camera.updateRecordingConfiguration({
+    videoCodec: { parameters: { profile: 0, level: 0, iFrameInterval: 4000, bitRate: 2000 }, resolution: [1280, 720, 30] },
+  });
+  context.mock.method(camera.ffmpeg, 'start', () => {
+    throw new Error('Spawn failed');
+  });
+  await assert.rejects(camera.handleRecordingStreamRequest('spawn-failure').next(), /Spawn failed/);
+  assert.equal(camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_record').length, 1);
+});
+
+for (let action of ['closeRecordingStream', 'onShutdown']) {
+  test('pending recording retired by ' + action + ' cannot start FFmpeg after RTP preparation', async (context) => {
+    let { camera, processes } = setup(context);
+    camera.updateRecordingConfiguration({
+      videoCodec: { parameters: { profile: 0, level: 0, iFrameInterval: 4000, bitRate: 2000 }, resolution: [1280, 720, 30] },
+    });
+    let ready = Promise.withResolvers();
+    camera.message = context.mock.fn((type, message) => (message === 'start_record' ? ready.promise : Promise.resolve()));
+    let waiting = camera.handleRecordingStreamRequest('pending').next();
+    await camera[action]('pending', 0);
+    ready.resolve({ input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/retired' } });
+    assert.equal((await waiting).done, true);
+    assert.equal(processes.length, 0);
+    assert.equal(
+      camera.message.mock.calls.some((call) => call.arguments[1] === 'stop_record'),
+      true,
+    );
+  });
+}
+
+test('failed retired RTP preparation leaves a pending same-id recording replacement owned', async (context) => {
+  let { camera, handles } = setup(context);
+  camera.updateRecordingConfiguration({
+    videoCodec: { parameters: { profile: 0, level: 0, iFrameInterval: 4000, bitRate: 2000 }, resolution: [1280, 720, 30] },
+  });
+  let oldSource = Promise.withResolvers();
+  let newSource = Promise.withResolvers();
+  let starts = 0;
+  camera.message = context.mock.fn((type, message) =>
+    message === 'start_record' ? (starts++ === 0 ? oldSource.promise : newSource.promise) : Promise.resolve(),
+  );
+  let first = camera.handleRecordingStreamRequest('reused').next();
+  await camera.closeRecordingStream('reused', 0);
+  let second = camera.handleRecordingStreamRequest('reused').next();
+  let failed = assert.rejects(first, /Retired source failed/);
+  oldSource.reject(new Error('Retired source failed'));
+  await failed;
+  assert.equal(camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_record').length, 1);
+  newSource.resolve({ input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/replacement' } });
+  await setImmediate();
+  assert.equal(handles.length, 1);
+  assert.equal(handles[0].active, true);
+  await camera.closeRecordingStream('reused', 0);
+  assert.equal((await second).done, true);
+});
+
+test('old FFmpeg completion cannot retire a same-id recording still preparing RTP', async (context) => {
+  let { camera, processes, handles } = setup(context);
+  camera.updateRecordingConfiguration({
+    videoCodec: { parameters: { profile: 0, level: 0, iFrameInterval: 4000, bitRate: 2000 }, resolution: [1280, 720, 30] },
+  });
+  let first = camera.handleRecordingStreamRequest('reused').next();
+  await setImmediate();
+  let ready = Promise.withResolvers();
+  camera.message = context.mock.fn((type, message) => (message === 'start_record' ? ready.promise : Promise.resolve()));
+  let second = camera.handleRecordingStreamRequest('reused').next();
+  processes[0].emit('exit', 1, null);
+  processes[0].emit('close', 1, null);
+  assert.equal((await first).done, true);
+  assert.equal(camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_record').length, 0);
+  ready.resolve({ input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/replacement' } });
+  await setImmediate();
+  assert.equal(handles.length, 2);
+  assert.equal(handles[1].active, true);
+  await camera.closeRecordingStream('reused', 0);
+  assert.equal((await second).done, true);
 });

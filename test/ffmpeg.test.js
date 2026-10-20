@@ -98,11 +98,22 @@ test('hardware selection requires encoded output and preserves Pi encoder-node d
       assert.equal(ffmpeg.supportsEncoder('libx264'), true);
       assert.equal(ffmpeg.getH264EncoderOptions(false).codec, 'libx264');
       let original = ffmpeg.getH264EncoderOptions(true);
+      assert.deepEqual(
+        original.outputArguments,
+        {
+          libx264: ['-preset', 'veryfast', '-bf', '0'],
+          h264_v4l2m2m: ['-bf:v', '0'],
+          h264_vaapi: [],
+          h264_nvenc: ['-preset', 'p4', '-bf', '0', '-tune', 'll', '-zerolatency', '1'],
+        }[original.codec],
+      );
+      assert.deepEqual(ffmpeg.getH264EncoderOptions(false).outputArguments, ['-preset', 'veryfast', '-bf', '0']);
       let changed = ffmpeg.getH264EncoderOptions(true);
       changed.codec = 'changed';
       changed.filter = 'changed';
       changed.preset = 'changed';
       changed.inputArguments.push('changed');
+      changed.outputArguments.push('changed');
       assert.deepEqual(ffmpeg.getH264EncoderOptions(true), original, 'Callers cannot mutate the selected configuration');
       if (scenario.codec === 'h264_vaapi') {
         let encoding = ffmpeg.getH264EncoderOptions(true);
@@ -147,6 +158,10 @@ for (let platform of ['darwin', 'win32']) {
       let ffmpeg = new FFmpeg('ffmpeg-' + platform + '-' + outcome.replace(/ /g, '-'));
       assert.equal(ffmpeg.hardwareH264Codec, outcome === 'success' ? codec : undefined);
       assert.equal(ffmpeg.getH264EncoderOptions(true).codec, outcome === 'success' ? codec : 'libx264');
+      assert.deepEqual(
+        ffmpeg.getH264EncoderOptions(true).outputArguments,
+        outcome === 'success' && platform === 'darwin' ? ['-realtime', 'true'] : ['-preset', 'veryfast', '-bf', '0'],
+      );
     });
   }
 }

@@ -21,7 +21,7 @@
 //   - RTX retransmission recovery
 // - Assemble complete H264 access units and emit Annex-B frames
 // - Inject SPS/PPS before IDR frames when required
-// - Decode Opus audio to PCM for downstream Streamer output
+// - Preserve ordered native Opus audio for downstream Streamer outputs
 // - Inject media into Streamer for live streaming and HKSV recording
 // - Support two-way audio (talkback) via outbound RTP/Opus pipeline
 // - Detect stream stalls and perform automatic reconnect handling
@@ -45,7 +45,7 @@
 // - Stream readiness is determined by successful video frame delivery
 //   (first decodable keyframe), not connection state
 // - Startup delays may occur due to upstream (Google) keyframe delivery behaviour
-// - Audio is decoded to PCM; output pacing is owned by Streamer
+// - Audio remains compressed until FFmpeg performs the HomeKit codec conversion
 // - Emitted media timestamps describe source media time derived from RTP timing
 // - Output playout timing, catch-up, and live latency policy are owned by Streamer
 // - Incomplete keyframes and pathological access units are dropped/recovered locally rather than blocking the plugin process
@@ -56,7 +56,6 @@
 
 // Define external module requirements
 import * as werift from 'werift';
-import { Decoder } from '@evan/opus';
 
 // Define nodejs module requirements
 import { Buffer } from 'node:buffer';
@@ -95,7 +94,7 @@ const KEYFRAME_BYTES_PER_PIXEL = 0.5; // Conservative compressed-IDR allowance d
 const KEYFRAME_BITRATE_SECONDS = 4; // Allow an IDR burst up to four seconds of the learned average bitrate
 const DELTA_FU_SWITCH_GRACE_MS = 180; // Tiny grace before abandoning a young non-keyframe FU-A on timestamp switch
 const STALLED_TIMEOUT = 10000; // Time with no playback packets before we consider stream stalled and attempt restart
-const AUDIO_RTP_REORDER_DELAY_MS = 50; // Hold audio RTP briefly so reordered Opus packets can arrive before decode
+const AUDIO_RTP_REORDER_DELAY_MS = 50; // Hold audio RTP briefly so reordered Opus packets can arrive before emission
 const AUDIO_RTP_REORDER_MAX_PACKETS = 64; // Bound audio RTP reorder queue
 const VIDEO_RTP_REORDER_DELAY_MS = 250; // Hold video RTP briefly so reordered fragments/RTX can arrive before FU-A assembly
 const VIDEO_RTP_REORDER_MAX_PACKETS = 4096; // Bound video RTP queue while allowing a fragmented 4MiB keyframe plus packet overhead
@@ -118,7 +117,6 @@ export default class WebRTC extends StreamTransport {
   #peerConnection = undefined;
   #videoTransceiver = undefined;
   #audioTransceiver = undefined;
-  #opusDecoder = new Decoder({ channels: 2, sample_rate: 48000 });
   #extendTimer = undefined; // Stream extend timer
   #stalledTimer = undefined; // Interval object for no received data checks
   #startupKeyframeTimer = undefined; // Interval object for bounded startup keyframe PLI retries
@@ -134,11 +132,9 @@ export default class WebRTC extends StreamTransport {
     // Setup WebRTC-specific codec defaults; StreamTransport owns the shared media shape.
     this.video.codec = StreamTransport.CODEC_TYPE.H264;
     this.video.clockRate = 90000;
-    this.audio.codec = StreamTransport.CODEC_TYPE.PCM;
-    this.audio.profile = 's16le';
+    this.audio.codec = StreamTransport.CODEC_TYPE.OPUS;
     this.audio.sampleRate = 48000;
     this.audio.channels = 2;
-    this.audio.bitrate = this.audio.sampleRate * this.audio.channels * 16;
     this.audio.frameDuration = 20;
     this.talkback.codec = StreamTransport.CODEC_TYPE.OPUS;
     this.talkback.sampleRate = 48000;
@@ -335,7 +331,7 @@ export default class WebRTC extends StreamTransport {
       ) === true;
 
     // Track subscription callbacks feed the media-specific assembly paths.
-    // Audio is decoded and emitted as PCM; video is assembled into complete access units.
+    // Audio remains native Opus; video is assembled into complete access units.
     // Track and RTP callbacks retain their peer owner across asynchronous teardown.
     this.#audioTransceiver?.onTrack?.subscribe?.((track) => {
       if (this.#peerConnection !== peerConnection) {
@@ -1988,8 +1984,6 @@ export default class WebRTC extends StreamTransport {
     let deltaTicks = 0;
     let deltaMs = 0;
     let timestamp = undefined;
-    let pcm = undefined;
-    let decoded = undefined;
     let now = Date.now();
 
     // Validate RTP packet structure before touching any fields
@@ -2087,40 +2081,8 @@ export default class WebRTC extends StreamTransport {
       timestamp = audioOutput.lastTimestamp + Math.max(1, deltaMs);
     }
 
-    // Decode Opus RTP payload to PCM for downstream ffmpeg / streamer consumption
-    if (payload.length > 0) {
-      try {
-        decoded = this.#opusDecoder.decode(payload);
-
-        if (Buffer.isBuffer(decoded) === true && decoded.length > 0) {
-          pcm = decoded;
-        }
-
-        if (pcm === undefined && decoded instanceof Uint8Array && decoded.length > 0) {
-          pcm = Buffer.from(decoded.buffer, decoded.byteOffset, decoded.byteLength);
-        }
-      } catch (error) {
-        if (typeof audio.lastDecodeErrorLogTime !== 'number' || now - audio.lastDecodeErrorLogTime >= 10000) {
-          audio.lastDecodeErrorLogTime = now;
-          this?.log?.debug?.('Error decoding Opus audio for uuid "%s": %s', this.uuid, String(error));
-        }
-      }
-    }
-
-    if (Buffer.isBuffer(pcm) !== true || pcm.length === 0) {
-      if (typeof audio.lastDecodeFallbackLogTime !== 'number' || now - audio.lastDecodeFallbackLogTime >= 10000) {
-        audio.lastDecodeFallbackLogTime = now;
-        this?.log?.debug?.(
-          'Dropping undecoded WebRTC audio frame for uuid "%s": payloadBytes=%s decoded=%s',
-          this.uuid,
-          payload.length,
-          Buffer.isBuffer(decoded) === true || decoded instanceof Uint8Array ? decoded.length : 0,
-        );
-      }
-
-      return;
-    }
-
+    // Keep the ordered Opus payload compressed through shared retention and RTP
+    // delivery. FFmpeg owns conversion for live and recording consumers.
     timestamp = typeof audioOutput.lastTimestamp === 'number' ? Math.max(timestamp, audioOutput.lastTimestamp + 1) : timestamp;
 
     audioRtp.lastSequence = sequenceNumber;
@@ -2137,7 +2099,7 @@ export default class WebRTC extends StreamTransport {
       frameDuration: this.audio.frameDuration,
       timestamp: timestamp,
       keyFrame: false,
-      data: pcm,
+      data: payload,
     });
   }
 

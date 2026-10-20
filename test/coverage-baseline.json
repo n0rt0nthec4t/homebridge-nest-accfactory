@@ -129,6 +129,11 @@
     "branches": 86,
     "functions": 95
   },
+  "src/plugins/camera/rtpmuxer.js": {
+    "lines": 90,
+    "branches": 85,
+    "functions": 90
+  },
   "src/plugins/camera/streamer.js": {
     "lines": 87,
     "branches": 74,

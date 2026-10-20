@@ -295,3 +295,44 @@ test('invalid jitter state is rejected without producing media', () => {
     transport.clearJitterBuffer(invalid);
   }
 });
+
+test('transport normalization preserves fractional source time and canonical codec metadata', () => {
+  let frames = [];
+  let transport = new StreamTransport({ consumer: { media: (frame) => frames.push(frame) } });
+  Object.assign(transport.audio, { codec: 'AAC', sampleRate: 48000, channels: 1 });
+  let data = Buffer.from([1]);
+  let timestamps = Array.from({ length: 4 }, (_, index) => 100000 + (index * 1024 * 1000) / 48000);
+  for (let timestamp of timestamps) {
+    transport.emitMedia({ type: 'AUDIO', codec: '', data, timestamp });
+  }
+  assert.deepEqual(
+    frames.map((frame) => frame.timestamp),
+    timestamps,
+  );
+  assert.deepEqual(
+    frames.map((frame) => frame.sequence),
+    [0, 1, 2, 3],
+  );
+  assert.equal(
+    frames.every((frame) => frame.type === 'audio' && frame.codec === 'aac' && frame.data === data),
+    true,
+  );
+});
+
+test('transport drops unresolved codecs and normalizes missing timing before emission', (context) => {
+  context.mock.timers.enable({ apis: ['Date'], now: 100000 });
+  let frames = [];
+  let transport = new StreamTransport({ consumer: { media: (frame) => frames.push(frame) } });
+  let data = Buffer.from([0xf8, 0xff, 0xfe]);
+  transport.emitMedia({ type: 'audio', data });
+  assert.deepEqual(frames, []);
+  assert.equal(transport.stats.media.audioFrames, 0);
+  transport.audio.codec = ' OPUS ';
+  transport.emitMedia({ type: 'AUDIO', data, timestamp: NaN, sequence: 8 });
+  transport.emitMedia({ type: 'audio', data, timestamp: 0.25 });
+  assert.equal(frames[0].codec, 'opus');
+  assert.equal(frames[0].timestamp, 100000);
+  assert.equal(frames[0].sequence, 8);
+  assert.equal(frames[1].timestamp, 0.25);
+  assert.equal(frames[1].sequence, 0);
+});

@@ -162,7 +162,16 @@ export default class FFmpeg extends EventEmitter {
         ? this.#hardwareEncoder
         : { codec: 'libx264', inputArguments: [], filter: 'format=yuv420p', preset: 'veryfast' };
 
-    return { ...encoding, inputArguments: [...encoding.inputArguments] };
+    // Share encoder tuning between live transcoding and recording. Camera owns
+    // profile/level selection, frame timing, bitrate and output format.
+    let outputArguments = [
+      ...(encoding.codec === 'h264_v4l2m2m' ? ['-bf:v', '0'] : []),
+      ...(encoding.codec === 'h264_videotoolbox' ? ['-realtime', 'true'] : []),
+      ...(encoding.preset !== undefined ? ['-preset', encoding.preset, '-bf', '0'] : []),
+      ...(encoding.codec === 'h264_nvenc' ? ['-tune', 'll', '-zerolatency', '1'] : []),
+    ];
+
+    return { ...encoding, inputArguments: [...encoding.inputArguments], outputArguments };
   }
 
   supportsEncoder(encoder) {
@@ -210,8 +219,8 @@ export default class FFmpeg extends EventEmitter {
 
     // Keep lifecycle outcome fields together; expose only snapshots when completion is reported.
     let lifecycle = { state: FFmpeg.SESSION_STATE.STARTING, expected: false, error: undefined };
-    let shutdownTimer;
-    let shutdownSignal;
+    let shutdownTimer = undefined;
+    let shutdownSignal = undefined;
     let connections = new Set();
     let completion = Promise.withResolvers();
 
@@ -585,7 +594,7 @@ export default class FFmpeg extends EventEmitter {
   #discoverHardwareEncoders() {
     let platform = os.platform();
     let renderDevices = [];
-    let videoEncoder;
+    let videoEncoder = undefined;
     let isPi = false;
 
     if (platform === 'linux') {
@@ -689,7 +698,7 @@ export default class FFmpeg extends EventEmitter {
 
     // Recheck metadata on construction, but reuse successful and failed encode probes across camera managers.
     // Binary metadata invalidates the result when an executable at the same path is replaced.
-    let binaryMetadata;
+    let binaryMetadata = undefined;
     try {
       let executable = this.#binary;
       if (executable.includes('/') === false && executable.includes('\\') === false) {

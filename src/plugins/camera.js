@@ -23,6 +23,7 @@
 //
 // Features:
 // - Streaming via WebRTC and NexusTalk protocols
+// - RTP/RTSP media input for WebRTC and NexusTalk live view and HKSV
 // - HomeKit Secure Video live streaming and recording support
 // - Stream copy or transcoding via ffmpeg (configurable per device)
 // - Motion-triggered recording with prebuffer support
@@ -101,7 +102,7 @@ export default class NestCamera extends HomeKitDevice {
   // Internal data only for this class
   #liveSessions = new Map(); // Track active HomeKit live stream sessions (ports, crypto, talkback routing)
   #livePorts = new Set(); // Ports reserved for prepared/active live sessions
-  #recordingSessions = new Map(); // HomeKit recording owners retain their exact process handles
+  #recordingSessions = new Map(); // Exact recording owners from RTP preparation through FFmpeg completion
   #recordingConfig = {}; // HomeKit Secure Video recording configuration
   #cameraImages = {}; // Snapshot resource images
   #motionCooldownActive = false; // Flag to track if motion cooldown is active
@@ -714,13 +715,42 @@ export default class NestCamera extends HomeKitDevice {
       this.controller?.recordingManagement?.recordingManagementService?.getCharacteristic(this.hap.Characteristic.RecordingAudioActive)
         ?.value === this.hap.Characteristic.RecordingAudioActive.ENABLE;
 
+    // Keep one owner through RTP preparation and process startup. HomeKit close
+    // or shutdown can retire it before either asynchronous stage completes.
+    let recording = { ffmpeg: undefined };
+    this.#recordingSessions.set(sessionID, recording);
+    let input = undefined;
+    try {
+      ({ input } = await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_RECORD, {
+        sessionID,
+        options: { includeAudio: includeAudio === true, recordTime: Date.now() - PREBUFFER_LENGTH },
+      }));
+      if (this.#recordingSessions.get(sessionID) !== recording) {
+        // A late source may still need releasing, but never stop its replacement.
+        if (this.#recordingSessions.has(sessionID) === false) {
+          await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_RECORD, { sessionID });
+        }
+        return;
+      }
+      if (input?.type !== 'rtp' || typeof input.url !== 'string') {
+        throw new Error('Recording source did not provide an RTP endpoint');
+      }
+    } catch (error) {
+      if (this.#recordingSessions.get(sessionID) === recording) {
+        this.#cleanupRecordingSession(sessionID, recording);
+        await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_RECORD, { sessionID });
+      }
+      throw error;
+    }
+
     let encoding = this.ffmpeg.getH264EncoderOptions(this.deviceData?.ffmpeg?.hwaccel === true);
     let commandLine = [
       '-hide_banner',
       '-nostats',
       ...encoding.inputArguments,
+      '-copyts',
       '-fflags',
-      '+discardcorrupt+genpts',
+      this.streamer.codecs.audio === Streamer.CODEC_TYPE.AAC ? '+discardcorrupt+genpts' : '+discardcorrupt+genpts+nofillin',
       '-avoid_negative_ts',
       'make_zero',
       '-max_delay',
@@ -728,20 +758,12 @@ export default class NestCamera extends HomeKitDevice {
       '-flags',
       'low_delay',
 
-      // Video input
-      '-f',
-      'h264',
+      // Both source tracks share the RTP timeline; encoding below still produces
+      // HomeKit's requested CFR H264 and AAC-LC fragmented MP4.
+      '-rtsp_transport',
+      'tcp',
       '-i',
-      'pipe:0',
-
-      // Audio input (optional)
-      ...(includeAudio === true
-        ? this.streamer.codecs.audio === Streamer.CODEC_TYPE.PCM
-          ? ['-thread_queue_size', '1024', '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', 'pipe:3']
-          : this.streamer.codecs.audio === Streamer.CODEC_TYPE.AAC
-            ? ['-thread_queue_size', '1024', '-f', 'aac', '-i', 'pipe:3']
-            : []
-        : []),
+      input.url,
 
       // Video output including hardware acceleration if available
       '-map',
@@ -768,7 +790,7 @@ export default class NestCamera extends HomeKitDevice {
 
       // V4L2 uses numeric profiles and does not apply an explicit H264 level.
       ...(encoding.codec === 'h264_v4l2m2m'
-        ? ['-bf:v', '0']
+        ? []
         : [
             '-level:v',
             this.#recordingConfig.videoCodec.parameters.level === this.hap.H264Level.LEVEL4_0
@@ -778,11 +800,7 @@ export default class NestCamera extends HomeKitDevice {
                 : '3.1',
           ]),
 
-      ...(encoding.codec === 'h264_videotoolbox' ? ['-realtime', 'true'] : []),
-
-      ...(encoding.preset !== undefined ? ['-preset', encoding.preset, '-bf', '0'] : []),
-
-      ...(encoding.codec === 'h264_nvenc' ? ['-tune', 'll', '-zerolatency', '1'] : []),
+      ...encoding.outputArguments,
 
       '-filter:v',
       'fps=fps=' + this.#recordingConfig.videoCodec.resolution[2] + ',' + encoding.filter,
@@ -808,7 +826,7 @@ export default class NestCamera extends HomeKitDevice {
       ...(includeAudio === true
         ? [
             '-map',
-            '1:a:0',
+            '0:a:0',
             '-codec:a',
             'libfdk_aac',
             '-profile:a',
@@ -829,37 +847,37 @@ export default class NestCamera extends HomeKitDevice {
       'pipe:1',
     ];
 
-    // Start our ffmpeg recording process and stream from our streamer
-    // video input is pipe #0; fragmented MP4 output is pipe #1
-    // audio is pipe #3 if including audio
+    // FFmpeg reads RTP over TCP and writes fragmented MP4 on stdout.
     this?.log?.debug?.(
       'ffmpeg process for recording stream from "%s" will be called using the following commandline: %s',
       this.deviceData.description,
       commandLine.join(' '),
     );
 
-    let source = this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_RECORD, {
-      sessionID: sessionID,
-      options: {
-        includeAudio: includeAudio === true,
-        recordTime: Date.now() - PREBUFFER_LENGTH,
-      },
-    });
-    let ffmpegStream = this.ffmpeg.start({
-      id: 'record:' + sessionID,
-      args: commandLine,
-      inputs: source.then(({ video, audio }) => ({ 0: video, 3: audio })),
-      pipeCount: 4,
-      onStderr:
-        this.deviceData.ffmpeg.debug === true
-          ? (data) => {
-              if (data.toString().includes('frame=') === false) {
-                this?.log?.debug?.(data.toString());
+    let ffmpegStream = undefined;
+    try {
+      ffmpegStream = this.ffmpeg.start({
+        id: 'record:' + sessionID,
+        args: commandLine,
+
+        onStderr:
+          this.deviceData.ffmpeg.debug === true
+            ? (data) => {
+                if (data.toString().includes('frame=') === false) {
+                  this?.log?.debug?.(data.toString());
+                }
               }
-            }
-          : undefined,
-    });
-    this.#recordingSessions.set(sessionID, ffmpegStream);
+            : undefined,
+      });
+    } catch (error) {
+      // Retire this attempt before releasing its prepared source.
+      if (this.#recordingSessions.get(sessionID) === recording) {
+        this.#cleanupRecordingSession(sessionID, recording);
+        await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_RECORD, { sessionID });
+      }
+      throw error;
+    }
+    recording.ffmpeg = ffmpegStream;
 
     let buffer = Buffer.alloc(0);
     let mp4boxes = [];
@@ -888,15 +906,6 @@ export default class NestCamera extends HomeKitDevice {
         this.emit(MP4BOX);
       }
     });
-
-    // FFmpeg owns input attachment and setup failures; release a source acquired after cancellation.
-    await source;
-    if (ffmpegStream.active === false) {
-      if (this.#recordingSessions.has(sessionID) === false || this.#recordingSessions.get(sessionID) === ffmpegStream) {
-        await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_RECORD, { sessionID });
-      }
-      return;
-    }
 
     this?.log?.info?.('Started recording from "%s" %s', this.deviceData.description, includeAudio === false ? 'without audio' : '');
 
@@ -1133,7 +1142,7 @@ export default class NestCamera extends HomeKitDevice {
       let includeAudio = this.deviceData.audio_enabled === true && this.streamer?.codecs?.audio !== undefined;
 
       // Start the live streamer process
-      let { video, audio, talkback } = await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_LIVE, {
+      let { talkback, input } = await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_LIVE, {
         sessionID: request.sessionID,
         options: {
           includeAudio: includeAudio === true,
@@ -1157,11 +1166,13 @@ export default class NestCamera extends HomeKitDevice {
         '-nostats',
         ...(this.deviceData?.ffmpeg?.transcode === true ? encoding.inputArguments : []),
 
-        // Raw stream copy mode benefits from wallclock timestamps for stable live audio pacing
-        ...(this.deviceData?.ffmpeg?.transcode === true ? [] : ['-use_wallclock_as_timestamps', '1']),
+        // RTP timestamps already use a common zero-based source clock.
+        '-copyts',
 
         '-fflags',
-        '+discardcorrupt+genpts',
+        // AAC needs its fixed sample duration to recover the first parser timestamp.
+        // Opus/PCM avoid inference from nominal video FPS while retaining RTP timing.
+        this.streamer.codecs.audio !== Streamer.CODEC_TYPE.AAC ? '+discardcorrupt+genpts+nofillin' : '+discardcorrupt+genpts',
         '-avoid_negative_ts',
         'make_zero',
         '-max_delay',
@@ -1169,20 +1180,11 @@ export default class NestCamera extends HomeKitDevice {
         '-flags',
         'low_delay',
 
-        // Video input
-        '-f',
-        'h264',
+        // RTSP negotiates readiness and carries both tracks in one timed input.
+        '-rtsp_transport',
+        'tcp',
         '-i',
-        'pipe:0',
-
-        // Audio input (if enabled)
-        ...(includeAudio === true
-          ? this.streamer.codecs.audio === Streamer.CODEC_TYPE.PCM
-            ? ['-thread_queue_size', '1024', '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', 'pipe:3']
-            : this.streamer.codecs.audio === Streamer.CODEC_TYPE.AAC
-              ? ['-thread_queue_size', '1024', '-f', 'aac', '-i', 'pipe:3']
-              : []
-          : []),
+        input.url,
 
         // Video output
         '-map',
@@ -1208,7 +1210,7 @@ export default class NestCamera extends HomeKitDevice {
 
               // V4L2 uses numeric profiles and does not apply an explicit H264 level.
               ...(encoding.codec === 'h264_v4l2m2m'
-                ? ['-bf:v', '0']
+                ? []
                 : [
                     '-level:v',
                     request.video.level === this.hap.H264Level.LEVEL4_0
@@ -1218,11 +1220,7 @@ export default class NestCamera extends HomeKitDevice {
                         : '3.1',
                   ]),
 
-              ...(encoding.codec === 'h264_videotoolbox' ? ['-realtime', 'true'] : []),
-
-              ...(encoding.preset !== undefined ? ['-preset', encoding.preset, '-bf', '0'] : []),
-
-              ...(encoding.codec === 'h264_nvenc' ? ['-tune', 'll', '-zerolatency', '1'] : []),
+              ...encoding.outputArguments,
 
               '-filter:v',
               encoding.filter,
@@ -1256,11 +1254,11 @@ export default class NestCamera extends HomeKitDevice {
         // Audio output (if enabled)
         ...(includeAudio === true
           ? request.audio.codec === this.hap.AudioStreamingCodecType.AAC_ELD
-            ? ['-map', '1:a:0', '-codec:a', 'libfdk_aac', '-profile:a', 'aac_eld', '-filter:a', 'aresample=async=1:first_pts=0']
+            ? ['-map', '0:a:0', '-codec:a', 'libfdk_aac', '-profile:a', 'aac_eld', '-filter:a', 'aresample=async=1:first_pts=0']
             : request.audio.codec === this.hap.AudioStreamingCodecType.OPUS
               ? [
                   '-map',
-                  '1:a:0',
+                  '0:a:0',
                   '-codec:a',
                   'libopus',
                   '-application',
@@ -1317,7 +1315,6 @@ export default class NestCamera extends HomeKitDevice {
       let ffmpegStream = this.ffmpeg.start({
         id: 'live:' + request.sessionID,
         args: commandLine,
-        inputs: { 0: video, 3: audio },
         onStderr: (data) => {
           if (data.toString().includes('frame=') === false && this.deviceData.ffmpeg.debug === true) {
             this?.log?.debug?.(data.toString());
@@ -1593,7 +1590,7 @@ export default class NestCamera extends HomeKitDevice {
   }
 
   #createStreamer(deviceData, reason = '') {
-    // Camera owns backend selection/configuration; Streamer owns media lifecycle once created.
+    // Camera selects and configures the source transport; Streamer owns media lifecycle and RTP delivery.
     // Prefer WebRTC when available, falling back to NexusTalk for older Nest-capable cameras.
     let protocol = undefined;
     let TransportClass = undefined;
@@ -1643,7 +1640,7 @@ export default class NestCamera extends HomeKitDevice {
     }
 
     for (let [sessionID, recording] of this.#recordingSessions) {
-      if (recording !== handle) {
+      if (recording.ffmpeg !== handle) {
         continue;
       }
       if (state === FFmpeg.SESSION_STATE.FAILED) {
@@ -1653,12 +1650,13 @@ export default class NestCamera extends HomeKitDevice {
           error?.message ?? code ?? signal,
         );
       }
+      // Relinquish this exact owner before source teardown can yield to a replacement.
+      this.#cleanupRecordingSession(sessionID, recording);
       try {
         await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_RECORD, { sessionID });
       } catch {
         // Ignore errors if streamer already stopped.
       }
-      this.#cleanupRecordingSession(sessionID, handle);
       return;
     }
 
@@ -1736,10 +1734,11 @@ export default class NestCamera extends HomeKitDevice {
   }
 
   #cleanupRecordingSession(sessionID, owner) {
-    for (let [id, handle] of this.#recordingSessions) {
-      if ((sessionID === undefined || id === sessionID) && (owner === undefined || handle === owner)) {
+    for (let [id, recording] of this.#recordingSessions) {
+      if ((sessionID === undefined || id === sessionID) && (owner === undefined || recording === owner)) {
+        // Detach ownership first: stopping a process can notify lifecycle listeners.
         this.#recordingSessions.delete(id);
-        handle.stop('SIGKILL');
+        recording.ffmpeg?.stop('SIGKILL');
       }
     }
     this.emit(MP4BOX);
@@ -2278,7 +2277,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
         }
 
         // Map the affected resource's complete cache so required traits can arrive in separate messages.
-        let mappedResult;
+        let mappedResult = undefined;
 
         // Process Google API camera/doorbell/floodlight data
         if (

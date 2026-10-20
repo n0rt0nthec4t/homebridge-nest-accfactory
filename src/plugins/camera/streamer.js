@@ -5,12 +5,19 @@
 //
 // Streamer owns the HomeKit-facing media pipeline:
 // - shared media retention via MediaTimeline
-// - live and recording output fan-out
+// - live and recording output fan-out through independent RTP sessions
 // - adaptive per-output pacing, live jitter smoothing, and catch-up behaviour
 // - decoder-safe startup handling
 // - H264 SPS/PPS bootstrap for outputs
 // - fallback video frame injection when the camera is offline, video is disabled, or migrating
 // - optional talkback stream wiring to the active StreamTransport
+//
+// RTP delivery:
+// - RTPMuxer packetizes each consumer's selected media and owns its RTSP endpoint
+// - Endpoint preparation remains cancellable while a live/recording start is pending
+// - PLAY and socket drain gate delivery without a second timeline or scheduler
+// - Streamer retains complete source media, then paces each consumer independently
+// - Closing an output retires its RTP delivery before awaiting socket cleanup
 //
 // Streamer does not implement protocol-specific streaming.
 //
@@ -26,10 +33,11 @@
 //
 // Transport boundary:
 // - Transport emits complete media frames using consumer.media(media)
-// - Transport media timestamps describe source media time
+// - Transport validates and normalizes complete frames once at the media boundary
+// - Transport media timestamps retain fractional source time until RTP packetization
 // - Transport reports lifecycle state using consumer.state(state, reason)
 // - Streamer converts source media time into per-output playout timing
-// - Streamer consumes callbacks and writes retained/timed output streams
+// - Streamer consumes callbacks and schedules retained media into RTPMuxer
 //
 // Media model:
 // - Streamer expects complete media frames, not partial RTP/NAL fragments
@@ -83,6 +91,7 @@ import HomeKitDevice from '../../HomeKitDevice.js';
 import MediaTimeline from './mediatimeline.js';
 import StreamTransport from './streamtransport.js';
 import H264 from './h264.js';
+import RTPMuxer from './rtpmuxer.js';
 
 // Define constants
 import { TIMERS, RESOURCE_FRAMES, RESOURCE_PATH, LOG_LEVELS, __dirname } from '../../consts.js';
@@ -95,8 +104,6 @@ const OUTPUT_STABLE_PLAYOUT_TARGET = 20; // Ticks before live playout delay rela
 const OUTPUT_KEYFRAME_AUDIO_PRIORITY_MS = 120; // Let due audio go first around large H264 keyframes
 const OUTPUT_AUDIO_OVERDUE_PRIORITY_MS = 40; // Do not let expensive video writes extend an audible audio gap
 const OUTPUT_EXPENSIVE_VIDEO_BYTES = 64 * 1024; // Treat large frames as cooperative-scheduler boundaries
-const OUTPUT_VIDEO_HIGH_WATER_MARK = 512 * 1024; // Enough room for a few large H264 access units
-const OUTPUT_AUDIO_HIGH_WATER_MARK = 128 * 1024; // Enough room for normal PCM read cadence without false stalls
 const OUTPUT_PLAYOUT_POLICY = {
   live: {
     requireKeyFrameStart: false,
@@ -191,9 +198,8 @@ export default class Streamer {
   #bufferDuration = 0; // Duration of media to keep in the shared buffer based on media timestamps
   #bufferEnabled = false; // Retained buffering policy flag owned by Streamer
   #timeline = undefined; // Shared media timeline used by buffering, live and recording outputs
-  #outputs = new Map(); // Live and recording outputs keyed by session id
+  #outputs = new Map(); // Preparing and active outputs; exact records own setup and playback
   #cameraFrames = {}; // H264 resource frames for offline, video off, transferring
-  #sequenceCounters = {}; // Sequence counters for item types
   #itemIndex = 0; // Monotonic item index for shared media timeline cursor tracking
   #videoState = {}; // Video state tracking
   #lastFallbackFrameTime = 0; // Timer for pacing fallback frames
@@ -244,7 +250,7 @@ export default class Streamer {
         buffer = fs.readFileSync(file);
 
         // Strip Annex-B start code from bundled fallback frames.
-        // Streamer adds start codes during output when required.
+        // RTP packetization consumes the NAL bytes without Annex-B prefixes.
         if (buffer.indexOf(H264.NALUS.START_CODE) === 0) {
           buffer = buffer.subarray(H264.NALUS.START_CODE.length);
         }
@@ -275,7 +281,7 @@ export default class Streamer {
         ? Math.min(Math.max(options.bufferDuration, 2000), 15000)
         : 5000;
 
-    // Attach transport backend (WebRTC / NexusTalk).
+    // Attach the source transport (WebRTC / NexusTalk).
     // Transport owns protocol connection, media parsing and state.
     // Streamer owns buffering, pacing, fan-out and HomeKit stream handling.
     if (options?.transport instanceof StreamTransport) {
@@ -286,7 +292,7 @@ export default class Streamer {
       this.#transport.consumer = {
         // Incoming media from transport.
         media: (media) => {
-          this.addMedia(media);
+          this.#retainMedia(media);
         },
 
         // Transport state changes (connecting, ready, reconnecting, etc).
@@ -411,7 +417,7 @@ export default class Streamer {
 
     if (type === Streamer.MESSAGE_TYPE.START_LIVE) {
       // Start a live streaming output for HomeKit.
-      // This creates PassThrough streams and begins feeding real-time data.
+      // Each live or recording output owns one independent RTP endpoint.
       return await this.#createOutput(sessionID, Streamer.STREAM_TYPE.LIVE, options);
     }
 
@@ -472,26 +478,31 @@ export default class Streamer {
       this?.log?.debug?.('Stopped %s from device uuid "%s"', stopped.join(', '), this.nest_google_device_uuid);
     }
 
-    for (let output of this.#outputs.values()) {
-      this.#cleanupOutput(output);
-    }
-
+    // Detach every owner before any close can yield or finish pending setup.
+    let outputs = [...this.#outputs.values()];
     this.#outputs.clear();
+    let closingOutputs = outputs.map((output) => {
+      output.state = 'closing';
+      return this.#cleanupOutput(output);
+    });
+
     this.#resetRetainedState();
 
     // Full teardown owns scheduler cleanup directly. Normal start/stop paths
     // still use #syncSchedulerState() as outputs/buffering change incrementally.
     Streamer.#removeStreamer(this);
 
-    // Keep full close and transport shutdown together, ahead of any later lifecycle work.
-    await this.#queueLifecycle(async () => {
+    // Queue transport teardown before awaiting muxer closure, so replacement
+    // source acquisition cannot overtake shutdown of the previous owner.
+    const closingSource = this.#queueLifecycle(async () => {
       this.#resetSourceState();
       await this.#transport?.close?.();
       await this.#transport?.shutdown?.();
     });
+    await Promise.all([...closingOutputs, closingSource]);
   }
 
-  addMedia(media) {
+  #retainMedia(media) {
     let addedIndex = undefined;
     let mediaType = undefined;
     let codec = undefined;
@@ -508,27 +519,11 @@ export default class Streamer {
     let sourceAudioGapMs = 0;
     let keyframeAgeMs = undefined;
 
-    // Validate incoming media object.
-    if (typeof media !== 'object' || media === null) {
-      return;
-    }
-
-    mediaType = typeof media.type === 'string' ? media.type.toLowerCase() : undefined;
-    keyFrame = media?.keyFrame === true;
-
-    // Validate media type and payload.
-    if (
-      typeof mediaType !== 'string' ||
-      mediaType.trim() === '' ||
-      (mediaType !== Streamer.MEDIA_TYPE.VIDEO &&
-        mediaType !== Streamer.MEDIA_TYPE.AUDIO &&
-        mediaType !== Streamer.MEDIA_TYPE.TALK &&
-        mediaType !== Streamer.MEDIA_TYPE.METADATA) ||
-      Buffer.isBuffer(media.data) !== true ||
-      media.data.length === 0
-    ) {
-      return;
-    }
+    // StreamTransport has validated and normalized this complete frame. This
+    // private consumer only owns retention and per-output playout protection.
+    mediaType = media.type;
+    keyFrame = media.keyFrame;
+    codec = media.codec;
 
     // Do not process if no active outputs or retained buffer.
     if (this.hasActiveStreams() !== true) {
@@ -569,25 +564,6 @@ export default class Streamer {
       return;
     }
 
-    // Resolve codec.
-    // Transport owns codec metadata, but explicit media codec wins if provided.
-    codec =
-      typeof media?.codec === 'string'
-        ? media.codec.toLowerCase()
-        : mediaType === Streamer.MEDIA_TYPE.VIDEO
-          ? this.codecs?.video
-          : mediaType === Streamer.MEDIA_TYPE.AUDIO
-            ? this.codecs?.audio
-            : mediaType === Streamer.MEDIA_TYPE.TALK
-              ? this.codecs?.talkback
-              : mediaType === Streamer.MEDIA_TYPE.METADATA
-                ? StreamTransport.CODEC_TYPE.META
-                : undefined;
-
-    if (typeof codec !== 'string' || codec.trim() === '') {
-      return;
-    }
-
     // H264 transport contract:
     // - transports emit complete Annex-B access units
     // - Streamer stores access units unchanged
@@ -615,29 +591,19 @@ export default class Streamer {
       }
     }
 
-    // Initialise sequence counter if required.
-    if (typeof this.#sequenceCounters?.[mediaType] !== 'number') {
-      this.#sequenceCounters[mediaType] = 0;
-    }
-
-    // Use provided transport sequence/source timestamp or fallback to generated values.
-    sequence = Number.isFinite(media?.sequence) === true ? media.sequence : this.#sequenceCounters[mediaType]++;
-    sourceTimestamp = Number.isFinite(media?.timestamp) === true ? Math.round(media.timestamp) : now;
+    sequence = media.sequence;
+    sourceTimestamp = media.timestamp;
 
     // Ensure monotonic media time.
     // StreamTransport owns source media timing metadata, but Streamer still
     // protects MediaTimeline ordering if timestamps repeat or go backwards.
-    if (typeof this.#lastMediaTime?.[mediaType] !== 'number') {
-      this.#lastMediaTime[mediaType] = 0;
-    }
-
-    if (sourceTimestamp <= this.#lastMediaTime[mediaType]) {
+    if (Number.isFinite(this.#lastMediaTime[mediaType]) === true && sourceTimestamp <= this.#lastMediaTime[mediaType]) {
       if (
         mediaType === Streamer.MEDIA_TYPE.VIDEO &&
         Number.isFinite(this.#transport?.video?.fps) === true &&
         this.#transport.video.fps > 0
       ) {
-        minimumMediaStep = Math.max(1, Math.round(1000 / this.#transport.video.fps));
+        minimumMediaStep = Math.max(1, 1000 / this.#transport.video.fps);
       }
 
       if (
@@ -645,11 +611,11 @@ export default class Streamer {
         Number.isFinite(this.#transport?.audio?.frameDuration) === true &&
         this.#transport.audio.frameDuration > 0
       ) {
-        minimumMediaStep = Math.max(1, Math.round(this.#transport.audio.frameDuration));
+        minimumMediaStep = Math.max(1, this.#transport.audio.frameDuration);
       }
 
       if (mediaType === Streamer.MEDIA_TYPE.VIDEO && minimumMediaStep === 1) {
-        minimumMediaStep = Math.round(STREAM_FRAME_INTERVAL);
+        minimumMediaStep = STREAM_FRAME_INTERVAL;
       }
 
       mediaTime = this.#lastMediaTime[mediaType] + minimumMediaStep;
@@ -676,6 +642,15 @@ export default class Streamer {
       // Keep Streamer item index aligned with MediaTimeline.
       // MediaTimeline owns index assignment for retained media items.
       this.#itemIndex = this.#timeline.nextIndex;
+      if (mediaType === Streamer.MEDIA_TYPE.AUDIO && codec === StreamTransport.CODEC_TYPE.AAC) {
+        // Codec bootstrap can precede receiver PLAY without consuming any cursor.
+        // Once configured, each muxer skips this work on subsequent packets.
+        for (let output of this.#outputs.values()) {
+          if (output.muxer?.needsAudioConfig === true) {
+            output.muxer.configureAudio(data);
+          }
+        }
+      }
     } else if (
       typeof this.#lastTimelineDropLogTime !== 'number' ||
       now - this.#lastTimelineDropLogTime >= STREAMER_AUDIO_GAP_LOG_INTERVAL_MS
@@ -715,7 +690,7 @@ export default class Streamer {
     this.#bufferEnabled = false;
     this.log?.debug?.('Stopped buffering from device uuid "%s"', this.nest_google_device_uuid);
 
-    if (this.isStreaming() === false) {
+    if (this.#outputs.size === 0) {
       this.#resetRetainedState();
       this.#syncSchedulerState();
       await this.#doClose();
@@ -726,39 +701,20 @@ export default class Streamer {
   }
 
   async #createOutput(sessionID, type, options) {
-    let existing = undefined;
-    let output = undefined;
-    let video = undefined;
-    let audio = null;
-    let talkback = null;
-    let includeAudio = options?.includeAudio === true && this.audioEnabled === true;
-    let waitForReady = Number.isInteger(options?.waitForReady) === true ? options.waitForReady : 0;
-    let startCursor = this.#itemIndex;
-    let timeline = undefined;
-    let timelineStart = 0;
-    let item = undefined;
-    let recordTime = options?.recordTime;
-    let startTime = Date.now();
-
-    // Validate session id.
     if (typeof sessionID !== 'string' || sessionID === '') {
       return;
     }
 
-    // Check for existing output with this session id.
-    existing = this.#outputs.get(sessionID);
-
-    // Only allow a single record output, regardless of session id.
+    let existing = this.#outputs.get(sessionID);
+    // Recording is singular even while its RTP endpoint is being prepared.
     if (type === Streamer.STREAM_TYPE.RECORD && existing === undefined) {
-      for (output of this.#outputs.values()) {
-        if (output?.type === Streamer.STREAM_TYPE.RECORD) {
-          existing = output;
+      for (let candidate of this.#outputs.values()) {
+        if (candidate.type === type) {
+          existing = candidate;
           break;
         }
       }
     }
-
-    // Reuse existing output when possible, otherwise reject type conflict.
     if (existing !== undefined) {
       if (existing.type !== type) {
         this?.log?.warn?.(
@@ -769,31 +725,76 @@ export default class Streamer {
         );
         return;
       }
-
-      return {
-        video: existing.video,
-        audio: existing.audio,
-        talkback: existing.talkback,
-      };
+      return await existing.promise;
     }
+
+    // One record owns both setup and playback. Preparing consumers hold source
+    // demand and a retention cursor, but never enter media delivery scheduling.
+    let output = {
+      sessionID,
+      type,
+      state: 'preparing',
+      promise: undefined,
+      muxer: undefined,
+      cursor: type === Streamer.STREAM_TYPE.RECORD ? (this.#timeline?.startIndex ?? this.#itemIndex) : this.#itemIndex,
+    };
+    this.#outputs.set(sessionID, output);
+    output.promise = this.#buildOutput(output, options);
+    try {
+      return await output.promise;
+    } catch (error) {
+      if (this.#outputs.get(sessionID) === output) {
+        await this.#stopOutput(sessionID, type);
+      } else {
+        // Cancellation already relinquished ownership; only finish local cleanup.
+        await output.muxer?.close();
+      }
+      throw error;
+    }
+  }
+
+  async #buildOutput(output, options) {
+    let { sessionID, type } = output;
+    let muxer = undefined;
+    let talkback = null;
+    let includeAudio = options?.includeAudio === true && this.audioEnabled === true;
+    let waitForReady = Number.isInteger(options?.waitForReady) === true ? options.waitForReady : 0;
+    let startCursor = this.#itemIndex;
+    let timeline = undefined;
+    let timelineStart = 0;
+    let item = undefined;
+    let recordTime = options?.recordTime;
+    let startTime = Date.now();
 
     // Ensure retained timeline exists and start/connect source if needed.
     this.#ensureMediaTimeline();
     await this.#doConnect(options);
     timeline = this.#timeline;
 
-    if (timeline instanceof MediaTimeline !== true) {
+    if (timeline instanceof MediaTimeline !== true || this.#outputs.get(sessionID) !== output) {
       return;
     }
 
-    // Create streams for this output.
-    video = new PassThrough({ highWaterMark: OUTPUT_VIDEO_HIGH_WATER_MARK });
-    audio = includeAudio === true ? new PassThrough({ highWaterMark: OUTPUT_AUDIO_HIGH_WATER_MARK }) : null;
+    // RTPMuxer owns delivery and wire clocks; this record owns its preparation.
+    muxer = new RTPMuxer({ includeAudio, audio: this.#transport?.audio });
+    output.muxer = muxer;
+    await muxer.prepare();
+    if (this.#outputs.get(sessionID) !== output) {
+      await muxer.close();
+      return;
+    }
+    if (muxer.needsAudioConfig === true) {
+      let firstAudio = timeline.nextAudioFrom(timeline.startIndex);
+      if (firstAudio !== undefined) {
+        muxer.configureAudio(firstAudio.data);
+      }
+    }
+    if (muxer.error !== undefined) {
+      throw muxer.error;
+    }
     talkback = type === Streamer.STREAM_TYPE.LIVE && includeAudio === true ? new PassThrough({ highWaterMark: 1024 * 16 }) : null;
 
     // Prevent unhandled stream errors from bubbling.
-    video?.on?.('error', () => {});
-    audio?.on?.('error', () => {});
     talkback?.on?.('error', () => {});
 
     // Determine initial cursor for recording.
@@ -847,13 +848,12 @@ export default class Streamer {
     // - Each output has its own independent timing model
     // - Policies MUST be tuned per output type (do not unify blindly)
 
-    output = {
+    Object.assign(output, {
       sessionID: sessionID,
       type: type,
 
-      // Writable streams (ffmpeg pipes etc).
-      video: video,
-      audio: audio,
+      // Delivery belongs to this output; only talkback remains a byte stream.
+      muxer: muxer,
       talkback: talkback,
       talkbackTimeout: undefined,
 
@@ -927,7 +927,8 @@ export default class Streamer {
               },
             }
           : undefined,
-    };
+    });
+    output.state = 'active';
 
     // Attach talkback handling for live streams.
     if (talkback !== null) {
@@ -946,8 +947,7 @@ export default class Streamer {
       });
     }
 
-    // Register output before any optional readiness wait.
-    this.#outputs.set(sessionID, output);
+    // Only fully prepared records participate in delivery scheduling.
     this.#syncSchedulerState();
 
     // Optionally wait for source readiness before returning stream handles.
@@ -964,39 +964,27 @@ export default class Streamer {
     this?.log?.debug?.('Started %s stream from device uuid "%s" and session id "%s"', type, this.nest_google_device_uuid, sessionID);
 
     return {
-      video: video,
-      audio: audio,
       talkback: talkback,
+      input: muxer.input,
     };
   }
 
   async #stopOutput(sessionID, type) {
-    let output = undefined;
-    let hasOtherLiveOutputs = false;
-    let id = undefined;
-    let activeOutput = undefined;
-
-    // Resolve output by session id if provided
-    if (typeof sessionID === 'string' && sessionID !== '') {
-      output = this.#outputs.get(sessionID);
-    }
-
-    // For recording, allow stopping the first active record stream if no session id was provided
+    let output = this.#outputs.get(sessionID);
     if (output === undefined && type === Streamer.STREAM_TYPE.RECORD) {
       for (let candidate of this.#outputs.values()) {
-        if (candidate?.type === Streamer.STREAM_TYPE.RECORD) {
+        if (candidate.type === type) {
           output = candidate;
           break;
         }
       }
     }
-
-    // Nothing matched to stop
     if (output === undefined) {
+      if (this.#outputs.size === 0 && this.#bufferEnabled !== true) {
+        await this.#doClose();
+      }
       return;
     }
-
-    // Ensure we are not stopping a mismatched type (e.g. live vs record)
     if (output.type !== type) {
       this?.log?.warn?.(
         'Cannot stop stream for device uuid "%s" and session id "%s" as it is type "%s" not "%s"',
@@ -1008,46 +996,43 @@ export default class Streamer {
       return;
     }
 
-    // If this is the last live output and support dump is enabled, log per-output stats before cleanup
-    if (output.type === Streamer.STREAM_TYPE.LIVE && this.supportDump === true) {
-      for ([id, activeOutput] of this.#outputs) {
-        if (id !== output.sessionID && activeOutput?.type === Streamer.STREAM_TYPE.LIVE) {
-          hasOtherLiveOutputs = true;
-          break;
-        }
-      }
-
-      if (hasOtherLiveOutputs !== true) {
+    // Remove the exact owner before source retirement, diagnostics or socket
+    // closure can yield. A replacement can then safely reuse the same session id.
+    if (this.#outputs.get(output.sessionID) !== output) {
+      return;
+    }
+    let wasActive = output.state === 'active';
+    this.#outputs.delete(output.sessionID);
+    output.state = 'closing';
+    let closingSource = undefined;
+    if (wasActive === false && this.#outputs.size === 0 && this.#bufferEnabled !== true) {
+      // Queue this before awaiting socket closure so a replacement's source open
+      // cannot be overtaken by the old owner's delayed cleanup.
+      closingSource = this.#doClose();
+    }
+    this.#syncSchedulerState();
+    let closingOutput = this.#cleanupOutput(output);
+    let diagnostics = undefined;
+    if (wasActive === true && type === Streamer.STREAM_TYPE.LIVE && this.supportDump === true && this.isLiveStreaming() === false) {
+      diagnostics = Promise.resolve().then(async () => {
         await this.#transport?.refreshDiagnostics?.();
         this.#outputStats(output, Date.now());
-      }
+      });
     }
-
     this?.log?.debug?.(
       'Stopping %s stream from device uuid "%s" and session id "%s"',
       type,
       this.nest_google_device_uuid,
       output.sessionID,
     );
-
-    // Cleanup streams, timers, and any talkback state
-    this.#cleanupOutput(output);
-
-    // Remove from active outputs
-    this.#outputs.delete(output.sessionID);
-
-    // Clear retained state when last output stops and buffering is disabled.
-    // This prevents stale buffered media being reused by the next session.
+    await Promise.all([closingOutput, closingSource, diagnostics]);
     if (this.#outputs.size === 0 && this.#bufferEnabled !== true) {
+      // Preserve retained statistics until final diagnostics finish, and retain
+      // the source if a replacement took ownership during asynchronous closure.
       this.#resetRetainedState();
-    }
-
-    // Update scheduler based on remaining activity
-    this.#syncSchedulerState();
-
-    // If nothing remains active, fully close underlying source
-    if (this.isStreaming() === false && this.isBuffering() === false) {
-      await this.#doClose();
+      if (closingSource === undefined) {
+        await this.#doClose();
+      }
     }
   }
 
@@ -1056,12 +1041,17 @@ export default class Streamer {
   }
 
   isStreaming() {
-    return this.#outputs.size !== 0;
+    for (let output of this.#outputs.values()) {
+      if (output.state === 'active') {
+        return true;
+      }
+    }
+    return false;
   }
 
   isRecording() {
     for (let output of this.#outputs.values()) {
-      if (output?.type === Streamer.STREAM_TYPE.RECORD) {
+      if (output.state === 'active' && output.type === Streamer.STREAM_TYPE.RECORD) {
         return true;
       }
     }
@@ -1071,7 +1061,7 @@ export default class Streamer {
 
   isLiveStreaming() {
     for (let output of this.#outputs.values()) {
-      if (output?.type === Streamer.STREAM_TYPE.LIVE) {
+      if (output.state === 'active' && output.type === Streamer.STREAM_TYPE.LIVE) {
         return true;
       }
     }
@@ -1080,6 +1070,8 @@ export default class Streamer {
   }
 
   hasActiveStreams() {
+    // Source demand includes preparing consumers; playback queries above count
+    // only active records so pending endpoints cannot enter delivery scheduling.
     return this.#bufferEnabled === true || this.#outputs.size !== 0;
   }
 
@@ -1158,18 +1150,14 @@ export default class Streamer {
     }
 
     clearTimeout(output?.talkbackTimeout);
-    output?.video?.removeAllListeners?.();
-    output?.audio?.removeAllListeners?.();
     output?.talkback?.removeAllListeners?.();
-    output?.video?.end?.();
-    output?.audio?.end?.();
     output?.talkback?.end?.();
+    return output.muxer?.close();
   }
 
   #resetRetainedState() {
     this.#bufferEnabled = false;
     this.#timeline = undefined;
-    this.#sequenceCounters = {};
     this.#itemIndex = 0;
     this.#videoState = {};
     this.#lastMediaTime = {};
@@ -1189,6 +1177,9 @@ export default class Streamer {
     // Existing HomeKit outputs may still be open, but their decoder state must
     // be reset so the next real H264 keyframe can be bootstrapped again.
     for (let output of this.#outputs.values()) {
+      if (output.state !== 'active') {
+        continue;
+      }
       output.seenKeyFrame = false;
       output.sentCodecConfig = false;
       output.sourceBaseTime = undefined;
@@ -1369,33 +1360,31 @@ export default class Streamer {
   }
 
   #writeFallback(output, fallbackFrame, dateNow = undefined) {
-    let outputVideo = undefined;
-    let outputAudio = undefined;
-    let isH264 = false;
-
     if (Buffer.isBuffer(fallbackFrame) !== true || typeof output !== 'object' || output === null) {
       return;
     }
-
-    outputVideo = output.video;
-    outputAudio = output.audio;
-    isH264 = this.codecs?.video === StreamTransport.CODEC_TYPE.H264;
+    const muxer = output.muxer;
+    if (muxer.needsAudioConfig === true && Buffer.isBuffer(this.#transport?.audio?.blank) === true) {
+      muxer.configureAudio(this.#transport.audio.blank);
+    }
     if (typeof dateNow !== 'number') {
       dateNow = Date.now();
     }
 
-    if (outputVideo.writableNeedDrain !== true) {
+    if (muxer.blocked('video') !== true) {
       this.#statsWrite(output, Streamer.MEDIA_TYPE.VIDEO, dateNow);
-      if (isH264 === true) {
-        outputVideo.write(H264.NALUS.START_CODE);
-      }
-      outputVideo.write(fallbackFrame);
+      muxer.writeVideo(fallbackFrame, dateNow);
     }
-
-    if (output.includeAudio === true && outputAudio.writableNeedDrain !== true && Buffer.isBuffer(this.#transport?.audio?.blank) === true) {
+    if (
+      output.includeAudio === true &&
+      muxer.hasAudio === true &&
+      muxer.blocked('audio') !== true &&
+      Buffer.isBuffer(this.#transport?.audio?.blank) === true
+    ) {
       this.#statsWrite(output, Streamer.MEDIA_TYPE.AUDIO, dateNow);
-      outputAudio.write(this.#transport.audio.blank);
+      muxer.writeAudio(this.#transport.audio.blank, dateNow);
     }
+    muxer.tick(dateNow);
   }
 
   #processBufferedOutput(output, dateNow, budgetMs) {
@@ -1414,8 +1403,7 @@ export default class Streamer {
     let stopReason = '';
     let diagnostics = undefined;
 
-    let outputVideo = undefined;
-    let outputAudio = undefined;
+    let muxer = undefined;
     let includeAudio = false;
     let isH264Output = false;
     let isLiveOutput = false;
@@ -1424,24 +1412,12 @@ export default class Streamer {
     let lastPPS = undefined;
     let hasSPS = false;
     let hasPPS = false;
-    let keyFrameHasSPS = false;
-    let keyFrameHasPPS = false;
+    let bootstrap = undefined;
 
     let policy = undefined;
     let requireKeyFrameStart = false;
     let allowAudioBeforeKeyFrame = false;
     let playoutDelayMs = 0;
-    let minPlayoutDelayMs = 0;
-    let maxPlayoutDelayMs = 0;
-    let playoutAdjustStepMs = 0;
-    let maxLagBehindLiveMs = 0;
-    let dueTolerance = 0;
-    let dueSlack = 0;
-    let catchupExitThresholdMs = 0;
-    let catchupAudioBurstLimit = 0;
-    let catchupVideoBurstLimit = 0;
-    let normalAudioBurstLimit = 0;
-    let normalVideoBurstLimit = 0;
 
     let state = undefined;
     let shouldCatchUp = false;
@@ -1479,10 +1455,9 @@ export default class Streamer {
       return;
     }
 
-    // Resolve output streams and audio availability.
-    outputVideo = output.video;
-    outputAudio = output.audio;
-    includeAudio = output.includeAudio === true && outputAudio !== null;
+    // Delivery readiness belongs to the muxer, independently for each track.
+    muxer = output.muxer;
+    includeAudio = output.includeAudio === true && muxer.hasAudio === true;
     isH264Output = this.codecs?.video === StreamTransport.CODEC_TYPE.H264;
     isLiveOutput = output.type === Streamer.STREAM_TYPE.LIVE;
 
@@ -1498,18 +1473,7 @@ export default class Streamer {
     allowAudioBeforeKeyFrame = policy.allowAudioBeforeKeyFrame === true;
 
     playoutDelayMs = Number.isFinite(output.playoutDelayMs) === true ? output.playoutDelayMs : policy.playoutDelayMs;
-    minPlayoutDelayMs = policy.minPlayoutDelayMs;
-    maxPlayoutDelayMs = policy.maxPlayoutDelayMs;
-    playoutAdjustStepMs = policy.playoutAdjustStepMs;
-    playoutDelayMs = Math.min(maxPlayoutDelayMs, Math.max(minPlayoutDelayMs, playoutDelayMs));
-    maxLagBehindLiveMs = policy.maxLagBehindLiveMs;
-    dueTolerance = policy.dueTolerance;
-    dueSlack = policy.dueSlack;
-    catchupExitThresholdMs = policy.catchupExitThresholdMs;
-    catchupAudioBurstLimit = policy.catchupAudioBurstLimit;
-    catchupVideoBurstLimit = policy.catchupVideoBurstLimit;
-    normalAudioBurstLimit = policy.normalAudioBurstLimit;
-    normalVideoBurstLimit = policy.normalVideoBurstLimit;
+    playoutDelayMs = Math.min(policy.maxPlayoutDelayMs, Math.max(policy.minPlayoutDelayMs, playoutDelayMs));
 
     // Cached clean SPS/PPS for H264 keyframe bootstrap.
     // Transport media itself remains Annex-B and is written directly.
@@ -1518,9 +1482,8 @@ export default class Streamer {
     hasSPS = Buffer.isBuffer(lastSPS) === true && lastSPS.length > 0;
     hasPPS = Buffer.isBuffer(lastPPS) === true && lastPPS.length > 0;
 
-    // Local mutable output state.
-    // Keeping this grouped reduces local variable churn while still writing the
-    // final state back to the output object at the end of processing.
+    // Keep playback changes local until the tick completes. A delivery error
+    // must not commit partially advanced cursors or decoder state.
     state = {
       cursor: typeof output.cursor === 'number' ? output.cursor : startIndex,
       videoCursor: typeof output.videoCursor === 'number' ? output.videoCursor : startIndex,
@@ -1596,7 +1559,7 @@ export default class Streamer {
       if (typeof item?.time === 'number') {
         itemLag = latestItemTime - item.time;
 
-        if (itemLag > maxLagBehindLiveMs) {
+        if (itemLag > policy.maxLagBehindLiveMs) {
           state.catchingUp = true;
           state.catchupTicks = 0;
           state.catchupStableFrames = 0;
@@ -1608,6 +1571,16 @@ export default class Streamer {
     // selected media cursor advances, so resolving both again wastes a search.
     videoItem = state.videoCursor < timelineEnd ? timeline.nextVideoFrom(state.videoCursor) : undefined;
     audioItem = includeAudio === true && state.audioCursor < timelineEnd ? timeline.nextAudioFrom(state.audioCursor) : undefined;
+
+    // Delivery priority can put audio ahead of the first keyframe. Give timed
+    // RTP outputs one common source origin before either track starts writing.
+    anchorTime = videoItem?.time;
+    if (typeof audioItem?.time === 'number' && (typeof anchorTime !== 'number' || audioItem.time < anchorTime)) {
+      anchorTime = audioItem.time;
+    }
+    if (typeof anchorTime === 'number') {
+      muxer.setSourceEpoch(anchorTime);
+    }
 
     // Main processing loop.
     // MediaTimeline gives us indexed video/audio lookup so we no longer walk
@@ -1656,12 +1629,12 @@ export default class Streamer {
 
         if (typeof videoItem?.time === 'number') {
           dueVideoTime = state.wallclockBaseTime + (videoItem.time - state.sourceBaseTime);
-          dueVideo = dueVideoTime <= dateNow + dueTolerance + dueSlack;
+          dueVideo = dueVideoTime <= dateNow + policy.dueTolerance + policy.dueSlack;
         }
 
         if (typeof audioItem?.time === 'number') {
           dueAudioTime = state.wallclockBaseTime + (audioItem.time - state.sourceBaseTime);
-          dueAudio = dueAudioTime <= dateNow + dueTolerance + dueSlack;
+          dueAudio = dueAudioTime <= dateNow + policy.dueTolerance + policy.dueSlack;
         }
       } else {
         dueVideo = videoItem !== undefined;
@@ -1672,8 +1645,8 @@ export default class Streamer {
 
       // Backpressure persists between scheduler ticks. Keep blocked media in the bounded timeline
       // until its output drains, while allowing the other media stream to continue independently.
-      dueVideo = dueVideo === true && outputVideo.writableNeedDrain !== true;
-      dueAudio = dueAudio === true && outputAudio?.writableNeedDrain !== true;
+      dueVideo = dueVideo === true && muxer.blocked('video') !== true;
+      dueAudio = dueAudio === true && muxer.blocked('audio') !== true;
 
       if (dueVideo !== true && dueAudio !== true) {
         stopReason = 'not-due';
@@ -1683,14 +1656,14 @@ export default class Streamer {
       // Enforce burst limits separately for normal and catch-up playback.
       if (dueVideo === true) {
         capVideo =
-          (shouldCatchUp !== true && normalVideoWrites >= normalVideoBurstLimit) ||
-          (shouldCatchUp === true && catchupVideoWrites >= catchupVideoBurstLimit);
+          (shouldCatchUp !== true && normalVideoWrites >= policy.normalVideoBurstLimit) ||
+          (shouldCatchUp === true && catchupVideoWrites >= policy.catchupVideoBurstLimit);
       }
 
       if (dueAudio === true) {
         capAudio =
-          (shouldCatchUp !== true && normalAudioWrites >= normalAudioBurstLimit) ||
-          (shouldCatchUp === true && catchupAudioWrites >= catchupAudioBurstLimit);
+          (shouldCatchUp !== true && normalAudioWrites >= policy.normalAudioBurstLimit) ||
+          (shouldCatchUp === true && catchupAudioWrites >= policy.catchupAudioBurstLimit);
       }
 
       if ((dueVideo !== true || capVideo === true) && (dueAudio !== true || capAudio === true)) {
@@ -1741,24 +1714,28 @@ export default class Streamer {
         lateness = dateNow - (selectedType === Streamer.MEDIA_TYPE.AUDIO ? dueAudioTime : dueVideoTime);
 
         if (lateness > Math.max(playoutDelayMs / 2, 120)) {
-          if (isLiveOutput === true && state.playoutDelayMs < maxPlayoutDelayMs) {
-            state.playoutDelayMs = Math.min(maxPlayoutDelayMs, state.playoutDelayMs + playoutAdjustStepMs);
+          if (isLiveOutput === true && state.playoutDelayMs < policy.maxPlayoutDelayMs) {
+            state.playoutDelayMs = Math.min(policy.maxPlayoutDelayMs, state.playoutDelayMs + policy.playoutAdjustStepMs);
             playoutDelayMs = state.playoutDelayMs;
           }
 
           state.stablePlayoutTicks = 0;
           state.sourceBaseTime = item.time;
           state.wallclockBaseTime = dateNow - playoutDelayMs;
-        } else if (isLiveOutput === true && state.playoutDelayMs > minPlayoutDelayMs && lateness <= dueTolerance + dueSlack) {
+        } else if (
+          isLiveOutput === true &&
+          state.playoutDelayMs > policy.minPlayoutDelayMs &&
+          lateness <= policy.dueTolerance + policy.dueSlack
+        ) {
           state.stablePlayoutTicks++;
 
           if (state.stablePlayoutTicks >= OUTPUT_STABLE_PLAYOUT_TARGET) {
-            state.playoutDelayMs = Math.max(minPlayoutDelayMs, state.playoutDelayMs - playoutAdjustStepMs);
+            state.playoutDelayMs = Math.max(policy.minPlayoutDelayMs, state.playoutDelayMs - policy.playoutAdjustStepMs);
             playoutDelayMs = state.playoutDelayMs;
             state.stablePlayoutTicks = 0;
             state.wallclockBaseTime = dateNow - playoutDelayMs - (item.time - state.sourceBaseTime);
           }
-        } else if (lateness > dueTolerance + dueSlack) {
+        } else if (lateness > policy.dueTolerance + policy.dueSlack) {
           state.stablePlayoutTicks = 0;
         }
       }
@@ -1776,7 +1753,7 @@ export default class Streamer {
           break;
         }
 
-        writeAccepted = true;
+        bootstrap = undefined;
 
         if (item.codec === StreamTransport.CODEC_TYPE.H264) {
           // Suppress pre-keyframe video until this output has a real IDR.
@@ -1789,22 +1766,14 @@ export default class Streamer {
             continue;
           }
 
-          // Bootstrap H264 decoder with cached SPS/PPS before the first keyframe.
-          // Do not duplicate config if the keyframe access unit already contains it.
+          // Select missing decoder bootstrap data here; the muxer decides how
+          // to encode it in the same access unit as the selected keyframe.
+          bootstrap = undefined;
           if (item.keyFrame === true && state.sentCodecConfig !== true) {
-            keyFrameHasSPS = item.hasSPS === true;
-            keyFrameHasPPS = item.hasPPS === true;
-
-            if (hasSPS === true && keyFrameHasSPS !== true) {
-              writeAccepted = outputVideo.write(H264.NALUS.START_CODE) !== false && writeAccepted;
-              writeAccepted = outputVideo.write(lastSPS) !== false && writeAccepted;
-            }
-
-            if (hasPPS === true && keyFrameHasPPS !== true) {
-              writeAccepted = outputVideo.write(H264.NALUS.START_CODE) !== false && writeAccepted;
-              writeAccepted = outputVideo.write(lastPPS) !== false && writeAccepted;
-            }
-
+            bootstrap = {
+              sps: hasSPS === true && item.hasSPS !== true ? lastSPS : undefined,
+              pps: hasPPS === true && item.hasPPS !== true ? lastPPS : undefined,
+            };
             state.sentCodecConfig = true;
           }
 
@@ -1813,14 +1782,14 @@ export default class Streamer {
           }
         }
 
-        writeAccepted = outputVideo.write(item.data) !== false && writeAccepted;
+        writeAccepted = muxer.writeVideo(item.data, item.time, bootstrap) !== false;
         this.#statsWrite(output, Streamer.MEDIA_TYPE.VIDEO, dateNow);
 
         if (shouldCatchUp === true) {
           catchupVideoWrites++;
           state.catchupTicks++;
 
-          if (typeof latestItemTime === 'number' && latestItemTime - item.time <= catchupExitThresholdMs) {
+          if (typeof latestItemTime === 'number' && latestItemTime - item.time <= policy.catchupExitThresholdMs) {
             state.catchupStableFrames++;
           } else {
             state.catchupStableFrames = 0;
@@ -1843,7 +1812,7 @@ export default class Streamer {
         state.videoCursor = nextCursor;
         processed++;
 
-        if (writeAccepted !== true || outputVideo.writableNeedDrain === true) {
+        if (writeAccepted !== true || muxer.blocked('video') === true) {
           stopReason = 'video-backpressure';
 
           if (this.supportDump === true && typeof output?.stats?.diagnostics === 'object' && output.stats.diagnostics !== null) {
@@ -1859,7 +1828,7 @@ export default class Streamer {
 
       if (selectedType === Streamer.MEDIA_TYPE.AUDIO) {
         // Audio may be disabled for the output or absent from the output stream.
-        if (includeAudio !== true || outputAudio === null) {
+        if (includeAudio !== true) {
           state.audioCursor = nextCursor;
           processed++;
           audioItem = state.audioCursor < timelineEnd ? timeline.nextAudioFrom(state.audioCursor) : undefined;
@@ -1877,13 +1846,11 @@ export default class Streamer {
         }
 
         if (this.supportDump === true && typeof output?.stats?.diagnostics === 'object' && output.stats.diagnostics !== null) {
-          queuedBytes =
-            (Number.isFinite(outputAudio.writableLength) === true ? outputAudio.writableLength : 0) +
-            (Number.isFinite(outputAudio.readableLength) === true ? outputAudio.readableLength : 0);
+          queuedBytes = muxer.queuedBytes();
           output.stats.diagnostics.maxAudioQueuedBytes = Math.max(output.stats.diagnostics.maxAudioQueuedBytes ?? 0, queuedBytes);
         }
 
-        writeAccepted = outputAudio.write(item.data) !== false;
+        writeAccepted = muxer.writeAudio(item.data, item.time) !== false;
         this.#statsWrite(output, Streamer.MEDIA_TYPE.AUDIO, dateNow);
 
         if (shouldCatchUp === true) {
@@ -1896,9 +1863,7 @@ export default class Streamer {
         processed++;
 
         if (this.supportDump === true && typeof output?.stats?.diagnostics === 'object' && output.stats.diagnostics !== null) {
-          queuedBytes =
-            (Number.isFinite(outputAudio.writableLength) === true ? outputAudio.writableLength : 0) +
-            (Number.isFinite(outputAudio.readableLength) === true ? outputAudio.readableLength : 0);
+          queuedBytes = muxer.queuedBytes();
           output.stats.diagnostics.maxAudioQueuedBytes = Math.max(output.stats.diagnostics.maxAudioQueuedBytes ?? 0, queuedBytes);
         }
 
@@ -1918,23 +1883,14 @@ export default class Streamer {
       }
     }
 
-    // Persist updated output state.
+    // Keep retention behind the earliest unconsumed media track.
     if (includeAudio !== true) {
       state.audioCursor = state.videoCursor;
     }
+    state.cursor = includeAudio === true ? Math.min(state.videoCursor, state.audioCursor) : state.videoCursor;
 
-    output.videoCursor = state.videoCursor;
-    output.audioCursor = state.audioCursor;
-    output.cursor = includeAudio === true ? Math.min(state.videoCursor, state.audioCursor) : state.videoCursor;
-    output.seenKeyFrame = state.seenKeyFrame;
-    output.sentCodecConfig = state.sentCodecConfig;
-    output.catchingUp = state.catchingUp;
-    output.sourceBaseTime = state.sourceBaseTime;
-    output.wallclockBaseTime = state.wallclockBaseTime;
-    output.playoutDelayMs = state.playoutDelayMs;
-    output.stablePlayoutTicks = state.stablePlayoutTicks;
-    output.catchupTicks = state.catchupTicks;
-    output.catchupStableFrames = state.catchupStableFrames;
+    // Commit this tick's playback state to its owning output.
+    Object.assign(output, state);
   }
 
   #processOutput(dateNow, budgetMs) {
@@ -1950,7 +1906,38 @@ export default class Streamer {
       return;
     }
 
-    hasOutputs = this.#outputs.size !== 0;
+    // Receiver shutdown is local to one output. In particular, killing FFmpeg on
+    // a HomeKit STOP can close RTSP before the STOP message reaches Streamer.
+    // Do not feed that terminal state into the device-wide scheduler retry guard.
+    for (const current of this.#outputs.values()) {
+      if (current.state === 'active' && current.muxer.closed === true) {
+        const error = current.muxer.error;
+        if (error !== undefined && error.code !== 'ECONNRESET' && error.code !== 'ERR_RTP_RECEIVER_CLOSED') {
+          this?.log?.warn?.(
+            'Media output failed for device uuid "%s" and session id "%s": %s',
+            this.nest_google_device_uuid,
+            current.sessionID,
+            String(error),
+          );
+        } else {
+          this?.log?.debug?.(
+            'Retiring closed media output for device uuid "%s" and session id "%s"',
+            this.nest_google_device_uuid,
+            current.sessionID,
+          );
+        }
+        this.#stopOutput(current.sessionID, current.type).catch((stopError) => {
+          this?.log?.error?.(
+            'Unable to close media output for device uuid "%s" and session id "%s": %s',
+            this.nest_google_device_uuid,
+            current.sessionID,
+            String(stopError),
+          );
+        });
+      }
+    }
+
+    hasOutputs = this.isStreaming();
 
     // Determine if timeline contains items older than retention window.
     if (timeline.size !== 0) {
@@ -1996,6 +1983,9 @@ export default class Streamer {
 
       if (Buffer.isBuffer(fallbackFrame) === true) {
         for (output of this.#outputs.values()) {
+          if (output.state !== 'active') {
+            continue;
+          }
           this.#writeFallback(output, fallbackFrame, dateNow);
         }
 
@@ -2007,12 +1997,16 @@ export default class Streamer {
     if (this.#transport?.ready !== true) {
       // Source is not ready and no fallback was sent, so there is nothing useful
       // to fan out yet. For live ffmpeg sessions, early audio without decodable
-      // video only builds pipe latency before HomeKit can consume the stream.
+      // video only queues unusable media before HomeKit can consume the stream.
       return;
     }
 
     for (output of this.#outputs.values()) {
+      if (output.state !== 'active') {
+        continue;
+      }
       this.#processBufferedOutput(output, dateNow, budgetMs);
+      output.muxer.tick(dateNow);
     }
   }
 
@@ -2247,7 +2241,7 @@ export default class Streamer {
   }
 
   #syncSchedulerState() {
-    if (this.hasActiveStreams() === true) {
+    if (this.isBuffering() === true || this.isStreaming() === true) {
       if (Streamer.#streamers.has(this.#HomeKitDeviceUUID) === false) {
         Streamer.#addStreamer(this);
       }
