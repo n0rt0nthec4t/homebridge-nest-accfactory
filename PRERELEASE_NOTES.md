@@ -6,6 +6,10 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
 ## v0.4.5-alpha.1 (2026/10/20)
 
+### Added
+
+- Thermostat Eco state translation and per-device Google API commands to enable manual Eco or disable Eco
+
 ### Changed
 
 - Replace separate raw video/audio inputs to FFmpeg with timestamped RTP over a local RTSP connection for WebRTC and NexusTalk live streams and HomeKit Secure Video recordings

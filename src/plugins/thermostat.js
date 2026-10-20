@@ -1893,6 +1893,13 @@ const THERMOSTAT_FIELD_MAP = {
   },
 
   // HVAC mode / setpoint fields
+  eco_mode: {
+    google: {
+      fields: ['eco_mode_state'],
+      translate: ({ raw }) => raw?.value?.eco_mode_state?.ecoMode ?? 'ECO_MODE_UNSPECIFIED',
+    },
+  },
+
   hvac_mode: {
     google: {
       fields: ['target_temperature_settings', 'eco_mode_state', 'eco_mode_settings'],
