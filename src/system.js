@@ -194,6 +194,10 @@ export default class NestAccfactory {
     return Connections.fromConfig(this.config, {
       log: this.log,
       onAuthorised: async (uuid, connection, details = {}) => {
+        // Cancel the old transport's retry before awaiting device updates.
+        clearTimeout(connection.observeTimer);
+        connection.observeTimer = undefined;
+
         // Notify any camera related devices (camera/doorbell/floodlight) of updated auth details.
         for (let [, trackedDevice] of this.#trackedDevices) {
           if (typeof trackedDevice !== 'object' || trackedDevice === null) {
@@ -228,8 +232,7 @@ export default class NestAccfactory {
           }
         }
 
-        // Initial authorisation/re-authorisation should start ingestion loops.
-        // Token refreshes keep existing loops running.
+        // The REST loop keeps using the current connection after token refresh.
         if (details?.wasAuthorised !== true) {
           this.#subscribeNestAPI(uuid).catch((error) => {
             this?.log?.debug?.(
@@ -238,14 +241,16 @@ export default class NestAccfactory {
               typeof error?.message === 'string' ? error.message : String(error),
             );
           });
-          this.#observeGoogleAPI(uuid).catch((error) => {
-            this?.log?.debug?.(
-              'Unable to start Google API observe for connection "%s": %s',
-              connection?.name,
-              typeof error?.message === 'string' ? error.message : String(error),
-            );
-          });
         }
+
+        // Every authorisation replaces the gRPC transport, including token refresh.
+        this.#observeGoogleAPI(uuid).catch((error) => {
+          this?.log?.debug?.(
+            'Unable to start Google API observe for connection "%s": %s',
+            connection?.name,
+            typeof error?.message === 'string' ? error.message : String(error),
+          );
+        });
       },
     });
   }

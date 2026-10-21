@@ -18,6 +18,7 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
 ### Fixed
 
+- Resume Google state updates after credential refresh and cancel pending retries from the previous Observe stream
 - Prevent live-view startup failures when the first audio/video frames arrive out of timestamp order or playback starts during a scheduler tick
 - Accept complete, valid WebRTC keyframes after slow delivery while retaining incomplete-frame expiry and decoder safety checks
 - Wait for newer Google snapshot updates before falling back to the last available image, and remove repetitive fallback logging

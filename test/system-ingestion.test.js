@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
-import { DATA_SOURCE } from '../src/consts.js';
+import { DATA_SOURCE, DEVICE_TYPE } from '../src/consts.js';
 import { platformHarness } from './helpers/platform-harness.js';
 
 for (let status of [401, 403]) {
@@ -126,11 +126,9 @@ for (let status of [16]) {
     assert.equal(flow.observations.length, 1);
   });
 }
-test('Observe transient failures back off and token refresh does not duplicate ingestion loops', async (context) => {
+test('Observe transient failures back off to the retry cap', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'] });
   let flow = await platformHarness(context);
-  await flow.authorise('account', flow.connection, { wasAuthorised: true });
-  assert.equal(flow.observations.length, 1);
   flow.pending.resolve({ status: 14 });
   await setImmediate();
   for (let delay of [5000, 10000, 20000, 40000, 60000]) {
@@ -166,7 +164,7 @@ for (let status of [0, 16]) {
         return replacement.promise;
       },
     };
-    await flow.authorise('account', flow.connection, { wasAuthorised: false });
+    await flow.authorise('account', flow.connection, { wasAuthorised: true });
     flow.pending.resolve({ status });
     await setImmediate();
     assert.equal(flow.connection.authorised, true);
@@ -178,9 +176,10 @@ for (let status of [0, 16]) {
   });
 }
 
-test('retired Observe callbacks cannot overwrite newer data or remove a replacement accessory', async (context) => {
+test('credential refresh resumes Observe updates without restarting Nest subscriptions or replacing accessories', async (context) => {
   let flow = await platformHarness(context);
   let oldCallback = flow.consume;
+  let subscriptions = flow.requests.filter((request) => String(request[1]).includes('/app_launch') === true).length;
   let replacement = Promise.withResolvers();
   flow.connection.grpcTransport = {
     ...flow.connection.grpcTransport,
@@ -189,7 +188,9 @@ test('retired Observe callbacks cannot overwrite newer data or remove a replacem
       return replacement.promise;
     },
   };
-  await flow.authorise('account', flow.connection, { wasAuthorised: false });
+  await flow.authorise('account', flow.connection, { wasAuthorised: true });
+  assert.equal(flow.observations.length, 2);
+  assert.equal(flow.requests.filter((request) => String(request[1]).includes('/app_launch') === true).length, subscriptions);
   let currentCallback = flow.observations.at(-1).at(-1);
   let message = (value) => ({
     traitStates: [
@@ -205,3 +206,31 @@ test('retired Observe callbacks cannot overwrite newer data or remove a replacem
   assert.deepEqual(flow.removed, []);
   replacement.resolve({ status: 0 });
 });
+
+for (let status of [0, 14]) {
+  test('credential refresh cancels the pending Observe retry after status ' + status, async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    let flow = await platformHarness(context, { type: DEVICE_TYPE.CAMERA });
+    flow.pending.resolve({ status });
+    await setImmediate();
+    assert.notEqual(flow.connection.observeTimer, undefined);
+    let replacement = Promise.withResolvers();
+    flow.connection.grpcTransport = {
+      ...flow.connection.grpcTransport,
+      observe: (...args) => {
+        flow.observations.push(args);
+        return replacement.promise;
+      },
+    };
+    let refresh = flow.authorise('account', flow.connection, { wasAuthorised: true });
+    // The old retry must not fire while camera credential updates are pending.
+    context.mock.timers.tick(60000);
+    await refresh;
+    assert.equal(flow.observations.length, 2);
+    assert.equal(flow.connection.observeTimer, undefined);
+    context.mock.timers.tick(60000);
+    await setImmediate();
+    assert.equal(flow.observations.length, 2);
+    replacement.resolve({ status: 0 });
+  });
+}

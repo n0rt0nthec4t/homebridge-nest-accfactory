@@ -63,6 +63,8 @@ test('account authorisation and refresh update only owned camera-family credenti
     ['google', 'account-A'],
     ['nest', 'account-B'],
     ['google', 'account-B'],
+    ['google', 'account-A'],
+    ['google', 'account-B'],
   ]);
 });
 
