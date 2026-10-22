@@ -39,7 +39,7 @@
 // - Uses shared protobuf helpers for schema/type loading and traversal
 // - Creates and updates HomeKitDevice-based instances for supported device types
 //
-// Code version 2026.10.21
+// Code version 2026.10.22
 // Mark Hulskamp
 'use strict';
 

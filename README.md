@@ -28,12 +28,11 @@ The following Nest devices are known to be supported by this Homebridge plugin:
 - Nest Heat Links
 - Nest × Yale Locks
 
-**Note:** Google has discontinued support for 1st and 2nd generation Nest Thermostats as of **October 25, 2025**.  
-Based on this, these models are expected to stop functioning with this Homebridge plugin.
-
 The accessory supports connections using a Nest account AND/OR a Google (migrated Nest account) account.
 
-Thermostats, temperature sensors and Heat Links require the Google API (protobuf) to be enabled. Nest REST API support for these devices has been removed in v0.4.4.
+**Note: Thermostats, temperature sensors and Heat Links continue to be supported through Google's newer API. Support for these devices through the legacy Nest API was removed in v0.4.4.**
+
+**Note: Google ended online support for 1st and 2nd generation Nest Learning Thermostats on October 25, 2025. These models are no longer supported by this plugin, but can still be controlled directly on the thermostat.** [Learn more](https://support.google.com/googlehome/answer/16233096).
 
 ## Configuration
 
@@ -284,13 +283,27 @@ Hardware discovery validates a short H264 encode before selecting acceleration a
 
 ## Support Policy
 
-This plugin is developed and tested specifically for **Homebridge**.
+This plugin is developed and tested specifically for **HomeKit through Homebridge**. Support covers the plugin's integration with HomeKit through supported Homebridge installations. 
+
+Integration with third-party platforms is outside the scope of this project. Changes requested solely to accommodate those platforms are not supported.
+
+Support is provided exclusively for the original **`homebridge-nest-accfactory`** package maintained by **n0rt0nthec4t** in [this repository](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory).
+
+Forks, renamed packages, and modified distributions are independently maintained and are **not endorsed or supported** by this project. Issues involving these versions should be reported to their respective maintainers.
+
+Issues that can be reproduced using the original, unmodified package in a supported Homebridge environment may still be reported here.
+
+### Supported Environments
 
 Supported environments include Homebridge installations running on common platforms such as Linux or macOS, as well as official container or image distributions such as **docker-homebridge**, **homebridge-vm-image**, and **homebridge-raspbian-image**.
 
-Platforms that bundle, modify, or wrap Homebridge — such as **HOOBS**, **Home Assistant**, or similar derivatives are **not officially supported** and may behave differently. Issues reported from these environments may be closed without investigation.
+Platforms that bundle, modify, or wrap Homebridge — including **HOOBS**, **Home Assistant add-ons that bundle Homebridge**, and similar third-party environments — are **not officially supported**. Issues specific to unsupported environments may be closed without investigation.
+
+### Reporting Issues
 
 If you encounter a problem, please [raise an issue](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issues) on the project's **GitHub repository**.
+
+Before submitting an issue, please confirm that you are using the official **`homebridge-nest-accfactory`** package in a supported Homebridge environment.
 
 When reporting an issue, providing relevant diagnostic information (logs, configuration snippets, device details, etc.) and being available to assist with follow-up testing is greatly appreciated. Issues reported without sufficient detail may be difficult to investigate.
 

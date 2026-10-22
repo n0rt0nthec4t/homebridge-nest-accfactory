@@ -68,7 +68,7 @@
 // - CLOSING
 // - CLOSED
 //
-// Code version 2026.10.21
+// Code version 2026.10.22
 // Mark Hulskamp
 'use strict';
 
@@ -1047,7 +1047,6 @@ export default class StreamTransport {
       videoDrops: {},
       videoReorder: {
         defers: 0,
-        fuTimestampDefers: 0,
         overflowDrops: 0,
       },
       keyframeRequests: 0,
@@ -1082,7 +1081,6 @@ export default class StreamTransport {
     if (typeof this.stats.media.videoReorder !== 'object' || this.stats.media.videoReorder === null) {
       this.stats.media.videoReorder = {
         defers: 0,
-        fuTimestampDefers: 0,
         overflowDrops: 0,
       };
     }

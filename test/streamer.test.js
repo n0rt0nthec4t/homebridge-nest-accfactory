@@ -86,6 +86,14 @@ function setup(context, data = {}, options = {}) {
   return { streamer, transport };
 }
 
+// Step the fake clock so relative playout deadlines see elapsed scheduler ticks,
+// rather than every interval callback observing the end of a large time jump.
+function advance(context, milliseconds) {
+  for (let elapsed = 0; elapsed < milliseconds; elapsed += 10) {
+    context.mock.timers.tick(Math.min(10, milliseconds - elapsed));
+  }
+}
+
 let keyframe = Buffer.from([0, 0, 0, 1, 0x65, 1]);
 function addVideo(transport, timestamp = 100000, keyFrame = true) {
   transport.emitMedia({
@@ -155,10 +163,10 @@ for (let type of [Streamer.MESSAGE_TYPE.START_LIVE, Streamer.MESSAGE_TYPE.START_
     let { streamer, transport } = setup(context);
     await streamer.onMessage(type, { sessionID: 'decoder' });
     addVideo(transport, 100000, false);
-    context.mock.timers.tick(300);
+    advance(context, 300);
     assert.deepEqual(media(hooks.instances[0]), []);
     addVideo(transport, 100300);
-    context.mock.timers.tick(500);
+    advance(context, 500);
     let packets = media(hooks.instances[0]);
     assert.deepEqual(
       packets.map(({ data }) => data[12] & 31),
@@ -168,7 +176,7 @@ for (let type of [Streamer.MESSAGE_TYPE.START_LIVE, Streamer.MESSAGE_TYPE.START_
     assert.equal(packets.at(-1).data[1] & 0x80, 0x80);
     await streamer.stopEverything();
     let count = packets.length;
-    context.mock.timers.tick(1000);
+    advance(context, 1000);
     assert.equal(media(hooks.instances[0]).length, count);
   });
 }
@@ -178,14 +186,14 @@ test('recording reads retained prebuffer while a later live view starts at the l
   await streamer.onMessage(Streamer.MESSAGE_TYPE.START_BUFFER, { options: {} });
   addVideo(transport, 100000);
   addVideo(transport, 100100, false);
-  context.mock.timers.tick(300);
+  advance(context, 300);
   await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, { sessionID: 'clip', options: { recordTime: 100000 } });
   await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'live' });
-  context.mock.timers.tick(500);
+  advance(context, 500);
   assert.equal(media(hooks.instances[0]).length, 4);
   assert.deepEqual(media(hooks.instances[1]), []);
   addVideo(transport, 100800);
-  context.mock.timers.tick(500);
+  advance(context, 500);
   assert.equal(media(hooks.instances[1]).length, 3);
 });
 test('VFR source intervals survive accelerated retained recording playback', async (context) => {
@@ -195,9 +203,9 @@ test('VFR source intervals survive accelerated retained recording playback', asy
   addVideo(transport, 100000);
   addVideo(transport, 100100, false);
   addVideo(transport, 100150, false);
-  context.mock.timers.tick(2000);
+  advance(context, 2000);
   await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, { sessionID: 'clip', options: { recordTime: 100000 } });
-  context.mock.timers.tick(500);
+  advance(context, 500);
   let timestamps = media(hooks.instances[0])
     .filter(({ data }) => (data[1] & 0x80) !== 0)
     .map(({ data }) => data.readUInt32BE(4));
@@ -213,10 +221,10 @@ test('native Opus stays compressed for simultaneous live and recording consumers
   await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'live', options: { includeAudio: true } });
   await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, { sessionID: 'record', options: { includeAudio: true } });
   addVideo(transport);
-  context.mock.timers.tick(10);
+  advance(context, 10);
   let payload = Buffer.from([0xf8, 0xff, 0xfe]);
   transport.emitMedia({ type: 'audio', codec: 'opus', timestamp: 100020, data: payload });
-  context.mock.timers.tick(500);
+  advance(context, 500);
   for (let muxer of hooks.instances) {
     assert.deepEqual(media(muxer, 'audio')[0].data.subarray(12), payload);
   }
@@ -232,12 +240,12 @@ test('AAC learns from source ADTS and retained metadata for later recording cons
   let payload = Buffer.from([0x21, 0x10, 0x56]);
   transport.emitMedia({ type: 'audio', codec: 'aac', timestamp: 100020, data: adts(payload) });
   assert.equal(hooks.instances[0].needsAudioConfig, false);
-  context.mock.timers.tick(500);
+  advance(context, 500);
   await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, { sessionID: 'record', options: { includeAudio: true } });
   assert.equal(hooks.instances[1].needsAudioConfig, false);
-  context.mock.timers.tick(500);
+  advance(context, 500);
   transport.emitMedia({ type: 'audio', codec: 'aac', timestamp: 101020, data: adts(payload) });
-  context.mock.timers.tick(500);
+  advance(context, 500);
   for (let muxer of hooks.instances) {
     assert.deepEqual(media(muxer, 'audio')[0].data.subarray(16), payload);
   }
@@ -251,14 +259,14 @@ test('a blocked viewer finishes its current access unit without stalling another
   hooks.send = (muxer, data, metadata) => (muxer === slow && metadata.kind === 'rtp' ? false : true);
   addVideo(transport);
   addVideo(transport, 100100, false);
-  context.mock.timers.tick(1000);
+  advance(context, 1000);
   assert.equal(media(slow).length, 3);
   assert.equal(media(hooks.instances[1]).length, 4);
-  context.mock.timers.tick(1000);
+  advance(context, 1000);
   assert.equal(media(slow).length, 3);
   hooks.send = undefined;
   slow.resume('video');
-  context.mock.timers.tick(500);
+  advance(context, 500);
   assert.equal(media(slow).length, 4);
 });
 test('a failed RTP sink retires only its own viewer', async (context) => {
@@ -273,7 +281,7 @@ test('a failed RTP sink retires only its own viewer', async (context) => {
     return true;
   };
   addVideo(transport);
-  context.mock.timers.tick(1000);
+  advance(context, 1000);
   assert.equal(hooks.instances[0].closed, true);
   assert.equal(hooks.instances[1].closed, false);
   assert.equal(media(hooks.instances[1]).length, 3);
@@ -292,13 +300,13 @@ for (let [label, data] of [
     context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
     let { streamer } = setup(context, data);
     await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'fallback' });
-    context.mock.timers.tick(100);
+    advance(context, 100);
     assert.equal(media(hooks.instances[0]).length > 0, true);
     let muxer = hooks.instances[0];
     hooks.send = () => false;
-    context.mock.timers.tick(50);
+    advance(context, 50);
     let count = media(muxer).length;
-    context.mock.timers.tick(100);
+    advance(context, 100);
     assert.equal(media(muxer).length, count);
   });
 }
@@ -309,10 +317,10 @@ test('talkback still forwards bytes and sends its end marker after inactivity', 
   transport.sendAudio = async (data) => sent.push([...data]);
   let output = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'talk', options: { includeAudio: true } });
   output.talkback.write(Buffer.from([1, 2]));
-  context.mock.timers.tick(1000);
+  advance(context, 1000);
   assert.deepEqual(sent, [[1, 2], []]);
   await streamer.stopEverything();
-  context.mock.timers.tick(2000);
+  advance(context, 2000);
   assert.deepEqual(sent, [[1, 2], []]);
 });
 for (let shutdown of [false, true]) {
@@ -460,7 +468,7 @@ test('repeated and backwards source times become strictly increasing RTP timesta
   for (let timestamp of [100000, 100000, 99900, 100120]) {
     addVideo(transport, timestamp);
   }
-  context.mock.timers.tick(1000);
+  advance(context, 1000);
   let timestamps = media(hooks.instances[0])
     .filter(({ data }) => (data[1] & 0x80) !== 0)
     .map(({ data }) => data.readUInt32BE(4));
@@ -478,7 +486,7 @@ test('invalid AAC configuration retires its receiver without stopping a video-on
   await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'video' });
   transport.emitMedia({ type: 'audio', codec: 'aac', timestamp: 100000, data: Buffer.from([1]) });
   addVideo(transport);
-  context.mock.timers.tick(1000);
+  advance(context, 1000);
   assert.equal(hooks.instances[0].closed, true);
   assert.equal(hooks.instances[1].closed, false);
   assert.equal(media(hooks.instances[1]).length, 3);
@@ -564,7 +572,7 @@ for (let exit of ['ready', 'closed', 'reconnecting', 'timeout']) {
     if (exit !== 'timeout') {
       transport.setState(StreamTransport.STATE[exit.toUpperCase()]);
     }
-    context.mock.timers.tick(exit === 'timeout' ? 100 : 25);
+    advance(context, exit === 'timeout' ? 100 : 25);
     let output = await starting;
     assert.equal(output.input.type, 'rtp');
     assert.equal(streamer.isLiveStreaming(), true);
@@ -594,7 +602,7 @@ for (let diagnostics of [false, true]) {
     await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'gaps', options: { includeAudio: true } });
     for (let index = 0; index < 5; index++) {
       transport.emitMedia({ type: 'audio', timestamp: 100000 + index * 200, data: Buffer.from([0xf8, 0xff, 0xfe]) });
-      context.mock.timers.tick(200);
+      advance(context, 200);
     }
     for (let kind of ['source audio gap', 'output audio write gap']) {
       assert.equal(logs.filter((entry) => entry[0].includes(kind)).length, diagnostics === true ? 1 : 0);
@@ -615,7 +623,7 @@ for (let config of ['both', 'SPS', 'PPS']) {
     let idr = Buffer.from([0x65, 3]);
     let accessUnit = Buffer.concat([...(hasSPS === true ? [prefix, sps] : []), ...(hasPPS === true ? [prefix, pps] : []), prefix, idr]);
     transport.emitMedia({ type: 'video', timestamp: 100000, keyFrame: true, data: accessUnit, codecConfig: { sps, pps, hasSPS, hasPPS } });
-    context.mock.timers.tick(300);
+    advance(context, 310);
     let packets = media(hooks.instances[0]).map(({ data }) => data.subarray(12));
     assert.equal(packets.filter((data) => data.equals(sps)).length, 1);
     assert.equal(packets.filter((data) => data.equals(pps)).length, 1);
@@ -627,15 +635,15 @@ test('reconnect resets decoder startup without replacing the RTP endpoint', asyn
   let { streamer, transport } = setup(context);
   let output = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'recovery' });
   addVideo(transport);
-  context.mock.timers.tick(300);
+  advance(context, 310);
   let count = media(hooks.instances[0]).length;
   transport.setState(StreamTransport.STATE.RECONNECTING);
   transport.setState(StreamTransport.STATE.READY);
   addVideo(transport, 100300, false);
-  context.mock.timers.tick(200);
+  advance(context, 200);
   assert.equal(media(hooks.instances[0]).length, count);
   addVideo(transport, 100500);
-  context.mock.timers.tick(300);
+  advance(context, 310);
   assert.equal(media(hooks.instances[0]).length, count + 3);
   assert.equal((await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'recovery' })).input, output.input);
 });
@@ -660,7 +668,7 @@ for (let [sourceStart, repeated] of [
         data: payload,
       });
     }
-    context.mock.timers.tick(1000);
+    advance(context, 1000);
     let timestamps = media(hooks.instances[0], 'audio').map(({ data }) => data.readUInt32BE(4));
     assert.equal(timestamps.length, 6);
     assert.deepEqual(
@@ -677,7 +685,7 @@ test('fractional video frame intervals retain their 90 kHz RTP clock spacing', a
   for (let index = 0; index < 5; index++) {
     addVideo(transport, 100000 + (index * 1001 * 1000) / 30000, index === 0);
   }
-  context.mock.timers.tick(1000);
+  advance(context, 1000);
   let timestamps = media(hooks.instances[0])
     .filter(({ data }) => (data[1] & 0x80) !== 0)
     .map(({ data }) => data.readUInt32BE(4));
@@ -701,13 +709,13 @@ test('preparing outputs hold source demand without reporting active playback or 
   assert.equal(streamer.isLiveStreaming(), false);
   assert.equal(streamer.isRecording(), false);
   addVideo(transport);
-  context.mock.timers.tick(500);
+  advance(context, 500);
   assert.deepEqual(media(hooks.instances[0]), []);
   ready.resolve();
   await starting;
   assert.equal(streamer.isLiveStreaming(), true);
   addVideo(transport, 100500);
-  context.mock.timers.tick(500);
+  advance(context, 500);
   assert.equal(media(hooks.instances[0]).length, 3);
 });
 
@@ -744,7 +752,7 @@ test('stopping buffering preserves a preparing recording and its retained prebuf
   assert.equal(streamer.hasActiveStreams(), true);
   ready.resolve();
   await starting;
-  context.mock.timers.tick(500);
+  advance(context, 500);
   assert.equal(media(hooks.instances[0]).length, 3);
 });
 
@@ -790,7 +798,7 @@ test('an active viewer continues while another output is preparing', async (cont
   let preparing = streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, { sessionID: 'pending' });
   await setImmediate();
   addVideo(transport);
-  context.mock.timers.tick(500);
+  advance(context, 500);
   assert.equal(media(hooks.instances[0]).length, 3);
   assert.deepEqual(media(hooks.instances[1]), []);
   assert.equal(streamer.isRecording(), false);
@@ -838,12 +846,12 @@ for (let firstTrack of ['video', 'audio']) {
         }
       };
       write(firstTrack, 100040);
-      context.mock.timers.tick(10);
+      advance(context, 310);
       let muxer = hooks.instances[0];
       assert.ok(media(muxer, firstTrack).length > 0);
       let lateTrack = firstTrack === 'video' ? 'audio' : 'video';
       write(lateTrack, 100000);
-      context.mock.timers.tick(100);
+      advance(context, 100);
       assert.equal(streamer.isLiveStreaming(), true);
       assert.equal(streamer.isBuffering(), true);
       assert.equal(media(muxer, lateTrack).length > 0, true);
@@ -864,24 +872,26 @@ for (let type of [Streamer.STREAM_TYPE.LIVE, Streamer.STREAM_TYPE.RECORD]) {
     });
     for (let index = 0; index < 12; index++) {
       addVideo(transport, Date.now(), index === 0);
-      context.mock.timers.tick(40);
+      advance(context, 40);
     }
 
     let muxer = hooks.instances[0];
+    advance(context, 310);
     let before = media(muxer).length;
     // A future source frame must still wait after regular arrivals. Repeated
     // deadline adjustments used to make live delivery progressively earlier.
-    addVideo(transport, Date.now() + 500, false);
-    context.mock.timers.tick(10);
+    let futureTime = Date.now() + 500;
+    addVideo(transport, futureTime, false);
+    advance(context, 10);
     assert.equal(media(muxer).length, before);
-    context.mock.timers.tick(400);
+    advance(context, 810);
     assert.equal(media(muxer).length, before + 1);
     let times = media(muxer)
       .filter(({ data }) => (data[1] & 0x80) !== 0)
       .map(({ data }) => data.readUInt32BE(4));
     assert.deepEqual(
       times.slice(1).map((time, index) => (time - times[index]) >>> 0),
-      [...Array(11).fill(3600), 48600],
+      [...Array(11).fill(3600), (futureTime - 100440) * 90],
     );
   });
 }
@@ -906,7 +916,7 @@ for (let diagnostics of [false, true]) {
       return true;
     };
     addVideo(transport);
-    context.mock.timers.tick(10);
+    advance(context, 310);
     assert.equal(queued > 0, true);
     // The access-unit reservation queries once regardless of diagnostics.
     assert.equal(query.mock.callCount(), diagnostics === true ? 2 : 1);
@@ -919,3 +929,121 @@ for (let diagnostics of [false, true]) {
     );
   });
 }
+
+for (let diagnostics of [false, true]) {
+  test('audio timing emits one stop summary per live/record output only when enabled=' + diagnostics, async (context) => {
+    context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+    let logs = [];
+    let { streamer, transport } = setup(
+      context,
+      {},
+      {
+        supportDump: diagnostics,
+        log: { debug: (...args) => logs.push(args), info: (...args) => logs.push(args), warn() {}, error() {}, success() {} },
+      },
+    );
+    await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'live-timing', options: { includeAudio: true } });
+    await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, { sessionID: 'record-timing', options: { includeAudio: true } });
+    addVideo(transport);
+    for (let timestamp of [100000, 100020, 100160, 100170]) {
+      transport.emitMedia({ type: 'audio', timestamp, data: Buffer.from([0xf8, 0xff, 0xfe]) });
+      advance(context, 40);
+    }
+    advance(context, 500);
+    let summaries = () => logs.filter((entry) => entry[0].startsWith('RTP audio timing'));
+    assert.equal(summaries().length, 0);
+    await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_LIVE, { sessionID: 'live-timing' });
+    await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_RECORD, { sessionID: 'record-timing' });
+    assert.equal(summaries().length, diagnostics === true ? 2 : 0);
+    for (let entry of summaries()) {
+      assert.equal(entry[4].gaps, 1);
+      assert.equal(entry[4].maxGapMs, 120);
+      assert.equal(entry[4].overlaps, 1);
+      assert.equal(entry[4].maxOverlapMs, 10);
+    }
+    // Duplicate stops never produce another summary or reset another receiver's counters.
+    await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_LIVE, { sessionID: 'live-timing' });
+    await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_RECORD, { sessionID: 'record-timing' });
+    assert.equal(summaries().length, diagnostics === true ? 2 : 0);
+  });
+}
+
+test('fixed live playout spaces 200 ms audio batches without changing RTP timing', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+  let { streamer, transport } = setup(context);
+  let writes = [];
+  hooks.send = (muxer, data, metadata) => {
+    if (metadata.kind === 'rtp' && metadata.track === 'audio') {
+      writes.push({ at: Date.now(), timestamp: data.readUInt32BE(4) });
+    }
+    return true;
+  };
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'batched', options: { includeAudio: true } });
+  addVideo(transport);
+  let audio = (timestamp) => transport.emitMedia({ type: 'audio', timestamp, data: Buffer.from([0xf8, 0xff, 0xfe]) });
+  audio(100000);
+  advance(context, 200);
+  assert.equal(writes.length, 0, 'normal delivery retains fixed playout headroom');
+  for (let batch = 0; batch < 5; batch++) {
+    for (let index = 1; index <= 10; index++) {
+      audio(100000 + batch * 200 + index * 20);
+    }
+    advance(context, 200);
+  }
+  advance(context, 500);
+  assert.equal(writes.length, 51);
+  assert.equal(writes[0].at, 100310);
+  for (let index = 1; index < writes.length; index++) {
+    assert.equal(writes[index].at - writes[index - 1].at, 20);
+    assert.equal((writes[index].timestamp - writes[index - 1].timestamp) >>> 0, 960);
+  }
+});
+
+test('recording replay stops at its captured startup boundary while new arrivals wait for playout', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+  let { streamer, transport } = setup(context, {}, { bufferDuration: 8000 });
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_BUFFER);
+  for (let index = 0; index < 50; index++) {
+    if (index % 10 === 0) {
+      addVideo(transport, 100000 + index * 20, index === 0);
+    }
+    transport.emitMedia({ type: 'audio', timestamp: 100000 + index * 20, data: Buffer.from([0xf8, 0xff, 0xfe]) });
+  }
+  advance(context, 1000);
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, {
+    sessionID: 'boundary',
+    options: { recordTime: 100000, includeAudio: true },
+  });
+  let muxer = hooks.instances[0];
+  // These frames arrive after START_RECORD and must not join the replay range.
+  addVideo(transport, 101000, false);
+  transport.emitMedia({ type: 'audio', timestamp: 101000, data: Buffer.from([0xf8, 0xff, 0xfe]) });
+  advance(context, 10);
+  assert.equal(media(muxer, 'audio').length > 0, true);
+  assert.equal(media(muxer, 'audio').length < 50, true, 'the shared work limit bounds retained replay');
+  advance(context, 290);
+  assert.equal(media(muxer, 'audio').length, 50);
+  assert.equal(media(muxer).filter(({ data }) => (data[1] & 0x80) !== 0).length, 5);
+  advance(context, 40);
+  let audio = media(muxer, 'audio');
+  assert.equal(audio.length, 51);
+  assert.equal((audio.at(-1).data.readUInt32BE(4) - audio.at(-2).data.readUInt32BE(4)) >>> 0, 960);
+  assert.equal(media(muxer).filter(({ data }) => (data[1] & 0x80) !== 0).length, 6);
+});
+
+test('a delayed first video frame cannot anchor playout behind newer retained audio', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+  let { streamer, transport } = setup(context);
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'late-keyframe', options: { includeAudio: true } });
+  transport.setState(StreamTransport.STATE.CONNECTED);
+  for (let index = 0; index <= 150; index++) {
+    transport.emitMedia({ type: 'audio', timestamp: 100000 + index * 20, data: Buffer.from([0xf8, 0xff, 0xfe]) });
+    advance(context, 20);
+  }
+  // The IDR completes now, but its source time describes its first RTP packet.
+  // Arrival order therefore differs from the shared source timeline's head.
+  addVideo(transport, 100000);
+  transport.setState(StreamTransport.STATE.READY);
+  advance(context, 400);
+  assert.equal(media(hooks.instances[0], 'audio').length, 151, 'startup backlog must not become several seconds of playout latency');
+});

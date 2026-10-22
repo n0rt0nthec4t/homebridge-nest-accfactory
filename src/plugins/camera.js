@@ -91,7 +91,7 @@ const V4L2_RECORDING_CAPTURE_BUFFERS = 32;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.10.20'; // Code version
+  static VERSION = '2026.10.23'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -822,24 +822,10 @@ export default class NestCamera extends HomeKitDevice {
       '-movflags',
       'frag_keyframe+empty_moov+delay_moov+default_base_moof',
 
+      // Preserve RTP audio timing; -ar still performs the required sample-rate conversion.
       // Audio output
       ...(includeAudio === true
-        ? [
-            '-map',
-            '0:a:0',
-            '-codec:a',
-            'libfdk_aac',
-            '-profile:a',
-            'aac_low',
-            '-ar',
-            '16000',
-            '-b:a',
-            '16k',
-            '-ac',
-            '1',
-            '-filter:a',
-            'aresample=async=1:first_pts=0',
-          ]
+        ? ['-map', '0:a:0', '-codec:a', 'libfdk_aac', '-profile:a', 'aac_low', '-ar', '16000', '-b:a', '16k', '-ac', '1']
         : []),
 
       '-f',
@@ -1180,6 +1166,10 @@ export default class NestCamera extends HomeKitDevice {
         '-flags',
         'low_delay',
 
+        // Bound startup analysis once timed RTP media is available.
+        '-analyzeduration',
+        '500000',
+
         // RTSP negotiates readiness and carries both tracks in one timed input.
         '-rtsp_transport',
         'tcp',
@@ -1251,10 +1241,11 @@ export default class NestCamera extends HomeKitDevice {
         session.videoSRTP.toString('base64'),
         'srtp://' + session.address + ':' + session.videoPort + '?rtcpport=' + session.videoPort + '&pkt_size=' + request.video.mtu,
 
+        // Preserve RTP audio timing without padding or trimming audio to start at zero.
         // Audio output (if enabled)
         ...(includeAudio === true
           ? request.audio.codec === this.hap.AudioStreamingCodecType.AAC_ELD
-            ? ['-map', '0:a:0', '-codec:a', 'libfdk_aac', '-profile:a', 'aac_eld', '-filter:a', 'aresample=async=1:first_pts=0']
+            ? ['-map', '0:a:0', '-codec:a', 'libfdk_aac', '-profile:a', 'aac_eld']
             : request.audio.codec === this.hap.AudioStreamingCodecType.OPUS
               ? [
                   '-map',
@@ -1265,8 +1256,6 @@ export default class NestCamera extends HomeKitDevice {
                   'lowdelay',
                   '-frame_duration',
                   request.audio.packet_time.toString(),
-                  '-filter:a',
-                  'aresample=async=1:first_pts=0',
                 ]
               : []
           : []),

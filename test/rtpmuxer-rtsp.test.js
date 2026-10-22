@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import net from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
+import timers from 'node:timers';
 import RTPMuxer from '../src/plugins/camera/rtpmuxer.js';
 import { importSource } from './helpers/import-source.js';
 let { default: Streamer } = await importSource(new URL('../src/plugins/camera/streamer.js', import.meta.url));
@@ -126,6 +127,7 @@ test('independent outputs bind distinct ports and reject foreign paths, sessions
   await second.prepare();
   context.after(() => second.close());
   assert.notEqual(new URL(first.input.url).port, new URL(second.input.url).port);
+  assert.equal((await client.request('OPTIONS')).status, 200);
   assert.equal((await client.request('DESCRIBE', first.input.url + '-wrong')).status, 404);
   assert.equal((await client.request('PLAY', first.input.url, ['Session: stale'])).status, 454);
   assert.equal(
@@ -174,6 +176,7 @@ test('large access units are bounded before delivery, and a slow receiver drains
 test('malformed oversized control input closes the endpoint with an actionable failure', { timeout: 5000 }, async (context) => {
   const output = new RTPMuxer();
   const client = await connect(context, output);
+  assert.equal((await client.request('OPTIONS')).status, 200);
   client.socket.on('error', (error) => assert.equal(error.code, 'ECONNRESET'));
   const closed = new Promise((resolve) => client.socket.once('close', resolve));
   client.socket.write(Buffer.alloc(200 * 1024, 0x41));
@@ -265,6 +268,14 @@ for (const reset of [false, true]) {
 }
 
 test('NexusTalk DESCRIBE waits for ADTS metadata and advertises the actual AAC track', { timeout: 5000 }, async (context) => {
+  let expiry = undefined;
+  let schedule = timers.setTimeout;
+  context.mock.method(timers, 'setTimeout', (callback, milliseconds, ...args) => {
+    if (milliseconds === 5000) {
+      expiry = callback;
+    }
+    return schedule(callback, milliseconds, ...args);
+  });
   let { adts } = await import('./helpers/aac-fixtures.js');
   let output = new RTPMuxer({ audio: { codec: 'aac' } });
   let client = await connect(context, output);
@@ -275,6 +286,9 @@ test('NexusTalk DESCRIBE waits for ADTS metadata and advertises the actual AAC t
   });
   await delay(20);
   assert.equal(described, false);
+  // A validated resource request owns the receiver even while SDP is deferred.
+  expiry();
+  assert.equal(output.closed, false);
   assert.equal((await client.request('DESCRIBE')).status, 455);
   assert.equal((await client.request('PLAY')).status, 455);
   output.configureAudio(adts(Buffer.from([0x21, 0x10]), { frequency: 4, channels: 2 }));
@@ -350,4 +364,102 @@ test('fragmented H264 uses one wire allocation per packet and preserves RTCP cou
   assert.equal(report.data[1], 200);
   assert.equal(report.data.readUInt32BE(20), 6);
   assert.equal(report.data.readUInt32BE(24), 216, 'octets include FU-A headers, excluding RTP and RTSP framing');
+});
+
+for (let request of [
+  'DESCRIBE * RTSP/1.0\r\nCSeq: 1\r\n\r\n',
+  'GET_PARAMETER * RTSP/1.0\r\nCSeq: 1\r\n\r\n',
+  'PLAY * RTSP/1.0\r\nCSeq: 1\r\n\r\n',
+  'TEARDOWN * RTSP/1.0\r\nCSeq: 1\r\n\r\n',
+  'DESCRIBE rtsp://127.0.0.1/unknown RTSP/1.0\r\nCSeq: 1\r\n\r\n',
+  'malformed request\r\n\r\n',
+  Buffer.alloc(200 * 1024, 0x41),
+  Buffer.from([0x24, 0, 0, 0]),
+]) {
+  test(
+    'unvalidated RTSP client cannot disclose or retire an output: ' +
+      (typeof request === 'string' ? request.split(' ')[0] : request.length),
+    { timeout: 5000 },
+    async (context) => {
+      let output = new RTPMuxer({ includeAudio: false });
+      let rejected = await connect(context, output);
+      let received = [];
+      rejected.socket.on('data', (data) => received.push(data));
+      rejected.socket.on('error', (error) => assert.equal(error.code, 'ECONNRESET'));
+      let closed = new Promise((resolve) => rejected.socket.once('close', resolve));
+      rejected.socket.write(request);
+      await closed;
+      assert.equal(received.length, 0, 'no SDP, resource URL or session is disclosed');
+      assert.equal(output.closed, false);
+      assert.equal(output.error, undefined);
+
+      let receiver = await connect(context, output);
+      assert.equal((await play(receiver, output)).status, 200);
+      output.writeVideo(Buffer.from([0x65, 1]), 0);
+      await waitFor(() => receiver.packets.some((packet) => packet.channel === 4));
+    },
+  );
+}
+
+test('OPTIONS discovery cannot reserve ownership or disclose the resource', { timeout: 5000 }, async (context) => {
+  let output = new RTPMuxer({ includeAudio: false });
+  let candidate = await connect(context, output);
+  let response = await candidate.request('OPTIONS', '*');
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.has('session'), false);
+  assert.equal(response.headers.has('content-base'), false);
+  assert.equal(response.body, '');
+  let closed = new Promise((resolve) => candidate.socket.once('close', resolve));
+  let receiver = await connect(context, output);
+  assert.equal((await play(receiver, output)).status, 200);
+  await closed;
+  response = await receiver.request('DESCRIBE', '*');
+  assert.equal(response.status, 404);
+  assert.equal(response.body, '');
+  assert.equal(response.headers.has('session'), false);
+  output.writeVideo(Buffer.from([0x65, 1]), 0);
+  await waitFor(() => receiver.packets.some((packet) => packet.channel === 4));
+});
+
+test('receiver admission has an absolute deadline and stale expiry cannot close its replacement', { timeout: 5000 }, async (context) => {
+  let deadlines = [];
+  let schedule = timers.setTimeout;
+  context.mock.method(timers, 'setTimeout', (callback, milliseconds, ...args) => {
+    if (milliseconds === 5000) {
+      deadlines.push(callback);
+    }
+    return schedule(callback, milliseconds, ...args);
+  });
+  let output = new RTPMuxer({ includeAudio: false });
+  let candidate = await connect(context, output);
+  await candidate.request('OPTIONS', '*');
+  await candidate.request('OPTIONS', '*');
+  assert.equal(deadlines.length, 1, 'traffic must not renew admission time');
+  let closed = new Promise((resolve) => candidate.socket.once('close', resolve));
+  deadlines[0]();
+  await closed;
+  assert.equal(output.closed, false);
+  assert.equal(output.error, undefined);
+  let receiver = await connect(context, output);
+  assert.equal((await play(receiver, output)).status, 200);
+  deadlines[0]();
+  output.writeVideo(Buffer.from([0x65, 1]), 0);
+  await waitFor(() => receiver.packets.some((packet) => packet.channel === 4));
+});
+
+test('pending receivers stay bounded and admission closes the remaining candidates', { timeout: 5000 }, async (context) => {
+  let output = new RTPMuxer({ includeAudio: false });
+  let candidates = [];
+  for (let index = 0; index < 4; index++) {
+    candidates.push(await connect(context, output));
+  }
+  let excess = await connect(context, output);
+  excess.socket.on('error', (error) => assert.equal(error.code, 'ECONNRESET'));
+  await new Promise((resolve) => excess.socket.once('close', resolve));
+  assert.equal(output.closed, false);
+  let rejected = candidates.slice(1).map((candidate) => new Promise((resolve) => candidate.socket.once('close', resolve)));
+  assert.equal((await play(candidates[0], output)).status, 200);
+  await Promise.all(rejected);
+  output.writeVideo(Buffer.from([0x65, 1]), 0);
+  await waitFor(() => candidates[0].packets.some((packet) => packet.channel === 4));
 });

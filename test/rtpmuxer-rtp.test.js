@@ -370,3 +370,129 @@ test('a scheduler tick captured before first media waits for the playback clock 
   output.tick(now + 1000);
   assert.equal(packets.filter((packet) => packet.kind === 'rtcp').length, 2);
 });
+
+for (let audioDiagnostics of [false, true]) {
+  test('audio timing counters observe gaps/overlaps without changing payloads; enabled=' + audioDiagnostics, async () => {
+    let packets = [];
+    let muxer = new RTPMuxer({ audio: opus, audioDiagnostics, writePacket: (data) => packets.push(data) });
+    let payload = Buffer.from([0xf8, 0xff, 0xfe]);
+    for (let timestamp of [0, 20, 160, 170, 190]) {
+      muxer.writeAudio(payload, timestamp);
+    }
+    assert.equal(packets.length, 5);
+    assert.equal(
+      packets.every((packet) => packet.subarray(12).equals(payload)),
+      true,
+    );
+    assert.deepEqual(
+      packets.slice(1).map((packet, index) => (packet.readUInt32BE(4) - packets[index].readUInt32BE(4)) >>> 0),
+      [960, 6720, 480, 960],
+    );
+    if (audioDiagnostics === true) {
+      assert.deepEqual(muxer.audioTiming, {
+        units: 5,
+        unknownDurations: 0,
+        gaps: 1,
+        overlaps: 1,
+        maxGapMs: 120,
+        maxOverlapMs: 10,
+        totalGapMs: 120,
+        totalOverlapMs: 10,
+      });
+      let snapshot = muxer.audioTiming;
+      snapshot.gaps = 99;
+      assert.equal(muxer.audioTiming.gaps, 1);
+    } else {
+      assert.equal(muxer.audioTiming, undefined);
+    }
+    await muxer.close();
+  });
+}
+
+for (let [toc, count, duration] of [
+  [0x00, undefined, 10],
+  [0x08, undefined, 20],
+  [0x10, undefined, 40],
+  [0x18, undefined, 60],
+  [0x60, undefined, 10],
+  [0x68, undefined, 20],
+  [0x80, undefined, 2.5],
+  [0x88, undefined, 5],
+  [0x90, undefined, 10],
+  [0x98, undefined, 20],
+  [0x99, undefined, 40],
+  [0x9a, undefined, 40],
+  [0x9b, 3, 60],
+  [0x83, 48, 120],
+]) {
+  test('Opus timing reads TOC frame configuration and count: ' + toc + '/' + count, async () => {
+    let muxer = new RTPMuxer({ audio: opus, audioDiagnostics: true, writePacket: () => {} });
+    let payload = Buffer.from([toc, count ?? 0, 1]);
+    muxer.writeAudio(payload, 0);
+    muxer.writeAudio(payload, duration);
+    assert.equal(muxer.audioTiming.gaps, 0);
+    assert.equal(muxer.audioTiming.overlaps, 0);
+    assert.equal(muxer.audioTiming.unknownDurations, 0);
+    await muxer.close();
+  });
+}
+
+for (let payload of [Buffer.from([0x9b]), Buffer.from([0x9b, 0]), Buffer.from([0x9b, 7])]) {
+  test('unknown Opus duration is counted without rejecting or guessing media: ' + payload.toString('hex'), async () => {
+    let packets = [];
+    let muxer = new RTPMuxer({ audio: opus, audioDiagnostics: true, writePacket: (data) => packets.push(data) });
+    muxer.writeAudio(payload, 0);
+    muxer.writeAudio(Buffer.from([0xf8, 0xff, 0xfe]), 150);
+    assert.equal(packets.length, 2);
+    assert.equal(muxer.audioTiming.unknownDurations, 1);
+    assert.equal(muxer.audioTiming.gaps, 0);
+    await muxer.close();
+  });
+}
+
+test('batched AAC timing counts each 1024-sample AU using its ADTS sample rate', async () => {
+  let { adts } = await import('./helpers/aac-fixtures.js');
+  let frame = adts(Buffer.from([0x21, 0x10]), { frequency: 4 });
+  let muxer = new RTPMuxer({ audio: { codec: 'aac' }, audioDiagnostics: true, writePacket: () => {} });
+  muxer.configureAudio(frame);
+  muxer.writeAudio(Buffer.concat([frame, frame]), 0);
+  muxer.writeAudio(frame, (2048 * 1000) / 44100);
+  assert.equal(muxer.audioTiming.units, 3);
+  assert.equal(muxer.audioTiming.gaps, 0);
+  assert.equal(muxer.audioTiming.overlaps, 0);
+  await muxer.close();
+});
+
+test('raw AAC and PCM timing use sample counts rather than delivery intervals', async () => {
+  for (let [format, data, step] of [
+    [aac, Buffer.from([0x21, 0x10]), (1024 * 1000) / 48000],
+    [{ codec: 'pcm-s16le', sampleRate: 48000, channels: 2 }, Buffer.alloc(960 * 4), 20],
+  ]) {
+    let muxer = new RTPMuxer({ audio: format, audioDiagnostics: true, writePacket: () => {} });
+    for (let index = 0; index < 100; index++) {
+      muxer.writeAudio(data, index * step);
+    }
+    assert.equal(muxer.audioTiming.units, 100);
+    assert.equal(muxer.audioTiming.gaps, 0);
+    assert.equal(muxer.audioTiming.overlaps, 0);
+    await muxer.close();
+  }
+});
+
+test('audio timing handles RTP timestamp rollover without reporting another discontinuity', async () => {
+  let packets = [];
+  let muxer = new RTPMuxer({ audio: opus, audioDiagnostics: true, writePacket: (packet) => packets.push(packet) });
+  let payload = Buffer.from([0xf8, 0xff, 0xfe]);
+  muxer.writeAudio(payload, 0);
+  let wrapTime = (0x100000000 - packets[0].readUInt32BE(4)) / 48;
+  if (wrapTime <= 20) {
+    wrapTime += 0x100000000 / 48;
+  }
+  muxer.writeAudio(payload, wrapTime - 10);
+  let before = muxer.audioTiming;
+  muxer.writeAudio(payload, wrapTime + 10);
+  assert.equal(packets[2].readUInt32BE(4), 480);
+  assert.equal(muxer.audioTiming.gaps, before.gaps);
+  assert.equal(muxer.audioTiming.overlaps, before.overlaps);
+  await muxer.close();
+});

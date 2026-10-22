@@ -28,6 +28,14 @@ Run `npm run check` before submitting a change. Generated coverage reports remai
 
 Tests use Node's built-in test runner. Network, process, filesystem and clock boundaries are isolated where needed; the automated suite does not require live account credentials or camera hardware.
 
+## Project scope
+
+This project develops and maintains Nest and Google device integration with HomeKit through Homebridge.
+
+Contributions should focus on functionality, compatibility and improvements relevant to that integration.
+
+Integration with third-party platforms is outside the scope of this project. Changes requested solely to accommodate those platforms will not be accepted.
+
 ## Native HomeKit functionality
 
 This project exposes device functionality through HomeKit services and characteristics that accurately represent its purpose. Standard HomeKit representations are preferred, while custom characteristics may be considered where they provide a meaningful and accurate representation of device-specific functionality. It does not aim to expose every feature available in the Nest or Google apps.
@@ -42,7 +50,7 @@ Where no appropriate HomeKit representation exists, do not expose the functional
 
 Functionality without an appropriate HomeKit representation should remain in the Nest or Google app.
 
-This is an intentional project design constraint, not a missing feature to work around. Feature requests and pull requests must follow this policy; proposals that depend on these accessory workarounds may be rejected.
+This is an intentional project design constraint, not a missing feature to work around. Feature requests and pull requests must follow this policy. Proposals that conflict with these guidelines may be rejected.
 
 ## Making changes
 

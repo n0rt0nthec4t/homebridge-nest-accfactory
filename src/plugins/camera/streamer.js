@@ -54,13 +54,13 @@
 //
 // Live streaming behaviour:
 // - Live outputs attach at the current live edge
-// - Output policy controls startup keyframe requirements, burst limits, and a fixed delivery lead
+// - A fixed 300 ms playout buffer absorbs source delivery bursts with one shared A/V clock
 // - RTP presentation timestamps remain independent of scheduler delivery deadlines
-// - Catch-up mode drains retained media faster when an output falls too far behind live
-// - This keeps latency low while still allowing decoder-safe startup and smoother recovery
+// - Shared work limits and receiver backpressure bound delivery without adaptive catch-up
 //
 // Recording behaviour:
 // - Recording outputs can start from a requested timestamp
+// - The retained startup range drains under the shared work budget before timed delivery
 // - The closest retained media item to the requested time is selected
 // - Decoder/keyframe safety is handled during playout, not during cursor selection
 //
@@ -75,7 +75,7 @@
 // - MediaTimeline owns retained buffer/index stats
 // - Streamer owns per-output write/drop/playout stats
 //
-// Code version 2026.10.21
+// Code version 2026.10.23
 // Mark Hulskamp
 'use strict';
 
@@ -100,38 +100,8 @@ const MAX_BUFFERED_ITEMS_PER_OUTPUT_PER_TICK = 20; // Prevent one output starvin
 const STREAM_FRAME_INTERVAL = 1000 / 30; // 30fps approx
 const OUTPUT_LOOP_INTERVAL = 10; // Shared output scheduler interval
 const OUTPUT_BUDGET_LOG_INTERVAL = 30000; // Throttle per-streamer over-budget debug logs
-const OUTPUT_KEYFRAME_AUDIO_PRIORITY_MS = 120; // Let due audio go first around large H264 keyframes
-const OUTPUT_AUDIO_OVERDUE_PRIORITY_MS = 40; // Do not let expensive video writes extend an audible audio gap
-const OUTPUT_EXPENSIVE_VIDEO_BYTES = 64 * 1024; // Treat large frames as cooperative-scheduler boundaries
-const OUTPUT_PLAYOUT_POLICY = {
-  live: {
-    requireKeyFrameStart: false,
-    allowAudioBeforeKeyFrame: true,
-    deliveryLeadMs: 380,
-    maxLagBehindLiveMs: 1000,
-    dueTolerance: 12,
-    dueSlack: 18,
-    catchupExitThresholdMs: 300,
-    catchupAudioBurstLimit: 6,
-    normalVideoBurstLimit: 2,
-    normalAudioBurstLimit: 8,
-    catchupVideoBurstLimit: 4,
-  },
-
-  record: {
-    requireKeyFrameStart: true,
-    allowAudioBeforeKeyFrame: false,
-    deliveryLeadMs: 200,
-    maxLagBehindLiveMs: 1200,
-    dueTolerance: 12,
-    dueSlack: 20,
-    catchupExitThresholdMs: 350,
-    catchupAudioBurstLimit: 6,
-    normalVideoBurstLimit: 3,
-    normalAudioBurstLimit: 6,
-    catchupVideoBurstLimit: 10,
-  },
-};
+const OUTPUT_EXPENSIVE_VIDEO_BYTES = 64 * 1024; // Check the shared work budget before large frames
+const OUTPUT_PLAYOUT_DELAY_MS = 300; // Fixed A/V headroom for bursty source delivery
 
 // Initial capacity used by Streamer for its shared media buffer.
 // This may diverge from the generic RingBuffer default as buffering strategy,
@@ -765,7 +735,7 @@ export default class Streamer {
     }
 
     // RTPMuxer owns delivery and wire clocks; this record owns its preparation.
-    muxer = new RTPMuxer({ includeAudio, audio: this.#transport?.audio });
+    muxer = new RTPMuxer({ includeAudio, audio: this.#transport?.audio, audioDiagnostics: this.supportDump === true });
     output.muxer = muxer;
     await muxer.prepare();
     if (this.#outputs.get(sessionID) !== output) {
@@ -820,23 +790,8 @@ export default class Streamer {
       startCursor = this.#itemIndex;
     }
 
-    // Create output state.
-    // Each output consumes from the shared media timeline using independent video
-    // and audio cursors with one shared playout timing model.
-    //
-    // Key concepts:
-    // - videoCursor/audioCursor: next media-specific read positions (absolute indexes)
-    // - cursor: earliest media cursor, retained for shared timeline trimming
-    // - catchingUp: used when starting behind live edge (mainly RECORD) to fast-drain
-    // - sourceBaseTime / wallclockBaseTime:
-    //     map source timestamps -> real time for paced playback
-    // - policy: defines how this output consumes media (latency vs continuity tradeoff)
-    //
-    // IMPORTANT:
-    // - All smoothing / pacing happens in Streamer (not in NexusTalk/WebRTC)
-    // - Each output has its own independent timing model
-    // - Policies MUST be tuned per output type (do not unify blindly)
-
+    // Each receiver owns its cursors and one common A/V clock. Recording can
+    // drain the retained startup range before normal timed delivery begins.
     Object.assign(output, {
       sessionID: sessionID,
       type: type,
@@ -856,12 +811,7 @@ export default class Streamer {
       videoCursor: startCursor,
       audioCursor: startCursor,
 
-      // Catch-up mode:
-      // - RECORD starts in catch-up to drain historical timeline
-      // - LIVE starts at the live edge so no catch-up is required initially
-      catchingUp: type === Streamer.STREAM_TYPE.RECORD,
-      catchupTicks: 0,
-      catchupStableFrames: 0,
+      prebufferEnd: type === Streamer.STREAM_TYPE.RECORD ? timeline.endIndex : 0,
 
       // Codec / decoder state tracking.
       sentCodecConfig: false, // SPS/PPS sent
@@ -874,18 +824,6 @@ export default class Streamer {
       // wallclockTime = wallclockBaseTime + (item.time - sourceBaseTime)
       sourceBaseTime: undefined,
       wallclockBaseTime: undefined,
-
-      // Playout policy:
-      // Defines how aggressively we stay near live edge vs preserve continuity.
-      //
-      // LIVE:
-      // - attaches at the live edge with a fixed delivery lead
-      // - prefers stable low-latency delivery over dumping bursts into ffmpeg
-      //
-      // RECORD:
-      // - fixed delivery lead after bounded prebuffer catch-up
-      // - preserves continuity while draining retained media
-      policy: { ...(OUTPUT_PLAYOUT_POLICY[type] ?? OUTPUT_PLAYOUT_POLICY.live) },
 
       // Debug instrumentation is not allocated for normal streaming.
       stats:
@@ -905,10 +843,8 @@ export default class Streamer {
                 audioWriteGapsOver100Ms: 0,
                 audioWriteGapsOver250Ms: 0,
                 audioWriteGapsOver500Ms: 0,
-                audioBlockedBehindVideo: 0,
                 videoBackpressureStops: 0,
                 maxQueuedBytes: 0,
-                maxBlockedAudioLagMs: 0,
                 lastAudioDiagnosticWriteAt: undefined,
                 lastAudioDiagnosticLogTime: undefined,
               },
@@ -999,6 +935,18 @@ export default class Streamer {
     }
     this.#syncSchedulerState();
     let closingOutput = this.#cleanupOutput(output);
+    let audioTiming = wasActive === true && this.supportDump === true ? output.muxer?.audioTiming : undefined;
+    if (audioTiming !== undefined && audioTiming.units > 0) {
+      // One bounded summary for each live or recording receiver. These are source
+      // presentation gaps/overlaps at RTP delivery, not network-arrival delays.
+      this?.log?.info?.(
+        'RTP audio timing for device uuid "%s": session="%s" type="%s" %j',
+        this.nest_google_device_uuid,
+        output.sessionID,
+        type,
+        audioTiming,
+      );
+    }
     let diagnostics = undefined;
     if (wasActive === true && type === Streamer.STREAM_TYPE.LIVE && this.supportDump === true && this.isLiveStreaming() === false) {
       diagnostics = Promise.resolve().then(async () => {
@@ -1171,9 +1119,7 @@ export default class Streamer {
       output.sentCodecConfig = false;
       output.sourceBaseTime = undefined;
       output.wallclockBaseTime = undefined;
-      output.catchingUp = false;
-      output.catchupTicks = 0;
-      output.catchupStableFrames = 0;
+      output.prebufferEnd = 0;
 
       // Move active outputs to the current live edge.
       // This avoids replaying stale pre-offline media after fallback frames.
@@ -1219,16 +1165,13 @@ export default class Streamer {
           diagnostics.lastAudioDiagnosticLogTime = dateNow;
 
           this?.log?.debug?.(
-            'Streamer output audio write gap for device uuid "%s": session="%s" type="%s" gapMs=%s keyframeAgeMs=%s ' +
-              'keyframeBytes=%s catchingUp=%s deliveryLeadMs=%s',
+            'Streamer output audio write gap for device uuid "%s": session="%s" type="%s" gapMs=%s keyframeAgeMs=%s ' + 'keyframeBytes=%s',
             this.nest_google_device_uuid,
             output?.sessionID ?? '-',
             output?.type ?? '-',
             Math.round(gapMs),
             Number.isFinite(keyframeAgeMs) === true && keyframeAgeMs <= STREAMER_AV_CORRELATION_WINDOW_MS ? Math.round(keyframeAgeMs) : '-',
             Number.isFinite(this.#lastKeyframeBytes) === true ? this.#lastKeyframeBytes : '-',
-            output?.catchingUp === true ? 'true' : 'false',
-            output?.policy?.deliveryLeadMs ?? '-',
           );
         }
       }
@@ -1265,10 +1208,8 @@ export default class Streamer {
         audioWriteGapsOver100Ms: 0,
         audioWriteGapsOver250Ms: 0,
         audioWriteGapsOver500Ms: 0,
-        audioBlockedBehindVideo: 0,
         videoBackpressureStops: 0,
         maxQueuedBytes: 0,
-        maxBlockedAudioLagMs: 0,
         lastAudioDiagnosticWriteAt: undefined,
         lastAudioDiagnosticLogTime: undefined,
       };
@@ -1383,13 +1324,9 @@ export default class Streamer {
     let item = undefined;
     let videoItem = undefined;
     let audioItem = undefined;
-    let latestItem = undefined;
-    let latestItemTime = undefined;
     let anchorTime = undefined;
     let nextCursor = 0;
     let selectedType = undefined;
-    let stopReason = '';
-    let diagnostics = undefined;
 
     let muxer = undefined;
     let includeAudio = false;
@@ -1401,27 +1338,12 @@ export default class Streamer {
     let hasPPS = false;
     let bootstrap = undefined;
 
-    let policy = undefined;
-    let requireKeyFrameStart = false;
-    let allowAudioBeforeKeyFrame = false;
-
     let state = undefined;
-    let shouldCatchUp = false;
-    let catchupExitedThisTick = false;
     let budgetDeadline = 0;
-    let itemLag = 0;
     let dueVideo = false;
     let dueAudio = false;
-    let capVideo = false;
-    let capAudio = false;
     let dueVideoTime = 0;
     let dueAudioTime = 0;
-    let catchupAudioWrites = 0;
-    let catchupVideoWrites = 0;
-    let normalAudioWrites = 0;
-    let normalVideoWrites = 0;
-    let videoIsExpensive = false;
-    let audioOverdue = false;
     let writeAccepted = true;
     let outputDrops = undefined;
     let trimmedCursorLoss = 0;
@@ -1444,17 +1366,6 @@ export default class Streamer {
     includeAudio = output.includeAudio === true && muxer.hasAudio === true;
     isH264Output = this.codecs?.video === StreamTransport.CODEC_TYPE.H264;
 
-    // Output policy is normalised once when the output is created.
-    policy = output.policy;
-    //
-    // Even when live policy does not normally require keyframe startup, force
-    // decoder-safe startup whenever this output has not yet seen a real keyframe.
-    // This is important after fallback frames, reconnects, source resets, and
-    // offline -> online recovery where ffmpeg/HomeKit may still be displaying
-    // a fallback H264 image.
-    requireKeyFrameStart = policy.requireKeyFrameStart === true || (isH264Output === true && output.seenKeyFrame !== true);
-    allowAudioBeforeKeyFrame = policy.allowAudioBeforeKeyFrame === true;
-
     // Cached clean SPS/PPS for H264 keyframe bootstrap.
     // Transport media itself remains Annex-B and is written directly.
     lastSPS = this.#videoState.lastSPS;
@@ -1470,12 +1381,8 @@ export default class Streamer {
       audioCursor: typeof output.audioCursor === 'number' ? output.audioCursor : startIndex,
       seenKeyFrame: output.seenKeyFrame === true,
       sentCodecConfig: output.sentCodecConfig === true,
-      catchingUp: output.catchingUp === true,
       sourceBaseTime: output.sourceBaseTime,
       wallclockBaseTime: output.wallclockBaseTime,
-      catchupTicks: Number.isInteger(output.catchupTicks) === true && output.catchupTicks >= 0 ? output.catchupTicks : 0,
-      catchupStableFrames:
-        Number.isInteger(output.catchupStableFrames) === true && output.catchupStableFrames >= 0 ? output.catchupStableFrames : 0,
     };
 
     // Output drop stats should record only cursor data this output actually lost.
@@ -1518,29 +1425,8 @@ export default class Streamer {
     // Media-specific cursors do the actual draining.
     state.cursor = includeAudio === true ? Math.min(state.videoCursor, state.audioCursor) : state.videoCursor;
 
-    // Determine latest media timestamp currently retained.
-    // This acts as the live head for lag/catch-up decisions.
-    latestItem = timeline.last();
-    latestItemTime = typeof latestItem?.time === 'number' ? latestItem.time : undefined;
-
-    // Optional time budget for cooperative scheduling across outputs.
+    // Retained replay and normal delivery share the same cooperative work budget.
     budgetDeadline = typeof budgetMs === 'number' && budgetMs > 0 ? dateNow + budgetMs : 0;
-
-    // Detect if this output is too far behind the retained live head.
-    // Uses the earliest protected cursor item as the lag reference.
-    if (state.catchingUp !== true && typeof latestItemTime === 'number') {
-      item = timeline.get(state.cursor);
-
-      if (typeof item?.time === 'number') {
-        itemLag = latestItemTime - item.time;
-
-        if (itemLag > policy.maxLagBehindLiveMs) {
-          state.catchingUp = true;
-          state.catchupTicks = 0;
-          state.catchupStableFrames = 0;
-        }
-      }
-    }
 
     // Keep the unconsumed media candidate between loop iterations. Only the
     // selected media cursor advances, so resolving both again wastes a search.
@@ -1557,6 +1443,18 @@ export default class Streamer {
       muxer.setSourceEpoch(anchorTime);
     }
 
+    if (typeof state.sourceBaseTime !== 'number' && typeof anchorTime === 'number') {
+      // Anchor once at the available source head. Historical startup media may
+      // already be due, while subsequent batches retain fixed playout headroom.
+      // Arrival order can end with an older video frame after audio advanced.
+      // Reuse the latest per-track times rather than treating the last item as the head.
+      state.sourceBaseTime = Math.max(
+        this.#lastMediaTime.video ?? anchorTime,
+        includeAudio === true ? (this.#lastMediaTime.audio ?? anchorTime) : anchorTime,
+      );
+      state.wallclockBaseTime = dateNow + OUTPUT_PLAYOUT_DELAY_MS;
+    }
+
     // Main processing loop.
     // MediaTimeline gives us indexed video/audio lookup so we no longer walk
     // the mixed shared buffer looking for the next item of each type.
@@ -1566,59 +1464,19 @@ export default class Streamer {
     ) {
       // Respect scheduler budget periodically.
       if (budgetDeadline !== 0 && (processed & 0x03) === 0 && Date.now() >= budgetDeadline) {
-        stopReason = 'budget';
         break;
       }
-
-      dueVideo = false;
-      dueAudio = false;
-      capVideo = false;
-      capAudio = false;
-      selectedType = undefined;
-      videoIsExpensive = false;
-      audioOverdue = false;
 
       if (videoItem === undefined && audioItem === undefined) {
         break;
       }
 
-      shouldCatchUp = state.catchingUp === true && catchupExitedThisTick === false;
-
-      // Normal playback maps source media timestamps to wallclock time.
-      // Catch-up playback drains retained items faster until close to live edge.
-      if (shouldCatchUp !== true) {
-        if (typeof state.sourceBaseTime !== 'number' || typeof state.wallclockBaseTime !== 'number') {
-          anchorTime = undefined;
-
-          if (typeof videoItem?.time === 'number') {
-            anchorTime = videoItem.time;
-          }
-
-          if (typeof audioItem?.time === 'number' && (typeof anchorTime !== 'number' || audioItem.time < anchorTime)) {
-            anchorTime = audioItem.time;
-          }
-
-          state.sourceBaseTime = anchorTime;
-          // Lead delivery by a fixed amount; RTP timestamps retain presentation
-          // time. This is not a buffering delay or a measure of frame lateness.
-          state.wallclockBaseTime = dateNow - policy.deliveryLeadMs;
-        }
-
-        if (typeof videoItem?.time === 'number') {
-          dueVideoTime = state.wallclockBaseTime + (videoItem.time - state.sourceBaseTime);
-          dueVideo = dueVideoTime <= dateNow + policy.dueTolerance + policy.dueSlack;
-        }
-
-        if (typeof audioItem?.time === 'number') {
-          dueAudioTime = state.wallclockBaseTime + (audioItem.time - state.sourceBaseTime);
-          dueAudio = dueAudioTime <= dateNow + policy.dueTolerance + policy.dueSlack;
-        }
-      } else {
-        dueVideo = videoItem !== undefined;
-        dueAudio = audioItem !== undefined;
-        dueVideoTime = dateNow;
-        dueAudioTime = dateNow;
-      }
+      // Only the recording's original retained range bypasses timed delivery.
+      // A fixed source/wallclock mapping preserves A/V spacing after that range.
+      dueVideoTime = state.wallclockBaseTime + (videoItem?.time - state.sourceBaseTime);
+      dueAudioTime = state.wallclockBaseTime + (audioItem?.time - state.sourceBaseTime);
+      dueVideo = videoItem !== undefined && (videoItem.index < output.prebufferEnd || dueVideoTime <= dateNow);
+      dueAudio = audioItem !== undefined && (audioItem.index < output.prebufferEnd || dueAudioTime <= dateNow);
 
       // Keep blocked media in the bounded timeline until its output drains.
       // Production tracks share TCP pressure; injected sinks may block tracks separately.
@@ -1626,51 +1484,12 @@ export default class Streamer {
       dueAudio = dueAudio === true && muxer.blocked('audio') !== true;
 
       if (dueVideo !== true && dueAudio !== true) {
-        stopReason = 'not-due';
         break;
       }
 
-      // Enforce burst limits separately for normal and catch-up playback.
-      if (dueVideo === true) {
-        capVideo =
-          (shouldCatchUp !== true && normalVideoWrites >= policy.normalVideoBurstLimit) ||
-          (shouldCatchUp === true && catchupVideoWrites >= policy.catchupVideoBurstLimit);
-      }
-
-      if (dueAudio === true) {
-        capAudio =
-          (shouldCatchUp !== true && normalAudioWrites >= policy.normalAudioBurstLimit) ||
-          (shouldCatchUp === true && catchupAudioWrites >= policy.catchupAudioBurstLimit);
-      }
-
-      if ((dueVideo !== true || capVideo === true) && (dueAudio !== true || capAudio === true)) {
-        stopReason =
-          capVideo === true && capAudio === true
-            ? 'media-cap'
-            : capVideo === true
-              ? 'video-cap'
-              : capAudio === true
-                ? 'audio-cap'
-                : 'not-due';
-        break;
-      }
-
-      // Choose the oldest due media item so A/V ordering remains timeline based.
-      // Exception: large H264 keyframes can be expensive to write/process, so
-      // let already-due audio go first when it is close to the keyframe boundary.
-      videoIsExpensive =
-        videoItem?.keyFrame === true ||
-        (Buffer.isBuffer(videoItem?.data) === true && videoItem.data.length >= OUTPUT_EXPENSIVE_VIDEO_BYTES);
-      audioOverdue = dueAudio === true && dateNow - dueAudioTime >= OUTPUT_AUDIO_OVERDUE_PRIORITY_MS;
-
-      if (
-        dueAudio === true &&
-        capAudio !== true &&
-        (dueVideo !== true ||
-          capVideo === true ||
-          dueAudioTime <= dueVideoTime ||
-          (videoIsExpensive === true && (dueAudioTime <= dueVideoTime + OUTPUT_KEYFRAME_AUDIO_PRIORITY_MS || audioOverdue === true)))
-      ) {
+      // Deliver the oldest source time, with video first on ties so recording
+      // audio at the opening keyframe is retained. Both tracks share TCP pressure.
+      if (dueAudio === true && (dueVideo !== true || audioItem.time < videoItem.time)) {
         selectedType = Streamer.MEDIA_TYPE.AUDIO;
         item = audioItem;
       } else {
@@ -1679,7 +1498,6 @@ export default class Streamer {
       }
 
       if (typeof item?.time !== 'number') {
-        stopReason = 'invalid-item';
         break;
       }
 
@@ -1694,7 +1512,6 @@ export default class Streamer {
           item.data.length >= OUTPUT_EXPENSIVE_VIDEO_BYTES &&
           Date.now() >= budgetDeadline
         ) {
-          stopReason = 'budget';
           break;
         }
 
@@ -1703,7 +1520,7 @@ export default class Streamer {
         if (item.codec === StreamTransport.CODEC_TYPE.H264) {
           // Suppress pre-keyframe video until this output has a real IDR.
           // This protects both recording startup and live recovery after fallback.
-          if (requireKeyFrameStart === true && state.seenKeyFrame !== true && item.keyFrame !== true) {
+          if (state.seenKeyFrame !== true && item.keyFrame !== true) {
             this.#statsDrop(output, Streamer.MEDIA_TYPE.VIDEO);
             state.videoCursor = nextCursor;
             processed++;
@@ -1713,7 +1530,6 @@ export default class Streamer {
 
           // Select missing decoder bootstrap data here; the muxer decides how
           // to encode it in the same access unit as the selected keyframe.
-          bootstrap = undefined;
           if (item.keyFrame === true && state.sentCodecConfig !== true) {
             bootstrap = {
               sps: hasSPS === true && item.hasSPS !== true ? lastSPS : undefined,
@@ -1730,35 +1546,10 @@ export default class Streamer {
         writeAccepted = muxer.writeVideo(item.data, item.time, bootstrap) !== false;
         this.#statsWrite(output, Streamer.MEDIA_TYPE.VIDEO, dateNow);
 
-        if (shouldCatchUp === true) {
-          catchupVideoWrites++;
-          state.catchupTicks++;
-
-          if (typeof latestItemTime === 'number' && latestItemTime - item.time <= policy.catchupExitThresholdMs) {
-            state.catchupStableFrames++;
-          } else {
-            state.catchupStableFrames = 0;
-          }
-
-          // Exit catch-up once enough recent video frames have been written.
-          if (state.catchupTicks >= 2 && state.catchupStableFrames >= 2) {
-            state.catchingUp = false;
-            state.sourceBaseTime = item.time;
-            state.wallclockBaseTime = dateNow - policy.deliveryLeadMs;
-            state.catchupTicks = 0;
-            state.catchupStableFrames = 0;
-            catchupExitedThisTick = true;
-          }
-        } else {
-          normalVideoWrites++;
-        }
-
         state.videoCursor = nextCursor;
         processed++;
 
         if (writeAccepted !== true || muxer.blocked('video') === true) {
-          stopReason = 'video-backpressure';
-
           if (this.supportDump === true && typeof output?.stats?.diagnostics === 'object' && output.stats.diagnostics !== null) {
             output.stats.diagnostics.videoBackpressureStops++;
           }
@@ -1771,17 +1562,9 @@ export default class Streamer {
       }
 
       if (selectedType === Streamer.MEDIA_TYPE.AUDIO) {
-        // Audio may be disabled for the output or absent from the output stream.
-        if (includeAudio !== true) {
-          state.audioCursor = nextCursor;
-          processed++;
-          audioItem = state.audioCursor < timelineEnd ? timeline.nextAudioFrom(state.audioCursor) : undefined;
-          continue;
-        }
-
         // Recordings keep audio aligned with the first decodable H264 keyframe.
         // Live output can let audio flow while video waits for IDR recovery.
-        if (isH264Output === true && requireKeyFrameStart === true && allowAudioBeforeKeyFrame !== true && state.seenKeyFrame !== true) {
+        if (isH264Output === true && output.type === Streamer.STREAM_TYPE.RECORD && state.seenKeyFrame !== true) {
           this.#statsDrop(output, Streamer.MEDIA_TYPE.AUDIO);
           state.audioCursor = nextCursor;
           processed++;
@@ -1792,28 +1575,12 @@ export default class Streamer {
         writeAccepted = muxer.writeAudio(item.data, item.time) !== false;
         this.#statsWrite(output, Streamer.MEDIA_TYPE.AUDIO, dateNow);
 
-        if (shouldCatchUp === true) {
-          catchupAudioWrites++;
-        } else {
-          normalAudioWrites++;
-        }
-
         state.audioCursor = nextCursor;
         processed++;
 
         audioItem = state.audioCursor < timelineEnd ? timeline.nextAudioFrom(state.audioCursor) : undefined;
 
         continue;
-      }
-    }
-
-    // Diagnostic: audio was due but was blocked by video burst limits.
-    if (this.supportDump === true && stopReason === 'video-cap' && dueAudio === true && capAudio !== true) {
-      diagnostics = output?.stats?.diagnostics;
-
-      if (typeof diagnostics === 'object' && diagnostics !== null) {
-        diagnostics.audioBlockedBehindVideo++;
-        diagnostics.maxBlockedAudioLagMs = Math.max(diagnostics.maxBlockedAudioLagMs, Math.max(0, dateNow - dueAudioTime));
       }
     }
 
@@ -2060,10 +1827,8 @@ export default class Streamer {
     this?.log?.info?.('        "audioWriteGapsOver100Ms": %s', diagnostics?.audioWriteGapsOver100Ms ?? 0);
     this?.log?.info?.('        "audioWriteGapsOver250Ms": %s', diagnostics?.audioWriteGapsOver250Ms ?? 0);
     this?.log?.info?.('        "audioWriteGapsOver500Ms": %s', diagnostics?.audioWriteGapsOver500Ms ?? 0);
-    this?.log?.info?.('        "audioBlockedBehindVideo": %s', diagnostics?.audioBlockedBehindVideo ?? 0);
     this?.log?.info?.('        "videoBackpressureStops": %s', diagnostics?.videoBackpressureStops ?? 0);
     this?.log?.info?.('        "maxQueuedBytes": %s', diagnostics?.maxQueuedBytes ?? 0);
-    this?.log?.info?.('        "maxBlockedAudioLagMs": %s', diagnostics?.maxBlockedAudioLagMs ?? 0);
     this?.log?.info?.('      },');
     this?.log?.info?.('    },');
     this?.log?.info?.('    "last": {');

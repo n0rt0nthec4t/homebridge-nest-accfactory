@@ -4,6 +4,25 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.5-alpha.3 (2026/10/23)
+
+### Changed
+
+- Limit live-view FFmpeg input analysis to 500 ms of media to reduce probing delay after usable camera media arrives
+- Simplify Streamer to fixed 300 ms A/V playout buffering and bounded HKSV prebuffer delivery, removing adaptive catch-up and separate audio/video burst policies
+- Remove audio timestamp compensation inherited from raw-pipe inputs in live views and HKSV recordings, retaining RTP timing and the required audio format conversion
+- Simplify WebRTC video reassembly around complete timestamp groups, retaining fragment validation, decoder recovery and existing incomplete-frame timeouts
+
+### Fixed
+
+- Anchor playout to the newest enabled media track when the first WebRTC keyframe completes after audio has already advanced, avoiding extra startup buffering
+- Release WebRTC audio when its reorder hold expires without waiting for another packet, and report connection timing only after ICE connects
+- Resume Google state updates after credential refresh and cancel pending retries from the previous Observe stream [#352](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/pull/352) [@jakemike1](https://github.com/jakemike1)
+
+### Security
+
+- Restrict the local RTSP endpoint to its random resource URL, bound receiver admission time and pending connections, and reject invalid clients without retiring the camera output
+
 ## v0.4.5-alpha.2 (2026/10/21)
 
 ### Added
@@ -18,7 +37,6 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
 ### Fixed
 
-- Resume Google state updates after credential refresh and cancel pending retries from the previous Observe stream
 - Prevent live-view startup failures when the first audio/video frames arrive out of timestamp order or playback starts during a scheduler tick
 - Accept complete, valid WebRTC keyframes after slow delivery while retaining incomplete-frame expiry and decoder safety checks
 - Wait for newer Google snapshot updates before falling back to the last available image, and remove repetitive fallback logging

@@ -1,5 +1,5 @@
 // Verify camera cleanup uses managed FFmpeg completion without Homebridge, media backends or network sockets.
-// Code version 2026.10.20
+// Code version 2026.10.23
 import assert from 'node:assert/strict';
 import { importSource } from './helpers/import-source.js';
 import { Buffer } from 'node:buffer';
@@ -654,6 +654,8 @@ for (let sourceCodec of ['pcm', 'opus', 'aac']) {
       const args = processes[0].args;
       assert.equal(args[args.indexOf('-fflags') + 1], sourceCodec === 'aac' ? '+discardcorrupt+genpts' : '+discardcorrupt+genpts+nofillin');
       assert.equal(args.includes('-copyts'), true);
+      assert.equal(args[args.indexOf('-analyzeduration') + 1], '500000');
+      assert.ok(args.indexOf('-analyzeduration') < args.indexOf('-i'));
       assert.equal(args[args.indexOf('-rtsp_transport') + 1], 'tcp');
       assert.equal(args[args.indexOf('-i') + 1], 'rtsp://127.0.0.1:12345/owned-session');
       assert.equal(args.includes('0:a:0'), true);
@@ -662,6 +664,9 @@ for (let sourceCodec of ['pcm', 'opus', 'aac']) {
       assert.equal(args.includes('pipe:3'), false);
       assert.equal(args.includes('pipe:0'), false);
       assert.equal(args.includes(codec === 'aac' ? 'libfdk_aac' : 'libopus'), true);
+      assert.equal(args.includes('-filter:a'), false);
+      assert.equal(args[args.indexOf('-ar') + 1], '16k');
+      assert.equal(args[args.indexOf('-ac') + 1], '1');
       assert.equal(camera.ffmpeg.start.mock.calls[0].arguments[0].inputs, undefined);
       await camera.handleStreamRequest({ sessionID: 'one', type: 'stop' });
       assert.equal(
@@ -694,6 +699,10 @@ for (let sourceCodec of ['opus', 'aac']) {
     assert.equal(args.includes('0:a:0'), true);
     assert.equal(args.includes('-copyts'), true);
     assert.equal(args.includes('aac_low'), true);
+    assert.equal(args.includes('-analyzeduration'), false);
+    assert.equal(args.includes('-filter:a'), false);
+    assert.equal(args[args.indexOf('-ar') + 1], '16000');
+    assert.equal(args[args.indexOf('-ac') + 1], '1');
     assert.equal(args[args.indexOf('-codec:v') + 1], 'libx264');
     assert.equal(args[args.indexOf('-fps_mode') + 1], 'cfr');
     assert.equal(args[args.indexOf('-g:v') + 1], '120');

@@ -10,14 +10,16 @@
 // - Preserve source media intervals using per-track RTP clocks
 // - Relate audio/video clocks through RTCP sender reports and a shared CNAME
 // - Build RTP/RTSP headers and codec payloads directly in final wire buffers
+// - Admit one receiver by its random resource URL, with bounded candidate connections and a fixed deadline
 // - Report per-track backpressure and retire packet delivery on close
+// - Optionally summarise delivered audio timestamp gaps/overlaps against packet sample durations
 //
 // Streamer owns the shared buffer, output cursors, decoder bootstrap and pacing.
 // This muxer has no media timeline, output registry, scheduler or hidden queue.
 // A loopback RTSP endpoint carries RTP/RTCP over TCP after the receiver's PLAY.
 // Tests may inject a synchronous packet sink instead of opening that endpoint.
 //
-// Code version 2026.10.21
+// Code version 2026.10.23
 // Mark Hulskamp
 'use strict';
 
@@ -25,11 +27,14 @@
 import { randomBytes } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import net from 'node:net';
+import timers from 'node:timers';
 
 // Define our modules
 import H264 from './h264.js';
 
 // Define constants
+const RECEIVER_ADMISSION_TIMEOUT_MS = 5000;
+const MAX_PENDING_RECEIVERS = 4;
 const MAX_CONTROL_BYTES = 128 * 1024;
 const MAX_PENDING_BYTES = 8 * 1024 * 1024;
 const MAX_ACCESS_UNIT_BYTES = 4 * 1024 * 1024;
@@ -49,13 +54,22 @@ export default class RTPMuxer {
   #playing = false;
   #adtsAudio = false;
   #audioPending = false;
+  #audioTiming = undefined; // Opt-in counters only; no audio bytes or per-packet history retained.
+  #nextAudioTimestamp = undefined; // Expected next RTP timestamp, including 32-bit rollover.
   #descriptionCSeq = undefined;
   #url = undefined;
   #session = randomBytes(12).toString('hex');
   #channels = new Map();
-  #control = Buffer.alloc(0);
+  #candidates = new Set(); // Bounded, unvalidated local connections; none owns media delivery.
 
-  constructor({ audio, includeAudio = true, writePacket, maxPacketBytes = 1200, unixNow = () => Date.now() } = {}) {
+  constructor({
+    audio,
+    includeAudio = true,
+    audioDiagnostics = false,
+    writePacket,
+    maxPacketBytes = 1200,
+    unixNow = () => Date.now(),
+  } = {}) {
     if ((writePacket !== undefined && typeof writePacket !== 'function') || typeof unixNow !== 'function') {
       throw new TypeError('A packet sink and wallclock are required');
     }
@@ -77,6 +91,18 @@ export default class RTPMuxer {
       format.config = Buffer.from(format.config);
     }
     this.#unixNow = unixNow;
+    if (audioDiagnostics === true) {
+      this.#audioTiming = {
+        units: 0,
+        unknownDurations: 0,
+        gaps: 0,
+        overlaps: 0,
+        maxGapMs: 0,
+        maxOverlapMs: 0,
+        totalGapMs: 0,
+        totalOverlapMs: 0,
+      };
+    }
     this.#output = {
       audio: format,
       writePacket,
@@ -141,58 +167,94 @@ export default class RTPMuxer {
   }
 
   #accept(socket) {
-    // Each live output belongs to one FFmpeg receiver. A second connection must
-    // not replace that receiver or inherit its negotiated channels and RTP clocks.
-    if (this.#output.closed === true || this.#socket !== undefined) {
+    if (this.#output.closed === true || this.#socket !== undefined || this.#candidates.size >= MAX_PENDING_RECEIVERS) {
       socket.destroy();
       return;
     }
-    this.#socket = socket;
+
+    // A connection does not own the receiver until it proves knowledge of this
+    // output's random resource URL. An idle or invalid client cannot evict FFmpeg.
+    let receiver = { socket, control: Buffer.alloc(0), timer: undefined };
+    this.#candidates.add(receiver);
+    receiver.timer = timers.setTimeout(() => this.#rejectReceiver(receiver), RECEIVER_ADMISSION_TIMEOUT_MS);
+    receiver.timer.unref();
     socket.setNoDelay(true);
     socket.on('data', (data) => {
       try {
-        this.#receive(data);
+        this.#receive(data, receiver);
       } catch (error) {
-        this.#fail(error);
+        if (this.#socket === socket) {
+          this.#fail(error);
+        } else {
+          this.#rejectReceiver(receiver);
+        }
       }
     });
-    // Both tracks share this TCP queue, so one drain releases their socket pressure.
-    socket.on('drain', () => this.#blocked.clear());
-    socket.on('error', (error) => this.#fail(error));
+    socket.on('drain', () => {
+      if (this.#socket === socket) {
+        this.#blocked.clear();
+      }
+    });
+    socket.on('error', (error) => {
+      if (this.#socket === socket) {
+        this.#fail(error);
+      } else {
+        this.#rejectReceiver(receiver);
+      }
+    });
     socket.on('close', () => {
-      if (this.#output.closed !== true) {
+      timers.clearTimeout(receiver.timer);
+      this.#candidates.delete(receiver);
+      receiver.control = Buffer.alloc(0);
+      if (this.#socket === socket && this.#output.closed !== true) {
         this.#fail(Object.assign(new Error('FFmpeg RTP receiver disconnected'), { code: 'ERR_RTP_RECEIVER_CLOSED' }));
       }
     });
   }
 
-  #receive(data) {
-    if (this.#control.length + data.length > MAX_CONTROL_BYTES) {
+  #rejectReceiver(receiver) {
+    // Exact candidate ownership prevents a late timer/error from retiring an
+    // admitted receiver or touching a different connection's parser state.
+    if (this.#candidates.delete(receiver) === true) {
+      timers.clearTimeout(receiver.timer);
+      receiver.control = Buffer.alloc(0);
+      receiver.socket.destroy();
+    }
+  }
+
+  #receive(data, receiver) {
+    if (receiver.socket.destroyed === true) {
+      return;
+    }
+    if (receiver.control.length + data.length > MAX_CONTROL_BYTES) {
       throw new Error('RTSP control buffer exceeded its limit');
     }
     // TCP can split a request across reads or combine several messages. Retain
     // only the unfinished suffix and process complete messages in wire order.
-    this.#control = this.#control.length === 0 ? data : Buffer.concat([this.#control, data]);
+    receiver.control = receiver.control.length === 0 ? data : Buffer.concat([receiver.control, data]);
 
-    while (this.#control.length > 0) {
-      if (this.#control[0] === 0x24) {
+    while (receiver.control.length > 0) {
+      if (receiver.control[0] === 0x24) {
+        if (this.#socket !== receiver.socket) {
+          throw new Error('RTCP feedback before receiver admission');
+        }
         // Consume bounded receiver RTCP feedback so it cannot block the TCP stream.
         // Retransmission is not needed for this ordered loopback TCP handoff.
-        if (this.#control.length < 4) {
+        if (receiver.control.length < 4) {
           return;
         }
-        let length = this.#control.readUInt16BE(2);
-        if (this.#control.length < 4 + length) {
+        let length = receiver.control.readUInt16BE(2);
+        if (receiver.control.length < 4 + length) {
           return;
         }
-        this.#control = this.#control.subarray(4 + length);
+        receiver.control = receiver.control.subarray(4 + length);
         continue;
       }
-      let end = this.#control.indexOf('\r\n\r\n');
+      let end = receiver.control.indexOf('\r\n\r\n');
       if (end === -1) {
         return;
       }
-      let lines = this.#control.subarray(0, end).toString('utf8').split('\r\n');
+      let lines = receiver.control.subarray(0, end).toString('utf8').split('\r\n');
       let request = /^([A-Z_]+) (\S+) RTSP\/1\.0$/.exec(lines.shift());
       if (request === null) {
         throw new Error('Malformed RTSP request');
@@ -211,15 +273,15 @@ export default class RTPMuxer {
       if (Number.isInteger(length) !== true || length < 0 || length > 32768) {
         throw new Error('Invalid RTSP content length');
       }
-      if (this.#control.length < end + 4 + length) {
+      if (receiver.control.length < end + 4 + length) {
         return;
       }
-      this.#control = this.#control.subarray(end + 4 + length);
-      this.#request(request[1], request[2], headers);
+      receiver.control = receiver.control.subarray(end + 4 + length);
+      this.#request(request[1], request[2], headers, receiver);
     }
   }
 
-  #reply(code, cseq, headers = [], body = '') {
+  #reply(code, cseq, headers = [], body = '', socket = this.#socket) {
     let status = {
       200: 'OK',
       400: 'Bad Request',
@@ -240,33 +302,49 @@ export default class RTPMuxer {
       '',
       body,
     ].join('\r\n');
-    if (this.#socket.writableLength + Buffer.byteLength(response) > MAX_PENDING_BYTES) {
+    if (socket.writableLength + Buffer.byteLength(response) > MAX_PENDING_BYTES) {
       throw new Error('RTSP response queue exceeded its limit');
     }
-    this.#socket.write(response);
+    socket.write(response);
   }
 
-  #request(method, target, headers) {
+  #request(method, target, headers, receiver) {
     let cseq = headers.get('cseq');
     if (/^\d{1,20}$/.test(cseq ?? '') !== true) {
       throw new Error('RTSP request has no valid sequence');
     }
+    // OPTIONS discovery must not disclose the random resource or session. Its
+    // deadline remains active, so repeated OPTIONS cannot reserve a receiver.
+    if (method === 'OPTIONS' && target === '*') {
+      this.#reply(200, cseq, ['Public: OPTIONS, DESCRIBE, SETUP, PLAY, GET_PARAMETER, TEARDOWN'], '', receiver.socket);
+      return;
+    }
+
     // Restrict requests to this output's resource and session. Track selection
     // happens during SETUP; this endpoint never routes another output's media.
-    if (
-      target !== '*' &&
-      target !== this.#url &&
-      target !== this.#url + '/' &&
-      target !== this.#url + '/trackID=0' &&
-      target !== this.#url + '/trackID=1'
-    ) {
+    if (target !== this.#url && target !== this.#url + '/' && target !== this.#url + '/trackID=0' && target !== this.#url + '/trackID=1') {
+      if (this.#socket !== receiver.socket) {
+        throw new Error('Unknown RTSP resource');
+      }
       this.#reply(404, cseq);
       return;
     }
     if (headers.has('session') === true && headers.get('session').split(';')[0] !== this.#session) {
+      if (this.#socket !== receiver.socket) {
+        throw new Error('Unknown RTSP session');
+      }
       this.#reply(454, cseq);
       return;
     }
+    if (this.#socket === undefined) {
+      this.#socket = receiver.socket;
+      timers.clearTimeout(receiver.timer);
+      this.#candidates.delete(receiver);
+      for (let candidate of this.#candidates) {
+        this.#rejectReceiver(candidate);
+      }
+    }
+
     if (method === 'OPTIONS') {
       this.#reply(200, cseq, ['Public: OPTIONS, DESCRIBE, SETUP, PLAY, GET_PARAMETER, TEARDOWN']);
     } else if (method === 'DESCRIBE') {
@@ -449,6 +527,11 @@ export default class RTPMuxer {
 
   get error() {
     return this.#failure;
+  }
+
+  // Detached counter snapshot for stop-time diagnostics; undefined when collection is disabled.
+  get audioTiming() {
+    return this.#audioTiming === undefined ? undefined : { ...this.#audioTiming };
   }
 
   get hasAudio() {
@@ -852,6 +935,52 @@ export default class RTPMuxer {
       track.lastTimestamp = timestamp;
       this.#packet(output, track, data, rtpTimestamp, true, { format: 'aac' });
     }
+
+    if (this.#audioTiming !== undefined) {
+      let samples = undefined;
+      if (output.audio.codec === 'pcm-s16le') {
+        samples = data.length / (output.audio.channels * 2);
+      } else if (output.audio.codec === 'opus') {
+        // RFC 6716 section 3: TOC configuration sets frame duration, while the
+        // packing code sets frame count. Read headers only, without decoding audio.
+        let config = data[0] >> 3;
+        let code = data[0] & 3;
+        let frames = code === 0 ? 1 : code === 3 ? (data.length > 1 ? data[1] & 63 : 0) : 2;
+        let frameSamples =
+          config >= 16 ? 120 * 2 ** (config & 3) : config >= 12 ? 480 * 2 ** (config & 1) : [480, 960, 1920, 2880][config & 3];
+        if (frames > 0 && frames * frameSamples <= 5760) {
+          samples = frames * frameSamples;
+        }
+      } else {
+        // ADTS validation and raw AAC configuration both require AAC-LC with
+        // one 1024-sample block per AU. Batched ADTS is measured AU by AU.
+        samples = 1024;
+      }
+
+      let timing = this.#audioTiming;
+      timing.units++;
+      if (this.#nextAudioTimestamp !== undefined) {
+        // Compare the actual wire clock, preserving signed differences through
+        // rollover. Ignore sub-millisecond quantisation rather than reporting noise.
+        let difference = ((((rtpTimestamp - this.#nextAudioTimestamp + 0x80000000) >>> 0) - 0x80000000) * 1000) / track.rate;
+        if (difference >= 1) {
+          timing.gaps++;
+          timing.totalGapMs += difference;
+          timing.maxGapMs = Math.max(timing.maxGapMs, difference);
+        } else if (difference <= -1) {
+          timing.overlaps++;
+          timing.totalOverlapMs -= difference;
+          timing.maxOverlapMs = Math.max(timing.maxOverlapMs, -difference);
+        }
+      }
+      if (samples === undefined) {
+        // Diagnostics must not reject media or guess the next clock position.
+        timing.unknownDurations++;
+        this.#nextAudioTimestamp = undefined;
+      } else {
+        this.#nextAudioTimestamp = (rtpTimestamp + samples) >>> 0;
+      }
+    }
   }
 
   #report(output, unixMs) {
@@ -915,7 +1044,9 @@ export default class RTPMuxer {
     this.#playing = false;
     this.#blocked.clear();
     this.#socket?.destroy();
-    this.#control = Buffer.alloc(0);
+    for (let candidate of this.#candidates) {
+      this.#rejectReceiver(candidate);
+    }
     this.#descriptionCSeq = undefined;
     this.#closing = (async () => {
       if (this.#server === undefined) {
