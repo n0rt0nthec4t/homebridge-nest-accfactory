@@ -139,11 +139,6 @@
     "branches": 74,
     "functions": 84
   },
-  "src/plugins/camera/talkback.js": {
-    "lines": 95,
-    "branches": 90,
-    "functions": 100
-  },
   "src/plugins/camera/streamtransport.js": {
     "lines": 92,
     "branches": 84,

@@ -1,5 +1,5 @@
 // Verify camera cleanup uses managed FFmpeg completion without Homebridge, media backends or network sockets.
-// Code version 2026.10.23
+// Code version 2026.10.24
 import assert from 'node:assert/strict';
 import { importSource } from './helpers/import-source.js';
 import { Buffer } from 'node:buffer';
@@ -14,6 +14,8 @@ import { URL } from 'node:url';
 import FFmpeg from '../src/plugins/camera/ffmpeg.js';
 import { processConfig } from '../src/config.js';
 import { DATA_SOURCE } from '../src/consts.js';
+import { UDPPorts } from '../src/utils.js';
+import RTPMuxer from '../src/plugins/camera/rtpmuxer.js';
 
 // Replace runtime boundaries while exercising the complete camera implementation and real FFmpeg manager.
 let baseModule =
@@ -141,7 +143,11 @@ function setup(t) {
   camera.controller = { forceStopStreamingSession: t.mock.fn() };
   camera.log = { error: t.mock.fn() };
   let video = new PassThrough();
-  camera.message = t.mock.fn(async () => ({ video, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/record' } }));
+  camera.message = t.mock.fn(async () => ({
+    video,
+    ports: { audioControl: 21001, talkback: 21002 },
+    input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/record' },
+  }));
   let crypto = { port: 1234, srtpCryptoSuite: 0, srtp_key: Buffer.alloc(16), srtp_salt: Buffer.alloc(14) };
   let prepare = {
     sessionID: 'one',
@@ -152,11 +158,12 @@ function setup(t) {
     audio: crypto,
   };
   let start = { sessionID: 'one', type: 'start', video: { pt: 99, mtu: 1378 }, audio: {} };
-  t.after(() => {
+  t.after(async () => {
     for (let child of processes) {
       child.emit('exit', 0, null);
       child.emit('close', 0, null);
     }
+    await camera.onShutdown();
   });
   return { camera, processes, handles, prepare, start, video, sockets };
 }
@@ -227,7 +234,7 @@ test('recording close during RTP preparation releases a late source without spaw
   let next = camera.handleRecordingStreamRequest('recording').next();
   await camera.closeRecordingStream('recording', 0);
   assert.equal(processes.length, 0);
-  ready.resolve({ video, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/record' } });
+  ready.resolve({ video, ports: { audioControl: 21001, talkback: 21002 }, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/record' } });
   assert.equal((await next).done, true);
   assert.equal(
     camera.message.mock.calls.some((call) => call.arguments[1] === 'stop_record'),
@@ -246,7 +253,13 @@ test('replacement created during failure cleanup survives the awaited source shu
   await camera.handleStreamRequest(start, () => {});
   let stopped = Promise.withResolvers();
   camera.message = t.mock.fn((type, message) =>
-    message === 'stop_live' ? stopped.promise : Promise.resolve({ video, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/record' } }),
+    message === 'stop_live'
+      ? stopped.promise
+      : Promise.resolve({
+          video,
+          ports: { audioControl: 21001, talkback: 21002 },
+          input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/record' },
+        }),
   );
   processes[0].emit('exit', 1, null);
   processes[0].emit('close', 1, null);
@@ -345,7 +358,7 @@ for (let codec of ['libx264', 'h264_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_v4l2
 }
 
 for (let codec of ['opus', 'speex']) {
-  test('camera talkback ' + codec + ' routes RTP/RTCP and wires encoded audio through managed processes', async (context) => {
+  test('camera talkback ' + codec + ' supplies routing settings and wires encoded audio through managed processes', async (context) => {
     let { camera, handles, processes, sockets, prepare, start, video } = setup(context);
     camera.deviceData.audio_enabled = true;
     camera.deviceData.has_speaker = true;
@@ -355,7 +368,13 @@ for (let codec of ['opus', 'speex']) {
     context.mock.method(camera.ffmpeg, 'supportsEncoder', () => true);
     let audio = new PassThrough();
     let talkback = new PassThrough();
-    camera.message = context.mock.fn(async () => ({ video, audio, talkback, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/live' } }));
+    camera.message = context.mock.fn(async () => ({
+      video,
+      audio,
+      talkback,
+      ports: { audioControl: 21001, talkback: 21002 },
+      input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/live' },
+    }));
     start.audio = { pt: 110, codec: 'aac', max_bit_rate: 24, packet_time: 20, sample_rate: 16, channel: 1 };
     await camera.prepareStream(prepare, () => {});
     await camera.handleStreamRequest(start, () => {});
@@ -366,23 +385,18 @@ for (let codec of ['opus', 'speex']) {
     assert.ok(timeoutOption > talkbackArgs.indexOf('sdp') && timeoutOption < talkbackArgs.indexOf('-i'));
     assert.equal(talkbackArgs[timeoutOption + 1], '0');
     assert.equal(processes[0].args.includes('-listen_timeout'), false);
-    let splitter = sockets.find((socket) => socket.listenerCount('message') > 0 && socket !== sockets.at(-1));
-    assert.notEqual(splitter, undefined);
-    splitter.emit('message', Buffer.alloc(0));
-    splitter.emit('message', Buffer.from([0, 110]));
-    assert.equal(splitter.send.mock.callCount(), 0);
-    splitter.emit('message', Buffer.from([0x80, 110]));
-    assert.equal(splitter.send.mock.callCount(), 1);
-    splitter.emit('message', Buffer.from([0x80, 200]));
-    assert.equal(splitter.send.mock.callCount(), 3);
-    splitter.emit('message', Buffer.from([0x80, 50]));
-    assert.equal(splitter.send.mock.callCount(), 5);
+    let settings = camera.message.mock.calls[0].arguments[2].options.talkback;
+    assert.deepEqual(Object.keys(settings).sort(), ['payloadType', 'port']);
+    assert.equal(settings.payloadType, 110);
+    assert.equal(typeof settings.port, 'number');
+    assert.match(processes[0].args.at(-1), /localrtcpport=21001/);
+    assert.match(camera.ffmpeg.start.mock.calls[1].arguments[0].inputs[0], /m=audio 21002 /);
+    // Camera owns only its video RTCP listener; return-audio sockets belong to Streamer.
+    assert.equal(sockets.filter((socket) => socket.listenerCount('message') > 0).length, 1);
     let received = [];
     talkback.on('data', (data) => received.push(data));
     processes[1].stdout.write(Buffer.from([1, 2, 3]));
     assert.deepEqual(received, [Buffer.from([1, 2, 3])]);
-    splitter.emit('error', new Error('Fixture splitter failure'));
-    assert.equal(splitter.close.mock.callCount(), 1);
     await camera.handleStreamRequest({ sessionID: 'one', type: 'stop' });
     assert.equal(handles.at(-1).active, false);
     assert.deepEqual(processes[1].kill.mock.calls[0].arguments, ['SIGKILL']);
@@ -457,7 +471,7 @@ for (let unavailable of ['ffmpeg', 'source', 'configuration', 'motion']) {
       camera.streamer = undefined;
     }
     if (unavailable === 'motion') {
-      camera.motionService = { getCharacteristic: () => ({ value: false }) };
+      camera.motionService = { getCharacteristic: () => ({ value: false }), updateCharacteristic() {} };
     }
     assert.equal((await camera.handleRecordingStreamRequest('unavailable').next()).done, true);
     assert.equal(processes.length, 0);
@@ -478,7 +492,7 @@ for (let action of ['stop', 'replace']) {
       await camera.prepareStream(prepare, () => {});
     }
     let stops = camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_live').length;
-    ready.resolve({ video, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/record' } });
+    ready.resolve({ video, ports: { audioControl: 21001, talkback: 21002 }, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/record' } });
     await starting;
     assert.equal(processes.length, 0);
     assert.equal(callback.mock.callCount(), 1);
@@ -488,7 +502,11 @@ for (let action of ['stop', 'replace']) {
       'late startup releases only an output with no replacement owner',
     );
     if (action === 'replace') {
-      camera.message = context.mock.fn(async () => ({ video, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/record' } }));
+      camera.message = context.mock.fn(async () => ({
+        video,
+        ports: { audioControl: 21001, talkback: 21002 },
+        input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/record' },
+      }));
       await camera.handleStreamRequest(start);
       assert.equal(handles.at(-1).active, true);
     }
@@ -525,6 +543,7 @@ for (let completion of ['error', 'exit', 'clean-exit']) {
       video,
       audio: new PassThrough(),
       talkback: new PassThrough(),
+      ports: { audioControl: 21001, talkback: 21002 },
       input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/live' },
     }));
     start.audio = { pt: 110, codec: 'opus', max_bit_rate: 24, packet_time: 20, sample_rate: 24, channel: 1 };
@@ -616,7 +635,13 @@ test('late recording completion cannot stop a replacement created during source 
   await setImmediate();
   let stopping = Promise.withResolvers();
   camera.message = context.mock.fn((type, message) =>
-    message === 'stop_record' ? stopping.promise : Promise.resolve({ video, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/record' } }),
+    message === 'stop_record'
+      ? stopping.promise
+      : Promise.resolve({
+          video,
+          ports: { audioControl: 21001, talkback: 21002 },
+          input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/record' },
+        }),
   );
   processes[0].emit('exit', 1, null);
   processes[0].emit('close', 1, null);
@@ -647,6 +672,7 @@ for (let sourceCodec of ['pcm', 'opus', 'aac']) {
         video: null,
         audio: null,
         talkback: null,
+        ports: { audioControl: 21001, talkback: 21002 },
         input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/owned-session' },
       }));
       await camera.prepareStream(prepare, () => {});
@@ -700,7 +726,7 @@ for (let sourceCodec of ['opus', 'aac']) {
     assert.equal(args.includes('-copyts'), true);
     assert.equal(args.includes('aac_low'), true);
     assert.equal(args.includes('-analyzeduration'), false);
-    assert.equal(args.includes('-filter:a'), false);
+    assert.equal(args[args.indexOf('-filter:a') + 1], 'aresample=first_pts=0');
     assert.equal(args[args.indexOf('-ar') + 1], '16000');
     assert.equal(args[args.indexOf('-ac') + 1], '1');
     assert.equal(args[args.indexOf('-codec:v') + 1], 'libx264');
@@ -726,14 +752,14 @@ test('late RTP preparation cannot stop a replacement recording with the same id'
       if (starts++ === 0) {
         return ready.promise;
       }
-      return { input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/replacement' } };
+      return { ports: { audioControl: 21001, talkback: 21002 }, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/replacement' } };
     }
   });
   let first = camera.handleRecordingStreamRequest('pending').next();
   await camera.closeRecordingStream('pending', 0);
   let second = camera.handleRecordingStreamRequest('pending').next();
   await setImmediate();
-  ready.resolve({ input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/old' } });
+  ready.resolve({ ports: { audioControl: 21001, talkback: 21002 }, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/old' } });
   assert.equal((await first).done, true);
   assert.equal(handles.length, 1);
   assert.equal(handles[0].active, true);
@@ -764,7 +790,7 @@ for (let action of ['closeRecordingStream', 'onShutdown']) {
     camera.message = context.mock.fn((type, message) => (message === 'start_record' ? ready.promise : Promise.resolve()));
     let waiting = camera.handleRecordingStreamRequest('pending').next();
     await camera[action]('pending', 0);
-    ready.resolve({ input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/retired' } });
+    ready.resolve({ ports: { audioControl: 21001, talkback: 21002 }, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/retired' } });
     assert.equal((await waiting).done, true);
     assert.equal(processes.length, 0);
     assert.equal(
@@ -792,7 +818,7 @@ test('failed retired RTP preparation leaves a pending same-id recording replacem
   oldSource.reject(new Error('Retired source failed'));
   await failed;
   assert.equal(camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_record').length, 1);
-  newSource.resolve({ input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/replacement' } });
+  newSource.resolve({ ports: { audioControl: 21001, talkback: 21002 }, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/replacement' } });
   await setImmediate();
   assert.equal(handles.length, 1);
   assert.equal(handles[0].active, true);
@@ -814,10 +840,69 @@ test('old FFmpeg completion cannot retire a same-id recording still preparing RT
   processes[0].emit('close', 1, null);
   assert.equal((await first).done, true);
   assert.equal(camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_record').length, 0);
-  ready.resolve({ input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/replacement' } });
+  ready.resolve({ ports: { audioControl: 21001, talkback: 21002 }, input: { type: 'rtp', url: 'rtsp://127.0.0.1:12345/replacement' } });
   await setImmediate();
   assert.equal(handles.length, 2);
   assert.equal(handles[1].active, true);
   await camera.closeRecordingStream('reused', 0);
   assert.equal((await second).done, true);
+});
+
+test('Camera and RTPMuxer avoid conflicting UDP port selections', async (context) => {
+  let { camera, prepare } = setup(context);
+  let prepared = undefined;
+  await camera.prepareStream(prepare, (error, response) => {
+    prepared = response;
+  });
+  let createSocket = dgram.createSocket;
+  let nextPort = prepared.video.port;
+  context.mock.method(dgram, 'createSocket', () => {
+    let socket = createSocket();
+    if (nextPort !== undefined) {
+      let port = nextPort;
+      nextPort = undefined;
+      socket.address = () => ({ port });
+    }
+    return socket;
+  });
+  let muxer = new RTPMuxer({ audioControl: true, writePacket: () => true });
+  context.after(() => muxer.close());
+  await muxer.prepare();
+  assert.notEqual(muxer.ports.audioControl, prepared.video.port);
+  assert.notEqual(muxer.ports.audioControl, prepared.audio.port);
+  await camera.onShutdown();
+  nextPort = prepared.video.port;
+  let reused = await UDPPorts.allocate();
+  assert.equal(reused, prepared.video.port);
+  UDPPorts.release(reused);
+});
+
+test('failed Camera preparation releases a port already selected before reporting the error', async (context) => {
+  let { camera, prepare } = setup(context);
+  let createSocket = dgram.createSocket;
+  let count = 0;
+  let firstPort = undefined;
+  let failure = new Error('Fixture second allocation failure');
+  context.mock.method(dgram, 'createSocket', () => {
+    let socket = createSocket();
+    if (count++ === 0) {
+      firstPort = socket.address().port;
+    } else if (count === 2) {
+      socket.bind = () => {
+        throw failure;
+      };
+    }
+    return socket;
+  });
+  let callback = context.mock.fn();
+  await camera.prepareStream(prepare, callback);
+  assert.equal(callback.mock.calls[0].arguments[0], failure);
+  context.mock.method(dgram, 'createSocket', () => {
+    let socket = createSocket();
+    socket.address = () => ({ port: firstPort });
+    return socket;
+  });
+  let reused = await UDPPorts.allocate();
+  assert.equal(reused, firstPort);
+  UDPPorts.release(reused);
 });

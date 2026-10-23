@@ -104,21 +104,6 @@ test('Opus payloads remain compressed with source timing on a 48 kHz clock', () 
   flow.muxer.close();
 });
 
-test('L16 converts endian order without changing retained PCM or splitting stereo samples', () => {
-  const flow = setup({ audio: { codec: 'pcm-s16le', sampleRate: 48000, channels: 2 }, maxPacketBytes: 20 });
-  const data = Buffer.from([1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0]);
-  flow.audio(0, data);
-  flow.pump(0);
-  const packets = flow.media('audio');
-  assert.deepEqual(
-    packets.map((packet) => packet.subarray(12)),
-    [Buffer.from([0, 1, 0, 2, 0, 3, 0, 4]), Buffer.from([0, 5, 0, 6])],
-  );
-  assert.equal((packets[1].readUInt32BE(4) - packets[0].readUInt32BE(4)) >>> 0, 2);
-  assert.deepEqual(data, Buffer.from([1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0]));
-  flow.muxer.close();
-});
-
 test('AAC-hbr includes a correctly sized raw AU and an access-unit marker', () => {
   const flow = setup({ audio: aac });
   const data = Buffer.from([0x21, 2, 3]);
@@ -194,7 +179,6 @@ test('unsupported audio framing and RTCP sink failures surface to the backend ow
     [aac, Buffer.from([0xff, 0xf1, 0x4c]), /ADTS/],
     [aac, Buffer.alloc(1500), /fragmentation/],
     [opus, Buffer.alloc(1500), /packet budget/],
-    [{ codec: 'pcm-s16le', sampleRate: 48000, channels: 2 }, Buffer.alloc(3), /whole sample/],
   ]) {
     const flow = setup({ audio });
     assert.throws(() => flow.audio(0, data), expected);
@@ -463,20 +447,16 @@ test('batched AAC timing counts each 1024-sample AU using its ADTS sample rate',
   await muxer.close();
 });
 
-test('raw AAC and PCM timing use sample counts rather than delivery intervals', async () => {
-  for (let [format, data, step] of [
-    [aac, Buffer.from([0x21, 0x10]), (1024 * 1000) / 48000],
-    [{ codec: 'pcm-s16le', sampleRate: 48000, channels: 2 }, Buffer.alloc(960 * 4), 20],
-  ]) {
-    let muxer = new RTPMuxer({ audio: format, audioDiagnostics: true, writePacket: () => {} });
-    for (let index = 0; index < 100; index++) {
-      muxer.writeAudio(data, index * step);
-    }
-    assert.equal(muxer.audioTiming.units, 100);
-    assert.equal(muxer.audioTiming.gaps, 0);
-    assert.equal(muxer.audioTiming.overlaps, 0);
-    await muxer.close();
+test('raw AAC timing uses sample counts rather than delivery intervals', async () => {
+  let muxer = new RTPMuxer({ audio: aac, audioDiagnostics: true, writePacket: () => {} });
+  let data = Buffer.from([0x21, 0x10]);
+  for (let index = 0; index < 100; index++) {
+    muxer.writeAudio(data, (index * 1024 * 1000) / 48000);
   }
+  assert.equal(muxer.audioTiming.units, 100);
+  assert.equal(muxer.audioTiming.gaps, 0);
+  assert.equal(muxer.audioTiming.overlaps, 0);
+  await muxer.close();
 });
 
 test('audio timing handles RTP timestamp rollover without reporting another discontinuity', async () => {
@@ -495,4 +475,13 @@ test('audio timing handles RTP timestamp rollover without reporting another disc
   assert.equal(muxer.audioTiming.gaps, before.gaps);
   assert.equal(muxer.audioTiming.overlaps, before.overlaps);
   await muxer.close();
+});
+
+test('decoded PCM formats are rejected at RTP output creation', () => {
+  for (let audio of [
+    { codec: 'pcm', profile: 's16le', sampleRate: 48000, channels: 2 },
+    { codec: 'pcm-s16le', sampleRate: 48000, channels: 2 },
+  ]) {
+    assert.throws(() => new RTPMuxer({ audio, writePacket: () => {} }), /supported mono\/stereo audio format/);
+  }
 });

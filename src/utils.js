@@ -9,6 +9,7 @@
 // - Provide hashing utilities for device identity (CRC24)
 // - Scale and transform numeric values between ranges
 // - Parse duration strings into normalised seconds
+// - Select and track UDP ports shared by camera endpoints and FFmpeg
 // - Build normalised device descriptions from Google and Nest metadata
 // - Apply common device data processing and configuration overrides
 //
@@ -22,16 +23,19 @@
 // Notes:
 // - Used by all device and system modules
 // - Shared helpers centralise common Google protobuf and Nest REST processing logic
-// - Functions are designed to fail safely and return undefined where appropriate
+// - Data helpers return undefined for invalid inputs where appropriate
+// - UDP allocation rejects socket failures; owners release reservations on teardown
 //
-// Code version 2026.09.17
+// Code version 2026.10.24
 // Mark Hulskamp
 'use strict';
 
 // Define nodejs module requirements
 import { Buffer } from 'node:buffer';
+import dgram from 'node:dgram';
 
 // Define constants
+const RESERVED_UDP_PORTS = new Set(); // Shared across Camera and RTPMuxer instances
 const CRC24_HASH_TABLE = [
   0x000000, 0x864cfb, 0x8ad50d, 0x0c99f6, 0x93e6e1, 0x15aa1a, 0x1933ec, 0x9f7f17, 0xa18139, 0x27cdc2, 0x2b5434, 0xad18cf, 0x3267d8,
   0xb42b23, 0xb8b2d5, 0x3efe2e, 0xc54e89, 0x430272, 0x4f9b84, 0xc9d77f, 0x56a868, 0xd0e493, 0xdc7d65, 0x5a319e, 0x64cfb0, 0xe2834b,
@@ -334,5 +338,50 @@ function buildDeviceDescription(rawData, raw) {
   return location === '' ? description : description + ' - ' + location;
 }
 
+const UDPPorts = {
+  async allocate() {
+    // Let the OS choose a free IPv4 UDP port using a temporary socket.
+    while (true) {
+      let socket = dgram.createSocket('udp4');
+      let port = undefined;
+      try {
+        await new Promise((resolve, reject) => {
+          socket.once('error', reject);
+          socket.bind({ port: 0, exclusive: true }, resolve);
+        });
+        port = socket.address().port;
+      } finally {
+        // The eventual listener needs to bind this port itself. Always close the
+        // probe, including failed binds; the reservation below holds only its number.
+        await new Promise((resolve, reject) => {
+          try {
+            socket.close(resolve);
+          } catch (error) {
+            // A bind failure may leave no running socket to close.
+            if (error.code === 'ERR_SOCKET_DGRAM_NOT_RUNNING') {
+              resolve();
+            } else {
+              reject(error);
+            }
+          }
+        });
+      }
+      // Camera and RTPMuxer share these reservations. Retry if the OS selected
+      // a number another session chose but has not yet bound. This does not
+      // reserve the port against other processes while the real socket is unbound.
+      if (RESERVED_UDP_PORTS.has(port) !== true) {
+        RESERVED_UDP_PORTS.add(port);
+        return port;
+      }
+    }
+  },
+
+  release(port) {
+    // The session owner closes its socket/process separately; release only the
+    // number so later allocations can select it again.
+    RESERVED_UDP_PORTS.delete(port);
+  },
+};
+
 // Define exports
-export { processSoftwareVersion, adjustTemperature, crc24, scaleValue, buildDeviceDescription, parseDurationToSeconds };
+export { UDPPorts, processSoftwareVersion, adjustTemperature, crc24, scaleValue, buildDeviceDescription, parseDurationToSeconds };

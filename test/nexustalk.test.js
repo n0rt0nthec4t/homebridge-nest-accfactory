@@ -163,7 +163,7 @@ test('NexusTalk decodes fragmented and coalesced playback packets with source ti
   socket.emit('data', Buffer.concat([next, negative]));
   assert.deepEqual(
     context.media.map((item) => item.timestamp),
-    [100110, 100130, 100130],
+    [100110, 100130, 100120],
   );
   assert.deepEqual(context.media[0].data, Buffer.from([1, 2]));
 });
@@ -701,11 +701,17 @@ test('NexusTalk close before TLS handshake settles the pending open without a la
 
 for (let [videoStart, audioStart, expectedVideo, expectedAudio] of [
   [100, 100.1, 100000, 100100],
-  [100, 110, 100000, 100250],
-  [110, 100, 100250, 100000],
+  [100, 102.5, 100000, 102500],
+  [102.5, 100, 102500, 100000],
+  [100, 110, 100000, 110000],
+  [110, 100, 110000, 100000],
+  [100, 100.000125, 100000, 100000.125],
+  [100.000125, 100, 100000.125, 100000],
+  [100, undefined, 100000, 100000],
+  [undefined, 100, 100000, 100000],
   [undefined, undefined, 100000, 100000],
 ]) {
-  test('NexusTalk source channel offsets stay bounded: ' + videoStart + '/' + audioStart, async (context) => {
+  test('NexusTalk preserves source channel timing: ' + videoStart + '/' + audioStart, async (context) => {
     let flow = setup(context);
     let socket = await open(flow);
     socket.emit('data', packet(200));
@@ -721,9 +727,18 @@ for (let [videoStart, audioStart, expectedVideo, expectedAudio] of [
     );
     socket.emit('data', packet(204, 'PlaybackPacket', { channelId: 1, payload: Buffer.from([0x65, 1]) }));
     socket.emit('data', packet(204, 'PlaybackPacket', { channelId: 2, payload: Buffer.from([2]) }));
+    socket.emit('data', packet(204, 'PlaybackPacket', { channelId: 1, timestampDelta: 9000, payload: Buffer.from([0x65, 3]) }));
+    socket.emit('data', packet(204, 'PlaybackPacket', { channelId: 2, timestampDelta: 4800, payload: Buffer.from([4]) }));
     await flow.transport.close();
-    assert.equal(flow.media.find((frame) => frame.type === 'video').timestamp, expectedVideo);
-    assert.equal(flow.media.find((frame) => frame.type === 'audio').timestamp, expectedAudio);
+    let video = flow.media.filter((frame) => frame.type === 'video');
+    let audio = flow.media.filter((frame) => frame.type === 'audio');
+    assert.equal(video.length, 2);
+    assert.equal(audio.length, 2);
+    for (let index = 0; index < 2; index++) {
+      assert.ok(Math.abs(video[index].timestamp - (expectedVideo + index * 100)) < 0.000001);
+      assert.ok(Math.abs(audio[index].timestamp - (expectedAudio + index * 100)) < 0.000001);
+      assert.ok(Math.abs(audio[index].timestamp - video[index].timestamp - (expectedAudio - expectedVideo)) < 0.000001);
+    }
   });
 }
 test('NexusTalk absent video clock metadata cannot make timestamps non-finite', async (context) => {

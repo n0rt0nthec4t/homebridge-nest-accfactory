@@ -29,9 +29,9 @@ let muxerModule =
       'export let hooks = { instances: [], prepare: undefined, close: undefined, send: undefined };' +
       'export default class extends RTPMuxer {' +
       'packets = [];' +
-      'constructor(settings) { super({ ...settings, writePacket: (data, metadata) => {' +
+      'constructor(settings) { super({ ...settings, audioControl: false, talkback: undefined, writePacket: (data, metadata) => {' +
       'this.packets.push({ data, ...metadata }); return hooks.send?.(this, data, metadata) ?? true;' +
-      '} }); hooks.instances.push(this); }' +
+      '} }); this.settings = settings; hooks.instances.push(this); }' +
       'prepare() { return hooks.prepare?.(this) ?? super.prepare(); }' +
       'close() { let done = super.close(); return hooks.close?.(this, done) ?? done; }' +
       '}',
@@ -115,7 +115,7 @@ for (let [label, data] of [
   test(label + ' output prepares RTP without opening an unavailable source', async (context) => {
     let { streamer, transport } = setup(context, data);
     let output = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'live' });
-    assert.deepEqual(Object.keys(output).sort(), ['input', 'talkback']);
+    assert.deepEqual(Object.keys(output).sort(), ['input', 'ports', 'talkback']);
     assert.equal(output.input.type, 'rtp');
     assert.deepEqual(transport.calls, []);
     await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_LIVE, { sessionID: 'live' });
@@ -460,7 +460,7 @@ test('stopping retained buffering does not retire an active RTP viewer', async (
     false,
   );
 });
-test('repeated and backwards source times become strictly increasing RTP timestamps', async (context) => {
+test('repeated and backwards source times are discarded without moving later presentation time', async (context) => {
   context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
   let { streamer, transport } = setup(context);
   transport.video.fps = 25;
@@ -472,11 +472,8 @@ test('repeated and backwards source times become strictly increasing RTP timesta
   let timestamps = media(hooks.instances[0])
     .filter(({ data }) => (data[1] & 0x80) !== 0)
     .map(({ data }) => data.readUInt32BE(4));
-  assert.equal(timestamps.length, 4);
-  assert.deepEqual(
-    timestamps.slice(1).map((value, index) => (value - timestamps[index]) >>> 0),
-    [3600, 3600, 3600],
-  );
+  assert.equal(timestamps.length, 2);
+  assert.equal((timestamps[1] - timestamps[0]) >>> 0, 10800);
 });
 test('invalid AAC configuration retires its receiver without stopping a video-only viewer', async (context) => {
   context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
@@ -653,29 +650,32 @@ for (let [sourceStart, repeated] of [
   [0, false],
   [100000, true],
 ]) {
-  test('AAC retains exact sample-clock spacing: start=' + sourceStart + ' repeated=' + repeated, async (context) => {
-    context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
-    let { adts } = await import('./helpers/aac-fixtures.js');
-    let { streamer, transport } = setup(context);
-    Object.assign(transport.audio, { codec: 'aac', sampleRate: 48000, channels: 1, frameDuration: (1024 * 1000) / 48000 });
-    await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'precision', options: { includeAudio: true } });
-    let payload = adts(Buffer.from([0x21, 0x10, 0x56]));
-    for (let index = 0; index < 6; index++) {
-      transport.emitMedia({
-        type: 'AUDIO',
-        codec: 'AAC',
-        timestamp: sourceStart + (repeated === true ? 0 : (index * 1024 * 1000) / 48000),
-        data: payload,
-      });
-    }
-    advance(context, 1000);
-    let timestamps = media(hooks.instances[0], 'audio').map(({ data }) => data.readUInt32BE(4));
-    assert.equal(timestamps.length, 6);
-    assert.deepEqual(
-      timestamps.slice(1).map((value, index) => (value - timestamps[index]) >>> 0),
-      [1024, 1024, 1024, 1024, 1024],
-    );
-  });
+  test(
+    'AAC preserves source sample-clock spacing and rejects repeated timestamps: start=' + sourceStart + ' repeated=' + repeated,
+    async (context) => {
+      context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+      let { adts } = await import('./helpers/aac-fixtures.js');
+      let { streamer, transport } = setup(context);
+      Object.assign(transport.audio, { codec: 'aac', sampleRate: 48000, channels: 1, frameDuration: (1024 * 1000) / 48000 });
+      await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'precision', options: { includeAudio: true } });
+      let payload = adts(Buffer.from([0x21, 0x10, 0x56]));
+      for (let index = 0; index < 6; index++) {
+        transport.emitMedia({
+          type: 'AUDIO',
+          codec: 'AAC',
+          timestamp: sourceStart + (repeated === true ? 0 : (index * 1024 * 1000) / 48000),
+          data: payload,
+        });
+      }
+      advance(context, 1000);
+      let timestamps = media(hooks.instances[0], 'audio').map(({ data }) => data.readUInt32BE(4));
+      assert.equal(timestamps.length, repeated === true ? 1 : 6);
+      assert.deepEqual(
+        timestamps.slice(1).map((value, index) => (value - timestamps[index]) >>> 0),
+        repeated === true ? [] : [1024, 1024, 1024, 1024, 1024],
+      );
+    },
+  );
 }
 
 test('fractional video frame intervals retain their 90 kHz RTP clock spacing', async (context) => {
@@ -1046,4 +1046,122 @@ test('a delayed first video frame cannot anchor playout behind newer retained au
   transport.setState(StreamTransport.STATE.READY);
   advance(context, 400);
   assert.equal(media(hooks.instances[0], 'audio').length, 151, 'startup backlog must not become several seconds of playout latency');
+});
+
+test('a video timestamp fault keeps both track clocks intact and waits for a keyframe', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+  let { streamer, transport } = setup(context);
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'timestamp-fault', options: { includeAudio: true } });
+  addVideo(transport, 100000);
+  addVideo(transport, 100000, false);
+  addVideo(transport, 100020, false);
+  addVideo(transport, 100040);
+  for (let timestamp of [100000, 100000, 99900, 100040]) {
+    transport.emitMedia({ type: 'audio', timestamp, data: Buffer.from([0xf8, 0xff, 0xfe]) });
+  }
+  advance(context, 600);
+  let video = media(hooks.instances[0])
+    .filter(({ data }) => (data[1] & 0x80) !== 0)
+    .map(({ data }) => data.readUInt32BE(4));
+  let audio = media(hooks.instances[0], 'audio').map(({ data }) => data.readUInt32BE(4));
+  assert.equal(video.length, 2);
+  assert.equal(audio.length, 2);
+  assert.equal((video[1] - video[0]) >>> 0, 3600);
+  assert.equal((audio[1] - audio[0]) >>> 0, 1920);
+  assert.equal(transport.stats.media.videoDrops['timestamp-recovery'], 1);
+});
+
+for (let restart of ['reopen', 'reconnect']) {
+  test('source audio gap diagnostics reset on ' + restart + ' without hiding new-session gaps', async (context) => {
+    context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+    let logs = [];
+    let { streamer, transport } = setup(
+      context,
+      {},
+      {
+        supportDump: true,
+        log: { debug: (...args) => logs.push(args), info() {}, warn() {}, error() {}, success() {} },
+      },
+    );
+    await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'old', options: { includeAudio: true } });
+    addVideo(transport);
+    transport.emitMedia({ type: 'audio', timestamp: Date.now(), data: Buffer.from([0xf8, 0xff, 0xfe]) });
+    advance(context, 200);
+    transport.emitMedia({ type: 'audio', timestamp: Date.now(), data: Buffer.from([0xf8, 0xff, 0xfe]) });
+    assert.equal(logs.filter((entry) => entry[0].includes('source audio gap')).length, 1);
+
+    if (restart === 'reopen') {
+      await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_LIVE, { sessionID: 'old' });
+      context.mock.timers.tick(697910);
+      await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'new', options: { includeAudio: true } });
+    } else {
+      transport.setState(StreamTransport.STATE.RECONNECTING);
+      advance(context, 1000);
+      transport.setState(StreamTransport.STATE.READY);
+    }
+    logs = [];
+    transport.emitMedia({ type: 'audio', timestamp: Date.now(), data: Buffer.from([0xf8, 0xff, 0xfe]) });
+    assert.equal(logs.filter((entry) => entry[0].includes('source audio gap')).length, 0);
+    advance(context, 200);
+    transport.emitMedia({ type: 'audio', timestamp: Date.now(), data: Buffer.from([0xf8, 0xff, 0xfe]) });
+    let gaps = logs.filter((entry) => entry[0].includes('source audio gap'));
+    assert.equal(gaps.length, 1);
+    assert.deepEqual(gaps[0].slice(2), [200, '-', '-']);
+  });
+}
+
+test('audio gap logs and stop statistics measure the same accepted writes', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+  let logs = [];
+  let { streamer, transport } = setup(
+    context,
+    {},
+    {
+      supportDump: true,
+      log: { debug: (...args) => logs.push(args), info: (...args) => logs.push(args), warn() {}, error() {}, success() {} },
+    },
+  );
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'gap-statistics', options: { includeAudio: true } });
+  transport.emitMedia({ type: 'audio', timestamp: 100000, data: Buffer.from([0xf8, 0xff, 0xfe]) });
+  advance(context, 310);
+  for (let [timestamp, elapsed] of [
+    [100100, 100],
+    [100350, 250],
+    [100850, 500],
+    [101450, 600],
+  ]) {
+    transport.emitMedia({ type: 'audio', timestamp, data: Buffer.from([0xf8, 0xff, 0xfe]) });
+    advance(context, elapsed);
+  }
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_LIVE, { sessionID: 'gap-statistics' });
+  assert.equal(media(hooks.instances[0], 'audio').length, 5);
+  let gaps = logs.filter((entry) => entry[0].includes('output audio write gap'));
+  assert.equal(gaps.length, 1, 'gap logging remains throttled');
+  assert.equal(gaps[0][4], 250);
+  for (let [name, expected] of [
+    ['firstWrite', '310ms'],
+    ['firstAudioWrite', '310ms'],
+    ['maxAudioWriteGapMs', 600],
+    ['audioWriteGapsOver100Ms', 3],
+    ['audioWriteGapsOver250Ms', 2],
+    ['audioWriteGapsOver500Ms', 1],
+  ]) {
+    assert.equal(logs.find((entry) => entry[0].includes('"' + name + '"'))?.[1], expected, name);
+  }
+});
+
+test('only live audio outputs pass optional talkback routing to their muxer', async (context) => {
+  let { streamer } = setup(context);
+  // Hold preparation at the injected boundary so this checks settings without binding sockets.
+  hooks.prepare = async () => {};
+  let talkback = { port: 12001, payloadType: 110 };
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'talk', options: { includeAudio: true, talkback } });
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, { sessionID: 'record', options: { includeAudio: true, talkback } });
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'silent', options: { includeAudio: false, talkback } });
+  assert.equal(hooks.instances[0].settings.audioControl, true);
+  assert.equal(hooks.instances[1].settings.audioControl, false);
+  assert.equal(hooks.instances[2].settings.audioControl, false);
+  assert.equal(hooks.instances[0].settings.talkback, talkback);
+  assert.equal(hooks.instances[1].settings.talkback, undefined);
+  assert.equal(hooks.instances[2].settings.talkback, undefined);
 });

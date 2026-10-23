@@ -44,7 +44,7 @@
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.10.21
+// Code version 2026.10.23
 // Mark Hulskamp
 'use strict';
 
@@ -747,7 +747,6 @@ export default class NexusTalk extends StreamTransport {
     let videoStream = undefined;
     let audioStream = undefined;
     let sessionStart = undefined;
-    let startDelta = 0;
 
     if (
       Buffer.isBuffer(payload) !== true ||
@@ -821,11 +820,9 @@ export default class NexusTalk extends StreamTransport {
               ? 100000
               : undefined;
 
-      // Audio/video channels may start slightly offset from each other.
-      // Clamp offset so reconnect jitter or backend timing anomalies do not
-      // produce unrealistic media timestamps.
-      startDelta = typeof videoStream.startTime === 'number' ? videoStream.startTime * 1000 - sessionStart : 0;
-      this.#channels.video.startOffset = Math.max(-250, Math.min(250, Math.round(startDelta)));
+      // Preserve the reported channel relationship, including fractional milliseconds.
+      // Clamping or rounding here changes the A/V offset carried into RTP.
+      this.#channels.video.startOffset = typeof videoStream.startTime === 'number' ? videoStream.startTime * 1000 - sessionStart : 0;
       this.#channels.video.mediaTime = sessionStart + this.#channels.video.startOffset;
     }
 
@@ -841,11 +838,8 @@ export default class NexusTalk extends StreamTransport {
       this.audio.channels = Number.isFinite(audioStream.channels) === true && audioStream.channels > 0 ? audioStream.channels : 1;
       this.audio.bitrate = Number.isFinite(audioStream.bitrate) === true && audioStream.bitrate > 0 ? audioStream.bitrate : undefined;
 
-      // Audio/video channels may start slightly offset from each other.
-      // Clamp offset so reconnect jitter or backend timing anomalies do not
-      // produce unrealistic media timestamps.
-      startDelta = typeof audioStream.startTime === 'number' ? audioStream.startTime * 1000 - sessionStart : 0;
-      this.#channels.audio.startOffset = Math.max(-250, Math.min(250, Math.round(startDelta)));
+      // Use the same session anchor without changing the source audio offset.
+      this.#channels.audio.startOffset = typeof audioStream.startTime === 'number' ? audioStream.startTime * 1000 - sessionStart : 0;
       this.#channels.audio.mediaTime = sessionStart + this.#channels.audio.startOffset;
     }
 
@@ -1343,7 +1337,7 @@ export default class NexusTalk extends StreamTransport {
   #calculateTimestamp(delta, stream, sampleRate) {
     let deltaMs = 0;
 
-    // Convert NexusTalk timestamp deltas into monotonic source media time
+    // Convert signed NexusTalk timestamp deltas into source media time
     // anchored to the shared playback session start time. Streamer later maps
     // this source media time onto each output's playout schedule.
     if (typeof stream?.mediaTime !== 'number') {
@@ -1357,14 +1351,14 @@ export default class NexusTalk extends StreamTransport {
     if (typeof delta === 'number') {
       deltaMs = (delta / sampleRate) * 1000;
 
-      if (Number.isFinite(deltaMs) !== true || deltaMs < 0) {
+      if (Number.isFinite(deltaMs) !== true) {
         deltaMs = 0;
       }
     }
 
-    if (deltaMs > 0) {
-      stream.mediaTime += deltaMs;
-    }
+    // Signed deltas describe source time, including a backwards packet. Keep
+    // that clock intact; shared retention rejects non-increasing complete frames.
+    stream.mediaTime += deltaMs;
 
     return stream.mediaTime;
   }

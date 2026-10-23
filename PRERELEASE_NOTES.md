@@ -4,6 +4,26 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.5-alpha.4 (2026/10/xx)
+
+### Changed
+
+- Consolidate live-view talkback routing into the RTP output lifecycle and share UDP port allocation across camera sessions and FFmpeg
+
+- Improve release validation and recovery after interrupted publishing
+- Update dependencies to their latest compatible versions
+- Remove unused decoded PCM input support from the camera RTP output
+- Simplify WebRTC audio reordering to one bounded queue, preserving packet ordering and release deadlines
+- Simplify output statistics updates while preserving support-dump measurements and log throttling
+
+### Fixed
+
+- Reset audio-gap diagnostics between camera sessions so idle time is not reported as a playback stall
+- Preserve NexusTalk's reported audio/video start offsets instead of limiting them to 250 ms
+- Preserve source presentation times through streaming instead of repairing each track with estimated frame durations
+- Synchronize WebRTC audio/video using paired RTCP sender reports when available, retaining fractional RTP timing
+- Preserve recording A/V alignment when audio starts later than video, preventing audio from playing several seconds ahead in HKSV clips
+
 ## v0.4.5-alpha.3 (2026/10/23)
 
 ### Changed

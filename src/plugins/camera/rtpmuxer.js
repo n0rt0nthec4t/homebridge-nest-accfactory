@@ -5,21 +5,25 @@
 //
 // Responsibilities:
 // - Packetize H264 access units and compressed Opus or AAC-LC audio
-// - Support PCM s16le through L16 and NexusTalk ADTS AAC through AAC-hbr
+// - Carry NexusTalk ADTS AAC through AAC-hbr without decoding
 // - Learn AAC configuration from source headers before publishing receiver SDP
 // - Preserve source media intervals using per-track RTP clocks
 // - Relate audio/video clocks through RTCP sender reports and a shared CNAME
 // - Build RTP/RTSP headers and codec payloads directly in final wire buffers
 // - Admit one receiver by its random resource URL, with bounded candidate connections and a fixed deadline
-// - Report per-track backpressure and retire packet delivery on close
+// - Allocate internal FFmpeg audio ports and route optional encrypted HomeKit return audio/control
+// - Report per-track backpressure and close all owned endpoints on output teardown
 // - Optionally summarise delivered audio timestamp gaps/overlaps against packet sample durations
 //
 // Streamer owns the shared buffer, output cursors, decoder bootstrap and pacing.
 // This muxer has no media timeline, output registry, scheduler or hidden queue.
 // A loopback RTSP endpoint carries RTP/RTCP over TCP after the receiver's PLAY.
 // Tests may inject a synchronous packet sink instead of opening that endpoint.
+// Optional talkback settings supply only the HomeKit-facing UDP port and payload
+// type. After prepare, ports exposes the internal audioControl and talkback ports
+// for FFmpeg arguments. FFmpeg retains SRTP and codec handling.
 //
-// Code version 2026.10.23
+// Code version 2026.10.24
 // Mark Hulskamp
 'use strict';
 
@@ -27,10 +31,12 @@
 import { randomBytes } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import net from 'node:net';
+import dgram from 'node:dgram';
 import timers from 'node:timers';
 
 // Define our modules
 import H264 from './h264.js';
+import { UDPPorts } from '../../utils.js';
 
 // Define constants
 const RECEIVER_ADMISSION_TIMEOUT_MS = 5000;
@@ -43,11 +49,15 @@ const AAC_SAMPLE_RATES = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050
 
 // RTPMuxer object
 export default class RTPMuxer {
+  #ports = { audioControl: undefined, talkback: undefined };
+  #audioControl = false;
   #output = undefined;
   #unixNow = undefined;
   #blocked = new Set(); // Tracks whose sink accepted data but needs to drain
   #failure = undefined;
   #server = undefined;
+  #talkback = undefined;
+  #talkbackSocket = undefined;
   #socket = undefined;
   #prepared = undefined;
   #closing = undefined;
@@ -66,6 +76,8 @@ export default class RTPMuxer {
     audio,
     includeAudio = true,
     audioDiagnostics = false,
+    audioControl = false,
+    talkback,
     writePacket,
     maxPacketBytes = 1200,
     unixNow = () => Date.now(),
@@ -77,11 +89,6 @@ export default class RTPMuxer {
       throw new RangeError('Invalid RTP packet size');
     }
 
-    // Existing StreamTransport describes decoded PCM using codec and profile.
-    // Accept that known format while leaving AAC configuration explicit.
-    if (audio?.codec === 'pcm' && audio.profile === 's16le') {
-      audio = { ...audio, codec: 'pcm-s16le' };
-    }
     // Generic AAC metadata does not tell us the decoder configuration. Keep the
     // audio track pending until a source ADTS header supplies its clock and format.
     this.#adtsAudio = includeAudio === true && audio?.codec === 'aac';
@@ -91,6 +98,8 @@ export default class RTPMuxer {
       format.config = Buffer.from(format.config);
     }
     this.#unixNow = unixNow;
+    this.#audioControl = audioControl === true || talkback !== undefined;
+    this.#talkback = talkback === undefined ? undefined : { ...talkback };
     if (audioDiagnostics === true) {
       this.#audioTiming = {
         units: 0,
@@ -145,25 +154,83 @@ export default class RTPMuxer {
     if (this.#output.closed === true) {
       return Promise.reject(new Error('Output is closed'));
     }
-    if (this.#output.writePacket !== undefined) {
-      return Promise.resolve();
-    }
     if (this.#prepared !== undefined) {
       return this.#prepared;
     }
 
-    // Own the actual listening socket from allocation through close. No free-port
-    // probe/rebind handoff is needed, and media remains blocked until PLAY.
-    this.#server = net.createServer({ highWaterMark: 64 * 1024 }, (socket) => this.#accept(socket));
-    this.#prepared = new Promise((resolve, reject) => {
-      this.#server.once('error', reject);
-      this.#server.listen({ host: '127.0.0.1', port: 0, exclusive: true }, () => {
-        this.#url = 'rtsp://127.0.0.1:' + this.#server.address().port + '/' + this.#session;
-        resolve();
-      });
+    // Prepare owns both listeners. Close waits for pending binds before releasing
+    // them, including cancellation while the output is still being prepared.
+    this.#prepared = (async () => {
+      if (this.#output.writePacket === undefined) {
+        this.#server = net.createServer({ highWaterMark: 64 * 1024 }, (socket) => this.#accept(socket));
+        this.#server.on('error', (error) => this.#fail(error));
+        await new Promise((resolve, reject) => {
+          this.#server.once('error', reject);
+          this.#server.listen({ host: '127.0.0.1', port: 0, exclusive: true }, () => {
+            this.#url = 'rtsp://127.0.0.1:' + this.#server.address().port + '/' + this.#session;
+            resolve();
+          });
+        });
+      }
+      if (this.#talkback !== undefined && this.#output.closed !== true) {
+        this.#talkbackSocket = dgram.createSocket('udp4');
+        this.#talkbackSocket.on('message', (message) => this.#routeTalkback(message));
+        this.#talkbackSocket.on('error', (error) => this.#fail(error));
+        await new Promise((resolve, reject) => {
+          this.#talkbackSocket.once('error', reject);
+          this.#talkbackSocket.bind(this.#talkback.port, resolve);
+        });
+      }
+      if (this.#audioControl === true && this.#output.closed !== true) {
+        this.#ports.audioControl = await UDPPorts.allocate();
+        if (this.#talkback !== undefined && this.#output.closed !== true) {
+          this.#ports.talkback = await UDPPorts.allocate();
+        }
+      }
+      Object.freeze(this.#ports);
+    })().catch((error) => {
+      this.#fail(error);
+      throw error;
     });
-    this.#server.on('error', (error) => this.#fail(error));
     return this.#prepared;
+  }
+
+  get ports() {
+    return this.#ports;
+  }
+
+  #routeTalkback(message) {
+    if (
+      this.#output.closed === true ||
+      this.#ports.talkback === undefined ||
+      this.#talkbackSocket === undefined ||
+      Buffer.isBuffer(message) !== true ||
+      message.length < 2
+    ) {
+      return;
+    }
+
+    // RTP and RTCP retain their encrypted payloads. Only the visible version
+    // and packet-type bytes are needed to choose the existing local routes.
+    let version = message.readUInt8(0) >> 6;
+    if (version !== 2) {
+      return;
+    }
+
+    let packetType = message.readUInt8(1);
+    let payloadType = packetType & 0x7f;
+    let isRTCP = packetType === 200 || packetType === 201;
+
+    // Mask the RTP marker bit, but classify sender/receiver reports first:
+    // their full RTCP types would otherwise look like payload types 72 or 73.
+    if (isRTCP !== true && payloadType === this.#talkback.payloadType) {
+      this.#talkbackSocket.send(message, this.#ports.talkback, '127.0.0.1');
+      return;
+    }
+
+    // Reports and unknown control packets retain their routes to both receivers.
+    this.#talkbackSocket.send(message, this.#ports.audioControl, '127.0.0.1');
+    this.#talkbackSocket.send(message, this.#ports.talkback, '127.0.0.1');
   }
 
   #accept(socket) {
@@ -436,9 +503,7 @@ export default class RTPMuxer {
     let audio = this.#output.audio;
     if (audio !== undefined) {
       lines.push('m=audio 0 RTP/AVP 97');
-      if (audio.codec === 'pcm-s16le') {
-        lines.push('a=rtpmap:97 L16/' + audio.sampleRate + '/' + audio.channels);
-      } else if (audio.codec === 'opus') {
+      if (audio.codec === 'opus') {
         // Opus SDP always advertises two channels; sprop-stereo describes the source.
         lines.push('a=rtpmap:97 opus/48000/2', 'a=fmtp:97 sprop-stereo=' + (audio.channels === 2 ? 1 : 0));
       } else {
@@ -715,7 +780,7 @@ export default class RTPMuxer {
   #snapshotAudio(audio) {
     if (
       audio !== undefined &&
-      (['opus', 'pcm-s16le', 'aac-lc'].includes(audio?.codec) !== true ||
+      (['opus', 'aac-lc'].includes(audio?.codec) !== true ||
         Number.isInteger(audio.sampleRate) !== true ||
         audio.sampleRate < 8000 ||
         audio.sampleRate > 96000 ||
@@ -839,10 +904,6 @@ export default class RTPMuxer {
       data.writeUInt16BE((end - start) << 3, offset + 2);
     }
     payload.copy(data, offset + prefixBytes, start, end);
-    if (format === 'l16') {
-      // Convert only the final payload to network byte order, leaving shared PCM unchanged.
-      data.subarray(offset).swap16();
-    }
     this.#send(output, data, track, 'rtp');
 
     // Sender-report octets exclude RTP and RTSP headers, but include codec headers.
@@ -896,22 +957,7 @@ export default class RTPMuxer {
 
     let rtpTimestamp = this.#timestampFor(output, track, timestamp);
 
-    if (output.audio.codec === 'pcm-s16le') {
-      let sampleBytes = output.audio.channels * 2;
-      if (data.length % sampleBytes !== 0) {
-        throw new RangeError('PCM must contain whole sample frames');
-      }
-
-      let chunkBytes = Math.floor(output.payloadBytes / sampleBytes) * sampleBytes;
-      track.lastTimestamp = timestamp;
-      for (let offset = 0; offset < data.length; offset += chunkBytes) {
-        this.#packet(output, track, data, (rtpTimestamp + offset / sampleBytes) >>> 0, false, {
-          start: offset,
-          end: Math.min(data.length, offset + chunkBytes),
-          format: 'l16',
-        });
-      }
-    } else if (output.audio.codec === 'opus') {
+    if (output.audio.codec === 'opus') {
       // Preserve the compressed Opus payload in one output RTP packet.
       // RFC 7587 does not allow splitting it across multiple RTP packets.
       if (data.length > output.payloadBytes) {
@@ -938,9 +984,7 @@ export default class RTPMuxer {
 
     if (this.#audioTiming !== undefined) {
       let samples = undefined;
-      if (output.audio.codec === 'pcm-s16le') {
-        samples = data.length / (output.audio.channels * 2);
-      } else if (output.audio.codec === 'opus') {
+      if (output.audio.codec === 'opus') {
         // RFC 6716 section 3: TOC configuration sets frame duration, while the
         // packing code sets frame count. Read headers only, without decoding audio.
         let config = data[0] >> 3;
@@ -1049,21 +1093,43 @@ export default class RTPMuxer {
     }
     this.#descriptionCSeq = undefined;
     this.#closing = (async () => {
-      if (this.#server === undefined) {
-        return;
-      }
       // A failed listen still needs the close attempt below; its original error
       // remains available through error. Repeated closes share this same promise.
-      await this.#prepared.catch(() => {});
-      await new Promise((resolve, reject) => {
-        this.#server.close((error) => {
-          if (error !== undefined && error.code !== 'ERR_SERVER_NOT_RUNNING') {
-            reject(error);
-          } else {
-            resolve();
-          }
-        });
-      });
+      await this.#prepared?.catch(() => {});
+      UDPPorts.release(this.#ports.audioControl);
+      UDPPorts.release(this.#ports.talkback);
+      try {
+        if (this.#talkbackSocket !== undefined) {
+          let socket = this.#talkbackSocket;
+          this.#talkbackSocket = undefined;
+          socket.removeAllListeners('message');
+          await new Promise((resolve, reject) => {
+            try {
+              socket.close(resolve);
+            } catch (error) {
+              // Failed binds never enter the running state, but still need cleanup.
+              if (error.code === 'ERR_SOCKET_DGRAM_NOT_RUNNING') {
+                resolve();
+              } else {
+                reject(error);
+              }
+            }
+          });
+        }
+      } finally {
+        // A UDP close failure must not leave the RTSP listener behind.
+        if (this.#server !== undefined) {
+          await new Promise((resolve, reject) => {
+            this.#server.close((error) => {
+              if (error !== undefined && error.code !== 'ERR_SERVER_NOT_RUNNING') {
+                reject(error);
+              } else {
+                resolve();
+              }
+            });
+          });
+        }
+      }
     })();
     return this.#closing;
   }

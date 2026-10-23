@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import net from 'node:net';
+import dgram from 'node:dgram';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import timers from 'node:timers';
@@ -92,19 +93,19 @@ async function waitFor(predicate) {
 }
 
 test('SDP describes actual audio, and PLAY gates RTP delivery on the owned listener', { timeout: 5000 }, async (context) => {
-  const output = new RTPMuxer({ audio: { codec: 'pcm', profile: 's16le', sampleRate: 48000, channels: 2 } });
+  const output = new RTPMuxer({ audio: { codec: 'opus', sampleRate: 48000, channels: 2 } });
   const client = await connect(context, output);
   assert.equal(output.blocked('video'), true);
   assert.throws(() => output.writeVideo(Buffer.from([0x65, 1]), 0), /PLAY/);
   assert.equal((await client.request('OPTIONS', '*')).status, 200);
   const description = await client.request('DESCRIBE');
   assert.match(description.body, /H264\/90000/);
-  assert.match(description.body, /L16\/48000\/2/);
+  assert.match(description.body, /opus\/48000\/2/);
   assert.equal((await client.request('PLAY')).status, 455);
   assert.equal((await play(client, output, true)).status, 200);
   assert.equal(output.blocked('video'), false);
   output.writeVideo(Buffer.from([0x65, 1]), 1000, { sps: Buffer.from([0x67, 0x42]), pps: Buffer.from([0x68, 1]) });
-  output.writeAudio(Buffer.from([1, 0, 2, 0]), 1040);
+  output.writeAudio(Buffer.from([0xf8, 0xff, 0xfe]), 1040);
   output.tick();
   await waitFor(() => client.packets.length === 6);
   assert.deepEqual(
@@ -115,7 +116,7 @@ test('SDP describes actual audio, and PLAY gates RTP delivery on the owned liste
     client.packets.filter((packet) => packet.channel === 4).map(({ data }) => data[12] & 31),
     [7, 8, 5],
   );
-  assert.deepEqual(client.packets.find((packet) => packet.channel === 6).data.subarray(12), Buffer.from([0, 1, 0, 2]));
+  assert.deepEqual(client.packets.find((packet) => packet.channel === 6).data.subarray(12), Buffer.from([0xf8, 0xff, 0xfe]));
   const session = (await client.request('GET_PARAMETER')).headers.get('session');
   assert.equal((await client.request('GET_PARAMETER', output.input.url, ['Session: ' + session])).status, 200);
 });
@@ -462,4 +463,54 @@ test('pending receivers stay bounded and admission closes the remaining candidat
   await Promise.all(rejected);
   output.writeVideo(Buffer.from([0x65, 1]), 0);
   await waitFor(() => candidates[0].packets.some((packet) => packet.channel === 4));
+});
+
+test('talkback UDP bind failure also closes the prepared RTSP listener', { timeout: 5000 }, async (context) => {
+  let occupied = dgram.createSocket('udp4');
+  occupied.bind(0);
+  await once(occupied, 'listening');
+  context.after(() => new Promise((resolve) => occupied.close(resolve)));
+  let muxer = new RTPMuxer({
+    talkback: { port: occupied.address().port, payloadType: 110 },
+  });
+  context.after(() => muxer.close());
+  await assert.rejects(muxer.prepare(), { code: 'EADDRINUSE' });
+  let url = new URL(muxer.input.url);
+  await muxer.close();
+  let client = net.connect({ host: url.hostname, port: Number(url.port) });
+  context.after(() => client.destroy());
+  await assert.rejects(once(client, 'connect'), { code: 'ECONNREFUSED' });
+});
+
+test('muxer-selected FFmpeg ports accept real UDP audio and control forwarding', { timeout: 5000 }, async (context) => {
+  let probe = dgram.createSocket('udp4');
+  probe.bind(0);
+  await once(probe, 'listening');
+  let port = probe.address().port;
+  await new Promise((resolve) => probe.close(resolve));
+  let muxer = new RTPMuxer({ talkback: { port, payloadType: 110 } });
+  context.after(() => muxer.close());
+  await muxer.prepare();
+  assert.equal(new Set([port, muxer.ports.audioControl, muxer.ports.talkback]).size, 3);
+  let control = dgram.createSocket('udp4');
+  let talk = dgram.createSocket('udp4');
+  let sender = dgram.createSocket('udp4');
+  context.after(() => {
+    control.close();
+    talk.close();
+    sender.close();
+  });
+  control.bind(muxer.ports.audioControl);
+  talk.bind(muxer.ports.talkback);
+  await Promise.all([once(control, 'listening'), once(talk, 'listening')]);
+  let audio = Buffer.from([0x80, 110 | 0x80, 1, 2, 3]);
+  let receivedAudio = once(talk, 'message');
+  sender.send(audio, port, '127.0.0.1');
+  assert.deepEqual((await receivedAudio)[0], audio);
+  let report = Buffer.from([0x80, 200, 0, 1]);
+  let reports = Promise.all([once(control, 'message'), once(talk, 'message')]);
+  sender.send(report, port, '127.0.0.1');
+  for (let received of await reports) {
+    assert.deepEqual(received[0], report);
+  }
 });

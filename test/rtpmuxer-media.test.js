@@ -105,26 +105,15 @@ function aacFrames() {
   return aac;
 }
 
-function pcm(timestamp) {
-  const data = Buffer.alloc(960 * 4);
-  for (let sample = 0; sample < 960; sample += 1) {
-    const value = Math.round(Math.sin(((timestamp * 48 + sample) * 2 * Math.PI * 440) / 48000) * 1000);
-    data.writeInt16LE(value, sample * 4);
-    data.writeInt16LE(value, sample * 4 + 2);
-  }
-  return data;
-}
-
 for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack] of [
-  [1, 'rawvideo', 'pcm-s16le'],
-  [4, 'rawvideo', 'pcm-s16le'],
-  [4, 'copy', 'pcm-s16le'],
+  [4, 'rawvideo', 'opus'],
   [1, 'rawvideo', 'opus'],
   [4, 'copy', 'opus'],
   [1, 'copy', 'aac'],
   [4, 'copy', 'aac'],
   [4, 'hksv', 'opus'],
   [4, 'hksv', 'aac'],
+  [4, 'hksv', 'aac', 2336],
   [4, 'copy', 'opus', -40, 'audio'],
   [4, 'copy', 'opus', 40, 'video'],
   [4, 'hksv', 'opus', -40, 'audio'],
@@ -134,7 +123,8 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack] of [
     (codec === 'hksv'
       ? 'FFmpeg ' + audioCodec + ' RTP input produces decodable CFR H264/AAC fragmented MP4 at delivery rate ' + rate
       : 'FFmpeg ' + codec + '/' + audioCodec + ' preserves VFR A/V with a ' + audioOffset + ' ms source offset at delivery rate ' + rate) +
-      (lateTrack === undefined ? '' : ' with late first ' + lateTrack),
+      (lateTrack === undefined ? '' : ' with late first ' + lateTrack) +
+      (audioOffset > 1000 ? ' with source audio offset ' + audioOffset + ' ms' : ''),
     { skip: binary === undefined ? 'Set FFMPEG_TEST_BINARY for real media checks' : false, timeout: 20000 },
     async (context) => {
       const video = videoFrames();
@@ -193,6 +183,8 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack] of [
               '16k',
               '-ac',
               '1',
+              '-filter:a',
+              'aresample=first_pts=0',
               '-f',
               'mp4',
               'pipe:1',
@@ -204,6 +196,7 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack] of [
       let mp4 = [];
       let stderr = '';
       let stopped = false;
+      let audioOnset = undefined;
       context.after(() => {
         if (stopped !== true) {
           context.diagnostic('FFmpeg did not finish. stderr=' + stderr.slice(-4000) + ' stdout=' + stdout.slice(-2000));
@@ -241,8 +234,7 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack] of [
         }
       } else {
         for (let timestamp = audioOffset; timestamp < 6000; timestamp += 20) {
-          let data = audioCodec === 'opus' ? opusSilence : pcm(timestamp);
-          events.push({ type: 'audio', data, timestamp });
+          events.push({ type: 'audio', data: opusSilence, timestamp });
         }
       }
       // Delay one track's delivery without changing its source clock. Its first
@@ -298,6 +290,22 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack] of [
         );
         assert.equal(decoded.status, 0, decoded.stderr?.toString());
         stdout = decoded.stdout.toString();
+        if (audioOffset > 1000) {
+          // Measure actual decoded tone placement, not just playable tracks or
+          // equal start timestamps: fragmented MP4 can hide a lost audio offset.
+          let pcm = spawnSync(
+            binary,
+            ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0', '-map', '0:a:0', '-ar', '16000', '-ac', '1', '-f', 's16le', 'pipe:1'],
+            { input: file, timeout: 10000, maxBuffer: 4 * 1024 * 1024 },
+          );
+          assert.equal(pcm.status, 0, pcm.stderr?.toString());
+          for (let offset = 0; offset + 2 <= pcm.stdout.length; offset += 2) {
+            if (Math.abs(pcm.stdout.readInt16LE(offset)) > 1000) {
+              audioOnset = offset / (2 * 16000);
+              break;
+            }
+          }
+        }
       }
 
       const bases = new Map();
@@ -324,6 +332,13 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack] of [
           decoded[1].at(-1),
       );
       if (codec === 'hksv') {
+        if (audioOffset > 1000) {
+          assert.equal(typeof audioOnset, 'number');
+          assert.ok(
+            Math.abs(audioOnset - decoded[0][0] - audioOffset / 1000) < 0.15,
+            'Lost source audio offset: tone=' + audioOnset + ' video=' + decoded[0][0],
+          );
+        }
         assert.equal(decoded[0].length >= 160, true);
         assert.equal(decoded[1].length > 70, true);
         assert.equal(decoded[0].at(-1) > 5.5 && decoded[1].at(-1) > 5.5, true);

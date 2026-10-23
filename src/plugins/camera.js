@@ -10,7 +10,7 @@
 // - Manage HomeKit live streaming and recording session requests
 // - Select and initialise the appropriate streaming backend (WebRTC or NexusTalk)
 // - Coordinate ffmpeg process plumbing for live streaming, talkback, and HKSV recording
-// - Delegate encrypted return-audio routing to the session-owned Talkback module
+// - Supply HomeKit return-audio routing to the Streamer-owned RTPMuxer
 // - Handle motion events, cooldown timing, and Eve history integration
 // - Provide snapshot handling with fallback images
 // - Translate Nest / Google camera data into HomeKit-facing state
@@ -56,8 +56,13 @@ import Streamer from './camera/streamer.js';
 import NexusTalk from './camera/nexustalk.js';
 import WebRTC from './camera/webrtc.js';
 import FFmpeg from './camera/ffmpeg.js';
-import Talkback from './camera/talkback.js';
-import { processSoftwareVersion, parseDurationToSeconds, scaleValue, buildDeviceDescription } from '../utils.js';
+import {
+  processSoftwareVersion,
+  parseDurationToSeconds,
+  scaleValue,
+  buildDeviceDescription,
+  UDPPorts,
+} from '../utils.js';
 import { buildMappedObject, createMappingContext } from '../translator.js';
 
 // Define constants
@@ -91,7 +96,7 @@ const V4L2_RECORDING_CAPTURE_BUFFERS = 32;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.10.23'; // Code version
+  static VERSION = '2026.10.24'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -101,7 +106,6 @@ export default class NestCamera extends HomeKitDevice {
 
   // Internal data only for this class
   #liveSessions = new Map(); // Track active HomeKit live stream sessions (ports, crypto, talkback routing)
-  #livePorts = new Set(); // Ports reserved for prepared/active live sessions
   #recordingSessions = new Map(); // Exact recording owners from RTP preparation through FFmpeg completion
   #recordingConfig = {}; // HomeKit Secure Video recording configuration
   #cameraImages = {}; // Snapshot resource images
@@ -822,10 +826,26 @@ export default class NestCamera extends HomeKitDevice {
       '-movflags',
       'frag_keyframe+empty_moov+delay_moov+default_base_moof',
 
-      // Preserve RTP audio timing; -ar still performs the required sample-rate conversion.
+      // Fragmented MP4 can rebase a later audio start to zero. Pad that initial
+      // gap with samples so HKSV retains A/V alignment without async clock correction.
       // Audio output
       ...(includeAudio === true
-        ? ['-map', '0:a:0', '-codec:a', 'libfdk_aac', '-profile:a', 'aac_low', '-ar', '16000', '-b:a', '16k', '-ac', '1']
+        ? [
+            '-map',
+            '0:a:0',
+            '-codec:a',
+            'libfdk_aac',
+            '-profile:a',
+            'aac_low',
+            '-ar',
+            '16000',
+            '-b:a',
+            '16k',
+            '-ac',
+            '1',
+            '-filter:a',
+            'aresample=first_pts=0',
+          ]
         : []),
 
       '-f',
@@ -1029,52 +1049,37 @@ export default class NestCamera extends HomeKitDevice {
   async prepareStream(request, callback) {
     // HomeKit has asked us to prepare ports and encryption details for video/audio streaming
 
-    const getPort = async () => {
-      return new Promise((resolve, reject) => {
-        let server = dgram.createSocket('udp4');
-        let done = false;
-
-        server.bind({ port: 0, exclusive: true }, () => {
-          let port = server.address().port;
-          server.close(() => {
-            if (this.#livePorts.has(port) === true) {
-              return getPort().then(resolve, reject);
-            }
-
-            this.#livePorts.add(port);
-            done = true;
-            resolve(port);
-          });
-        });
-        server.on('error', (error) => {
-          if (done !== true) {
-            reject(error);
-          }
-        });
-      });
-    };
-
     if (this.#liveSessions.has(request.sessionID) === true) {
       this.#cleanupLiveSession(request.sessionID);
+    }
+
+    let localVideoPort = undefined;
+    let rtpSplitterPort = undefined;
+    try {
+      localVideoPort = await UDPPorts.allocate();
+      rtpSplitterPort = await UDPPorts.allocate();
+    } catch (error) {
+      // Preparation may fail after selecting the first port. Release both numbers
+      // before reporting failure so subsequent sessions can reuse them.
+      UDPPorts.release(localVideoPort);
+      UDPPorts.release(rtpSplitterPort);
+      return callback(error);
     }
 
     // Generate streaming session information
     let sessionInfo = {
       address: request.targetAddress,
       videoPort: request.video.port,
-      localVideoPort: await getPort(),
+      localVideoPort,
       videoCryptoSuite: request.video.srtpCryptoSuite,
       videoSRTP: Buffer.concat([request.video.srtp_key, request.video.srtp_salt]),
       videoSSRC: this.hap.CameraController.generateSynchronisationSource(),
 
       audioPort: request.audio.port,
-      localAudioPort: await getPort(),
-      audioTalkbackPort: await getPort(),
-      rtpSplitterPort: await getPort(),
+      rtpSplitterPort,
       audioCryptoSuite: request.audio.srtpCryptoSuite,
       audioSRTP: Buffer.concat([request.audio.srtp_key, request.audio.srtp_salt]),
       audioSSRC: this.hap.CameraController.generateSynchronisationSource(),
-      talkback: null, // Routing is set up later during stream start
     };
 
     // Converts ipv4-mapped ipv6 into pure ipv4
@@ -1127,11 +1132,27 @@ export default class NestCamera extends HomeKitDevice {
 
       let includeAudio = this.deviceData.audio_enabled === true && this.streamer?.codecs?.audio !== undefined;
 
+      let enableTalkback =
+        includeAudio === true &&
+        this.deviceData.has_speaker === true &&
+        this.deviceData.has_microphone === true &&
+        this.ffmpeg.supportsEncoder('libfdk_aac') === true &&
+        ((this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.SPEEX && this.ffmpeg.supportsEncoder('libspeex') === true) ||
+          (this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.OPUS && this.ffmpeg.supportsEncoder('libopus') === true));
+
       // Start the live streamer process
-      let { talkback, input } = await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_LIVE, {
+      let { talkback, input, ports } = await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_LIVE, {
         sessionID: request.sessionID,
         options: {
           includeAudio: includeAudio === true,
+          // Bind return-audio routing with this output before either FFmpeg process starts.
+          talkback:
+            enableTalkback === true
+              ? {
+                  port: session.rtpSplitterPort,
+                  payloadType: request.audio.pt,
+                }
+              : undefined,
           waitForReady: 2000, // Timeout to wait for source_ready before starting ffmpeg process
         },
       });
@@ -1288,7 +1309,7 @@ export default class NestCamera extends HomeKitDevice {
                 '?rtcpport=' +
                 session.audioPort +
                 '&localrtcpport=' +
-                session.localAudioPort +
+                ports.audioControl +
                 '&pkt_size=188',
             ]
           : []),
@@ -1314,25 +1335,7 @@ export default class NestCamera extends HomeKitDevice {
 
       let ffmpegTalk = null; // No ffmpeg session for talkback yet
       if (typeof talkback?.write === 'function') {
-        // Two-way audio support if enabled and codecs available
-        if (
-          ((this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.SPEEX && this.ffmpeg?.supportsEncoder('libspeex') === true) ||
-            (this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.OPUS && this.ffmpeg?.supportsEncoder('libopus') === true)) &&
-          this.ffmpeg?.supportsEncoder('libfdk_aac') === true &&
-          this.deviceData.audio_enabled === true &&
-          this.deviceData.has_speaker === true &&
-          this.deviceData.has_microphone === true
-        ) {
-          // Talkback owns encrypted return-audio/control routing for this session.
-          session.talkback = new Talkback({
-            port: session.rtpSplitterPort,
-            audioPort: session.localAudioPort,
-            talkbackPort: session.audioTalkbackPort,
-            payloadType: request.audio.pt,
-            description: this.deviceData.description,
-            log: this.log,
-          });
-
+        if (enableTalkback === true) {
           let talkbackCommandLine = [
             '-hide_banner',
             '-nostats',
@@ -1373,7 +1376,7 @@ export default class NestCamera extends HomeKitDevice {
             's=HomeKit Audio Talkback',
             'c=IN ' + (session.ipv6 ? 'IP6' : 'IP4') + ' ' + session.address,
             't=0 0',
-            'm=audio ' + session.audioTalkbackPort + ' RTP/AVP ' + request.audio.pt,
+            'm=audio ' + ports.talkback + ' RTP/AVP ' + request.audio.pt,
             'b=AS:' + request.audio.max_bit_rate,
             'a=ptime:' + request.audio.packet_time,
           ];
@@ -1698,23 +1701,8 @@ export default class NestCamera extends HomeKitDevice {
       // A listener whose bind failed may already be closed.
     }
 
-    session?.talkback?.close?.();
-
-    if (typeof session?.localVideoPort === 'number') {
-      this.#livePorts.delete(session.localVideoPort);
-    }
-
-    if (typeof session?.localAudioPort === 'number') {
-      this.#livePorts.delete(session.localAudioPort);
-    }
-
-    if (typeof session?.audioTalkbackPort === 'number') {
-      this.#livePorts.delete(session.audioTalkbackPort);
-    }
-
-    if (typeof session?.rtpSplitterPort === 'number') {
-      this.#livePorts.delete(session.rtpSplitterPort);
-    }
+    UDPPorts.release(session?.localVideoPort);
+    UDPPorts.release(session?.rtpSplitterPort);
 
     session?.ffmpegTalk?.stop('SIGKILL');
     session?.ffmpeg?.stop('SIGKILL');

@@ -44,7 +44,7 @@
 // - sizeJitterBuffer() returns top-level jitter queue size
 // - clearJitterBuffer() clears jitter state
 // - Grouped queues drain directly from the ring; reordered groups use a temporary sorted view
-// - Ungrouped queues use cached item arrays
+// - Ungrouped queues use one bounded array, sorted and drained in place
 // - Internal jitter sorting uses wraparound-aware RTP sequence/timestamp comparison
 //
 // Media recovery helpers:
@@ -68,7 +68,7 @@
 // - CLOSING
 // - CLOSED
 //
-// Code version 2026.10.22
+// Code version 2026.10.23
 // Mark Hulskamp
 'use strict';
 
@@ -304,10 +304,11 @@ export default class StreamTransport {
     // Create a per-stream jitter buffer state object.
     // This is deliberately a plain object so transports can keep separate
     // audio/video/retransmission buffers without introducing another exported class.
+    let maxPackets = Number.isFinite(options.maxPackets) === true && options.maxPackets > 0 ? options.maxPackets : 64;
     return {
       groupByTimestamp: options.groupByTimestamp === true,
       delayMs: Number.isFinite(options.delayMs) === true ? options.delayMs : 0,
-      maxPackets: Number.isFinite(options.maxPackets) === true && options.maxPackets > 0 ? options.maxPackets : 64,
+      maxPackets,
       sequenceWrap: Number.isFinite(options.sequenceWrap) === true && options.sequenceWrap > 0 ? options.sequenceWrap : RTP_SEQUENCE_WRAP,
       sequenceMask: Number.isFinite(options.sequenceMask) === true && options.sequenceMask > 0 ? options.sequenceMask : RTP_SEQUENCE_MASK,
       timestampWrap:
@@ -316,11 +317,9 @@ export default class StreamTransport {
         Number.isFinite(options.timestampMaxDelta) === true && options.timestampMaxDelta > 0
           ? options.timestampMaxDelta
           : RTP_TIMESTAMP_MAX_DELTA,
-      queue: new RingBuffer(
-        0,
-        Number.isFinite(options.maxPackets) === true && options.maxPackets > 0 ? options.maxPackets : 64,
-        Number.isFinite(options.maxPackets) === true && options.maxPackets > 0 ? options.maxPackets : 64,
-      ),
+      // Ungrouped queues sort and splice in place. Grouped queues retain the
+      // ring's head release without mirroring packet references into an array.
+      queue: options.groupByTimestamp === true ? new RingBuffer(0, maxPackets, maxPackets) : [],
       groupIndex: options.groupByTimestamp === true ? new Map() : undefined,
       packetCount: 0,
       groupsSorted: true,
@@ -353,10 +352,10 @@ export default class StreamTransport {
     let seqDelta = 0;
     let ageMs = 0;
     let releaseCount = 0;
-    let queue = this.#jitterItems(jitter);
+    let queue = jitter?.queue;
 
     // Release packets from a non-grouped jitter buffer in sequence order.
-    if (typeof jitter !== 'object' || jitter === null || jitter.groupByTimestamp === true) {
+    if (typeof jitter !== 'object' || jitter === null || jitter.groupByTimestamp === true || Array.isArray(queue) !== true) {
       return released;
     }
 
@@ -391,7 +390,6 @@ export default class StreamTransport {
     // Remove released packets from jitter queue.
     if (releaseCount > 0) {
       queue.splice(0, releaseCount);
-      this.#jitterReplace(jitter, queue);
     }
 
     return released;
@@ -491,23 +489,19 @@ export default class StreamTransport {
   }
 
   countJitterPackets(jitter) {
-    // Return total packets currently held by a jitter buffer.
-    // For grouped video jitter this counts packets inside all timestamp groups.
-    if (typeof jitter !== 'object' || jitter === null || jitter.queue instanceof RingBuffer !== true) {
-      return 0;
+    // Grouped queues count all held packets, not just timestamp groups.
+    if (jitter?.groupByTimestamp === true) {
+      return jitter.queue instanceof RingBuffer ? jitter.packetCount : 0;
     }
-
-    if (jitter.groupByTimestamp !== true) {
-      return jitter.queue.size;
-    }
-
-    return jitter.packetCount;
+    return this.sizeJitterBuffer(jitter);
   }
 
   sizeJitterBuffer(jitter) {
-    // Return top-level jitter queue size.
-    // For grouped buffers this is the number of timestamp groups, not packets.
-    return typeof jitter === 'object' && jitter !== null && jitter.queue instanceof RingBuffer ? jitter.queue.size : 0;
+    // Ungrouped queues hold packets directly; rings hold timestamp groups.
+    if (Array.isArray(jitter?.queue) === true) {
+      return jitter.queue.length;
+    }
+    return jitter?.queue instanceof RingBuffer ? jitter.queue.size : 0;
   }
 
   clearJitterBuffer(jitter) {
@@ -516,8 +510,11 @@ export default class StreamTransport {
       return;
     }
 
-    jitter.queue?.clear?.(0);
-    jitter.items = [];
+    if (Array.isArray(jitter.queue) === true) {
+      jitter.queue.length = 0;
+    } else {
+      jitter.queue?.clear?.(0);
+    }
     jitter.groupIndex?.clear();
     jitter.packetCount = 0;
     jitter.groupsSorted = true;
@@ -1147,10 +1144,10 @@ export default class StreamTransport {
   #jitterPushPacket(jitter, packetInfo = {}) {
     let sequenceNumber = Number.isInteger(packetInfo.sequenceNumber) === true ? packetInfo.sequenceNumber & jitter.sequenceMask : undefined;
     let seqDelta = 0;
-    let queue = this.#jitterItems(jitter);
+    let queue = jitter?.queue;
 
-    // Insert a packet into a sequence-ordered jitter buffer.
-    if (typeof sequenceNumber !== 'number') {
+    // Append in place; release sorts the bounded queue by RTP sequence.
+    if (typeof sequenceNumber !== 'number' || Array.isArray(queue) !== true) {
       return false;
     }
 
@@ -1177,8 +1174,6 @@ export default class StreamTransport {
     while (queue.length > jitter.maxPackets) {
       queue.shift();
     }
-
-    this.#jitterReplace(jitter, queue);
 
     return true;
   }
@@ -1308,32 +1303,6 @@ export default class StreamTransport {
     return (right[field] - left[field] + wrap) % wrap < maxDelta ? -1 : 1;
   }
 
-  #jitterItems(jitter) {
-    let index = 0;
-
-    // Invalid jitter state or queue unavailable.
-    if (typeof jitter !== 'object' || jitter === null || jitter.queue instanceof RingBuffer !== true) {
-      return [];
-    }
-
-    // Reuse a cached array to avoid repeated allocations during
-    // frequent jitter-buffer operations.
-    if (Array.isArray(jitter.items) !== true) {
-      jitter.items = [];
-    }
-
-    // Match the current queue size so removed items are discarded.
-    jitter.items.length = jitter.queue.size;
-
-    // Refresh cached items from the RingBuffer.
-    while (index < jitter.queue.size) {
-      jitter.items[index] = jitter.queue.getByOffset(index);
-      index++;
-    }
-
-    return jitter.items;
-  }
-
   #jitterReplace(jitter, items = []) {
     let index = 0;
 
@@ -1353,12 +1322,6 @@ export default class StreamTransport {
     while (index < items.length) {
       jitter.queue.push(items[index]);
       index++;
-    }
-
-    // Cache the array view only for ungrouped queues. Grouped queues use a
-    // temporary sorting view so released groups are not retained twice.
-    if (jitter.groupByTimestamp !== true) {
-      jitter.items = items;
     }
   }
 }

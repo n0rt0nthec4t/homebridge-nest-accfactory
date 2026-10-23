@@ -31,7 +31,7 @@
 // - Google Home Foyer gRPC signaling and stream lifecycle control
 // - RTCP feedback support (PLI/NACK/FIR) for video recovery
 // - Codec negotiation (H264 video, Opus audio, RTX retransmissions)
-// - RTP timestamp mapping from source media clocks
+// - Source RTP clock mapping with paired RTCP sender-report synchronization
 // - Bounded synchronous jitter draining so bad media bursts cannot monopolise the Node.js event loop
 // - Stream health monitoring with recovery/suppression logic
 // - Startup timing and stream diagnostics logging
@@ -46,7 +46,8 @@
 //   (first decodable keyframe), not connection state
 // - Startup delays may occur due to upstream (Google) keyframe delivery behaviour
 // - Audio remains compressed until FFmpeg performs the HomeKit codec conversion
-// - Emitted media timestamps describe source media time derived from RTP timing
+// - Emitted timestamps preserve RTP intervals; paired sender reports establish the A/V relationship
+// - Arrival time is an estimate until both sender reports are available; synchronization never rewinds either track
 // - Output playout timing, catch-up, and live latency policy are owned by Streamer
 // - Incomplete keyframes and pathological access units are dropped/recovered locally rather than blocking the plugin process
 //
@@ -124,6 +125,7 @@ export default class WebRTC extends StreamTransport {
   #lastPacketAt = undefined; // Last playback packet receipt time in ms
   #closeInProgress = false; // True while close() teardown is running to avoid re-entrant shutdown races
   #reconnectPending = false; // Reconnect requested once socket closes
+  #clockSynchronized = false; // Sender reports establish one A/V reference per source pair.
   #tracks = { audio: {}, video: {}, talkback: {} }; // Track state for audio and video
 
   constructor(options = {}) {
@@ -340,9 +342,19 @@ export default class WebRTC extends StreamTransport {
         return;
       }
       this.#handlePlaybackBegin(Streamer.MEDIA_TYPE.AUDIO);
+      let clock = this.#tracks.audio.clock;
+      track.onReceiveRtcp?.subscribe?.((packet) => {
+        if (this.#peerConnection === peerConnection && this.#tracks.audio.clock === clock && this.#closeInProgress !== true) {
+          this.#handleSenderReport('audio', packet);
+        }
+      });
 
       track.onReceiveRtp.subscribe((rtpPacket) => {
-        if (this.#peerConnection !== peerConnection || track.codec.payloadType !== RTP_OPUS_AUDIO_PAYLOAD_TYPE) {
+        if (
+          this.#peerConnection !== peerConnection ||
+          this.#tracks.audio.clock !== clock ||
+          track.codec.payloadType !== RTP_OPUS_AUDIO_PAYLOAD_TYPE
+        ) {
           // Ignore retired peers and unsupported audio payload types.
           return;
         }
@@ -356,10 +368,17 @@ export default class WebRTC extends StreamTransport {
         return;
       }
       this.#handlePlaybackBegin(Streamer.MEDIA_TYPE.VIDEO);
+      let clock = this.#tracks.video.clock;
+      track.onReceiveRtcp?.subscribe?.((packet) => {
+        if (this.#peerConnection === peerConnection && this.#tracks.video.clock === clock && this.#closeInProgress !== true) {
+          this.#handleSenderReport('video', packet);
+        }
+      });
 
       track.onReceiveRtp.subscribe((rtpPacket) => {
         if (
           this.#peerConnection !== peerConnection ||
+          this.#tracks.video.clock !== clock ||
           (track.codec.payloadType !== RTP_H264_VIDEO_PAYLOAD_TYPE && track.codec.payloadType !== RTP_H264_VIDEO_RTX_PAYLOAD_TYPE)
         ) {
           // Ignore retired peers and unsupported video payload types.
@@ -507,6 +526,7 @@ export default class WebRTC extends StreamTransport {
       // Clear media/talkback track state before closing remote transport.
       // This lets any in-flight callbacks naturally no-op while shutdown continues.
       this.#tracks = { audio: {}, video: {}, talkback: {} };
+      this.#clockSynchronized = false;
 
       if (closingStreamId !== undefined && talkbackActive === true) {
         await this.#grpcTransport.command(GOOGLE_HOME_FOYER_PREFIX, 'CameraService', 'SendTalkback', {
@@ -869,8 +889,10 @@ export default class WebRTC extends StreamTransport {
     if (mediaType === Streamer.MEDIA_TYPE.VIDEO) {
       this.#ensurePlaybackVideoTrack();
 
-      this.#tracks.video.rtp = { lastSequence: undefined, lastTimestamp: undefined };
-      this.#tracks.video.output = { lastTimestamp: undefined };
+      this.#tracks.video.rtp = { lastSequence: undefined };
+      this.#tracks.video.clock = { rtpTimestamp: undefined, timestamp: undefined, lastTimestamp: undefined, report: undefined };
+      this.#tracks.video.ssrc = undefined;
+      this.#clockSynchronized = false;
       this.#tracks.video.deltaAudit = { hasAcceptedKeyframe: false };
       this.#tracks.video.h264 = { lastSPS: undefined, lastPPS: undefined };
 
@@ -889,9 +911,13 @@ export default class WebRTC extends StreamTransport {
 
     if (mediaType === Streamer.MEDIA_TYPE.AUDIO) {
       this.#ensurePlaybackAudioTrack();
+      clearTimeout(this.#audioJitterTimer);
+      this.#audioJitterTimer = undefined;
 
-      this.#tracks.audio.rtp = { lastSequence: undefined, lastTimestamp: undefined };
-      this.#tracks.audio.output = { lastTimestamp: undefined };
+      this.#tracks.audio.rtp = { lastSequence: undefined };
+      this.#tracks.audio.clock = { rtpTimestamp: undefined, timestamp: undefined, lastTimestamp: undefined, report: undefined };
+      this.#tracks.audio.ssrc = undefined;
+      this.#clockSynchronized = false;
 
       if (typeof this.#tracks.audio.jitter === 'object' && this.#tracks.audio.jitter !== null) {
         this.clearJitterBuffer(this.#tracks.audio.jitter);
@@ -899,6 +925,90 @@ export default class WebRTC extends StreamTransport {
 
       this.#refreshStallTimer();
     }
+  }
+
+  #handleSenderReport(mediaType, packet) {
+    let track = this.#tracks[mediaType];
+    // Receiver callbacks also carry RR and feedback packets. Only an SR from
+    // this track's sender describes the relationship between RTP and NTP time.
+    if (
+      this.#clockSynchronized === true ||
+      packet?.type !== 200 ||
+      Number.isInteger(packet.ssrc) !== true ||
+      (track.ssrc !== undefined && packet.ssrc !== track.ssrc) ||
+      typeof packet.senderInfo?.ntpTimestamp !== 'bigint' ||
+      packet.senderInfo.ntpTimestamp <= 0n ||
+      Number.isInteger(packet.senderInfo.rtpTimestamp) !== true
+    ) {
+      return;
+    }
+    track.clock.report = { ssrc: packet.ssrc, ntpTimestamp: packet.senderInfo.ntpTimestamp, rtpTimestamp: packet.senderInfo.rtpTimestamp };
+    this.#synchronizePlaybackClocks();
+  }
+
+  #synchronizePlaybackClocks() {
+    let tracks = [this.#tracks.video, this.#tracks.audio];
+    if (
+      this.#clockSynchronized === true ||
+      tracks.some((track) => track.clock?.report === undefined || (track.ssrc !== undefined && track.clock.report.ssrc !== track.ssrc))
+    ) {
+      return;
+    }
+    if (tracks.every((track) => track.clock.timestamp === undefined)) {
+      return;
+    }
+
+    // Subtract NTP values before converting to Number to retain fractional
+    // precision. Reports can refer to different instants and random RTP origins.
+    let ntpOrigin = tracks[0].clock.report.ntpTimestamp;
+    let sourceTimes = tracks.map((track) => {
+      let clock = track.clock;
+      return (
+        (Number(clock.report.ntpTimestamp - ntpOrigin) * 1000) / 0x100000000 +
+        ((((clock.rtpTimestamp ?? clock.report.rtpTimestamp) - clock.report.rtpTimestamp) | 0) * 1000) / track.sampleRate
+      );
+    });
+    let localOrigin = Math.max(
+      ...tracks.map((track, index) =>
+        track.clock.timestamp === undefined ? Number.NEGATIVE_INFINITY : track.clock.timestamp - sourceTimes[index],
+      ),
+    );
+
+    // Late reports replace arrival-based estimates for both tracks together.
+    // Choose one translation that never rewinds either emitted track. A one-time
+    // forward gap is preferable to rewriting retained media or shifting tracks independently.
+    for (let index = 0; index < tracks.length; index++) {
+      // Early paired reports can seed an unseen track directly at its reported
+      // RTP position, avoiding an arrival-based offset on its first media frame.
+      tracks[index].clock.rtpTimestamp ??= tracks[index].clock.report.rtpTimestamp;
+      tracks[index].clock.timestamp = localOrigin + sourceTimes[index];
+    }
+    this.#clockSynchronized = true;
+    this?.log?.debug?.('Synchronized WebRTC source A/V clocks for uuid "%s" using RTCP sender reports', this.uuid);
+  }
+
+  #mapPlaybackTimestamp(mediaType, rtpTimestamp, receivedAt) {
+    let track = this.#tracks[mediaType];
+    let clock = track.clock;
+    if (clock.rtpTimestamp === undefined) {
+      // Until both sender reports are available, retain arrival anchoring as an
+      // estimate. Subsequent timing always follows RTP ticks, including rollover.
+      clock.rtpTimestamp = rtpTimestamp;
+      clock.timestamp = receivedAt;
+      this.#synchronizePlaybackClocks();
+    }
+    let deltaTicks = (rtpTimestamp - clock.rtpTimestamp) | 0;
+    if (deltaTicks === 0 && clock.lastTimestamp !== undefined) {
+      return undefined;
+    }
+    let timestamp = clock.timestamp + (deltaTicks * 1000) / track.sampleRate;
+    if (timestamp <= clock.lastTimestamp) {
+      return undefined;
+    }
+    clock.rtpTimestamp = rtpTimestamp;
+    clock.timestamp = timestamp;
+    clock.lastTimestamp = timestamp;
+    return timestamp;
   }
 
   #ensurePlaybackVideoTrack() {
@@ -911,8 +1021,7 @@ export default class WebRTC extends StreamTransport {
     video.codec ??= StreamTransport.CODEC_TYPE.H264;
     video.sampleRate ??= 90000;
     video.keyframeRequestInFlight ??= false;
-    video.rtp ??= { lastSequence: undefined, lastTimestamp: undefined };
-    video.output ??= { lastTimestamp: undefined };
+    video.rtp ??= { lastSequence: undefined };
     video.health ??= this.getMediaState('video');
     video.deltaAudit ??= { hasAcceptedKeyframe: false };
 
@@ -940,8 +1049,7 @@ export default class WebRTC extends StreamTransport {
     audio.sampleRate ??= 48000;
     audio.channels ??= 2;
     audio.packetTime ??= 20;
-    audio.rtp ??= { lastSequence: undefined, lastTimestamp: undefined };
-    audio.output ??= { lastTimestamp: undefined };
+    audio.rtp ??= { lastSequence: undefined };
 
     if (typeof audio.jitter !== 'object' || audio.jitter === null || audio.jitter.groupByTimestamp === true) {
       audio.jitter = this.createJitterBuffer({
@@ -1280,8 +1388,6 @@ export default class WebRTC extends StreamTransport {
   #emitPlaybackVideoFrame(group, frame) {
     let video = this.#tracks.video;
     let h264 = video.h264;
-    let videoRtp = video.rtp;
-    let videoOutput = video.output;
     let deltaAudit = video.deltaAudit;
     let pendingRtpTimestamp = group.rtpTimestamp;
     // Keep the existing source-clock anchor: the first packet in sequence
@@ -1291,7 +1397,6 @@ export default class WebRTC extends StreamTransport {
     let pendingTimestamp = undefined;
     let now = Date.now();
     let deltaTicks = 0;
-    let deltaMs = 0;
     let recoveringDeltaProbe = false;
 
     if (frame.hasVcl !== true) {
@@ -1371,9 +1476,9 @@ export default class WebRTC extends StreamTransport {
     }
 
     // Map RTP video time onto source media time without output pacing policy.
-    // Reordering/assembly stays here; smoothing, catch-up, and drops belong to Streamer.
-    if (typeof videoRtp.lastTimestamp === 'number') {
-      deltaTicks = (pendingRtpTimestamp - videoRtp.lastTimestamp + RTP_TIMESTAMP_MASK) % RTP_TIMESTAMP_MASK;
+    // Source clock validation stays here; Streamer owns retention and delivery pacing.
+    if (typeof video.clock.lastTimestamp === 'number') {
+      deltaTicks = (pendingRtpTimestamp - video.clock.rtpTimestamp + RTP_TIMESTAMP_MASK) % RTP_TIMESTAMP_MASK;
 
       if (deltaTicks > RTP_TIMESTAMP_MAX_DELTA) {
         this.recordVideoDrop('backwards-timestamp');
@@ -1382,7 +1487,7 @@ export default class WebRTC extends StreamTransport {
           'Dropping reordered/backwards WebRTC video frame for uuid "%s": pendingTs="%s" lastTs="%s" deltaTicks="%s"',
           this.uuid,
           pendingRtpTimestamp,
-          videoRtp.lastTimestamp,
+          video.clock.rtpTimestamp,
           deltaTicks,
         );
 
@@ -1390,33 +1495,12 @@ export default class WebRTC extends StreamTransport {
       }
     }
 
-    // Convert RTP clock deltas into source timestamps.
-    // Uses previous accepted RTP timestamp instead of a fixed RTP epoch so reconnects
-    // and RTP session restarts do not poison timing.
-    if (typeof videoOutput.lastTimestamp !== 'number') {
-      pendingTimestamp = typeof pendingFirstPacketTime === 'number' ? pendingFirstPacketTime : now;
-    } else {
-      deltaTicks = 0;
-
-      if (typeof videoRtp.lastTimestamp === 'number') {
-        deltaTicks = (pendingRtpTimestamp - videoRtp.lastTimestamp + RTP_TIMESTAMP_MASK) % RTP_TIMESTAMP_MASK;
-      }
-
-      deltaMs = (deltaTicks / video.sampleRate) * 1000;
-
-      if (Number.isFinite(deltaMs) !== true || deltaMs < 0) {
-        deltaMs = 1;
-      }
-
-      pendingTimestamp = videoOutput.lastTimestamp + Math.max(1, deltaMs);
+    pendingTimestamp = this.#mapPlaybackTimestamp('video', pendingRtpTimestamp, pendingFirstPacketTime ?? now);
+    if (pendingTimestamp === undefined) {
+      this.recordVideoDrop('non-increasing-timestamp');
+      this.#requestVideoRecovery('non-increasing-timestamp');
+      return;
     }
-
-    // Enforce monotonic source media timestamps even when upstream timing is noisy
-    pendingTimestamp =
-      typeof videoOutput.lastTimestamp === 'number' ? Math.max(pendingTimestamp, videoOutput.lastTimestamp + 1) : pendingTimestamp;
-
-    videoRtp.lastTimestamp = pendingRtpTimestamp;
-    videoOutput.lastTimestamp = pendingTimestamp;
 
     // A good keyframe means startup is complete and any startup PLI loop can stop
     if (pendingKeyFrame === true) {
@@ -1556,7 +1640,7 @@ export default class WebRTC extends StreamTransport {
     // Packet arrivals drain immediately; one pending deadline also releases
     // aged packets during an arrival pause. Reuse the same ordered drain path.
     if (this.#audioJitterTimer === undefined && this.sizeJitterBuffer(jitter) > 0) {
-      let first = jitter.queue.getByOffset(0);
+      let first = jitter.queue[0];
       this.#audioJitterTimer = setTimeout(
         () => {
           // A retired track must never drain or replace its successor's timer.
@@ -1580,7 +1664,6 @@ export default class WebRTC extends StreamTransport {
 
     let delta = 0;
     let deltaTicks = 0;
-    let deltaMs = 0;
     let timestamp = undefined;
     let now = Date.now();
 
@@ -1608,10 +1691,12 @@ export default class WebRTC extends StreamTransport {
 
     let audio = this.#tracks.audio;
     let audioRtp = audio.rtp;
-    let audioOutput = audio.output;
 
     if (typeof audio.ssrc !== 'number' && typeof ssrc === 'number') {
       audio.ssrc = ssrc;
+    }
+    if (typeof ssrc === 'number' && ssrc !== audio.ssrc) {
+      return;
     }
 
     if (typeof payloadType === 'number' && payloadType !== audio.id) {
@@ -1645,47 +1730,27 @@ export default class WebRTC extends StreamTransport {
     if (typeof audioRtp.lastSequence === 'number') {
       delta = (sequenceNumber - audioRtp.lastSequence + RTP_SEQUENCE_WRAP) % RTP_SEQUENCE_WRAP;
 
-      if (delta > RTP_SEQUENCE_WRAP / 2) {
+      if (delta === 0 || delta > RTP_SEQUENCE_WRAP / 2) {
         return;
       }
     }
 
-    // Map RTP audio time onto source media time without output pacing policy.
-    // Uses previous accepted RTP timestamp instead of a fixed RTP epoch so reconnects
-    // and long-running RTP sessions do not poison timing.
-    if (typeof audioRtp.lastTimestamp === 'number') {
-      deltaTicks = (rtpTimestamp - audioRtp.lastTimestamp + RTP_TIMESTAMP_MASK) % RTP_TIMESTAMP_MASK;
+    // Reject backwards source time before mapping RTP ticks onto the shared clock.
+    // A source reconnect creates fresh anchors instead of repairing packet times.
+    if (typeof audio.clock.lastTimestamp === 'number') {
+      deltaTicks = (rtpTimestamp - audio.clock.rtpTimestamp + RTP_TIMESTAMP_MASK) % RTP_TIMESTAMP_MASK;
 
       if (deltaTicks > RTP_TIMESTAMP_MAX_DELTA) {
         return;
       }
     }
 
-    if (typeof audioOutput.lastTimestamp !== 'number') {
-      timestamp = now;
-    } else {
-      deltaTicks = 0;
-
-      if (typeof audioRtp.lastTimestamp === 'number') {
-        deltaTicks = (rtpTimestamp - audioRtp.lastTimestamp + RTP_TIMESTAMP_MASK) % RTP_TIMESTAMP_MASK;
-      }
-
-      deltaMs = (deltaTicks / audio.sampleRate) * 1000;
-
-      if (Number.isFinite(deltaMs) !== true || deltaMs < 0) {
-        deltaMs = 1;
-      }
-
-      timestamp = audioOutput.lastTimestamp + Math.max(1, deltaMs);
+    timestamp = this.#mapPlaybackTimestamp('audio', rtpTimestamp, now);
+    if (timestamp === undefined) {
+      return;
     }
 
-    // Keep the ordered Opus payload compressed through shared retention and RTP
-    // delivery. FFmpeg owns conversion for live and recording consumers.
-    timestamp = typeof audioOutput.lastTimestamp === 'number' ? Math.max(timestamp, audioOutput.lastTimestamp + 1) : timestamp;
-
     audioRtp.lastSequence = sequenceNumber;
-    audioRtp.lastTimestamp = rtpTimestamp;
-    audioOutput.lastTimestamp = timestamp;
 
     this.emitMedia({
       type: Streamer.MEDIA_TYPE.AUDIO,

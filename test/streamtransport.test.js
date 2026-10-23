@@ -242,7 +242,9 @@ test('audio jitter waits for its delay, sorts rollover packets and rejects dupli
   }
   assert.equal(transport.pushJitterPacket(jitter, { sequenceNumber: 0 }), false);
   assert.deepEqual(transport.releaseJitterPackets(jitter), []);
-  context.mock.timers.tick(50);
+  context.mock.timers.tick(49);
+  assert.deepEqual(transport.releaseJitterPackets(jitter), []);
+  context.mock.timers.tick(1);
   assert.deepEqual(
     transport.releaseJitterPackets(jitter).map((entry) => entry.sequenceNumber),
     [65535, 0, 1],
@@ -257,6 +259,7 @@ test('audio jitter stays bounded and forced release bypasses delay', () => {
   for (let sequenceNumber = 0; sequenceNumber < 10; sequenceNumber++) {
     transport.pushJitterPacket(jitter, { sequenceNumber });
     assert.ok(transport.countJitterPackets(jitter) <= 3);
+    assert.equal(transport.sizeJitterBuffer(jitter), transport.countJitterPackets(jitter));
   }
   assert.deepEqual(
     transport.releaseJitterPackets(jitter, true).map((entry) => entry.sequenceNumber),

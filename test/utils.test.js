@@ -1,8 +1,11 @@
 // Verify normalisation, range conversion, identity and naming helpers with malformed and boundary inputs.
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import dgram from 'node:dgram';
+import { EventEmitter } from 'node:events';
 
 import {
+  UDPPorts,
   adjustTemperature,
   buildDeviceDescription,
   crc24,
@@ -93,3 +96,60 @@ test('software versions pad short versions and fail closed on strings without nu
 test('device description uses a known location even when the cloud label is absent', () => {
   assert.equal(buildDeviceDescription({}, { value: { device_located_settings: { fixtureNameLabel: { literal: 'Kitchen' } } } }), 'Kitchen');
 });
+
+test('UDP allocations share reservations across concurrent callers and release for reuse', async (context) => {
+  let candidates = [25000, 25000, 25001, 25000];
+  let sockets = [];
+  context.mock.method(dgram, 'createSocket', () => {
+    let socket = new EventEmitter();
+    let port = candidates.shift();
+    socket.bind = (options, ready) => {
+      assert.deepEqual(options, { port: 0, exclusive: true });
+      ready();
+    };
+    socket.address = () => ({ port });
+    socket.close = context.mock.fn((ready) => ready());
+    sockets.push(socket);
+    return socket;
+  });
+  context.after(() => {
+    UDPPorts.release(25000);
+    UDPPorts.release(25001);
+  });
+  let ports = await Promise.all([UDPPorts.allocate(), UDPPorts.allocate()]);
+  assert.deepEqual(ports.sort(), [25000, 25001]);
+  assert.equal(sockets.length, 3);
+  for (let socket of sockets) {
+    assert.equal(socket.close.mock.callCount(), 1);
+  }
+  UDPPorts.release(25000);
+  UDPPorts.release(25000);
+  UDPPorts.release(undefined);
+  assert.equal(await UDPPorts.allocate(), 25000);
+});
+
+for (let failure of ['bind-event', 'bind-throw', 'close']) {
+  test('UDP allocation closes failed probes and propagates ' + failure, async (context) => {
+    let socket = new EventEmitter();
+    let error = new Error('Fixture ' + failure);
+    socket.bind = (options, ready) => {
+      if (failure === 'bind-event') {
+        queueMicrotask(() => socket.emit('error', error));
+      } else if (failure === 'bind-throw') {
+        throw error;
+      } else {
+        ready();
+      }
+    };
+    socket.address = () => ({ port: 25002 });
+    socket.close = context.mock.fn(() => {
+      if (failure === 'close') {
+        throw error;
+      }
+      throw Object.assign(new Error('Not bound'), { code: 'ERR_SOCKET_DGRAM_NOT_RUNNING' });
+    });
+    context.mock.method(dgram, 'createSocket', () => socket);
+    await assert.rejects(UDPPorts.allocate(), (caught) => caught === error);
+    assert.equal(socket.close.mock.callCount(), 1);
+  });
+}

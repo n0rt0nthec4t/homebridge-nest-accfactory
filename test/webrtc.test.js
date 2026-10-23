@@ -323,7 +323,7 @@ for (let local of [false, true]) {
 async function videoFlow(context) {
   let flow = setup(context);
   await flow.transport.open();
-  let track = { codec: { payloadType: 98 }, onReceiveRtp: event() };
+  let track = { ssrc: 10, codec: { payloadType: 98 }, onReceiveRtp: event(), onReceiveRtcp: event() };
   let transceiver = flow.peers[0].transceivers.find((entry) => entry.kind === 'video');
   transceiver.onTrack.emit(track);
   let sequence = 0;
@@ -1304,4 +1304,104 @@ test('WebRTC startup connect timing excludes ICE checking and records actual con
   peer.iceConnectionStateChange.emit();
   assert.equal(flow.transport.connected, true);
   assert.equal(flow.transport.stats.lifecycle.connectedAt, Date.now());
+});
+
+// Independent sender RTP origins are related only by their NTP reports, never
+// by equality of RTP integers or by when the tracks' packets happened to arrive.
+function senderReport(ssrc, rtpTimestamp, milliseconds) {
+  return { type: 200, ssrc, senderInfo: { rtpTimestamp, ntpTimestamp: (BigInt(milliseconds) << 32n) / 1000n } };
+}
+
+for (let [earlyReports, offset, videoOrigin = 0, audioOrigin = 456000] of [
+  [true, 0],
+  [false, 0],
+  [true, 40],
+  [false, 40],
+  [true, -40],
+  [false, -40],
+  [true, 40, 0xfffff000, 0xfffffff0],
+  [false, -40, 0xfffff000, 0xfffffff0],
+]) {
+  test('WebRTC pairs sender clocks without rewinding media; early reports=' + earlyReports + ' offset=' + offset, async (context) => {
+    let flow = await videoFlow(context);
+    let audio = { ssrc: 20, codec: { payloadType: 111 }, onReceiveRtp: event(), onReceiveRtcp: event() };
+    flow.peers[0].transceivers.find((entry) => entry.kind === 'audio').onTrack.emit(audio);
+    let sendAudio = (sequenceNumber, timestamp) =>
+      audio.onReceiveRtp.emit({
+        header: { sequenceNumber, timestamp, payloadType: 111, ssrc: 20 },
+        payload: Buffer.from([0xf8, 0xff, 0xfe]),
+      });
+    let report = () => {
+      // The reports refer to different instants: video RTP 9000 is 100 ms
+      // after the video origin. Audio starts at the independently reported NTP offset.
+      flow.track.onReceiveRtcp.emit(senderReport(10, (videoOrigin + 9000) >>> 0, 1000100));
+      audio.onReceiveRtcp.emit({ type: 201 });
+      audio.onReceiveRtcp.emit({ type: 200, ssrc: 20, senderInfo: { rtpTimestamp: audioOrigin, ntpTimestamp: NaN } });
+      audio.onReceiveRtcp.emit(senderReport(99, audioOrigin, 9000000));
+      audio.onReceiveRtcp.emit(senderReport(20, audioOrigin, 1000000 + offset));
+    };
+    if (earlyReports === true) {
+      report();
+    }
+    sendAudio(0, audioOrigin);
+    context.mock.timers.tick(500);
+    flow.keyframe(videoOrigin);
+    let firstAudio = flow.media.find((item) => item.type === 'audio').timestamp;
+    let firstVideo = flow.media.find((item) => item.type === 'video').timestamp;
+    if (earlyReports === true) {
+      assert.ok(Math.abs(firstAudio - firstVideo - offset) < 0.000001);
+    }
+    if (earlyReports === false) {
+      report();
+    }
+    context.mock.timers.tick(100);
+    sendAudio(1, (audioOrigin + 4800) >>> 0);
+    flow.emit(Buffer.from([0x41, 2]), (videoOrigin + 9000) >>> 0);
+    context.mock.timers.tick(60);
+    let videos = flow.media.filter((item) => item.type === 'video');
+    let audios = flow.media.filter((item) => item.type === 'audio');
+    assert.equal(videos.length, 2);
+    assert.equal(audios.length, 2);
+    assert.ok(Math.abs(audios[1].timestamp - videos[1].timestamp - offset) < 0.000001);
+    assert.ok(videos[1].timestamp > firstVideo);
+    assert.ok(audios[1].timestamp > firstAudio);
+    // Once established, newer reports do not independently step either clock.
+    audio.onReceiveRtcp.emit(senderReport(20, (audioOrigin + 4800) >>> 0, 9990000));
+    sendAudio(2, (audioOrigin + 5760) >>> 0);
+    context.mock.timers.tick(60);
+    assert.ok(Math.abs(flow.media.filter((item) => item.type === 'audio')[2].timestamp - audios[1].timestamp - 20) < 0.000001);
+  });
+}
+
+test('WebRTC ignores wrong-sender reports and retired track timing callbacks', async (context) => {
+  let flow = await videoFlow(context);
+  flow.keyframe(0);
+  let transceiver = flow.peers[0].transceivers.find((entry) => entry.kind === 'video');
+  let replacement = { codec: { payloadType: 98 }, onReceiveRtp: event(), onReceiveRtcp: event() };
+  transceiver.onTrack.emit(replacement);
+  flow.track.onReceiveRtcp.emit(senderReport(10, 0, 1000000));
+  flow.keyframe(3000);
+  assert.equal(flow.media.length, 1);
+  replacement.onReceiveRtcp.emit(senderReport(99, 0, 1000000));
+  replacement.onReceiveRtp.emit(flow.packet(flow.stap([flow.sps, flow.pps, Buffer.from([0x65, 1])]), 6000));
+  assert.equal(flow.media.length, 2);
+});
+
+test('WebRTC retains fractional RTP intervals and discards duplicate audio sequence numbers', async (context) => {
+  let flow = setup(context);
+  await flow.transport.open();
+  let track = { codec: { payloadType: 111 }, onReceiveRtp: event(), onReceiveRtcp: event() };
+  flow.peers[0].transceivers.find((entry) => entry.kind === 'audio').onTrack.emit(track);
+  let send = (sequenceNumber, timestamp) =>
+    track.onReceiveRtp.emit({
+      header: { sequenceNumber, timestamp, payloadType: 111, ssrc: 20 },
+      payload: Buffer.from([0xf8, 0xff, 0xfe]),
+    });
+  send(0, 0xffffffff);
+  context.mock.timers.tick(60);
+  send(0, 0xffffffff);
+  send(1, 0);
+  context.mock.timers.tick(60);
+  assert.equal(flow.media.length, 2);
+  assert.ok(Math.abs(flow.media[1].timestamp - flow.media[0].timestamp - 1000 / 48000) < 0.000001);
 });

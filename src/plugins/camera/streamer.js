@@ -43,7 +43,8 @@
 // - Streamer expects complete media frames, not partial RTP/NAL fragments
 // - Video should be complete H264 NAL units or access units
 // - Audio should be complete AAC/PCM/Opus/etc frames as produced by the transport
-// - Streamer preserves media ordering using monotonic source timeline timestamps
+// - Streamer retains transport presentation times unchanged and rejects non-increasing frames
+// - Video timestamp faults require a new keyframe before dependent frames are retained
 // - Transport-specific jitter repair and frame assembly stay below the StreamTransport boundary
 //
 // Buffering model:
@@ -471,9 +472,6 @@ export default class Streamer {
     let codec = undefined;
     let now = Date.now();
     let data = undefined;
-    let sourceTimestamp = 0;
-    let mediaTime = 0;
-    let minimumMediaStep = 1;
     let keyFrame = false;
     let codecConfig = undefined;
     let hasSPS = false;
@@ -553,44 +551,32 @@ export default class Streamer {
       }
     }
 
-    sourceTimestamp = media.timestamp;
-
-    // Ensure monotonic media time.
-    // StreamTransport owns source media timing metadata, but Streamer still
-    // protects MediaTimeline ordering if timestamps repeat or go backwards.
-    if (Number.isFinite(this.#lastMediaTime[mediaType]) === true && sourceTimestamp <= this.#lastMediaTime[mediaType]) {
-      if (
-        mediaType === Streamer.MEDIA_TYPE.VIDEO &&
-        Number.isFinite(this.#transport?.video?.fps) === true &&
-        this.#transport.video.fps > 0
-      ) {
-        minimumMediaStep = Math.max(1, 1000 / this.#transport.video.fps);
+    // Presentation time belongs to the transport. Never advance one track using
+    // an estimated frame duration: doing so changes its relationship to the other.
+    if (media.timestamp <= this.#lastMediaTime[mediaType]) {
+      if (mediaType === Streamer.MEDIA_TYPE.VIDEO) {
+        this.#videoState.waitingForKeyframe = true;
+        this.#transport.recordVideoDrop('non-increasing-timestamp');
       }
-
-      if (
-        mediaType === Streamer.MEDIA_TYPE.AUDIO &&
-        Number.isFinite(this.#transport?.audio?.frameDuration) === true &&
-        this.#transport.audio.frameDuration > 0
-      ) {
-        minimumMediaStep = Math.max(1, this.#transport.audio.frameDuration);
-      }
-
-      if (mediaType === Streamer.MEDIA_TYPE.VIDEO && minimumMediaStep === 1) {
-        minimumMediaStep = STREAM_FRAME_INTERVAL;
-      }
-
-      mediaTime = this.#lastMediaTime[mediaType] + minimumMediaStep;
-    } else {
-      mediaTime = sourceTimestamp;
+      return;
     }
 
-    this.#lastMediaTime[mediaType] = mediaTime;
+    // A discarded H264 frame may be referenced by later deltas. Retain only a
+    // new decoder-safe keyframe after a timestamp fault, without retiming it.
+    if (mediaType === Streamer.MEDIA_TYPE.VIDEO && this.#videoState.waitingForKeyframe === true) {
+      if (keyFrame !== true) {
+        this.#transport.recordVideoDrop('timestamp-recovery');
+        return;
+      }
+      this.#videoState.waitingForKeyframe = false;
+    }
+    this.#lastMediaTime[mediaType] = media.timestamp;
 
     // Push final packet into shared media timeline.
     addedIndex = this.#timeline.add({
       type: mediaType,
       codec: codec,
-      time: mediaTime,
+      time: media.timestamp,
       keyFrame: keyFrame === true,
       hasSPS: hasSPS,
       hasPPS: hasPPS,
@@ -735,7 +721,13 @@ export default class Streamer {
     }
 
     // RTPMuxer owns delivery and wire clocks; this record owns its preparation.
-    muxer = new RTPMuxer({ includeAudio, audio: this.#transport?.audio, audioDiagnostics: this.supportDump === true });
+    muxer = new RTPMuxer({
+      includeAudio,
+      audio: this.#transport?.audio,
+      audioDiagnostics: this.supportDump === true,
+      audioControl: type === Streamer.STREAM_TYPE.LIVE && includeAudio === true,
+      talkback: type === Streamer.STREAM_TYPE.LIVE && includeAudio === true ? options?.talkback : undefined,
+    });
     output.muxer = muxer;
     await muxer.prepare();
     if (this.#outputs.get(sessionID) !== output) {
@@ -845,7 +837,6 @@ export default class Streamer {
                 audioWriteGapsOver500Ms: 0,
                 videoBackpressureStops: 0,
                 maxQueuedBytes: 0,
-                lastAudioDiagnosticWriteAt: undefined,
                 lastAudioDiagnosticLogTime: undefined,
               },
             }
@@ -889,6 +880,7 @@ export default class Streamer {
     return {
       talkback: talkback,
       input: muxer.input,
+      ports: muxer.ports,
     };
   }
 
@@ -1108,6 +1100,13 @@ export default class Streamer {
     this.#videoState = {};
     this.#lastMediaTime = {};
 
+    // Arrival-gap diagnostics belong to one source session. Idle time and the
+    // previous session's keyframe must not be reported against its replacement.
+    this.#lastSourceAudioAt = undefined;
+    this.#lastSourceAudioGapLogTime = undefined;
+    this.#lastKeyframeAt = undefined;
+    this.#lastKeyframeBytes = undefined;
+
     // A transport reconnect means a new encoded media session.
     // Existing HomeKit outputs may still be open, but their decoder state must
     // be reset so the next real H264 keyframe can be bootstrapped again.
@@ -1129,32 +1128,51 @@ export default class Streamer {
     }
   }
 
-  #ensureOutputDrops(outputStats) {
-    if (typeof outputStats !== 'object' || outputStats === null) {
-      return undefined;
-    }
-
-    if (typeof outputStats.drops !== 'object' || outputStats.drops === null) {
-      outputStats.drops = { videoBeforeKeyframe: 0, audioBeforeKeyframe: 0, bufferTrimmed: 0 };
-    }
-
-    return outputStats.drops;
-  }
-
   #statsWrite(output, type, dateNow) {
     if (this.supportDump !== true) {
       return;
     }
 
-    let outputStats = output?.stats;
-    let outputWrites = outputStats?.writes;
-    let diagnostics = outputStats?.diagnostics;
+    // Active outputs initialise this complete record once during setup.
+    let outputStats = output.stats;
+    let outputWrites = outputStats.writes;
+    let diagnostics = outputStats.diagnostics;
     let gapMs = 0;
     let keyframeAgeMs = undefined;
 
-    if (type === Streamer.MEDIA_TYPE.AUDIO && typeof diagnostics === 'object' && diagnostics !== null) {
-      if (typeof diagnostics.lastAudioDiagnosticWriteAt === 'number') {
-        gapMs = dateNow - diagnostics.lastAudioDiagnosticWriteAt;
+    outputStats.firstWriteAt ??= dateNow;
+
+    // Both media tracks share one TCP queue. Sample after each accepted media
+    // write so video-only outputs are covered without duplicating audio checks.
+    diagnostics.maxQueuedBytes = Math.max(diagnostics.maxQueuedBytes, output.muxer.queuedBytes());
+    outputWrites.total++;
+
+    if (type === Streamer.MEDIA_TYPE.VIDEO) {
+      outputStats.firstVideoWriteAt ??= dateNow;
+      outputWrites.video++;
+      if (typeof diagnostics.lastVideoWriteAt === 'number') {
+        gapMs = dateNow - diagnostics.lastVideoWriteAt;
+        diagnostics.maxVideoWriteGapMs = Math.max(diagnostics.maxVideoWriteGapMs, gapMs);
+      }
+      diagnostics.lastVideoWriteAt = dateNow;
+    }
+
+    if (type === Streamer.MEDIA_TYPE.AUDIO) {
+      outputStats.firstAudioWriteAt ??= dateNow;
+      outputWrites.audio++;
+      if (typeof diagnostics.lastAudioWriteAt === 'number') {
+        // The summary and throttled log measure the same audio-write interval.
+        gapMs = dateNow - diagnostics.lastAudioWriteAt;
+        diagnostics.maxAudioWriteGapMs = Math.max(diagnostics.maxAudioWriteGapMs, gapMs);
+        if (gapMs > 100) {
+          diagnostics.audioWriteGapsOver100Ms++;
+        }
+        if (gapMs > 250) {
+          diagnostics.audioWriteGapsOver250Ms++;
+        }
+        if (gapMs > 500) {
+          diagnostics.audioWriteGapsOver500Ms++;
+        }
 
         if (
           gapMs >= STREAMER_AUDIO_GAP_LOG_MS &&
@@ -1175,116 +1193,20 @@ export default class Streamer {
           );
         }
       }
-
-      diagnostics.lastAudioDiagnosticWriteAt = dateNow;
-    }
-
-    if (typeof outputStats !== 'object' || outputStats === null) {
-      return;
-    }
-
-    if (typeof outputStats.firstWriteAt !== 'number') {
-      outputStats.firstWriteAt = dateNow;
-    }
-
-    if (type === Streamer.MEDIA_TYPE.VIDEO && typeof outputStats.firstVideoWriteAt !== 'number') {
-      outputStats.firstVideoWriteAt = dateNow;
-    }
-
-    if (type === Streamer.MEDIA_TYPE.AUDIO && typeof outputStats.firstAudioWriteAt !== 'number') {
-      outputStats.firstAudioWriteAt = dateNow;
-    }
-
-    if (typeof outputWrites !== 'object' || outputWrites === null) {
-      return;
-    }
-
-    if (typeof diagnostics !== 'object' || diagnostics === null) {
-      outputStats.diagnostics = {
-        lastVideoWriteAt: undefined,
-        lastAudioWriteAt: undefined,
-        maxVideoWriteGapMs: 0,
-        maxAudioWriteGapMs: 0,
-        audioWriteGapsOver100Ms: 0,
-        audioWriteGapsOver250Ms: 0,
-        audioWriteGapsOver500Ms: 0,
-        videoBackpressureStops: 0,
-        maxQueuedBytes: 0,
-        lastAudioDiagnosticWriteAt: undefined,
-        lastAudioDiagnosticLogTime: undefined,
-      };
-      diagnostics = outputStats.diagnostics;
-    }
-
-    if (typeof outputWrites.total !== 'number') {
-      outputWrites.total = 0;
-      outputWrites.video = 0;
-      outputWrites.audio = 0;
-    }
-
-    // Both media tracks share one TCP queue. Sample after each accepted media
-    // write so video-only outputs are covered without duplicating audio checks.
-    diagnostics.maxQueuedBytes = Math.max(diagnostics.maxQueuedBytes, output.muxer.queuedBytes());
-    outputWrites.total++;
-
-    if (type === Streamer.MEDIA_TYPE.VIDEO) {
-      outputWrites.video++;
-
-      if (typeof diagnostics.lastVideoWriteAt === 'number') {
-        gapMs = dateNow - diagnostics.lastVideoWriteAt;
-        if (gapMs > diagnostics.maxVideoWriteGapMs) {
-          diagnostics.maxVideoWriteGapMs = gapMs;
-        }
-      }
-
-      diagnostics.lastVideoWriteAt = dateNow;
-    }
-
-    if (type === Streamer.MEDIA_TYPE.AUDIO) {
-      outputWrites.audio++;
-
-      if (typeof diagnostics.lastAudioWriteAt === 'number') {
-        gapMs = dateNow - diagnostics.lastAudioWriteAt;
-        if (gapMs > diagnostics.maxAudioWriteGapMs) {
-          diagnostics.maxAudioWriteGapMs = gapMs;
-        }
-
-        if (gapMs > 100) {
-          diagnostics.audioWriteGapsOver100Ms++;
-        }
-
-        if (gapMs > 250) {
-          diagnostics.audioWriteGapsOver250Ms++;
-        }
-
-        if (gapMs > 500) {
-          diagnostics.audioWriteGapsOver500Ms++;
-        }
-      }
-
       diagnostics.lastAudioWriteAt = dateNow;
     }
   }
 
   #statsDrop(output, type) {
-    let outputStats = output?.stats;
-
     if (this.supportDump !== true) {
       return;
     }
 
-    if (typeof outputStats !== 'object' || outputStats === null) {
-      return;
-    }
-
-    let outputDrops = this.#ensureOutputDrops(outputStats);
-
     if (type === Streamer.MEDIA_TYPE.VIDEO) {
-      outputDrops.videoBeforeKeyframe++;
+      output.stats.drops.videoBeforeKeyframe++;
     }
-
     if (type === Streamer.MEDIA_TYPE.AUDIO) {
-      outputDrops.audioBeforeKeyframe++;
+      output.stats.drops.audioBeforeKeyframe++;
     }
   }
 
@@ -1345,7 +1267,6 @@ export default class Streamer {
     let dueVideoTime = 0;
     let dueAudioTime = 0;
     let writeAccepted = true;
-    let outputDrops = undefined;
     let trimmedCursorLoss = 0;
 
     // Validate required inputs and shared timeline state before doing any work.
@@ -1395,12 +1316,8 @@ export default class Streamer {
         includeAudio === true ? startIndex - state.audioCursor : 0,
       );
 
-      if (trimmedCursorLoss > 0 && typeof output.stats === 'object' && output.stats !== null) {
-        outputDrops = this.#ensureOutputDrops(output.stats);
-
-        if (typeof outputDrops === 'object' && outputDrops !== null) {
-          outputDrops.bufferTrimmed += trimmedCursorLoss;
-        }
+      if (trimmedCursorLoss > 0) {
+        output.stats.drops.bufferTrimmed += trimmedCursorLoss;
       }
     }
 
@@ -1550,7 +1467,7 @@ export default class Streamer {
         processed++;
 
         if (writeAccepted !== true || muxer.blocked('video') === true) {
-          if (this.supportDump === true && typeof output?.stats?.diagnostics === 'object' && output.stats.diagnostics !== null) {
+          if (this.supportDump === true) {
             output.stats.diagnostics.videoBackpressureStops++;
           }
 
@@ -1712,11 +1629,10 @@ export default class Streamer {
   }
 
   #outputStats(output, dateNow) {
-    let outputStats = typeof output?.stats === 'object' && output.stats !== null ? output.stats : undefined;
-    let outputWrites = typeof outputStats?.writes === 'object' && outputStats.writes !== null ? outputStats.writes : undefined;
-    let outputDrops = typeof outputStats?.drops === 'object' && outputStats.drops !== null ? outputStats.drops : undefined;
-    let diagnostics =
-      typeof outputStats?.diagnostics === 'object' && outputStats.diagnostics !== null ? outputStats.diagnostics : undefined;
+    let outputStats = output.stats;
+    let outputWrites = outputStats.writes;
+    let outputDrops = outputStats.drops;
+    let diagnostics = outputStats.diagnostics;
     let lifecycleStats = this.#transport?.stats?.lifecycle;
     let mediaStats = this.#transport?.stats?.media;
     let timelineStats = this.#timeline?.stats;
@@ -1760,7 +1676,7 @@ export default class Streamer {
     );
     this?.log?.info?.(
       '      "output": "%s"',
-      typeof outputStats?.startedAt === 'number' ? Math.round((dateNow - outputStats.startedAt) / 1000) + 's' : '-',
+      typeof outputStats.startedAt === 'number' ? Math.round((dateNow - outputStats.startedAt) / 1000) + 's' : '-',
     );
     this?.log?.info?.('    },');
     this?.log?.info?.('    "video": {');
@@ -1806,29 +1722,29 @@ export default class Streamer {
     this?.log?.info?.('    },');
     this?.log?.info?.('    "webrtc": %j,', webRTCStats ?? null);
     this?.log?.info?.('    "drops": {');
-    this?.log?.info?.('      "videoBeforeKeyframe": %s', outputDrops?.videoBeforeKeyframe ?? 0);
-    this?.log?.info?.('      "audioBeforeKeyframe": %s', outputDrops?.audioBeforeKeyframe ?? 0);
-    this?.log?.info?.('      "bufferTrimmed": %s', outputDrops?.bufferTrimmed ?? 0);
+    this?.log?.info?.('      "videoBeforeKeyframe": %s', outputDrops.videoBeforeKeyframe);
+    this?.log?.info?.('      "audioBeforeKeyframe": %s', outputDrops.audioBeforeKeyframe);
+    this?.log?.info?.('      "bufferTrimmed": %s', outputDrops.bufferTrimmed);
     this?.log?.info?.('    },');
     this?.log?.info?.('    "output": {');
     this?.log?.info?.('      "startup": {');
-    this?.log?.info?.('        "firstWrite": "%s"', elapsed(outputStats?.startedAt, outputStats?.firstWriteAt));
-    this?.log?.info?.('        "firstVideoWrite": "%s"', elapsed(outputStats?.startedAt, outputStats?.firstVideoWriteAt));
-    this?.log?.info?.('        "firstAudioWrite": "%s"', elapsed(outputStats?.startedAt, outputStats?.firstAudioWriteAt));
+    this?.log?.info?.('        "firstWrite": "%s"', elapsed(outputStats.startedAt, outputStats.firstWriteAt));
+    this?.log?.info?.('        "firstVideoWrite": "%s"', elapsed(outputStats.startedAt, outputStats.firstVideoWriteAt));
+    this?.log?.info?.('        "firstAudioWrite": "%s"', elapsed(outputStats.startedAt, outputStats.firstAudioWriteAt));
     this?.log?.info?.('      },');
     this?.log?.info?.('      "writes": {');
-    this?.log?.info?.('        "total": %s', outputWrites?.total ?? 0);
-    this?.log?.info?.('        "video": %s', outputWrites?.video ?? 0);
-    this?.log?.info?.('        "audio": %s', outputWrites?.audio ?? 0);
+    this?.log?.info?.('        "total": %s', outputWrites.total);
+    this?.log?.info?.('        "video": %s', outputWrites.video);
+    this?.log?.info?.('        "audio": %s', outputWrites.audio);
     this?.log?.info?.('      },');
     this?.log?.info?.('      "diagnostics": {');
-    this?.log?.info?.('        "maxVideoWriteGapMs": %s', diagnostics?.maxVideoWriteGapMs ?? 0);
-    this?.log?.info?.('        "maxAudioWriteGapMs": %s', diagnostics?.maxAudioWriteGapMs ?? 0);
-    this?.log?.info?.('        "audioWriteGapsOver100Ms": %s', diagnostics?.audioWriteGapsOver100Ms ?? 0);
-    this?.log?.info?.('        "audioWriteGapsOver250Ms": %s', diagnostics?.audioWriteGapsOver250Ms ?? 0);
-    this?.log?.info?.('        "audioWriteGapsOver500Ms": %s', diagnostics?.audioWriteGapsOver500Ms ?? 0);
-    this?.log?.info?.('        "videoBackpressureStops": %s', diagnostics?.videoBackpressureStops ?? 0);
-    this?.log?.info?.('        "maxQueuedBytes": %s', diagnostics?.maxQueuedBytes ?? 0);
+    this?.log?.info?.('        "maxVideoWriteGapMs": %s', diagnostics.maxVideoWriteGapMs);
+    this?.log?.info?.('        "maxAudioWriteGapMs": %s', diagnostics.maxAudioWriteGapMs);
+    this?.log?.info?.('        "audioWriteGapsOver100Ms": %s', diagnostics.audioWriteGapsOver100Ms);
+    this?.log?.info?.('        "audioWriteGapsOver250Ms": %s', diagnostics.audioWriteGapsOver250Ms);
+    this?.log?.info?.('        "audioWriteGapsOver500Ms": %s', diagnostics.audioWriteGapsOver500Ms);
+    this?.log?.info?.('        "videoBackpressureStops": %s', diagnostics.videoBackpressureStops);
+    this?.log?.info?.('        "maxQueuedBytes": %s', diagnostics.maxQueuedBytes);
     this?.log?.info?.('      },');
     this?.log?.info?.('    },');
     this?.log?.info?.('    "last": {');
