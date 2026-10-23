@@ -1,5 +1,5 @@
 // Verify FFmpeg hardware discovery, capability queries, diagnostics, and session lifecycle.
-// Code version 2026.10.21
+// Code version 2026.10.24
 import assert from 'node:assert/strict';
 import child_process from 'node:child_process';
 import { Buffer } from 'node:buffer';
@@ -758,7 +758,7 @@ for (let [platform, existing] of [
 ]) {
   test('default binary discovery selects an existing installation on ' + platform, (context) => {
     context.mock.method(os, 'platform', () => platform);
-    let expected = platform === 'win32' ? path.join(existing, 'ffmpeg.exe') : existing;
+    let expected = platform === 'win32' ? path.join(existing, 'ffmpeg.exe') : path.normalize(existing);
     context.mock.method(fs, 'existsSync', (file) => file === expected);
     let probe = context.mock.method(child_process, 'spawnSync', () => ({ status: 0, stdout: 'ffmpeg version 8.0 ' }));
     let ffmpeg = new FFmpeg();
@@ -1176,7 +1176,7 @@ test('invalid pipe mappings are rejected before spawning and independent starts 
 
 function capabilityBinary(context) {
   let directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ffmpeg-capabilities-'));
-  let binary = path.join(directory, 'ffmpeg');
+  let binary = path.join(directory, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
   fs.writeFileSync(binary, 'fixture', { mode: 0o755 });
   context.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   return binary;
@@ -1244,9 +1244,7 @@ for (let failedCommand of ['-version', '-encoders']) {
   });
 }
 
-test('capability cache follows PATH changes and skips nonexecutable shadow files', (context) => {
-  let shadow = capabilityBinary(context);
-  fs.chmodSync(shadow, 0o644);
+test('capability cache follows PATH changes', (context) => {
   let first = capabilityBinary(context);
   let second = capabilityBinary(context);
   let originalPath = process.env.PATH;
@@ -1258,14 +1256,40 @@ test('capability cache follows PATH changes and skips nonexecutable shadow files
     }
   });
   let probes = context.mock.method(child_process, 'spawnSync', capabilityProbe);
-  process.env.PATH = path.dirname(shadow) + path.delimiter + path.dirname(first);
-  new FFmpeg('ffmpeg');
-  fs.writeFileSync(shadow, 'changed nonexecutable shadow');
-  new FFmpeg('ffmpeg');
+  process.env.PATH = path.dirname(first);
+  new FFmpeg(path.basename(first));
   assert.equal(probes.mock.callCount(), 5);
   process.env.PATH = path.dirname(second);
-  new FFmpeg('ffmpeg');
+  new FFmpeg(path.basename(second));
   assert.equal(probes.mock.callCount(), 10);
+});
+
+test('capability cache skips nonexecutable PATH shadow files', (context) => {
+  let shadow = capabilityBinary(context);
+  let first = capabilityBinary(context);
+  let access = fs.accessSync;
+  // Windows has no Unix executable-bit check. Inject an inaccessible candidate
+  // so rejection and fallback are verified on every supported platform.
+  context.mock.method(fs, 'accessSync', (file, mode) => {
+    if (file === shadow) {
+      throw Object.assign(new Error('Fixture inaccessible executable'), { code: 'EACCES' });
+    }
+    return access(file, mode);
+  });
+  let originalPath = process.env.PATH;
+  context.after(() => {
+    if (originalPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = originalPath;
+    }
+  });
+  let probes = context.mock.method(child_process, 'spawnSync', capabilityProbe);
+  process.env.PATH = path.dirname(shadow) + path.delimiter + path.dirname(first);
+  new FFmpeg(path.basename(first));
+  fs.writeFileSync(shadow, 'changed inaccessible shadow');
+  new FFmpeg(path.basename(first));
+  assert.equal(probes.mock.callCount(), 5);
 });
 
 test('capability cache stays bounded across distinct executable paths', (context) => {

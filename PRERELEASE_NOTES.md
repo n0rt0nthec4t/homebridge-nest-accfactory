@@ -4,7 +4,7 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.4.5-alpha.4 (2026/10/xx)
+## v0.4.5-alpha.4 (2026/10/24)
 
 ### Changed
 
@@ -17,6 +17,8 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 - Simplify output statistics updates while preserving support-dump measurements and log throttling
 
 ### Fixed
+
+- Fix Windows validation failures in coverage reporting, device module paths and platform-specific tests
 
 - Reset audio-gap diagnostics between camera sessions so idle time is not reported as a playback stall
 - Preserve NexusTalk's reported audio/video start offsets instead of limiting them to 250 ms

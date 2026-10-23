@@ -41,16 +41,18 @@ export default async function* coverageScope(events) {
     }
     let root = fileURLToPath(new URL('../', import.meta.url));
     let files = (await readdir(path.join(root, 'src'), { recursive: true }))
+      .map((file) => file.replaceAll('\\', '/'))
       .filter(
-        (file) => /\.(?:js|mjs)$/.test(file) === true && file.endsWith('.test.js') === false && path.basename(file) !== 'eslint.config.js',
+        (file) =>
+          /\.(?:js|mjs)$/.test(file) === true && file.endsWith('.test.js') === false && path.posix.basename(file) !== 'eslint.config.js',
       )
-      .map((file) => path.join('src', file))
+      .map((file) => 'src/' + file)
       .sort();
-    let measured = new Set(event.data.summary.files.map((file) => path.relative(root, file.path)));
+    let measured = new Set(event.data.summary.files.map((file) => path.relative(root, file.path).replaceAll('\\', '/')));
     let omitted = files.filter((file) => measured.has(file) === false);
     let measurements = Object.fromEntries(
       event.data.summary.files.map((file) => [
-        path.relative(root, file.path),
+        path.relative(root, file.path).replaceAll('\\', '/'),
         { lines: file.coveredLinePercent, branches: file.coveredBranchPercent, functions: file.coveredFunctionPercent },
       ]),
     );

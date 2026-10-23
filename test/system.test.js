@@ -270,7 +270,7 @@ let createHost = new Function(
     '  async #getLocationWeather() {}\n' +
     '  run() { return this.#observeGoogleAPI("account"); }\n' +
     '  replace(value) { this.#connections.set("account", value); }\n' +
-    source.slice(begin, end).replace('    grpcTransport\n', '    return grpcTransport\n') +
+    source.slice(begin, end).replace(/^    grpcTransport\r?$/m, '    return grpcTransport') +
     '};',
 );
 

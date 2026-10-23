@@ -26,7 +26,7 @@
 // - Additional named exports are attached to the module entry when present
 // - Used by the main system module to create and manage device instances
 //
-// Code version 2026.05.06
+// Code version 2026.10.24
 // Mark Hulskamp
 'use strict';
 
@@ -42,7 +42,7 @@ import HomeKitDevice from './HomeKitDevice.js';
 import { __dirname, DEVICE_CATEGORY_MAP } from './consts.js';
 
 async function loadDeviceModules(log, pluginDir = '') {
-  let baseDir = path.join(__dirname, pluginDir);
+  let baseDir = path.resolve(__dirname, pluginDir);
   let deviceMap = new Map();
   let files = (await fs.readdir(baseDir)).sort();
 

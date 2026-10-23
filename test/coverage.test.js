@@ -2,7 +2,9 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { coverageFailures } from './coverage-reporter.js';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import coverageScope, { coverageFailures } from './coverage-reporter.js';
 import { importSource } from './helpers/import-source.js';
 
 let files = ['src/example.js'];
@@ -34,4 +36,31 @@ test('coverage import helper refuses production body edits that would corrupt so
   let location = new URL('../src/utils.js', import.meta.url);
   let source = await readFile(location, 'utf8');
   await assert.rejects(importSource(location, source + '\nexport const changed = true;'), /unchanged production code/);
+});
+
+test('coverage report uses portable source keys when relative paths contain Windows separators', async (context) => {
+  let relative = path.relative;
+  context.mock.method(path, 'relative', (...args) => relative(...args).replaceAll('/', '\\'));
+  let previousExitCode = process.exitCode;
+  context.after(() => {
+    process.exitCode = previousExitCode;
+  });
+  let floors = JSON.parse(await readFile(new URL('./coverage-baseline.json', import.meta.url), 'utf8'));
+  let files = Object.keys(floors).map((file) => ({
+    path: fileURLToPath(new URL('../' + file, import.meta.url)),
+    coveredLinePercent: 100,
+    coveredBranchPercent: 100,
+    coveredFunctionPercent: 100,
+  }));
+  let output = '';
+  for await (let chunk of coverageScope([{ type: 'test:coverage', data: { summary: { files } } }])) {
+    output += chunk;
+  }
+  assert.match(output, /Coverage gate passed for every production module/);
+  let summary = JSON.parse(await readFile(new URL('../coverage/summary.json', import.meta.url), 'utf8'));
+  assert.deepEqual(summary.omitted, []);
+  assert.equal(
+    Object.keys(summary.measurements).some((file) => file.includes('\\')),
+    false,
+  );
 });

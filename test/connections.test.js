@@ -316,7 +316,7 @@ for (let fieldTest of [false, true]) {
     assert.equal(transport.options.getAuthHeader(), 'Basic first-session');
     assert.equal(connection.cameraAuth.value, fieldTest === true ? 'website_ft=' : 'website_2=');
     assert.equal(connection.cameraAuth.fieldTest, fieldTest);
-    assert.equal(transport.options.protoPath.endsWith('protobuf/root.proto'), true);
+    assert.equal(transport.options.protoPath.replaceAll('\\', '/').endsWith('protobuf/root.proto'), true);
     for (let invalid of [undefined, null, '', ' ']) {
       connection.token = invalid;
       assert.equal(transport.options.getAuthHeader(), '');

@@ -63,18 +63,19 @@ test('registry skips invalid and failing modules while keeping deterministic fir
   ]) {
     await writeFile(path.join(directory, name), source);
   }
-  let warnings = [];
-  let registry = await loadDeviceModules(
-    { ...log, warn: (...args) => warnings.push(args) },
-    path.relative(fileURLToPath(new URL('../src/', import.meta.url)), directory),
-  );
-  assert.deepEqual([...registry.keys()], ['fixture']);
-  assert.equal(registry.get('fixture').class.VERSION, 'test');
-  assert.equal(registry.get('fixture').processRawData(), 'mapped');
-  assert.equal(warnings.length, 2);
-  assert.equal(warnings[0][1], '03-missing.js');
-  assert.equal(warnings[1][1], '05-failure.js');
-  await assert.rejects(loadDeviceModules(log, path.join(directory, 'missing')), /ENOENT/);
+  // A Windows temp directory may be on a different drive, making relative()
+  // return an absolute path. The loader accepts either form.
+  for (let pluginDir of [directory, path.relative(fileURLToPath(new URL('../src/', import.meta.url)), directory)]) {
+    let warnings = [];
+    let registry = await loadDeviceModules({ ...log, warn: (...args) => warnings.push(args) }, pluginDir);
+    assert.deepEqual([...registry.keys()], ['fixture']);
+    assert.equal(registry.get('fixture').class.VERSION, 'test');
+    assert.equal(registry.get('fixture').processRawData(), 'mapped');
+    assert.equal(warnings.length, 2);
+    assert.equal(warnings[0][1], '03-missing.js');
+    assert.equal(warnings[1][1], '05-failure.js');
+    await assert.rejects(loadDeviceModules(log, path.join(directory, 'missing')), /ENOENT/);
+  }
 });
 
 test('platform restores valid cached identity, removes stale cache and shuts down without accounts', async (context) => {
