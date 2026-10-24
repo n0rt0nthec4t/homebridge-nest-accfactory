@@ -2,12 +2,15 @@
 // Synthetic source media verifies timing and decoding, not camera/HomeKit hardware.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import dgram from 'node:dgram';
 import { once } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import H264 from '../src/plugins/camera/h264.js';
 import RTPMuxer from '../src/plugins/camera/rtpmuxer.js';
 import FFmpeg from '../src/plugins/camera/ffmpeg.js';
+import { UDPPorts } from '../src/utils.js';
 
 const binary = process.env.FFMPEG_TEST_BINARY;
 let frames;
@@ -104,6 +107,134 @@ function aacFrames() {
   // The AAC encoder can emit a priming packet in addition to the requested frames.
   aac = aac.slice(0, 280);
   return aac;
+}
+
+for (let sourceAudio of ['opus', 'aac']) {
+  test(
+    'HomeKit live AAC-ELD uses 480-sample RTP blocks and managed talkback from ' + sourceAudio + ' input',
+    { skip: binary === undefined ? 'Set FFMPEG_TEST_BINARY for real media checks' : false, timeout: 15000 },
+    async (context) => {
+      let timestamps = [];
+      let talkback = new PassThrough();
+      let talkbackBytes = 0;
+      talkback.on('data', (data) => {
+        talkbackBytes += data.length;
+      });
+      let talkbackPort = await UDPPorts.allocate();
+      context.after(() => UDPPorts.release(talkbackPort));
+      let videoSink = dgram.createSocket('udp4');
+      let audioSink = dgram.createSocket('udp4');
+      for (let socket of [videoSink, audioSink]) {
+        socket.bind(0, '127.0.0.1');
+        await once(socket, 'listening');
+        context.after(() => socket.close());
+      }
+
+      // SRTP leaves the RTP header readable. Inspect actual wire timestamps
+      // without retaining payloads or needing HomeKit's decryption machinery.
+      audioSink.on('message', (packet) => {
+        if (packet.length >= 12 && packet[0] >> 6 === 2 && (packet[1] & 0x7f) === 110) {
+          // Loop the encrypted audio back as a synthetic HomeKit microphone.
+          audioSink.send(packet, talkbackPort, '127.0.0.1');
+          // An encoded block can span packets at HomeKit's small audio MTU.
+          let timestamp = packet.readUInt32BE(4);
+          if (timestamp !== timestamps.at(-1)) {
+            timestamps.push(timestamp);
+          }
+        }
+      });
+
+      let video = videoFrames();
+      let encodedAAC = sourceAudio === 'aac' ? aacFrames() : undefined;
+      let output = new RTPMuxer({
+        audio: { codec: sourceAudio, sampleRate: 48000, channels: encodedAAC === undefined ? 2 : 1 },
+        audioControl: true,
+      });
+      context.after(() => output.close());
+      if (encodedAAC !== undefined) {
+        output.configureAudio(encodedAAC[0]);
+      }
+      await output.prepare();
+      let manager = new FFmpeg(binary);
+      let [handle, returnAudio] = manager.startLive({
+        id: 'homekit-audio-test',
+        input: output.input,
+        ports: { ...output.ports, talkback: talkbackPort },
+        talkback,
+        talkbackCodec: sourceAudio === 'aac' ? 'speex' : 'opus',
+        sourceAudio,
+        video: { payloadType: 99, mtu: 1378 },
+        audio: { codec: 'aac-eld', sampleRate: 16000, bitRate: 24, channels: 1, payloadType: 110, packetTime: 20 },
+        target: {
+          address: '127.0.0.1',
+          videoPort: videoSink.address().port,
+          audioPort: audioSink.address().port,
+          videoSSRC: 1,
+          audioSSRC: 2,
+          videoSuite: 'AES_CM_128_HMAC_SHA1_80',
+          audioSuite: 'AES_CM_128_HMAC_SHA1_80',
+          videoSRTP: Buffer.alloc(30, 1),
+          audioSRTP: Buffer.alloc(30, 2),
+        },
+      });
+      context.after(async () => {
+        handle.stop('SIGKILL');
+        returnAudio.stop('SIGKILL');
+        await handle.finished;
+        await returnAudio.finished;
+      });
+      let stopped = false;
+      let finished = handle.finished.then((result) => {
+        stopped = true;
+        return result;
+      });
+      let deadline = performance.now() + 5000;
+      while (output.blocked('video') === true && stopped !== true && performance.now() < deadline) {
+        await delay(5);
+      }
+      assert.equal(output.blocked('video'), false, 'FFmpeg never completed PLAY');
+
+      let events = video.map((data, index) => ({ type: 'video', data, timestamp: index * 75 }));
+      for (let index = 0; index < (encodedAAC?.length ?? 300); index++) {
+        events.push({
+          type: 'audio',
+          data: encodedAAC?.[index] ?? opusSilence,
+          timestamp: index * (encodedAAC === undefined ? 20 : 1024 / 48),
+        });
+      }
+      events.sort((left, right) => left.timestamp - right.timestamp);
+      let started = performance.now();
+      for (let event of events) {
+        let due = started + event.timestamp / 4;
+        if (due > performance.now()) {
+          await delay(Math.max(1, due - performance.now()));
+        }
+        assert.equal(stopped, false, 'FFmpeg exited before source completion');
+        if (event.type === 'video') {
+          output.writeVideo(event.data, event.timestamp);
+        } else {
+          output.writeAudio(event.data, event.timestamp);
+        }
+        output.tick();
+      }
+      await output.close();
+      let result = await finished;
+      await delay(50);
+      assert.equal(result.code, 0, handle.diagnosticLines.join('\n'));
+      assert.equal(timestamps.length > 100, true, 'Too few live audio packets to verify the clock');
+      let intervals = new Set(timestamps.slice(1).map((timestamp, index) => (timestamp - timestamps[index]) >>> 0));
+      assert.deepEqual([...intervals], [480]);
+      deadline = performance.now() + 3000;
+      while (talkbackBytes === 0 && returnAudio.active === true && performance.now() < deadline) {
+        await delay(10);
+      }
+      assert.equal(talkbackBytes > 0, true, returnAudio.diagnosticLines.join('\n'));
+      assert.equal(returnAudio.active, true, 'Idle talkback must keep waiting for microphone audio');
+      await returnAudio.stop('SIGKILL');
+      assert.equal(talkback.destroyed, false);
+      assert.equal(talkback.writableEnded, false);
+    },
+  );
 }
 
 for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack] of [

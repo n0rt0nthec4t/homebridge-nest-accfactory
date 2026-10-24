@@ -1,5 +1,5 @@
 // Verify camera cleanup uses managed FFmpeg completion without Homebridge, media backends or network sockets.
-// Code version 2026.10.24
+// Code version 2026.10.25
 import assert from 'node:assert/strict';
 import { importSource } from './helpers/import-source.js';
 import { Buffer } from 'node:buffer';
@@ -455,7 +455,7 @@ for (let codec of ['opus', 'speex']) {
     assert.equal(settings.payloadType, 110);
     assert.equal(typeof settings.port, 'number');
     assert.match(processes[0].args.at(-1), /localrtcpport=21001/);
-    assert.match(camera.ffmpeg.start.mock.calls[1].arguments[0].inputs[0], /m=audio 21002 /);
+    assert.match(camera.ffmpeg.start.mock.calls[1].arguments[0].input, /m=audio 21002 /);
     // Camera owns only its video RTCP listener; return-audio sockets belong to Streamer.
     assert.equal(sockets.filter((socket) => socket.listenerCount('message') > 0).length, 1);
     let received = [];
@@ -756,7 +756,7 @@ for (let sourceCodec of ['pcm', 'opus', 'aac']) {
       assert.equal(args.includes('-filter:a'), false);
       assert.equal(args[args.indexOf('-ar') + 1], '16000');
       assert.equal(args[args.indexOf('-ac') + 1], '1');
-      assert.equal(camera.ffmpeg.start.mock.calls[0].arguments[0].inputs, undefined);
+      assert.equal(camera.ffmpeg.start.mock.calls[0].arguments[0].input, undefined);
       await camera.handleStreamRequest({ sessionID: 'one', type: 'stop' });
       assert.equal(
         handles.every((handle) => handle.active === false),

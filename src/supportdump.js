@@ -26,7 +26,7 @@
 // - Aliases remain private to the writer and are released on platform shutdown
 // - Normal plugin logs and streaming debug messages are outside this module
 //
-// Code version 2026.10.16
+// Code version 2026.10.24
 // Mark Hulskamp
 'use strict';
 
@@ -34,11 +34,10 @@
 import { isIP } from 'node:net';
 
 // Define constants
-import { DATA_SOURCE, NEST_API_BUCKETS } from './consts.js';
+import { DATA_SOURCE, NEST_API_BUCKETS, REDACTED } from './consts.js';
 
 // Diagnostic limits apply to each emission, except the identifier map retained across calls.
 // Stop collection before excessive depth or size can turn malformed API data into unbounded logging.
-const REDACTED = '**REDACTED**';
 const MAX_IDENTIFIERS = 4096;
 const MAX_IDENTIFIER_LENGTH = 256;
 const MAX_NODES = 8192;

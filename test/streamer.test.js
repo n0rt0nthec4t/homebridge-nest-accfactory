@@ -198,6 +198,33 @@ test('recording reads retained prebuffer while a later live view starts at the l
   advance(context, 500);
   assert.equal(media(hooks.instances[1]).length, 3);
 });
+test('recording merges retained audio and video by source time and drops audio before its first IDR', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+  let { streamer, transport } = setup(context, {}, { bufferDuration: 8000 });
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_BUFFER, { options: {} });
+  addVideo(transport, 100000);
+  addVideo(transport, 100100, false);
+  addVideo(transport, 100200);
+  addVideo(transport, 100300, false);
+  for (let timestamp of [100120, 100220, 100320]) {
+    transport.emitMedia({ type: 'audio', codec: 'opus', timestamp, data: Buffer.from([0xf8, 0xff, 0xfe]) });
+  }
+  advance(context, 500);
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, {
+    sessionID: 'clip',
+    options: { recordTime: 100100, includeAudio: true },
+  });
+  advance(context, 500);
+  let packets = hooks.instances[0].packets.filter((packet) => packet.kind === 'rtp');
+  // The first selected video is a delta frame. Audio from before the next IDR
+  // must not slip through merely because the entire video backlog ran first.
+  assert.equal(media(hooks.instances[0], 'audio').length, 2);
+  assert.deepEqual(
+    packets.map(({ track }) => track),
+    ['video', 'video', 'video', 'audio', 'video', 'audio'],
+  );
+});
+
 test('VFR source intervals survive accelerated retained recording playback', async (context) => {
   context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
   let { streamer, transport } = setup(context, {}, { bufferDuration: 8000 });

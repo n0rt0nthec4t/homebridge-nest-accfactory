@@ -20,14 +20,14 @@
 // - FFmpeg minimum version requirement for streaming support
 // - Resource paths and fallback H264 frames for offline states
 // - Temperature, elevation, and duration constraints
-// - Logging level definitions
+// - Logging levels and shared redaction text
 //
 // Notes:
 // - This module contains no runtime logic — constants only
 // - Imported throughout the codebase for consistency and reuse
 // - Changes here may affect multiple subsystems (devices, streaming, APIs)
 //
-// Code version 2026.10.16
+// Code version 2026.10.24
 // Mark Hulskamp
 'use strict';
 
@@ -213,6 +213,8 @@ export const LOG_LEVELS = {
   ERROR: 'error',
   DEBUG: 'debug',
 };
+
+export const REDACTED = '**REDACTED**'; // Common marker for private values omitted from diagnostics
 
 export const NESTLABS_MAC_PREFIX = '18B430';
 

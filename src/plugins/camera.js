@@ -72,6 +72,7 @@ import {
   TIMERS,
   LOW_BATTERY_LEVEL,
   LOG_LEVELS,
+  REDACTED,
 } from '../consts.js';
 
 const STREAMING_PROTOCOL = {
@@ -1258,7 +1259,7 @@ export default class NestCamera extends HomeKitDevice {
 
   #logCommand(kind, args) {
     // Command diagnostics must never disclose HomeKit SRTP key material.
-    let safe = args.map((arg, index) => (args[index - 1] === '-srtp_out_params' ? '[redacted]' : arg));
+    let safe = args.map((arg, index) => (args[index - 1] === '-srtp_out_params' ? REDACTED : arg));
     this.log?.debug?.(
       'ffmpeg process for %s from "%s" will be called using the following commandline: %s',
       kind,

@@ -4,6 +4,19 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.5-alpha.6 (2026/10/25)
+
+### Changed
+
+- Update the WebRTC library to werift `0.25.2`
+- Use a consistent redaction marker in FFmpeg command diagnostics and support dumps
+- Simplify FFmpeg process connections for RTP streaming and talkback, and remove unused capability discovery data
+
+### Fixed
+
+- Set live-view AAC-ELD audio to HomeKit's required 480-sample blocks instead of the encoder's 512-sample default
+- Replay recording prebuffer audio and video in source-time order, excluding audio before the recording's first video keyframe
+
 ## v0.4.5-alpha.5 (2026/10/24)
 
 ### Changed

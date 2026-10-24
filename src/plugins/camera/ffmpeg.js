@@ -10,6 +10,7 @@
 // - Build live, talkback and recording commands from normalised requirements
 // - Keep encoder-specific profiles, tuning and input options in one place
 // - Own child processes and connected pipes without owning caller streams
+// - Supply finite talkback SDP on stdin and optionally pipe stdout to its destination
 // - Read bounded MP4 initialization segments and fragments through an async iterator
 // - Retain bounded stderr diagnostics after process completion
 //
@@ -27,7 +28,7 @@
 // - Drain complete output after exit; requested stop may discard an incomplete tail
 // - Camera retains the HomeKit generator adapter and isLast workaround
 //
-// Code version 2026.10.24
+// Code version 2026.10.25
 // Mark Hulskamp
 'use strict';
 
@@ -40,7 +41,6 @@ import child_process from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { StringDecoder } from 'node:string_decoder';
 import timers from 'node:timers';
-import { Readable } from 'node:stream';
 import EventEmitter from 'node:events';
 
 // Define constants
@@ -57,7 +57,7 @@ const CAPABILITY_CACHE_CAPACITY = 32;
 
 // FFmpeg object
 export default class FFmpeg extends EventEmitter {
-  static #capabilityCache = new Map(); // Binary discovery only; each manager receives its own feature arrays.
+  static #capabilityCache = new Map(); // Private binary capabilities only; session ownership stays per manager.
   static #hardwareProbeCache = new Map(); // Bounded process-local results; session ownership stays per manager.
 
   static SESSION_EVENT = {
@@ -80,7 +80,7 @@ export default class FFmpeg extends EventEmitter {
   #hardwareEncoder = undefined; // The validated configuration; undefined keeps software as the default.
 
   #sessions = new Set(); // Private records, including replacements still shutting down
-  #shutdown; // A terminal instance shutdown shares one completion promise.
+  #shutdown = undefined; // A terminal instance shutdown shares one completion promise.
 
   constructor(binaryPath = undefined) {
     super(); // Setup event emitter for our class ONLY
@@ -151,10 +151,6 @@ export default class FFmpeg extends EventEmitter {
 
   get version() {
     return this.#version;
-  }
-
-  get features() {
-    return this.#features;
   }
 
   get supportsHardwareH264() {
@@ -274,8 +270,11 @@ export default class FFmpeg extends EventEmitter {
         : [
             '-map',
             '0:a:0',
+            // Apple HAP R2, section 11.8.2 (page 246), requires 480-sample
+            // AAC-ELD blocks. Set this explicitly instead of libfdk's 512 default.
+            // Reference: non-github/ARCHITECTURE.md, FFmpeg audio block size.
             ...(audio.codec === 'aac-eld'
-              ? ['-codec:a', 'libfdk_aac', '-profile:a', 'aac_eld']
+              ? ['-codec:a', 'libfdk_aac', '-profile:a', 'aac_eld', '-frame_length', '480']
               : ['-codec:a', 'libopus', '-application', 'lowdelay', '-frame_duration', String(audio.packetTime)]),
             '-flags',
             '+global_header',
@@ -362,7 +361,7 @@ export default class FFmpeg extends EventEmitter {
         ].join('\r\n');
 
         onCommand?.('talkback', talkArgs);
-        handles.push(this.start({ id: 'talk:' + id, args: talkArgs, inputs: { 0: sdp }, outputs: { 1: talkback }, onStderr }));
+        handles.push(this.start({ id: 'talk:' + id, args: talkArgs, input: sdp, output: talkback, onStderr }));
       } catch (error) {
         // A failed talkback setup must not leave its live process orphaned.
         handles[0].stop('SIGKILL');
@@ -514,10 +513,9 @@ export default class FFmpeg extends EventEmitter {
     return this.#features.muxers?.some((names) => names.split(',').includes(muxer) === true) === true;
   }
 
-  // Inputs map child pipe indexes to readable streams, strings or buffers; the map may be a promise.
-  // Outputs map child pipe indexes to writable streams. Neither transfers ownership of caller streams.
+  // Optional finite stdin supplies talkback SDP; stdout may feed a caller-owned writable.
   // Reusing an id replaces its older processes only after successful spawn; omitting it starts independently.
-  start({ id, args = [], inputs = {}, outputs = {}, onStderr, pipeCount = 3 } = {}) {
+  start({ id, args = [], input = undefined, output = undefined, onStderr } = {}) {
     if (this.#shutdown !== undefined) {
       throw new Error('FFmpeg instance has been shut down');
     }
@@ -525,20 +523,8 @@ export default class FFmpeg extends EventEmitter {
     id ??= Symbol('ffmpeg');
     let label = typeof id === 'symbol' ? id.description : String(id);
 
-    // Default invalid counts to three; always include stdin, stdout and stderr.
-    pipeCount = Number.isInteger(pipeCount) === true ? Math.max(3, pipeCount) : 3;
-
-    // Known connections select extra stdio pipes automatically; pending inputs may specify pipeCount.
-    for (let index of [...Object.keys(inputs), ...Object.keys(outputs)]) {
-      if (/^(0|[1-9][0-9]*)$/.test(index) === false || Number.isSafeInteger(Number(index)) === false) {
-        throw new RangeError('FFmpeg pipe index must be a nonnegative integer');
-      }
-
-      pipeCount = Math.max(pipeCount, Number(index) + 1);
-    }
-
     let child = child_process.spawn(this.#binary, args, {
-      stdio: Array.from({ length: pipeCount }, () => 'pipe'),
+      stdio: ['pipe', 'pipe', 'pipe'],
       env: process.env,
     });
 
@@ -546,17 +532,7 @@ export default class FFmpeg extends EventEmitter {
     let lifecycle = { state: FFmpeg.SESSION_STATE.STARTING, expected: false, error: undefined };
     let shutdownTimer = undefined;
     let shutdownSignal = undefined;
-    let connections = new Set();
     let completion = Promise.withResolvers();
-
-    const disconnectPipes = (inputsOnly = false) => {
-      for (let connection of connections) {
-        if (inputsOnly === false || connection.input === true) {
-          // Unpipe only this session's destination; a source may also feed another process.
-          connection.source.unpipe(connection.destination);
-        }
-      }
-    };
 
     const setState = (nextState) => {
       // Update before notifying listeners; repeated requests must not emit duplicate transitions.
@@ -565,59 +541,14 @@ export default class FFmpeg extends EventEmitter {
         lifecycle.state = nextState;
 
         if (nextState === FFmpeg.SESSION_STATE.STOPPING) {
-          disconnectPipes();
-        } else if (nextState === FFmpeg.SESSION_STATE.EXITED || nextState === FFmpeg.SESSION_STATE.FAILED) {
-          // Exit precedes stdout closure: final encoded output must still be allowed to drain.
-          disconnectPipes(true);
+          // Detach only this process. A replacement may share the destination.
+          if (output !== undefined) {
+            child.stdout.unpipe(output);
+          }
         }
 
         this.emit(FFmpeg.SESSION_EVENT.STATE_CHANGED, session, { state: lifecycle.state, previousState });
       }
-    };
-
-    const connectPipe = (stream, index, input) => {
-      if (session.active === false || stream === undefined || stream === null) {
-        return false;
-      }
-
-      if (Number.isInteger(index) === false || index < 0 || child.stdio[index] === undefined) {
-        throw new RangeError('FFmpeg pipe index is not available');
-      }
-
-      let source = input === true ? stream : child.stdio[index];
-      let destination = input === true ? child.stdio[index] : stream;
-
-      if (typeof source?.pipe !== 'function' || typeof source?.unpipe !== 'function' || typeof destination?.write !== 'function') {
-        throw new TypeError('FFmpeg connections require readable and writable streams');
-      }
-
-      for (let connection of connections) {
-        if (connection.source === source && connection.destination === destination) {
-          return true;
-        }
-      }
-
-      let connection = { source, destination, input };
-      // Natural stream completion also unpipes; remove its tracking without waiting for process shutdown.
-      const onUnpipe = (unpipeSource) => {
-        if (unpipeSource === source) {
-          destination.removeListener('unpipe', onUnpipe);
-          connections.delete(connection);
-        }
-      };
-
-      connections.add(connection);
-      destination.on('unpipe', onUnpipe);
-
-      try {
-        source.pipe(destination);
-      } catch (error) {
-        source.unpipe(destination);
-        onUnpipe(source);
-        throw error;
-      }
-
-      return true;
     };
 
     // Keep history on the returned handle, so registry cleanup or replacement cannot lose failure details.
@@ -769,7 +700,9 @@ export default class FFmpeg extends EventEmitter {
     child.once('close', (code, signal) => {
       // Exit or spawn failure already set the final state; close guarantees final stderr has been drained.
       timers.clearTimeout(shutdownTimer);
-      disconnectPipes();
+      if (output !== undefined) {
+        child.stdout.unpipe(output);
+      }
       this.#sessions.delete(record);
 
       // Both finished and complete share one outcome; expected distinguishes requested shutdown from failure.
@@ -778,7 +711,7 @@ export default class FFmpeg extends EventEmitter {
       this.emit(FFmpeg.SESSION_EVENT.COMPLETE, session, result);
     });
 
-    for (let i = 0; i < pipeCount; i++) {
+    for (let i = 0; i < child.stdio.length; i++) {
       child?.stdio?.[i]?.on?.('error', (error) => {
         // Writes can race with normal shutdown; keep expected broken-pipe errors silent.
         if (error?.code === 'EPIPE') {
@@ -795,48 +728,29 @@ export default class FFmpeg extends EventEmitter {
     // Register before attaching pipes so setup failure or a reentrant shutdown still owns this process.
     this.#sessions.add(record);
 
-    // Setup failures belong to this process and must not leave it running without usable media pipes.
-    const attachPipes = (inputStreams) => {
-      // Pending source acquisition may finish after HomeKit has already stopped the process.
-      if (session.active === false) {
-        return;
-      }
-
-      try {
-        for (let [index, stream] of Object.entries(inputStreams)) {
-          if (typeof stream === 'string' || Buffer.isBuffer(stream) === true) {
-            stream = Readable.from([stream]);
-          }
-
-          connectPipe(stream, Number(index), true);
+    try {
+      if (input !== undefined) {
+        // SDP is finite; ending stdin lets FFmpeg finish reading its description.
+        if (typeof input !== 'string' && Buffer.isBuffer(input) !== true) {
+          throw new TypeError('FFmpeg input must be a string or buffer');
         }
-
-        for (let [index, stream] of Object.entries(outputs)) {
-          connectPipe(stream, Number(index), false);
+        child.stdin.end(input);
+      }
+      if (output !== undefined && session.active === true) {
+        if (typeof output?.write !== 'function') {
+          throw new TypeError('FFmpeg output must be a writable stream');
         }
-      } catch (error) {
-        failSetup(error);
+        // Natural exit must drain final output. Requested stop only unpipes;
+        // it never destroys or ends a destination owned by the caller.
+        child.stdout.pipe(output);
       }
-    };
-
-    const failSetup = (error) => {
-      if (session.active === false) {
-        return;
-      }
-
+    } catch (error) {
       lifecycle.error = error;
       appendDiagnostics(
         '\nFailed to attach ffmpeg session "' + label + '" media pipes. Error was "' + String(error?.message || error) + '"',
       );
-
-      // Termination is automatic here; preserve the setup error as an unexpected failure.
+      // Setup failure still owns this process and is an unexpected termination.
       stop('SIGKILL', SHUTDOWN_TIMEOUT_MS, false);
-    };
-
-    if (typeof inputs?.then === 'function') {
-      Promise.resolve(inputs).then(attachPipes, failSetup);
-    } else {
-      attachPipes(inputs);
     }
 
     return session;
@@ -867,7 +781,7 @@ export default class FFmpeg extends EventEmitter {
     let cached = FFmpeg.#capabilityCache.get(binaryMetadata?.[0]);
     if (cached !== undefined && cached.identity === identity) {
       this.#version = cached.version;
-      this.#features = structuredClone(cached.features);
+      this.#features = cached.features;
       this.#probeHardwareEncoder(binaryMetadata);
       return;
     }
@@ -889,10 +803,6 @@ export default class FFmpeg extends EventEmitter {
     if ((match?.[1] ?? '') !== '') {
       this.#version = match[1];
     }
-
-    // Parse --enable-xxx flags from build config
-    let enabledLibs = stdout.match(/--enable-[^\s]+/g) || [];
-    this.#features.enabled = enabledLibs.map((f) => f.replace('--enable-', ''));
 
     // Failed queries remain retryable rather than caching an incomplete capability set.
     let complete = true;
@@ -921,19 +831,18 @@ export default class FFmpeg extends EventEmitter {
       return features;
     };
 
-    // Parse feature lists (encoders, decoders, muxers, demuxers)
+    // Retain only capabilities used by minimum checks and encoder selection.
     this.#features.encoders = parseFeatures('-encoders', /^\s*[A-Z.]+\s+([^\s]+)/);
     this.#features.decoders = parseFeatures('-decoders', /^\s*[A-Z.]+\s+([^\s]+)/);
     this.#features.muxers = parseFeatures('-muxers', /^\s*[E][A-Z.]*\s+([^\s]+)/);
-    this.#features.demuxers = parseFeatures('-demuxers', /^\s*[D][A-Z.]*\s+([^\s]+)/);
 
-    // Snapshot capabilities before hardware-specific flags are added. Discovery
-    // is synchronous, so another constructor cannot observe a partially filled entry.
+    // Capabilities stay private and are not mutated after discovery. Synchronous
+    // setup prevents another constructor from observing a partially filled entry.
     if (binaryMetadata !== undefined && typeof this.#version === 'string' && complete === true) {
       if (FFmpeg.#capabilityCache.has(binaryMetadata[0]) !== true && FFmpeg.#capabilityCache.size >= CAPABILITY_CACHE_CAPACITY) {
         FFmpeg.#capabilityCache.delete(FFmpeg.#capabilityCache.keys().next().value);
       }
-      FFmpeg.#capabilityCache.set(binaryMetadata[0], { identity, version: this.#version, features: structuredClone(this.#features) });
+      FFmpeg.#capabilityCache.set(binaryMetadata[0], { identity, version: this.#version, features: this.#features });
     }
     this.#probeHardwareEncoder(binaryMetadata);
   }
@@ -1060,10 +969,6 @@ export default class FFmpeg extends EventEmitter {
   // Validate an actual encode, rather than treating compiled encoders or graphics nodes as hardware evidence.
   #probeHardwareEncoder(binaryMetadata) {
     let codecs = ['h264_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_v4l2m2m', 'h264_videotoolbox'];
-    for (let codec of codecs) {
-      this.#features[codec] = false;
-    }
-
     if (codecs.some((codec) => this.supportsEncoder(codec) === true) === false) {
       return;
     }
@@ -1148,12 +1053,6 @@ export default class FFmpeg extends EventEmitter {
     }
 
     this.#hardwareEncoder = selection ?? undefined;
-
-    if (this.#hardwareEncoder !== undefined) {
-      // Retain the existing feature flags and codec field for callers of features.
-      this.#features[this.#hardwareEncoder.codec] = true;
-      this.#features.hardwareH264Codec = this.#hardwareEncoder.codec;
-    }
   }
 
   // Locate ffmpeg binary when no explicit path is provided.

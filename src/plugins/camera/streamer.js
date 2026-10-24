@@ -20,7 +20,7 @@
 // - MediaTimeline holds independent bounded video/audio rings with stable indexes
 // - Outputs cannot protect expired media; lagging video recovers at the next IDR
 // - Live outputs attach at the live edge; recordings seek the requested source time
-// - A recording drains its captured startup range before normal timed delivery
+// - A recording drains its captured startup range in A/V source-time order
 // - Fractional source timestamps remain independent of delivery deadlines
 // - Source generations reset retained state and seed RTPMuxer's common A/V offset
 // - Accepted writes advance their cursors even when the receiver then blocks
@@ -1245,7 +1245,9 @@ export default class Streamer {
             : output.wallclockBaseTime + audio.time - output.sourceBaseTime;
 
       next = Math.min(next, Math.max(1, Math.min(dueVideo, dueAudio) - now));
-      let useVideo = dueVideo <= dueAudio;
+      // Prebuffer frames share a send-now deadline. Merge by source time so
+      // video cannot drain first and admit audio from before its starting IDR.
+      let useVideo = audio === undefined || (video !== undefined && video.time <= audio.time);
       let item = useVideo === true ? video : audio;
       let type = useVideo === true ? 'video' : 'audio';
       let due = useVideo === true ? dueVideo : dueAudio;

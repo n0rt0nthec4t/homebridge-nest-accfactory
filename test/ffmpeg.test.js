@@ -1,5 +1,5 @@
 // Verify FFmpeg hardware discovery, capability queries, diagnostics, and session lifecycle.
-// Code version 2026.10.24
+// Code version 2026.10.25
 import assert from 'node:assert/strict';
 import child_process from 'node:child_process';
 import { Buffer } from 'node:buffer';
@@ -91,10 +91,6 @@ test('hardware selection requires encoded output and preserves Pi encoder-node d
       let ffmpeg = new FFmpeg(binary);
       assert.equal(ffmpeg.hardwareH264Codec, scenario.codec);
       assert.equal(ffmpeg.supportsHardwareH264, scenario.codec !== undefined);
-      assert.equal(ffmpeg.features.hardwareH264Codec, scenario.codec);
-      for (let codec of ['h264_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_v4l2m2m', 'h264_videotoolbox']) {
-        assert.equal(ffmpeg.features[codec], scenario.codec === codec);
-      }
       assert.equal(ffmpeg.supportsEncoder('libx264'), true);
       assert.equal(ffmpeg.getH264EncoderOptions(false).codec, 'libx264');
       let original = ffmpeg.getH264EncoderOptions(true);
@@ -129,7 +125,7 @@ test('hardware selection requires encoded output and preserves Pi encoder-node d
       let repeated = new FFmpeg(binary);
       assert.equal(repeated.hardwareH264Codec, scenario.codec);
       assert.deepEqual(repeated.getH264EncoderOptions(true), original, 'Returned options cannot mutate another camera manager');
-      assert.equal(probe.mock.callCount(), calls + 5, 'Camera managers must reuse hardware validation');
+      assert.equal(probe.mock.callCount(), calls + 4, 'Camera managers must reuse hardware validation');
     });
   }
 });
@@ -232,7 +228,6 @@ function createMockFFmpeg(t) {
       '-encoders': ' V..... libx264\n A..... libopus',
       '-decoders': ' A..... libspeex',
       '-muxers': ' E mp4\n E matroska,webm',
-      '-demuxers': '',
     }[args[0]],
   }));
   let children = [];
@@ -252,6 +247,33 @@ function createMockFFmpeg(t) {
   });
   return { ffmpeg, children, spawn };
 }
+
+test('HomeKit AAC-ELD block length applies only to live AAC-ELD encoding', (t) => {
+  let { ffmpeg } = createMockFFmpeg(t);
+  let commands = [];
+  t.mock.method(ffmpeg, 'start', ({ args }) => {
+    commands.push(args);
+    return {};
+  });
+  let video = { profile: 'baseline', level: '3.1', fps: 30, iFrameInterval: 4000, bitRate: 200, payloadType: 99, mtu: 1378 };
+  for (let codec of ['aac-eld', 'opus']) {
+    ffmpeg.startLive({
+      id: codec,
+      input: { url: 'rtsp://127.0.0.1/test' },
+      ports: { audioControl: 12345 },
+      sourceAudio: 'opus',
+      video,
+      audio: { codec, sampleRate: 16000, bitRate: 24, channels: 1, payloadType: 110, packetTime: 20 },
+      target: { address: '127.0.0.1', videoPort: 12346, audioPort: 12347, videoSRTP: Buffer.alloc(30), audioSRTP: Buffer.alloc(30) },
+    });
+  }
+  ffmpeg.startRecording({ id: 'recording', input: { url: 'rtsp://127.0.0.1/test' }, video, sourceAudio: 'opus' });
+  assert.equal(commands[0][commands[0].indexOf('-frame_length') + 1], '480');
+  assert.equal(commands[1].includes('-frame_length'), false);
+  assert.equal(commands[1][commands[1].indexOf('-frame_duration') + 1], '20');
+  assert.equal(commands[2].includes('-frame_length'), false);
+  assert.equal(commands[2][commands[2].indexOf('-profile:a') + 1], 'aac_low');
+});
 
 test('capability queries distinguish encoders, decoders and muxers including format aliases', (t) => {
   let { ffmpeg } = createMockFFmpeg(t);
@@ -601,27 +623,12 @@ test('state listeners can force a graceful stop without leaving an escalation ti
   await session.finished;
 });
 
-test('invalid pipe counts default to stdin, stdout and stderr', (t) => {
-  let { ffmpeg } = createMockFFmpeg(t);
-  let counts = ['4', null, NaN, Infinity, 3.5, {}];
-  for (let [index, pipeCount] of counts.entries()) {
-    let session = ffmpeg.start({
-      id: 'camera' + ':' + String(index) + ':' + 'default',
-      args: [],
-      onStderr: undefined,
-      pipeCount: pipeCount,
-    });
-    assert.equal(processFor(session).stdio.length, 3);
-    assert.equal(session.active, true);
-  }
-});
-
-test('integer pipe counts retain the minimum and additional media pipes', (t) => {
-  let { ffmpeg } = createMockFFmpeg(t);
-  for (let count of [-1, 0, 2, 3, 4]) {
-    let session = ffmpeg.start({ id: 'camera' + ':' + String(count) + ':' + 'default', args: [], onStderr: undefined, pipeCount: count });
-    assert.equal(processFor(session).stdio.length, Math.max(3, count));
-  }
+test('processes always allocate only stdin, stdout and stderr', (t) => {
+  let { ffmpeg, spawn } = createMockFFmpeg(t);
+  let session = ffmpeg.start();
+  assert.deepEqual(spawn.mock.calls[0].arguments[2].stdio, ['pipe', 'pipe', 'pipe']);
+  assert.equal(processFor(session).stdio.length, 3);
+  assert.equal(session.active, true);
 });
 
 test('synchronously rejected replacement arguments leave the running session intact', (t) => {
@@ -674,7 +681,7 @@ test('older replacement startup cannot stop a newer pending request', async (t) 
 test('EPIPE stays silent while other pipe errors reach diagnostics and completion', async (t) => {
   let { ffmpeg } = createMockFFmpeg(t);
   let callback = t.mock.fn();
-  let session = ffmpeg.start({ id: 'camera:one:live', args: [], onStderr: callback, pipeCount: 4 });
+  let session = ffmpeg.start({ id: 'camera:one:live', args: [], onStderr: callback });
   processFor(session).emit('spawn');
   for (let pipe of processFor(session).stdio) {
     pipe.emit('error', Object.assign(new Error('Broken pipe'), { code: 'EPIPE' }));
@@ -682,9 +689,9 @@ test('EPIPE stays silent while other pipe errors reach diagnostics and completio
   assert.equal(callback.mock.callCount(), 0);
   assert.deepEqual(session.diagnosticLines, []);
   let error = Object.assign(new Error('I/O failure'), { code: 'EIO' });
-  processFor(session).stdio[3].emit('error', error);
+  processFor(session).stdio[0].emit('error', error);
   assert.equal(callback.mock.callCount(), 1);
-  assert.deepEqual(session.diagnosticLines, ['Error on ffmpeg session "camera:one:live" pipe 3. Error was "I/O failure"']);
+  assert.deepEqual(session.diagnosticLines, ['Error on ffmpeg session "camera:one:live" pipe 0. Error was "I/O failure"']);
   assert.equal(callback.mock.calls[0].arguments[0], session.diagnosticLines[0]);
   // A pipe error does not mean the child exited; teardown must still be able to signal it.
   assert.equal(session.state, FFmpeg.SESSION_STATE.RUNNING);
@@ -804,7 +811,7 @@ for (let result of [
   });
 }
 
-for (let command of ['-encoders', '-decoders', '-muxers', '-demuxers']) {
+for (let command of ['-encoders', '-decoders', '-muxers']) {
   for (let result of [{ error: new Error('Fixture feature probe failed') }, { status: 1 }, { status: 0, stdout: null }]) {
     test('failed ' + command + ' query isolates unavailable features: ' + String(result.status ?? result.error.message), (context) => {
       context.mock.method(child_process, 'spawnSync', (binary, args) =>
@@ -817,7 +824,6 @@ for (let command of ['-encoders', '-decoders', '-muxers', '-demuxers']) {
                 '-encoders': ' V..... libx264',
                 '-decoders': ' A..... libspeex',
                 '-muxers': ' E mp4',
-                '-demuxers': ' D mov',
               }[args[0]],
             },
       );
@@ -826,7 +832,6 @@ for (let command of ['-encoders', '-decoders', '-muxers', '-demuxers']) {
       assert.equal(ffmpeg.supportsEncoder('libx264'), command !== '-encoders');
       assert.equal(ffmpeg.supportsDecoder('libspeex'), command !== '-decoders');
       assert.equal(ffmpeg.supportsMuxer('mp4'), command !== '-muxers');
-      assert.deepEqual(ffmpeg.features.demuxers, command === '-demuxers' ? [] : ['mov']);
       assert.equal(ffmpeg.supportsHardwareH264, false);
     });
   }
@@ -911,66 +916,50 @@ test('bounded hardware probe cache evicts old binaries while reusing recent vali
   assert.equal(validations.get('fixture-cache-capacity-0'), 2);
 });
 
-test('build configuration flags are reported separately from available codecs', (context) => {
+test('build configuration flags do not establish available codecs', (context) => {
   context.mock.method(child_process, 'spawnSync', (binary, args) => ({
     status: 0,
     stdout: args[0] === '-version' ? 'ffmpeg version 8.0 --enable-libx264 --enable-shared' : '',
   }));
   let ffmpeg = new FFmpeg('fixture-build-flags');
-  assert.deepEqual(ffmpeg.features.enabled, ['libx264', 'shared']);
   assert.equal(ffmpeg.supportsEncoder('libx264'), false);
   assert.equal(ffmpeg.hasMinimumSupport({ encoders: ['libx264'] }), false);
 });
 
-test('start owns media connections without disconnecting or destroying shared streams', async (t) => {
+test('stopping one process preserves a shared talkback destination and replacement', async (t) => {
   let { ffmpeg } = createMockFFmpeg(t);
-  let video = new PassThrough();
-  let audio = new PassThrough();
   let talkback = new PassThrough();
-  let first = ffmpeg.start({ id: 'record', inputs: { 0: video, 3: audio }, outputs: { 1: talkback } });
-  let replacement = ffmpeg.start({ id: 'record', inputs: { 0: video } });
-  video.write('video');
-  audio.write('audio');
-  first.stdout.write('talkback');
-  assert.equal(processFor(first).stdin.read().toString(), 'video');
-  assert.equal(processFor(replacement).stdin.read().toString(), 'video');
-  assert.equal(processFor(first).stdio[3].read().toString(), 'audio');
-  assert.equal(talkback.read().toString(), 'talkback');
-
+  let first = ffmpeg.start({ id: 'talk', input: 'first SDP', output: talkback });
+  let replacement = ffmpeg.start({ id: 'talk', input: 'replacement SDP', output: talkback });
+  first.stdout.write('first');
+  replacement.stdout.write('replacement');
+  assert.equal(talkback.read().toString(), 'firstreplacement');
   let finished = first.stop('SIGKILL');
-  assert.equal(first.active, false);
-  assert.equal(replacement.active, true);
-  video.write('replacement');
-  audio.write('stopped');
   first.stdout.write('stopped');
-  assert.equal(processFor(replacement).stdin.read().toString(), 'replacement');
-  assert.equal(processFor(first).stdin.read(), null);
-  assert.equal(processFor(first).stdio[3].read(), null);
-  assert.equal(talkback.read(), null);
-  for (let stream of [video, audio, talkback]) {
-    assert.equal(stream.destroyed, false);
-    assert.equal(stream.writableEnded, false);
-  }
-  assert.equal(processFor(first).stdin.listenerCount('unpipe'), 0);
-  assert.equal(talkback.listenerCount('unpipe'), 0);
+  replacement.stdout.write('still connected');
+  assert.equal(talkback.read().toString(), 'still connected');
+  assert.equal(first.stdout.listenerCount('data'), 0);
+  assert.equal(replacement.stdout.listenerCount('data'), 1);
+  assert.equal(talkback.destroyed, false);
+  assert.equal(talkback.writableEnded, false);
   processFor(first).emit('exit', null, 'SIGKILL');
   processFor(first).emit('close', null, 'SIGKILL');
   await finished;
+  replacement.stdout.write('after old close');
+  assert.equal(talkback.read().toString(), 'after old close');
   processFor(replacement).emit('exit', 0, null);
   processFor(replacement).emit('close', 0, null);
-  assert.equal(video.listenerCount('data'), 0);
+  assert.equal(talkback.listenerCount('unpipe'), 0);
   assert.deepEqual(await ffmpeg.shutdown(), []);
 });
 
-test('natural process exit detaches inputs but drains final output before completion', async (t) => {
+test('natural process exit drains final output before completion', async (t) => {
   let { ffmpeg } = createMockFFmpeg(t);
-  let source = new PassThrough();
   let sink = new PassThrough();
-  let session = ffmpeg.start({ inputs: { 0: source }, outputs: { 1: sink } });
+  let session = ffmpeg.start({ output: sink });
   processFor(session).emit('spawn');
   processFor(session).emit('exit', 0, null);
   assert.equal(session.active, false);
-  assert.equal(source.listenerCount('data'), 0);
   session.stdout.write('final encoded bytes');
   assert.equal(sink.read().toString(), 'final encoded bytes');
   processFor(session).emit('close', 0, null);
@@ -981,55 +970,50 @@ test('natural process exit detaches inputs but drains final output before comple
   assert.equal(sink.writableEnded, false);
 });
 
-test('naturally finished pipe connections release tracking before process shutdown', async (t) => {
-  let { ffmpeg } = createMockFFmpeg(t);
-  let source = new PassThrough();
-  let session = ffmpeg.start({ inputs: { 0: source } });
-  source.end('last input');
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(processFor(session).stdin.listenerCount('unpipe'), 0);
-  let unpipe = t.mock.method(source, 'unpipe', source.unpipe);
-  session.stop('SIGKILL');
-  assert.equal(unpipe.mock.callCount(), 0);
-  processFor(session).emit('exit', null, 'SIGKILL');
-  processFor(session).emit('close', null, 'SIGKILL');
-  await session.finished;
-});
-
-test('failed media attachment rolls back connections and terminates its process as a failure', async (t) => {
-  let { ffmpeg } = createMockFFmpeg(t);
-  let source = new PassThrough();
+test('failed output attachment unpipes and terminates its process as a failure', async (t) => {
+  let { ffmpeg, spawn } = createMockFFmpeg(t);
+  let sink = new PassThrough();
   let failure = new Error('Fixture pipe setup failed');
-  t.mock.method(source, 'pipe', (destination) => {
-    PassThrough.prototype.pipe.call(source, destination);
-    throw failure;
+  spawn.mock.mockImplementation((binary, args, options) => {
+    let child = new EventEmitter();
+    child.stdio = options.stdio.map(() => new PassThrough());
+    [child.stdin, child.stdout, child.stderr] = child.stdio;
+    child.kill = t.mock.fn(() => true);
+    t.mock.method(child.stdout, 'pipe', (destination) => {
+      PassThrough.prototype.pipe.call(child.stdout, destination);
+      throw failure;
+    });
+    return child;
   });
-  let session = ffmpeg.start({ inputs: { 0: source } });
-  assert.equal(source.listenerCount('data'), 0);
-  assert.equal(processFor(session).stdin.listenerCount('unpipe'), 0);
+  let session = ffmpeg.start({ output: sink });
+  let child = spawn.mock.calls[0].result;
+  assert.equal(child.stdout.listenerCount('data'), 0);
+  assert.equal(sink.listenerCount('unpipe'), 0);
+  assert.equal(sink.destroyed, false);
+  assert.equal(sink.writableEnded, false);
   assert.equal(session.active, false);
-  assert.deepEqual(processFor(session).kill.mock.calls[0].arguments, ['SIGKILL']);
-  processFor(session).emit('exit', null, 'SIGKILL');
-  processFor(session).emit('close', null, 'SIGKILL');
+  assert.deepEqual(child.kill.mock.calls[0].arguments, ['SIGKILL']);
+  child.emit('exit', null, 'SIGKILL');
+  child.emit('close', null, 'SIGKILL');
   let result = await session.finished;
   assert.equal(result.error, failure);
   assert.equal(result.expected, false);
   assert.equal(result.state, FFmpeg.SESSION_STATE.FAILED);
 });
 
-test('rejected stop signals preserve media connections until the process actually exits', async (t) => {
+test('rejected stop signals preserve output until the process actually closes', async (t) => {
   let { ffmpeg } = createMockFFmpeg(t);
-  let source = new PassThrough();
-  let session = ffmpeg.start({ inputs: { 0: source } });
+  let sink = new PassThrough();
+  let session = ffmpeg.start({ output: sink });
   t.mock.method(processFor(session), 'kill', () => false);
   assert.equal(session.stop(), session.finished);
   assert.equal(session.active, true);
-  source.write('still connected');
-  assert.equal(processFor(session).stdin.read().toString(), 'still connected');
+  session.stdout.write('still connected');
+  assert.equal(sink.read().toString(), 'still connected');
   processFor(session).emit('error', new Error('Fixture spawn failed'));
   assert.equal(session.active, false);
-  assert.equal(source.listenerCount('data'), 0);
   processFor(session).emit('close', -2, null);
+  assert.equal(session.stdout.listenerCount('data'), 0);
   await session.finished;
 });
 
@@ -1068,49 +1052,26 @@ test('capability probes have a forced timeout and isolate timed-out feature quer
       : { error: Object.assign(new Error('Fixture probe timed out'), { code: 'ETIMEDOUT' }), status: null, stdout: null };
   });
   let ffmpeg = new FFmpeg('fixture-probe-timeout');
-  assert.deepEqual(commands, ['-version', '-encoders', '-decoders', '-muxers', '-demuxers']);
+  assert.deepEqual(commands, ['-version', '-encoders', '-decoders', '-muxers']);
   assert.equal(ffmpeg.version, '8.0');
   assert.equal(ffmpeg.supportsEncoder('libx264'), false);
   assert.equal(ffmpeg.supportsDecoder('libspeex'), false);
   assert.equal(ffmpeg.supportsMuxer('mp4'), false);
 });
 
-test('pending inputs attach automatically and cannot reconnect a stopped process', async (t) => {
+test('invalid finite input or output stops its process as an unexpected setup failure', async (t) => {
   let { ffmpeg } = createMockFFmpeg(t);
-  for (let cancelled of [false, true]) {
-    let ready = Promise.withResolvers();
-    let source = new PassThrough();
-    let session = ffmpeg.start({ inputs: ready.promise });
-    if (cancelled === true) {
-      session.stop('SIGKILL');
-    }
-    ready.resolve({ 0: source });
-    await Promise.resolve();
-    source.write('media');
-    assert.equal(source.listenerCount('data'), cancelled === true ? 0 : 1);
-    let received = processFor(session).stdin.read();
-    assert.equal(received?.toString(), cancelled === true ? undefined : 'media');
-    processFor(session).emit('exit', 0, null);
-    processFor(session).emit('close', 0, null);
-    await session.finished;
+  for (let options of [{ input: {} }, { output: {} }]) {
+    let session = ffmpeg.start(options);
+    assert.equal(session.active, false);
+    assert.deepEqual(processFor(session).kill.mock.calls[0].arguments, ['SIGKILL']);
+    processFor(session).emit('exit', null, 'SIGKILL');
+    processFor(session).emit('close', null, 'SIGKILL');
+    let result = await session.finished;
+    assert.equal(result.error instanceof TypeError, true);
+    assert.equal(result.expected, false);
+    assert.equal(result.state, FFmpeg.SESSION_STATE.FAILED);
   }
-});
-
-test('rejected input acquisition stops its process without classifying the failure as expected', async (t) => {
-  let { ffmpeg } = createMockFFmpeg(t);
-  let ready = Promise.withResolvers();
-  let session = ffmpeg.start({ inputs: ready.promise });
-  let error = new Error('Fixture input acquisition failed');
-  ready.reject(error);
-  await Promise.resolve();
-  assert.equal(session.active, false);
-  assert.deepEqual(processFor(session).kill.mock.calls[0].arguments, ['SIGKILL']);
-  processFor(session).emit('exit', null, 'SIGKILL');
-  processFor(session).emit('close', null, 'SIGKILL');
-  let result = await session.finished;
-  assert.equal(result.error, error);
-  assert.equal(result.state, FFmpeg.SESSION_STATE.FAILED);
-  assert.equal(result.expected, false);
 });
 
 test('shutdown shares completion and prevents starts from reentrant callbacks and later callers', async (t) => {
@@ -1139,7 +1100,7 @@ test('shutdown shares completion and prevents starts from reentrant callbacks an
 test('start delivers finite SDP inputs and exposes no registry or raw process control', async (t) => {
   let { ffmpeg } = createMockFFmpeg(t);
   for (let input of ['v=0\r\n', Buffer.from('v=0\r\n')]) {
-    let session = ffmpeg.start({ inputs: { 0: input } });
+    let session = ffmpeg.start({ input });
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(processFor(session).stdin.read().toString(), 'v=0\r\n');
     assert.equal(processFor(session).stdin.writableEnded, true);
@@ -1155,12 +1116,8 @@ test('start delivers finite SDP inputs and exposes no registry or raw process co
   }
 });
 
-test('invalid pipe mappings are rejected before spawning and independent starts do not replace each other', async (t) => {
-  let { ffmpeg, spawn } = createMockFFmpeg(t);
-  for (let index of ['-1', '1.5', 'not-a-pipe']) {
-    assert.throws(() => ffmpeg.start({ inputs: { [index]: new PassThrough() } }), RangeError);
-  }
-  assert.equal(spawn.mock.callCount(), 0);
+test('independent starts do not replace each other', async (t) => {
+  let { ffmpeg } = createMockFFmpeg(t);
   let first = ffmpeg.start();
   let second = ffmpeg.start();
   processFor(first).emit('spawn');
@@ -1190,25 +1147,25 @@ function capabilityProbe(binary, args) {
       '-encoders': ' V..... libx264',
       '-decoders': ' V..... h264',
       '-muxers': ' E mp4',
-      '-demuxers': ' D mov',
     }[args[0]],
   };
 }
 
-test('camera managers share successful discovery while keeping feature arrays independent', (context) => {
+test('camera managers share successful private capability discovery', (context) => {
   let binary = capabilityBinary(context);
   let probes = context.mock.method(child_process, 'spawnSync', capabilityProbe);
   let first = new FFmpeg(binary);
-  let expected = structuredClone(first.features);
-  first.features.encoders.push('mutated');
-  first.features.enabled.push('mutated');
   let second = new FFmpeg(binary);
-  assert.equal(probes.mock.callCount(), 5);
-  assert.equal(second.version, '8.0');
-  assert.deepEqual(second.features, expected);
-  second.features.decoders.push('mutated');
-  assert.deepEqual(new FFmpeg(binary).features, expected);
-  assert.equal(probes.mock.callCount(), 5);
+  assert.equal(probes.mock.callCount(), 4);
+  for (let manager of [first, second]) {
+    assert.equal(manager.version, '8.0');
+    assert.equal(manager.supportsEncoder('libx264'), true);
+    assert.equal(manager.supportsDecoder('h264'), true);
+    assert.equal(manager.supportsMuxer('mp4'), true);
+    assert.equal(manager.features, undefined);
+  }
+  new FFmpeg(binary);
+  assert.equal(probes.mock.callCount(), 4);
 });
 
 test('capability discovery separates executables and invalidates replaced files', (context) => {
@@ -1217,13 +1174,13 @@ test('capability discovery separates executables and invalidates replaced files'
   let probes = context.mock.method(child_process, 'spawnSync', capabilityProbe);
   new FFmpeg(first);
   new FFmpeg(second);
-  assert.equal(probes.mock.callCount(), 10);
+  assert.equal(probes.mock.callCount(), 8);
   fs.writeFileSync(first, 'replaced fixture executable');
   new FFmpeg(first);
-  assert.equal(probes.mock.callCount(), 15);
+  assert.equal(probes.mock.callCount(), 12);
   new FFmpeg(first);
   new FFmpeg(second);
-  assert.equal(probes.mock.callCount(), 15);
+  assert.equal(probes.mock.callCount(), 12);
 });
 
 for (let failedCommand of ['-version', '-encoders']) {
@@ -1237,7 +1194,7 @@ for (let failedCommand of ['-version', '-encoders']) {
     fail = false;
     let recovered = new FFmpeg(binary);
     assert.equal(recovered.supportsEncoder('libx264'), true);
-    assert.equal(probes.mock.callCount(), failedCommand === '-version' ? 6 : 10);
+    assert.equal(probes.mock.callCount(), failedCommand === '-version' ? 5 : 8);
     let count = probes.mock.callCount();
     new FFmpeg(binary);
     assert.equal(probes.mock.callCount(), count);
@@ -1258,10 +1215,10 @@ test('capability cache follows PATH changes', (context) => {
   let probes = context.mock.method(child_process, 'spawnSync', capabilityProbe);
   process.env.PATH = path.dirname(first);
   new FFmpeg(path.basename(first));
-  assert.equal(probes.mock.callCount(), 5);
+  assert.equal(probes.mock.callCount(), 4);
   process.env.PATH = path.dirname(second);
   new FFmpeg(path.basename(second));
-  assert.equal(probes.mock.callCount(), 10);
+  assert.equal(probes.mock.callCount(), 8);
 });
 
 test('capability cache skips nonexecutable PATH shadow files', (context) => {
@@ -1289,7 +1246,7 @@ test('capability cache skips nonexecutable PATH shadow files', (context) => {
   new FFmpeg(path.basename(first));
   fs.writeFileSync(shadow, 'changed inaccessible shadow');
   new FFmpeg(path.basename(first));
-  assert.equal(probes.mock.callCount(), 5);
+  assert.equal(probes.mock.callCount(), 4);
 });
 
 test('capability cache stays bounded across distinct executable paths', (context) => {
@@ -1298,11 +1255,11 @@ test('capability cache stays bounded across distinct executable paths', (context
   for (let binary of binaries) {
     new FFmpeg(binary);
   }
-  assert.equal(probes.mock.callCount(), 165);
+  assert.equal(probes.mock.callCount(), 132);
   new FFmpeg(binaries.at(-1));
-  assert.equal(probes.mock.callCount(), 165);
+  assert.equal(probes.mock.callCount(), 132);
   new FFmpeg(binaries[0]);
-  assert.equal(probes.mock.callCount(), 170);
+  assert.equal(probes.mock.callCount(), 136);
 });
 
 function fragmentBox(type, payload = Buffer.alloc(0), extended = false) {
