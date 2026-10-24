@@ -1,83 +1,53 @@
 // StreamTransport
 // Part of homebridge-nest-accfactory
 //
-// Base class for protocol-specific streaming transports.
-//
-// Provides a consistent transport boundary for stream sources such as
-// WebRTC, NexusTalk, or future streaming implementations.
+// Shared lifecycle and complete-frame boundary for protocol-specific camera sources.
+// WebRTC and NexusTalk own their authentication, signalling, packet assembly and
+// reconnect behaviour. Streamer owns retention, output scheduling and FFmpeg wiring.
 //
 // Responsibilities:
-// - Connection/session lifecycle management
-// - Protocol authentication and signalling wrappers
-// - Packet receive handling support
-// - Protocol-specific packet parsing support
-// - Media frame normalisation and emission
-// - Transport-specific reconnect behaviour
-// - Optional talkback/audio send support
-// - Shared RTP/network jitter buffering helpers
-// - Shared media metadata and delivery statistics
-// - Shared media recovery state for packetised transports
+// - Wrap source open, close, update and optional talkback operations
+// - Publish lifecycle state and source metadata/statistics
+// - Validate complete H264 NAL groups and encoded audio before consumer delivery
+// - Cache frame-specific SPS/PPS configuration and changed SPS metadata
+// - Preserve fractional source timestamps until output RTP packetization
+// - Provide bounded jitter and decoder-recovery helpers where sources need them
 //
-// Transport implementations are expected to:
-// - Implement doOpen(), doClose(), doUpdate(), and optionally doSendAudio()
-// - Emit complete media frames through emitMedia()
-// - Report transport state transitions through setState()
-// - Handle protocol-specific recovery and reconnect logic
-// - Use transport jitter helpers where packet reordering is needed
-// - Use media state helpers where decoder recovery is needed
+// Source implementations:
+// - Implement doOpen(), doClose(), doUpdate() and optionally doSendAudio()
+// - Emit complete media through emitMedia() and report transitions through setState()
+// - Keep partial fragments, protocol ordering and loss recovery below this boundary
+// - Supply raw video NAL buffers or a complete Annex-B buffer to parse once
+// - Supply complete encoded audio payloads with source presentation timestamps
 //
-// Media emitted by transports should already be normalised and complete:
-// - Video should be complete access units or complete NAL units
-// - Audio should be complete codec frames
-// - Partial RTP fragments or incomplete payloads should not be emitted
-// - media.timestamp is source media time, not final HomeKit/output playout time
-// - media.frameDuration may be supplied for audio when known
-// - Output pacing, catch-up, and live latency policy are owned by Streamer
+// Jitter and recovery:
+// - Grouped video uses a bounded ring; reordered groups use a temporary sorted view
+// - Ungrouped audio uses one bounded array, sorted and released in place
+// - Sequence/timestamp comparisons account for RTP rollover
+// - Sources decide when to use recovery state and when a frame is decoder-safe
 //
-// Jitter helpers:
-// - createJitterBuffer() creates sequence or timestamp-grouped jitter state
-// - pushJitterPacket() inserts packets into a sequence or timestamp-grouped queue
-// - releaseJitterPackets() releases ordered single-packet media
-// - releaseJitterGroups() releases timestamp-grouped media
-// - sortJitterGroupPackets() sorts grouped packets and detects sequence gaps
-// - countJitterPackets() counts queued packets
-// - sizeJitterBuffer() returns top-level jitter queue size
-// - clearJitterBuffer() clears jitter state
-// - Grouped queues drain directly from the ring; reordered groups use a temporary sorted view
-// - Ungrouped queues use one bounded array, sorted and drained in place
-// - Internal jitter sorting uses wraparound-aware RTP sequence/timestamp comparison
+// Frame metadata:
+// - Video keeps NALs, byte count, keyframe flag and its cached configuration reference
+// - Equal parameter sets reuse the configuration rather than reparsing each frame
+// - Audio retains its supplied payload; production sources keep it compressed
+// - Source metadata logging is rate-limited independently of output diagnostics
 //
-// Media recovery helpers:
-// - getMediaState() returns built-in per-media recovery state
-// - resetMediaState() resets one media recovery state or clears all media recovery states
-// - markMediaIssue() records bad media events
-// - markMediaFrame() records accepted clean media frames
-// - canAcceptMediaFrame() decides whether a frame should currently be accepted
+// Lifecycle states:
+// - CONNECTING, CONNECTED, READY, RECONNECTING, CLOSING and CLOSED
 //
-// Media metadata:
-// - updateVideoMetadata() stores and rate-limits video metadata logging
-// - emitMedia() validates and normalises codec, source timing, audio, and video metadata
-// - Finite source timestamps retain sub-millisecond precision through retention
-// - H264 SPS metadata can be learned from complete emitted video frames
-//
-// Typical transport lifecycle states:
-// - CONNECTING
-// - CONNECTED
-// - READY
-// - RECONNECTING
-// - CLOSING
-// - CLOSED
-//
-// Code version 2026.10.23
+// Code version 2026.10.24
 // Mark Hulskamp
 'use strict';
 
 // Define nodejs module requirements
 import { Buffer } from 'node:buffer';
 
+// Define our modules
 import H264 from './h264.js';
 import RingBuffer from '../../ringbuffer.js';
 
+// Define constants
+const VIDEO_FPS_STARTUP_SAMPLES = 20; // Valid frame intervals before publishing an inferred startup FPS
 const VIDEO_FPS_LOG_CHANGE_THRESHOLD = 5; // Minimum rounded FPS change before logging updated stream media
 const RTP_SEQUENCE_WRAP = 0x10000; // Default 16-bit RTP sequence wrap value
 const RTP_SEQUENCE_MASK = 0xffff; // Default 16-bit RTP sequence mask
@@ -170,7 +140,10 @@ export default class StreamTransport {
     lastFPSLogTime: undefined,
   }; // Last video metadata values reported to debug logs
 
+  #videoFPSSamples = 0; // Saturates once the inferred startup sample is complete
+  #videoFPSEstimate = undefined; // Startup smoothing before FPS is published
   #lastVideoMetadataTimestamp = undefined; // Last source video timestamp used for FPS learning
+  #videoConfig = undefined; // Immutable parameter sets shared by frames until the source changes them
   #bitrateWindows = {}; // Per-media rolling byte counters for bitrate estimation
 
   constructor(options = {}) {
@@ -620,71 +593,39 @@ export default class StreamTransport {
     return state;
   }
 
-  canAcceptMediaFrame(name = 'video', options = {}) {
-    let state = this.getMediaState(name, options);
-    let isKeyFrame = options?.keyFrame === true;
-
-    // Decide whether a media frame should be accepted while a stream is
-    // recovering. This hides delta-frame suppression from protocol code.
-
-    if (state.state === StreamTransport.MEDIA_STATE.STABLE) {
-      return true;
-    }
-
-    if (isKeyFrame === true) {
-      return true;
-    }
-
-    return state.suppressDeltas !== true;
-  }
-
   #learnVideoMetadata(media) {
-    let info = undefined;
-
     // Learn generic video metadata from complete frames at the transport boundary.
     // Protocol transports still own packet/frame assembly; this only inspects
     // already-emitted media so WebRTC and NexusTalk do not duplicate timing/SPS parsing.
-    if (media?.type !== 'video' || Number.isFinite(media?.timestamp) !== true || Buffer.isBuffer(media?.data) !== true) {
+    if (media?.type !== 'video' || Number.isFinite(media?.timestamp) !== true || Array.isArray(media?.nals) !== true) {
       return;
     }
 
     // Estimate source FPS from accepted video frame timestamps. This is metadata
-    // only; Streamer owns output pacing and may still smooth/drop/catch up.
+    // only; presentation timestamps and source frame intervals stay unchanged.
     if (typeof this.#lastVideoMetadataTimestamp === 'number' && media.timestamp > this.#lastVideoMetadataTimestamp) {
       let frameDuration = media.timestamp - this.#lastVideoMetadataTimestamp;
       let instantFps = frameDuration > 0 ? 1000 / frameDuration : undefined;
 
       if (Number.isFinite(instantFps) === true && instantFps >= 1 && instantFps <= 60) {
-        this.updateVideoMetadata({
-          fps: Number.isFinite(this.video.fps) === true && this.video.fps > 0 ? this.video.fps * 0.8 + instantFps * 0.2 : instantFps,
-        });
+        let previousFPS = this.video.fps ?? this.#videoFPSEstimate;
+        this.#videoFPSEstimate =
+          Number.isFinite(previousFPS) === true && previousFPS > 0 ? previousFPS * 0.8 + instantFps * 0.2 : instantFps;
+        this.#videoFPSSamples = Math.min(this.#videoFPSSamples + 1, VIDEO_FPS_STARTUP_SAMPLES);
+
+        // Do not announce the first sparse startup interval as the stream rate.
+        // Explicit source FPS is already known; only inferred startup waits.
+        if (this.#videoFPSSamples >= VIDEO_FPS_STARTUP_SAMPLES || (Number.isFinite(this.video.fps) === true && this.video.fps > 0)) {
+          this.updateVideoMetadata({ fps: this.#videoFPSEstimate });
+        }
       }
     }
 
     this.#lastVideoMetadataTimestamp = media.timestamp;
 
-    if (
-      media?.codec === StreamTransport.CODEC_TYPE.H264 &&
-      (Number.isFinite(this.video.width) !== true || Number.isFinite(this.video.height) !== true || media.keyFrame === true)
-    ) {
-      for (let nalu of H264.getNALUnits(media.data)) {
-        if (nalu.type !== H264.NALUS.TYPES.SPS) {
-          continue;
-        }
-
-        info = H264.getSPSInfo(nalu.data);
-
-        if (Number.isFinite(info?.width) === true && Number.isFinite(info?.height) === true) {
-          if (this.video.width !== info.width || this.video.height !== info.height) {
-            this.updateVideoMetadata({
-              width: info.width,
-              height: info.height,
-            });
-          }
-        }
-
-        break;
-      }
+    let sps = media.config?.sps;
+    if (sps !== undefined && (this.video.width !== media.config.width || this.video.height !== media.config.height)) {
+      this.updateVideoMetadata({ width: media.config.width, height: media.config.height });
     }
   }
 
@@ -756,8 +697,9 @@ export default class StreamTransport {
       typeof media !== 'object' ||
       media === null ||
       (mediaType !== 'video' && mediaType !== 'audio' && mediaType !== 'talk' && mediaType !== 'meta') ||
-      Buffer.isBuffer(media.data) !== true ||
-      media.data.length === 0
+      (mediaType === 'video'
+        ? Array.isArray(media.nals) !== true && (Buffer.isBuffer(media.data) !== true || media.data.length === 0)
+        : Buffer.isBuffer(media.data) !== true || media.data.length === 0)
     ) {
       return;
     }
@@ -786,24 +728,65 @@ export default class StreamTransport {
 
     media.type = mediaType;
     media.codec = codec;
+
     // Keep fractional milliseconds from source sample clocks. RTPMuxer performs
     // the final integer tick conversion; earlier rounding changes AAC AU spacing.
     media.timestamp = Number.isFinite(media.timestamp) === true ? media.timestamp : now;
     media.keyFrame = media.keyFrame === true;
 
+    if (mediaType === 'video') {
+      // Sources supply raw NAL views. Annex-B input is accepted at this boundary
+      // for complete external frames and parsed once, never once per viewer.
+      media.nals ??= H264.getNALUnits(media.data).map((nal) => nal.data);
+      if (media.nals.length === 0 || media.nals.some((nal) => Buffer.isBuffer(nal) !== true || nal.length === 0)) {
+        return;
+      }
+
+      media.bytes = 0;
+      let sps = media.codecConfig?.sps ?? this.#videoConfig?.sps;
+      let pps = media.codecConfig?.pps ?? this.#videoConfig?.pps;
+      media.hasSPS = false;
+      media.hasPPS = false;
+
+      for (let nal of media.nals) {
+        media.bytes += nal.length;
+        let type = nal[0] & 31;
+        if (type === H264.NALUS.TYPES.SPS) {
+          sps = nal;
+          media.hasSPS = true;
+        }
+        if (type === H264.NALUS.TYPES.PPS) {
+          pps = nal;
+          media.hasPPS = true;
+        }
+      }
+
+      if (sps !== this.#videoConfig?.sps || pps !== this.#videoConfig?.pps) {
+        // Equal repeated headers reuse the configuration and its SPS parse.
+        if (
+          (sps !== this.#videoConfig?.sps && (this.#videoConfig?.sps === undefined || sps.equals(this.#videoConfig.sps) !== true)) ||
+          (pps !== this.#videoConfig?.pps && (this.#videoConfig?.pps === undefined || pps.equals(this.#videoConfig.pps) !== true))
+        ) {
+          let info = sps === undefined ? undefined : H264.getSPSInfo(sps);
+          this.#videoConfig = Object.freeze({ sps, pps, width: info?.width, height: info?.height });
+        }
+      }
+
+      media.config = this.#videoConfig;
+      delete media.data;
+      delete media.codecConfig;
+    } else {
+      media.bytes = media.data.length;
+    }
+
     // Codec shape stays on the transport. Frames carry only media needed for
     // retention and delivery; metadata learning still runs at this boundary.
     if (mediaType === 'video') {
-      this.#updateMediaBitrate(mediaType, media.data.length, now, media.bitrate ?? this.video.bitrate);
+      this.#updateMediaBitrate(mediaType, media.bytes, now, media.bitrate ?? this.video.bitrate);
       this.#learnVideoMetadata(media);
     }
     if (mediaType === 'audio') {
-      this.#updateMediaBitrate(mediaType, media.data.length, now, media.bitrate ?? this.audio.bitrate);
-    }
-
-    // Ensure media stats are initialised before updating counters.
-    if (typeof this.stats?.media !== 'object' || this.stats.media === null) {
-      this.resetMediaStats();
+      this.#updateMediaBitrate(mediaType, media.bytes, now, media.bitrate ?? this.audio.bitrate);
     }
 
     // Track transport video delivery stats before handing off to Streamer.
@@ -821,7 +804,7 @@ export default class StreamTransport {
       }
 
       this.stats.media.lastVideoAt = now;
-      this.stats.media.videoFrames = (this.stats.media.videoFrames ?? 0) + 1;
+      this.stats.media.videoFrames++;
 
       if (media.keyFrame === true) {
         if (typeof this.stats.media.firstKeyframeAt !== 'number') {
@@ -829,7 +812,7 @@ export default class StreamTransport {
         }
 
         this.stats.media.lastKeyframeAt = now;
-        this.stats.media.keyframes = (this.stats.media.keyframes ?? 0) + 1;
+        this.stats.media.keyframes++;
       }
     }
 
@@ -847,12 +830,12 @@ export default class StreamTransport {
         }
 
         if (gapMs > 100) {
-          this.stats.media.largeAudioGaps = (this.stats.media.largeAudioGaps ?? 0) + 1;
+          this.stats.media.largeAudioGaps++;
         }
       }
 
       this.stats.media.lastAudioAt = now;
-      this.stats.media.audioFrames = (this.stats.media.audioFrames ?? 0) + 1;
+      this.stats.media.audioFrames++;
     }
 
     // Emit a complete media frame to the consumer.
@@ -887,6 +870,7 @@ export default class StreamTransport {
     // New transport session/recovery attempt.
     // Runtime media metadata and media timing stats should be relearned.
     if (type === StreamTransport.STATE.CONNECTING || type === StreamTransport.STATE.RECONNECTING) {
+      this.#videoConfig = undefined;
       this.resetVideoMetadata();
       this.resetMediaStats();
       this.resetMediaState();
@@ -1010,6 +994,8 @@ export default class StreamTransport {
     this.video.height = undefined;
     this.video.fps = undefined;
     this.#lastVideoMetadataTimestamp = undefined;
+    this.#videoFPSSamples = 0;
+    this.#videoFPSEstimate = undefined;
     this.#reportedVideoMetadata.width = undefined;
     this.#reportedVideoMetadata.height = undefined;
     this.#reportedVideoMetadata.fps = undefined;
@@ -1058,30 +1044,11 @@ export default class StreamTransport {
   }
 
   recordVideoDrop(reason = 'unknown') {
-    if (typeof this.stats?.media !== 'object' || this.stats.media === null) {
-      this.resetMediaStats();
-    }
-
-    if (typeof this.stats.media.videoDrops !== 'object' || this.stats.media.videoDrops === null) {
-      this.stats.media.videoDrops = {};
-    }
-
     reason = typeof reason === 'string' && reason !== '' ? reason : 'unknown';
     this.stats.media.videoDrops[reason] = (this.stats.media.videoDrops[reason] ?? 0) + 1;
   }
 
   recordVideoReorder(type = 'defers') {
-    if (typeof this.stats?.media !== 'object' || this.stats.media === null) {
-      this.resetMediaStats();
-    }
-
-    if (typeof this.stats.media.videoReorder !== 'object' || this.stats.media.videoReorder === null) {
-      this.stats.media.videoReorder = {
-        defers: 0,
-        overflowDrops: 0,
-      };
-    }
-
     if (typeof this.stats.media.videoReorder[type] !== 'number') {
       this.stats.media.videoReorder[type] = 0;
     }
@@ -1090,11 +1057,7 @@ export default class StreamTransport {
   }
 
   recordKeyframeRequest() {
-    if (typeof this.stats?.media !== 'object' || this.stats.media === null) {
-      this.resetMediaStats();
-    }
-
-    this.stats.media.keyframeRequests = (this.stats.media.keyframeRequests ?? 0) + 1;
+    this.stats.media.keyframeRequests++;
   }
 
   #createMediaState(options = {}) {

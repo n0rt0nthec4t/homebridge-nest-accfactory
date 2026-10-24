@@ -1,429 +1,172 @@
 // MediaTimeline
 // Part of homebridge-nest-accfactory
 //
-// Shared ordered media timeline used by Streamer.
+// Shared retention for complete encoded media in independent video and audio rings.
 //
-// Maintains a single RingBuffer containing all retained media items
-// (video, audio, talkback, metadata) in timeline order while exposing
-// lightweight media-specific indexes for fast lookup.
+// Responsibilities:
+// - Keep stable track indexes through eviction and source resets
+// - Enforce shared item and payload-byte bounds without waiting for readers
+// - Trim expired source time and seek timestamps within an ordered track
+// - Retain frame payloads and their original decoder configuration references
 //
-// Design goals:
-// - Preserve a single ordered media timeline
-// - Avoid duplicated video/audio buffers
-// - Provide O(log n) media-specific lookup via indexed search
-// - Track retained Buffer payload lengths without scanning the timeline
-// - Maintain stable logical indexes during trimming
-// - Keep retention and timeline ordering consistent across all media
+// Notes:
+// - Streamer owns the time-retention policy, reader cursors and decoder recovery
+// - A stalled reader cannot pin this buffer or block current source media
+// - Default capacity is per ring; maximum items and bytes are shared across both
 //
-// Architecture:
-// - One shared RingBuffer stores all retained media items
-// - Media-specific indexes provide efficient lookup:
-//   - video index
-//   - audio index
-//   - keyframe index
-// - Output sessions maintain independent cursors into the shared timeline
-// - Trimming remains protected by the earliest active output cursor
-//
-// This preserves Streamer's existing timing and playout model:
-// - one shared media timeline
-// - one global monotonically increasing item index
-// - independent video/audio output cursors
-// - protected-cursor based retention trimming
-//
-// Benefits:
-// - No duplicated media storage
-// - Faster video/audio lookup without buffer walking
-// - Efficient keyframe discovery for decoder-safe startup
-// - Retains timeline-based A/V ordering
-// - Minimal memory overhead from lightweight indexes
-//
-// Code version 2026.10.20
+// Code version 2026.10.24
 // Mark Hulskamp
 'use strict';
-
-// Define nodejs module requirements
-import { Buffer } from 'node:buffer';
 
 // Import our modules
 import RingBuffer from '../../ringbuffer.js';
 
 // Define constants
-const MEDIA_TIMELINE_DEFAULT_CAPACITY = 1024;
-const MEDIA_TIMELINE_MAX_CAPACITY = 8192;
-const MEDIA_TIMELINE_INDEX_COMPACT_THRESHOLD = 256;
-const MEDIA_TIMELINE_TYPE_VIDEO = 'video';
-const MEDIA_TIMELINE_TYPE_AUDIO = 'audio';
+const DEFAULT_CAPACITY = 1024;
+const DEFAULT_MAX_ITEMS = 8192;
+const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
+
+const MEDIA_TYPE = {
+  VIDEO: 'video',
+  AUDIO: 'audio',
+};
 
 // MediaTimeline object
 export default class MediaTimeline {
-  #buffer = undefined; // Shared ordered media buffer
-  #itemIndex = 0; // Next logical media item index
+  #tracks = {};
+  #bytes = 0;
+  #maxItems = DEFAULT_MAX_ITEMS;
+  #maxBytes = DEFAULT_MAX_BYTES;
+  #trimmed = 0;
+  #dropped = 0;
 
-  #videoIndexes = []; // Logical indexes for video items
-  #audioIndexes = []; // Logical indexes for audio items
-  #keyframeIndexes = []; // Logical indexes for video keyframes
+  constructor(startIndex = 0, capacity = DEFAULT_CAPACITY, maxItems = DEFAULT_MAX_ITEMS, maxBytes = DEFAULT_MAX_BYTES) {
+    if (Number.isInteger(maxItems) !== true || maxItems <= 0 || Number.isSafeInteger(maxBytes) !== true || maxBytes <= 0) {
+      throw new RangeError('Media retention requires positive item and byte limits');
+    }
 
-  #videoIndexOffset = 0; // First valid entry in #videoIndexes
-  #audioIndexOffset = 0; // First valid entry in #audioIndexes
-  #keyframeIndexOffset = 0; // First valid entry in #keyframeIndexes
+    this.#maxItems = maxItems;
+    this.#maxBytes = maxBytes;
 
-  #trimmedItems = 0; // Total items removed by retention trimming
-  #droppedItems = 0; // Total items rejected because retained capacity was full
-  #retainedBytes = 0; // Sum of retained Buffer payload lengths, excluding metadata
-
-  constructor(startIndex = 0, capacity = MEDIA_TIMELINE_DEFAULT_CAPACITY, maxCapacity = MEDIA_TIMELINE_MAX_CAPACITY) {
-    // Initialise the logical item index.
-    this.#itemIndex = Number.isInteger(startIndex) === true && startIndex >= 0 ? startIndex : 0;
-
-    // Create one shared RingBuffer so video/audio retain a single ordered timeline.
-    // Capacity and maximum capacity are caller-tunable so Streamer can preserve
-    // its historical 8192 item ceiling while RingBuffer remains generic.
-    this.#buffer = new RingBuffer(this.#itemIndex, capacity, maxCapacity);
-  }
-
-  get startIndex() {
-    // First retained logical media index.
-    return this.#buffer.startIndex;
+    for (let type of Object.values(MEDIA_TYPE)) {
+      this.#tracks[type] = new RingBuffer(startIndex, capacity, maxItems);
+    }
   }
 
   get size() {
-    // Number of retained media items.
-    return this.#buffer.size;
-  }
-
-  get nextIndex() {
-    // Next logical media index that will be assigned.
-    return this.#itemIndex;
-  }
-
-  get endIndex() {
-    // Logical index immediately after the retained window.
-    return this.#buffer.startIndex + this.#buffer.size;
+    return this.#tracks.video.size + this.#tracks.audio.size;
   }
 
   get empty() {
-    // Convenience helper for callers.
-    return this.#buffer.size === 0;
+    return this.size === 0;
   }
 
   get stats() {
-    // Lightweight timeline diagnostics.
-    // These are safe to call from support/debug logging without scanning buffer data.
     return {
-      startIndex: this.#buffer.startIndex,
-      nextIndex: this.#itemIndex,
-      size: this.#buffer.size,
-      capacity: this.#buffer.capacity,
-      maxCapacity: this.#buffer.maxCapacity,
-      videoIndexes: this.#videoIndexes.length - this.#videoIndexOffset,
-      audioIndexes: this.#audioIndexes.length - this.#audioIndexOffset,
-      keyframeIndexes: this.#keyframeIndexes.length - this.#keyframeIndexOffset,
-      trimmedItems: this.#trimmedItems,
-      droppedItems: this.#droppedItems,
-      retainedBytes: this.#retainedBytes,
+      size: this.size,
+      capacity: this.#tracks.video.capacity + this.#tracks.audio.capacity,
+      maxCapacity: this.#maxItems,
+      retainedBytes: this.#bytes,
+      maxBytes: this.#maxBytes,
+      videoItems: this.#tracks.video.size,
+      audioItems: this.#tracks.audio.size,
+      trimmedItems: this.#trimmed,
+      droppedItems: this.#dropped,
     };
   }
 
-  clear(resetStartIndex = 0) {
-    // Reset logical indexing to a known position.
-    this.#itemIndex = Number.isInteger(resetStartIndex) === true && resetStartIndex >= 0 ? resetStartIndex : 0;
+  start(type) {
+    return this.#tracks[type].startIndex;
+  }
 
-    // Clear the underlying shared buffer.
-    this.#buffer.clear(this.#itemIndex);
+  end(type) {
+    return this.#tracks[type].tailIndex;
+  }
 
-    // Clear indexes and reset their logical heads.
-    this.#videoIndexes = [];
-    this.#audioIndexes = [];
-    this.#keyframeIndexes = [];
-
-    this.#videoIndexOffset = 0;
-    this.#audioIndexOffset = 0;
-    this.#keyframeIndexOffset = 0;
-
-    this.#trimmedItems = 0;
-    this.#droppedItems = 0;
-    this.#retainedBytes = 0;
+  get(type, index) {
+    return this.#tracks[type].at(index);
   }
 
   add(item) {
-    // Validate media item before assigning an index.
-    if (typeof item !== 'object' || item === null) {
+    if (item?.type !== MEDIA_TYPE.VIDEO && item?.type !== MEDIA_TYPE.AUDIO) {
       return undefined;
     }
 
-    // Assign the global logical timeline index.
-    item.index = this.#itemIndex;
-
-    // Store in the shared ordered buffer.
-    if (this.#buffer.push(item) !== true) {
-      this.#droppedItems++;
+    let track = this.#tracks[item.type];
+    if (track === undefined || Number.isFinite(item.time) !== true || Number.isFinite(item.bytes) !== true || item.bytes < 0) {
       return undefined;
     }
 
-    // Maintain video and keyframe indexes.
-    if (item.type === MEDIA_TIMELINE_TYPE_VIDEO) {
-      this.#videoIndexes.push(item.index);
-
-      if (item.keyFrame === true) {
-        this.#keyframeIndexes.push(item.index);
-      }
+    if (item.bytes > this.#maxBytes) {
+      this.#dropped++;
+      return undefined;
     }
 
-    // Maintain audio index.
-    if (item.type === MEDIA_TIMELINE_TYPE_AUDIO) {
-      this.#audioIndexes.push(item.index);
+    // Evict oldest presentation time until both limits admit this complete unit.
+    // Readers detect their expired cursor and recover at the next decodable IDR.
+    while (this.size >= this.#maxItems || this.#bytes + item.bytes > this.#maxBytes) {
+      let video = this.#tracks.video.getByOffset(0);
+      let audio = this.#tracks.audio.getByOffset(0);
+      this.#shift(video !== undefined && (audio === undefined || video.time <= audio.time) ? MEDIA_TYPE.VIDEO : MEDIA_TYPE.AUDIO);
     }
 
-    // Count accepted payload lengths only; rejected items do not occupy the ring.
-    this.#retainedBytes += Buffer.isBuffer(item.data) === true ? item.data.length : 0;
-
-    // Advance only after the item was accepted.
-    this.#itemIndex++;
+    item.index = track.tailIndex;
+    track.push(item);
+    this.#bytes += item.bytes;
 
     return item.index;
   }
 
-  get(index) {
-    // Validate logical index.
-    if (Number.isInteger(index) !== true) {
-      return undefined;
-    }
+  trim(cutoffTime) {
+    let before = this.size;
 
-    // Reject anything outside the retained media window.
-    if (index < this.#buffer.startIndex || index >= this.#buffer.startIndex + this.#buffer.size) {
-      return undefined;
-    }
-
-    // Convert logical index to RingBuffer offset.
-    return this.#buffer.getByOffset(index - this.#buffer.startIndex);
-  }
-
-  first() {
-    // Return oldest retained item.
-    return this.#buffer.getByOffset(0);
-  }
-
-  last() {
-    // Return newest retained item.
-    if (this.#buffer.size === 0) {
-      return undefined;
-    }
-
-    return this.#buffer.getByOffset(this.#buffer.size - 1);
-  }
-
-  latestTime() {
-    let offset = this.#buffer.size - 1;
-    let item = undefined;
-
-    // Return the newest retained media timestamp, skipping untimed metadata.
-    while (offset >= 0) {
-      item = this.#buffer.getByOffset(offset);
-
-      if (typeof item?.time === 'number' && Number.isFinite(item.time) === true) {
-        return item.time;
-      }
-
-      offset--;
-    }
-
-    return undefined;
-  }
-
-  nextVideoFrom(index) {
-    // Resolve next video item without scanning mixed media.
-    return this.get(this.#nextIndexFrom(this.#videoIndexes, this.#videoIndexOffset, index));
-  }
-
-  nextAudioFrom(index) {
-    // Resolve next audio item without scanning mixed media.
-    return this.get(this.#nextIndexFrom(this.#audioIndexes, this.#audioIndexOffset, index));
-  }
-
-  nextKeyFrameFrom(index) {
-    // Resolve next keyframe for decoder-safe startup.
-    return this.get(this.#nextIndexFrom(this.#keyframeIndexes, this.#keyframeIndexOffset, index));
-  }
-
-  trim(cutoffTime, protectedIndex = undefined) {
-    let trimCount = 0;
-    let trimBytes = 0;
-    let item = undefined;
-    let protectedOffset = -1;
-
-    // Nothing to trim if no retained media exists.
-    if (this.#buffer.size === 0 || Number.isFinite(cutoffTime) !== true) {
+    if (Number.isFinite(cutoffTime) !== true) {
       return 0;
     }
 
-    // Convert protected logical index into retained buffer offset.
-    if (Number.isInteger(protectedIndex) === true && protectedIndex >= this.#buffer.startIndex) {
-      protectedOffset = protectedIndex - this.#buffer.startIndex;
+    for (let type of Object.values(MEDIA_TYPE)) {
+      while (this.#tracks[type].getByOffset(0)?.time < cutoffTime) {
+        this.#shift(type);
+      }
     }
 
-    // Count expired, unprotected items from the front.
-    while (trimCount < this.#buffer.size) {
-      if (protectedOffset !== -1 && trimCount >= protectedOffset) {
-        break;
-      }
-
-      item = this.#buffer.getByOffset(trimCount);
-
-      // Untimed items cannot be retained by age, so allow them to be trimmed.
-      if (typeof item?.time !== 'number') {
-        trimBytes += Buffer.isBuffer(item?.data) === true ? item.data.length : 0;
-        trimCount++;
-        continue;
-      }
-
-      if (item.time >= cutoffTime) {
-        break;
-      }
-
-      trimBytes += Buffer.isBuffer(item?.data) === true ? item.data.length : 0;
-      trimCount++;
-    }
-
-    if (trimCount === 0) {
-      return 0;
-    }
-
-    // Trim the shared buffer.
-    this.#buffer.shift(trimCount, this.#itemIndex);
-    this.#retainedBytes -= trimBytes;
-    this.#trimmedItems += trimCount;
-
-    // Move index heads forward without Array.shift().
-    this.#trimIndexes();
-
-    return trimCount;
+    return before - this.size;
   }
 
-  closestToTime(time) {
-    let index = 0;
-    let item = undefined;
-    let closestItem = undefined;
-    let closestDelta = Number.POSITIVE_INFINITY;
-    let itemDelta = 0;
+  #shift(type) {
+    let track = this.#tracks[type];
+    let item = track.getByOffset(0);
 
-    // Recording/session start selection requires a valid timestamp.
-    if (Number.isFinite(time) !== true || this.#buffer.size === 0) {
-      return undefined;
-    }
-
-    // The shared timeline is ordered by arrival/index, not guaranteed by media time.
-    // Audio and video timestamps are normalised per media type, so the mixed
-    // timeline may not be globally monotonic. Use a full scan here for correctness.
-    //
-    // This only happens when creating an output, not on every scheduler tick.
-    while (index < this.#buffer.size) {
-      item = this.#buffer.getByOffset(index);
-
-      if (typeof item?.time === 'number') {
-        itemDelta = Math.abs(item.time - time);
-
-        if (itemDelta < closestDelta) {
-          closestDelta = itemDelta;
-          closestItem = item;
-        }
-      }
-
-      index++;
-    }
-
-    return closestItem;
+    this.#bytes -= item.bytes;
+    track.shift(1);
+    this.#trimmed++;
   }
 
-  protectedStart(outputs) {
-    let protectedIndex = this.#itemIndex;
+  seek(type, time) {
+    let track = this.#tracks[type];
+    let left = 0;
+    let right = track.size;
 
-    // No outputs means no active protected cursor.
-    if (outputs instanceof Map !== true || outputs.size === 0) {
-      return protectedIndex;
-    }
-
-    // Find the oldest valid cursor still required by any output.
-    for (let output of outputs.values()) {
-      if (Number.isInteger(output?.cursor) === true && output.cursor >= this.#buffer.startIndex && output.cursor < protectedIndex) {
-        protectedIndex = output.cursor;
-      }
-    }
-
-    return protectedIndex;
-  }
-
-  #nextIndexFrom(indexes, offset, index) {
-    let left = offset;
-    let right = indexes.length - 1;
-    let middle = 0;
-    let found = undefined;
-
-    // Default invalid cursor requests to retained start.
-    if (Number.isInteger(index) !== true) {
-      index = this.#buffer.startIndex;
-    }
-
-    // Clamp before binary search.
-    if (index < this.#buffer.startIndex) {
-      index = this.#buffer.startIndex;
-    }
-
-    // Binary search for first indexed media item >= requested index.
-    while (left <= right) {
-      middle = Math.floor((left + right) / 2);
-
-      if (indexes[middle] >= index) {
-        found = indexes[middle];
-        right = middle - 1;
-      } else {
+    // Source timestamps increase within each track; mixed arrival order no longer
+    // requires a full-buffer search or auxiliary media-index arrays.
+    while (left < right) {
+      let middle = (left + right) >>> 1;
+      if (track.getByOffset(middle).time < time) {
         left = middle + 1;
+      } else {
+        right = middle;
       }
     }
 
-    return found;
+    return track.startIndex + left;
   }
 
-  #trimIndexes() {
-    // Advance video index head past trimmed media.
-    while (this.#videoIndexOffset < this.#videoIndexes.length && this.#videoIndexes[this.#videoIndexOffset] < this.#buffer.startIndex) {
-      this.#videoIndexOffset++;
+  clear() {
+    // Preserve track indexes across generations so old cursors cannot alias new data.
+    for (let track of Object.values(this.#tracks)) {
+      track.clear(track.tailIndex);
     }
 
-    // Advance audio index head past trimmed media.
-    while (this.#audioIndexOffset < this.#audioIndexes.length && this.#audioIndexes[this.#audioIndexOffset] < this.#buffer.startIndex) {
-      this.#audioIndexOffset++;
-    }
-
-    // Advance keyframe index head past trimmed media.
-    while (
-      this.#keyframeIndexOffset < this.#keyframeIndexes.length &&
-      this.#keyframeIndexes[this.#keyframeIndexOffset] < this.#buffer.startIndex
-    ) {
-      this.#keyframeIndexOffset++;
-    }
-
-    // Compact occasionally so stale index entries do not accumulate forever.
-    this.#compactIndexes();
-  }
-
-  #compactIndexes() {
-    // Compact video index array only after enough stale entries accumulate.
-    // This avoids doing O(n) array work on every small trim.
-    if (this.#videoIndexOffset >= MEDIA_TIMELINE_INDEX_COMPACT_THRESHOLD) {
-      this.#videoIndexes = this.#videoIndexes.slice(this.#videoIndexOffset);
-      this.#videoIndexOffset = 0;
-    }
-
-    // Compact audio index array only after enough stale entries accumulate.
-    if (this.#audioIndexOffset >= MEDIA_TIMELINE_INDEX_COMPACT_THRESHOLD) {
-      this.#audioIndexes = this.#audioIndexes.slice(this.#audioIndexOffset);
-      this.#audioIndexOffset = 0;
-    }
-
-    // Compact keyframe index array only after enough stale entries accumulate.
-    if (this.#keyframeIndexOffset >= MEDIA_TIMELINE_INDEX_COMPACT_THRESHOLD) {
-      this.#keyframeIndexes = this.#keyframeIndexes.slice(this.#keyframeIndexOffset);
-      this.#keyframeIndexOffset = 0;
-    }
+    this.#bytes = 0;
   }
 }

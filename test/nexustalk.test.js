@@ -7,8 +7,11 @@ import { readFile } from 'node:fs/promises';
 import tls from 'node:tls';
 import { fileURLToPath, URL } from 'node:url';
 import test from 'node:test';
+import { sequenceParameterSet } from './helpers/h264-fixtures.js';
 import { setImmediate } from 'node:timers/promises';
 import { getProtoRoot, getProtoType } from '../src/protobuf.js';
+import RTPMuxer from '../src/plugins/camera/rtpmuxer.js';
+import { adts } from './helpers/aac-fixtures.js';
 
 // Streamer is used only for media type constants here; avoid its Homebridge imports.
 let location = new URL('../src/plugins/camera/nexustalk.js', import.meta.url);
@@ -92,7 +95,13 @@ function setup(t, options = {}) {
     uuid: 'camera.test',
     host: 'camera.example',
     apiAccess: { token: 'test-token' },
-    consumer: { active: () => active, media: (item) => media.push(item) },
+    consumer: {
+      active: () => active,
+      media: (item) =>
+        media.push(
+          item.nals === undefined ? item : { ...item, data: Buffer.concat(item.nals.flatMap((nal) => [Buffer.from([0, 0, 0, 1]), nal])) },
+        ),
+    },
     ...options,
   });
   t.after(async () => {
@@ -463,7 +472,7 @@ for (let reason of ['USER_ENDED_SESSION', 'ERROR_TIME_NOT_AVAILABLE']) {
     }
   });
 }
-test('NexusTalk health suppression drops deltas until keyframes restore stable decoding', async (context) => {
+test('NexusTalk complete frames bypass WebRTC-only loss recovery', async (context) => {
   let flow = setup(context);
   let socket = await open(flow);
   begin(socket);
@@ -482,12 +491,11 @@ test('NexusTalk health suppression drops deltas until keyframes restore stable d
     );
   send(0x41);
   send(0x65);
-  assert.equal(flow.media.length, 0);
-  assert.equal(flow.transport.stats.media.videoDrops['suppressed-delta-recovery'], 1);
+  assert.equal(flow.media.length, 1);
   for (let index = 0; index < health.recoveringCleanTarget; index++) {
     send(0x65);
   }
-  assert.equal(health.state, 'stable');
+  assert.notEqual(health.state, 'stable');
   send(0x41);
   send(0x41);
   assert.equal(flow.media.at(-1).keyFrame, false);
@@ -812,3 +820,99 @@ test('talkback idle and peer-end diagnostics identify event ordering without exp
   assert.equal(debug.filter((args) => args[0].includes('remote endpoint ended') === true).length, 1);
   flow.sockets[1].handshake();
 });
+
+// A new timestamp must not change the configuration attached to the queued frame.
+test('NexusTalk flushes the prior frame before accepting new SPS/PPS', async (t) => {
+  let flow = setup(t);
+  let socket = await open(flow);
+  begin(socket);
+  let oldSPS = sequenceParameterSet({ widthMbs: 40, heightMbs: 30 });
+  let newSPS = sequenceParameterSet({ widthMbs: 80, heightMbs: 45 });
+  let oldPPS = Buffer.from([0x68, 1]);
+  let newPPS = Buffer.from([0x68, 2]);
+  let prefix = Buffer.from([0, 0, 0, 1]);
+  for (let [timestampDelta, payload] of [
+    [0, Buffer.concat([prefix, oldSPS, prefix, oldPPS])],
+    [9000, Buffer.from([0x65, 1])],
+    [9000, Buffer.concat([prefix, newSPS, prefix, newPPS, prefix, Buffer.from([0x65, 2])])],
+    [9000, Buffer.from([0x41, 3])],
+  ]) {
+    socket.emit('data', packet(204, 'PlaybackPacket', { channelId: 1, timestampDelta, payload }));
+  }
+  assert.equal(flow.media.length, 3);
+  assert.equal(flow.media[1].keyFrame, true);
+  assert.deepEqual(flow.media[1].config.sps, oldSPS);
+  assert.deepEqual(flow.media[1].config.pps, oldPPS);
+  assert.deepEqual(flow.media[2].config.sps, newSPS);
+  assert.deepEqual(flow.media[2].config.pps, newPPS);
+  assert.notEqual(flow.media[1].config, flow.media[2].config);
+});
+
+for (let [codec, sampleRate, timestampDelta, frequency] of [
+  ['AAC', 48000, 1024, 3],
+  ['AAC', 44100, 1024, 4],
+  ['H264', 90000, 3000, undefined],
+]) {
+  test('NexusTalk ' + codec + '/' + sampleRate + ' preserves exact RTP intervals at Unix-epoch scale', async (t) => {
+    let flow = setup(t);
+    let socket = await open(flow);
+    let epoch = Date.parse('2026-10-24T14:30:00+11:00');
+    let payload = codec === 'AAC' ? adts(Buffer.from([0x21, 0x10]), { frequency }) : Buffer.from([0x65, 1]);
+    socket.emit(
+      'data',
+      packet(202, 'PlaybackBegin', {
+        sessionId: 7,
+        channels: [{ channelId: 1, codec, sampleRate, startTime: epoch / 1000 }],
+      }),
+    );
+    for (let index = 0; index < 3000; index++) {
+      socket.emit('data', packet(204, 'PlaybackPacket', { channelId: 1, timestampDelta, payload }));
+    }
+    await flow.transport.close();
+    assert.equal(flow.media.length, 3000);
+    let previous = undefined;
+    let intervals = [];
+    let muxer = new RTPMuxer({
+      includeAudio: codec === 'AAC',
+      audio: { codec: 'aac' },
+      writePacket: (data, metadata) => {
+        if (metadata.kind !== 'rtp') {
+          return;
+        }
+        let timestamp = data.readUInt32BE(4);
+        if (previous !== undefined) {
+          intervals.push((timestamp - previous) >>> 0);
+        }
+        previous = timestamp;
+      },
+    });
+    t.after(() => muxer.close());
+    if (codec === 'AAC') {
+      muxer.configureAudio(payload);
+    }
+    for (let frame of flow.media) {
+      if (codec === 'AAC') {
+        muxer.writeAudio(frame.data, frame.timestamp);
+      } else {
+        muxer.writeVideo(frame.nals, frame.timestamp);
+      }
+    }
+    assert.equal(intervals.length, 2999);
+    assert.deepEqual([...new Set(intervals)], [timestampDelta]);
+
+    // A fresh PlaybackBegin must discard the previous tick accumulator.
+    let count = flow.media.length;
+    socket = await open(flow);
+    socket.emit(
+      'data',
+      packet(202, 'PlaybackBegin', {
+        sessionId: 8,
+        channels: [{ channelId: 1, codec, sampleRate, startTime: (epoch + 10000) / 1000 }],
+      }),
+    );
+    socket.emit('data', packet(204, 'PlaybackPacket', { channelId: 1, timestampDelta, payload }));
+    await flow.transport.close();
+    assert.equal(flow.media.length, count + 1);
+    assert.equal(flow.media.at(-1).timestamp, epoch + 10000 + (timestampDelta * 1000) / sampleRate);
+  });
+}

@@ -119,7 +119,13 @@ function setup(t, responses = {}, peerOptions = {}) {
   let transport = new WebRTC({
     uuid: 'camera',
     apiAccess: { oauth2: 'oauth-token' },
-    consumer: { active: () => active, media: (item) => media.push(item) },
+    consumer: {
+      active: () => active,
+      media: (item) =>
+        media.push(
+          item.nals === undefined ? item : { ...item, data: Buffer.concat(item.nals.flatMap((nal) => [Buffer.from([0, 0, 0, 1]), nal])) },
+        ),
+    },
   });
   t.after(async () => {
     active = false;
@@ -679,9 +685,11 @@ test('WebRTC fragmented IDR reconstructs complete bytes and reuses cached parame
   flow.emit(Buffer.from([0x7c, 0x45, 3]), 3000);
   assert.equal(flow.media.length, 2);
   assert.equal(flow.media[1].keyFrame, true);
+  assert.deepEqual(flow.media[1].config.sps, flow.sps);
+  assert.deepEqual(flow.media[1].config.pps, flow.pps);
   assert.deepEqual(
     H264.getNALUnits(flow.media[1].data).map((entry) => entry.data),
-    [flow.sps, flow.pps, Buffer.from([0x65, 1, 2, 3])],
+    [Buffer.from([0x65, 1, 2, 3])],
   );
 });
 
@@ -724,7 +732,7 @@ test('WebRTC preserves native ordered Opus payloads and source timing', async (c
   assert.equal(flow.media.length, 2);
   for (const item of flow.media) {
     assert.equal(item.codec, 'opus');
-    assert.deepEqual(Object.keys(item).sort(), ['codec', 'data', 'keyFrame', 'timestamp', 'type']);
+    assert.deepEqual(Object.keys(item).sort(), ['bytes', 'codec', 'data', 'keyFrame', 'timestamp', 'type']);
     assert.deepEqual(item.data, payload);
   }
   assert.equal(flow.media[1].timestamp - flow.media[0].timestamp, 20);
@@ -1146,7 +1154,7 @@ test('WebRTC assembles multiple fragmented NALs into one timestamp group', async
   }
   assert.deepEqual(
     H264.getNALUnits(flow.media[1].data).map((nal) => nal.data),
-    [flow.sps, flow.pps, Buffer.from([0x65, 1, 2]), Buffer.from([0x65, 3, 4])],
+    [Buffer.from([0x65, 1, 2]), Buffer.from([0x65, 3, 4])],
   );
 });
 
@@ -1174,16 +1182,18 @@ for (let [label, suffix] of [
     flow.keyframe(6000);
     assert.equal(flow.media.length, 2);
     assert.equal(flow.media[1].keyFrame, true);
+    assert.deepEqual(flow.media[1].config.sps, flow.sps);
+    assert.deepEqual(flow.media[1].config.pps, flow.pps);
     assert.deepEqual(H264.getNALUnits(flow.media[1].data).at(-1).data, Buffer.from([0x65, 1]));
   });
 }
 
-test('WebRTC logs a pre-keyframe delta without constructing or emitting its access unit', async (context) => {
+test('WebRTC discards a pre-keyframe delta without reparsing or emitting its NAL data', async (context) => {
   let flow = await videoFlow(context);
   flow.transport.log = { debug: context.mock.fn() };
-  let build = context.mock.method(H264, 'buildAccessUnit');
+  let parse = context.mock.method(H264, 'getNALUnits');
   flow.emit(Buffer.from([0x41, 1]), 3000);
-  assert.equal(build.mock.callCount(), 0);
+  assert.equal(parse.mock.callCount(), 0);
   assert.equal(flow.media.length, 0);
   flow.keyframe(6000);
   assert.equal(flow.media.length, 1);
@@ -1210,17 +1220,17 @@ test('WebRTC delta delivery does not calculate a keyframe size limit or parse SP
   assert.equal(parse.mock.callCount(), 0);
 });
 
-test('WebRTC discards suppressed deltas before constructing their combined access unit', async (context) => {
+test('WebRTC discards suppressed deltas without reparsing their NAL data', async (context) => {
   let flow = await videoFlow(context);
   flow.keyframe(0);
   for (let index = 0; index < flow.transport.getMediaState('video').unstableBadThreshold; index++) {
     flow.transport.markMediaIssue('video', 'test-source-fault');
   }
   assert.equal(flow.transport.getMediaState('video').state, StreamTransport.MEDIA_STATE.UNSTABLE);
-  let build = context.mock.method(H264, 'buildAccessUnit');
+  let parse = context.mock.method(H264, 'getNALUnits');
   flow.emit(Buffer.from([0x41, 1]), 3000);
   assert.equal(flow.media.length, 1);
-  assert.equal(build.mock.callCount(), 0);
+  assert.equal(parse.mock.callCount(), 0);
 });
 
 test('WebRTC close drains a queued complete group while discarding its incomplete predecessor', async (context) => {
@@ -1233,6 +1243,8 @@ test('WebRTC close drains a queued complete group while discarding its incomplet
   await flow.transport.close();
   assert.equal(flow.media.length, 2);
   assert.equal(flow.media[1].keyFrame, true);
+  assert.deepEqual(flow.media[1].config.sps, flow.sps);
+  assert.deepEqual(flow.media[1].config.pps, flow.pps);
   assert.equal(flow.transport.stats.media.videoDrops['jitter-keyframe-incomplete'], 1);
   flow.emit(Buffer.from([0x7c, 0x45, 2]), 3000);
   assert.equal(flow.media.length, 2);
@@ -1404,4 +1416,14 @@ test('WebRTC retains fractional RTP intervals and discards duplicate audio seque
   context.mock.timers.tick(60);
   assert.equal(flow.media.length, 2);
   assert.ok(Math.abs(flow.media[1].timestamp - flow.media[0].timestamp - 1000 / 48000) < 0.000001);
+});
+
+test('WebRTC reuses learned dimensions for later keyframe size checks', async (context) => {
+  let flow = await videoFlow(context);
+  flow.keyframe(0);
+  assert.equal(flow.transport.video.width, 640);
+  let parse = context.mock.method(H264, 'getSPSInfo');
+  flow.keyframe(3000);
+  assert.equal(flow.media.length, 2);
+  assert.equal(parse.mock.callCount(), 0);
 });

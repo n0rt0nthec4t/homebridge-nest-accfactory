@@ -1304,3 +1304,76 @@ test('capability cache stays bounded across distinct executable paths', (context
   new FFmpeg(binaries[0]);
   assert.equal(probes.mock.callCount(), 170);
 });
+
+function fragmentBox(type, payload = Buffer.alloc(0), extended = false) {
+  let header = Buffer.alloc(extended === true ? 16 : 8);
+  header.writeUInt32BE(extended === true ? 1 : header.length + payload.length);
+  header.write(type, 4);
+  if (extended === true) {
+    header.writeBigUInt64BE(BigInt(header.length + payload.length), 8);
+  }
+  return Buffer.concat([header, payload]);
+}
+
+test('MP4 reader joins split and extended headers, drains exited stdout and ignores the complete seek trailer', async () => {
+  let init = Buffer.concat([fragmentBox('ftyp'), fragmentBox('moov', Buffer.from([1]), true)]);
+  let media = Buffer.concat([fragmentBox('moof'), fragmentBox('mdat', Buffer.from([2, 3]))]);
+  let input = Buffer.concat([init, media, fragmentBox('mfra')]);
+  let stdout = new PassThrough();
+  let reader = FFmpeg.prototype.fragments({ stdout, active: false });
+  let received = (async () => {
+    let values = [];
+    for await (let data of reader) {
+      values.push(data);
+    }
+    return values;
+  })();
+  for (let byte of input) {
+    stdout.write(Buffer.from([byte]));
+  }
+  stdout.end();
+  assert.deepEqual(await received, [init, media]);
+});
+
+for (let [label, data] of [
+  ['partial header', Buffer.from([0, 0, 0])],
+  ['partial body', fragmentBox('mdat', Buffer.from([1, 2])).subarray(0, 9)],
+  ['missing initialization', fragmentBox('ftyp')],
+  ['zero sized box', Buffer.from([0, 0, 0, 0, 109, 100, 97, 116])],
+  ['short header', Buffer.from([0, 0, 0, 7, 109, 100, 97, 116])],
+  ['oversized box', Buffer.from([2, 0, 0, 1, 109, 100, 97, 116])],
+  ['unsafe extended size', Buffer.from([0, 0, 0, 1, 109, 100, 97, 116, 255, 255, 255, 255, 255, 255, 255, 255])],
+]) {
+  test('MP4 reader rejects ' + label + ' without an unbounded queue', async () => {
+    let stdout = new PassThrough();
+    stdout.end(data);
+    await assert.rejects(async () => {
+      for await (let fragment of FFmpeg.prototype.fragments({ stdout })) {
+        assert.fail('Unexpected fragment: ' + fragment.length);
+      }
+    }, /MP4/);
+  });
+}
+
+test('MP4 readable stops pulling fragments while its consumer is paused', async () => {
+  let stdout = new PassThrough({ highWaterMark: 16 });
+  let reader = FFmpeg.prototype.fragments({ stdout });
+  stdout.write(fragmentBox('moov'));
+  assert.deepEqual((await reader.next()).value, fragmentBox('moov'));
+  assert.equal(stdout.write(fragmentBox('mdat', Buffer.alloc(128))), false);
+  assert.equal(stdout.writableNeedDrain, true);
+  assert.equal((await reader.next()).value.length, 136);
+  stdout.end();
+  assert.equal((await reader.next()).done, true);
+});
+
+test('requested recording cancellation discards an incomplete final box without reporting corrupt MP4', async () => {
+  let stdout = new PassThrough();
+  let controller = new AbortController();
+  let reader = FFmpeg.prototype.fragments({ stdout }, controller.signal);
+  let pending = reader.next();
+  stdout.write(fragmentBox('mdat', Buffer.alloc(100)).subarray(0, 12));
+  controller.abort();
+  stdout.end();
+  assert.equal((await pending).done, true);
+});

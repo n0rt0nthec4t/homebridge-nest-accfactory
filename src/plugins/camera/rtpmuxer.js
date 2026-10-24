@@ -5,18 +5,21 @@
 //
 // Responsibilities:
 // - Packetize H264 access units and compressed Opus or AAC-LC audio
-// - Carry NexusTalk ADTS AAC through AAC-hbr without decoding
+// - Normalize encoded audio once for shared retention, without decoding
+// - Carry normalized NexusTalk AAC through AAC-hbr
 // - Learn AAC configuration from source headers before publishing receiver SDP
 // - Preserve source media intervals using per-track RTP clocks
+// - Join new source generations with one common A/V offset after prior audio ends
 // - Relate audio/video clocks through RTCP sender reports and a shared CNAME
 // - Build RTP/RTSP headers and codec payloads directly in final wire buffers
 // - Admit one receiver by its random resource URL, with bounded candidate connections and a fixed deadline
 // - Allocate internal FFmpeg audio ports and route optional encrypted HomeKit return audio/control
+// - Wake output scheduling on PLAY/drain and report closure to the exact owner
 // - Report per-track backpressure and close all owned endpoints on output teardown
 // - Optionally summarise delivered audio timestamp gaps/overlaps against packet sample durations
 //
 // Streamer owns the shared buffer, output cursors, decoder bootstrap and pacing.
-// This muxer has no media timeline, output registry, scheduler or hidden queue.
+// This muxer has no media timeline, output registry or independent packet queue.
 // A loopback RTSP endpoint carries RTP/RTCP over TCP after the receiver's PLAY.
 // Tests may inject a synchronous packet sink instead of opening that endpoint.
 // Optional talkback settings supply only the HomeKit-facing UDP port and payload
@@ -49,6 +52,10 @@ const AAC_SAMPLE_RATES = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050
 
 // RTPMuxer object
 export default class RTPMuxer {
+  #onReady = undefined;
+  #onClose = undefined;
+  #generation = undefined;
+  #sourceOffset = 0;
   #ports = { audioControl: undefined, talkback: undefined };
   #audioControl = false;
   #output = undefined;
@@ -81,6 +88,8 @@ export default class RTPMuxer {
     writePacket,
     maxPacketBytes = 1200,
     unixNow = () => Date.now(),
+    onReady,
+    onClose,
   } = {}) {
     if ((writePacket !== undefined && typeof writePacket !== 'function') || typeof unixNow !== 'function') {
       throw new TypeError('A packet sink and wallclock are required');
@@ -98,6 +107,8 @@ export default class RTPMuxer {
       format.config = Buffer.from(format.config);
     }
     this.#unixNow = unixNow;
+    this.#onReady = onReady;
+    this.#onClose = onClose;
     this.#audioControl = audioControl === true || talkback !== undefined;
     this.#talkback = talkback === undefined ? undefined : { ...talkback };
     if (audioDiagnostics === true) {
@@ -136,6 +147,7 @@ export default class RTPMuxer {
         packets: 0,
         octets: 0,
         lastTimestamp: undefined,
+        endTimestamp: undefined,
       });
     }
     this.#output.cname = Buffer.from(randomBytes(12).toString('hex') + '@rtpmuxer');
@@ -260,6 +272,7 @@ export default class RTPMuxer {
     socket.on('drain', () => {
       if (this.#socket === socket) {
         this.#blocked.clear();
+        this.#onReady?.();
       }
     });
     socket.on('error', (error) => {
@@ -474,6 +487,7 @@ export default class RTPMuxer {
       // boundary; process spawn alone must never release buffered startup media.
       this.#reply(200, cseq, ['Session: ' + this.#session, 'Range: npt=0.000-', 'RTP-Info: ' + info]);
       this.#playing = true;
+      this.#onReady?.();
     } else if (method === 'GET_PARAMETER') {
       this.#reply(200, cseq, ['Session: ' + this.#session]);
     } else if (method === 'TEARDOWN') {
@@ -537,9 +551,9 @@ export default class RTPMuxer {
       return;
     }
     try {
-      // Turn the source's ADTS profile/frequency/channel fields into the two-byte
-      // AudioSpecificConfig FFmpeg expects in MPEG4-GENERIC SDP. No media is sent here.
-      let header = this.#readADTS(data, 0);
+      // Streamer supplies the shared normalized batch. Standalone callers may
+      // still supply ADTS bytes; both paths describe the same AAC clock and SDP.
+      let header = Buffer.isBuffer(data) === true ? RTPMuxer.normalizeAudio(data, 'aac') : data;
       let config = Buffer.alloc(2);
       config.writeUInt16BE(header.configWord);
       this.#output.audio = this.#snapshotAudio({ codec: 'aac-lc', sampleRate: header.sampleRate, channels: header.channels, config });
@@ -557,7 +571,51 @@ export default class RTPMuxer {
     }
   }
 
-  #readADTS(data, offset) {
+  // Normalize a complete source batch before fan-out. Payloads are buffer views;
+  // Returns { codec, frames: [{ data, samples }] }, plus sampleRate, channels and
+  // configWord for ADTS input. Frames carry sample counts, not decoded PCM.
+  // Unknown Opus durations stay undefined for reconnect and diagnostic fallback.
+  static normalizeAudio(data, codec) {
+    if (Buffer.isBuffer(data) !== true || data.length === 0 || data.length > MAX_ACCESS_UNIT_BYTES) {
+      throw new TypeError(codec === 'aac' ? 'Invalid ADTS audio delivery unit' : 'Expected bounded audio bytes');
+    }
+
+    if (codec === 'aac') {
+      let frames = [];
+      let format = undefined;
+      for (let offset = 0; offset < data.length;) {
+        if (frames.length >= MAX_AAC_FRAMES_PER_UNIT) {
+          throw new RangeError('Too many ADTS frames in one delivery unit');
+        }
+        let header = RTPMuxer.#readADTS(data, offset);
+        format ??= header;
+        if (header.configWord !== format.configWord) {
+          throw new Error('ADTS audio format changed within a source batch');
+        }
+        frames.push({ data: data.subarray(offset + header.headerBytes, offset + header.frameBytes), samples: 1024 });
+        offset += header.frameBytes;
+      }
+      return { codec: 'aac-lc', sampleRate: format.sampleRate, channels: format.channels, configWord: format.configWord, frames };
+    }
+
+    if (codec !== 'opus' && codec !== 'aac-lc') {
+      throw new TypeError('Expected compressed Opus or AAC-LC audio');
+    }
+    let samples = 1024;
+    if (codec === 'opus') {
+      // RFC 6716: TOC configuration gives frame duration and packing code gives
+      // frame count. This reads headers only; invalid/unknown counts stay unknown.
+      let config = data[0] >> 3;
+      let code = data[0] & 3;
+      let frames = code === 0 ? 1 : code === 3 ? (data.length > 1 ? data[1] & 63 : 0) : 2;
+      let frameSamples =
+        config >= 16 ? 120 * 2 ** (config & 3) : config >= 12 ? 480 * 2 ** (config & 1) : [480, 960, 1920, 2880][config & 3];
+      samples = frames > 0 && frames * frameSamples <= 5760 ? frames * frameSamples : undefined;
+    }
+    return { codec, frames: [{ data, samples }] };
+  }
+
+  static #readADTS(data, offset) {
     if (Buffer.isBuffer(data) !== true || data.length - offset < 7 || data[offset] !== 0xff || (data[offset + 1] & 0xf6) !== 0xf0) {
       throw new TypeError('Expected complete ADTS-framed AAC audio from NexusTalk');
     }
@@ -620,16 +678,30 @@ export default class RTPMuxer {
   }
 
   resume(type) {
-    // The injected sink owns drain notification. Streamer resumes on its next tick.
+    // The injected sink owns drain notification; wake delivery when it can resume.
     this.#blocked.delete(type);
+    this.#onReady?.();
   }
 
-  setSourceEpoch(timestamp) {
-    // Streamer may prioritize due audio ahead of an older expensive keyframe.
-    // Anchor both tracks to its earliest retained candidate before either writes.
-    if (this.#output.epochMs === undefined && Number.isFinite(timestamp) === true) {
-      this.#output.epochMs = timestamp;
+  setSourceEpoch(timestamp, generation = 0) {
+    if (Number.isFinite(timestamp) !== true) {
+      return;
     }
+
+    if (this.#generation !== generation) {
+      // A reconnect changes the source epoch, not the established output clock.
+      // Translate both tracks once; never repair individual packet durations.
+      let last = Math.max(
+        ...[...this.#output.tracks.values()].map(
+          (track) => track.endTimestamp ?? (track.lastTimestamp === undefined ? Number.NEGATIVE_INFINITY : track.lastTimestamp + 1),
+        ),
+      );
+      this.#sourceOffset = Number.isFinite(last) === true ? Math.max(0, last - timestamp) : 0;
+      this.#nextAudioTimestamp = undefined;
+      this.#generation = generation;
+    }
+
+    this.#output.epochMs ??= timestamp + this.#sourceOffset;
   }
 
   #start(timestamp) {
@@ -659,18 +731,24 @@ export default class RTPMuxer {
   }
 
   writeVideo(data, timestamp, { sps, pps } = {}) {
+    timestamp += this.#sourceOffset;
     this.#start(timestamp);
     if (this.blocked('video') === true) {
       throw new Error('Video output must drain before the next frame');
     }
 
-    let nalUnits = H264.getNALUnits(data).map((nal) => nal.data);
+    let nalUnits = Array.isArray(data) === true ? data : H264.getNALUnits(data).map((nal) => nal.data);
     if (nalUnits.length === 0 || nalUnits.some((nal) => (nal[0] & 0x80) !== 0 || (nal[0] & 31) < 1 || (nal[0] & 31) > 23)) {
       throw new TypeError('Expected complete H264 access units');
     }
 
     // Streamer selects bootstrap data; keep those NALs in the same RTP timestamp
     // group as the keyframe rather than emitting separate configuration frames.
+    // Bootstrap owns only its short NAL list; ordinary frames share the source
+    // array without copying it or allowing header injection to mutate retention.
+    if (sps !== undefined || pps !== undefined) {
+      nalUnits = [...nalUnits];
+    }
     if (pps !== undefined) {
       nalUnits.unshift(pps);
     }
@@ -679,6 +757,7 @@ export default class RTPMuxer {
     }
     let encodedBytes = 0;
     let payloadBytes = 0;
+
     for (let nal of nalUnits) {
       payloadBytes += nal.length;
       let packets = nal.length <= this.#output.payloadBytes ? 1 : Math.ceil((nal.length - 1) / (this.#output.payloadBytes - 2));
@@ -690,57 +769,64 @@ export default class RTPMuxer {
   }
 
   writeAudio(data, timestamp) {
+    timestamp += this.#sourceOffset;
     this.#start(timestamp);
     if (this.blocked('audio') === true) {
       throw new Error('Audio output must drain before the next frame');
     }
-    if (this.#adtsAudio === true) {
-      try {
-        // One Nexus payload may contain several complete ADTS frames. Validate the
-        // entire unit before emitting media, then remove headers without copying.
-        let frames = [];
-        let encodedBytes = 0;
-        let payloadBytes = 0;
-        if (Buffer.isBuffer(data) !== true || data.length === 0 || data.length > MAX_ACCESS_UNIT_BYTES) {
-          throw new TypeError('Invalid ADTS audio delivery unit');
+    try {
+      let batch =
+        Buffer.isBuffer(data) === true ? RTPMuxer.normalizeAudio(data, this.#adtsAudio === true ? 'aac' : this.#output.audio?.codec) : data;
+      if (
+        batch?.codec !== this.#output.audio?.codec ||
+        Array.isArray(batch?.frames) !== true ||
+        batch.frames.length === 0 ||
+        batch.frames.length > MAX_AAC_FRAMES_PER_UNIT
+      ) {
+        throw new TypeError('Expected normalized audio matching the output codec');
+      }
+      if (this.#adtsAudio === true && batch.configWord !== this.#output.audio.config.readUInt16BE(0)) {
+        throw new Error('ADTS audio format changed during an RTP session');
+      }
+
+      // Codec parsing is shared, but receiver packet and pending-byte limits are
+      // local. Check the whole batch before sending any of its access units.
+      let payloadBytes = 0;
+      let encodedBytes = 0;
+      for (let frame of batch.frames) {
+        if (Buffer.isBuffer(frame.data) !== true || frame.data.length === 0) {
+          throw new TypeError('Expected audio bytes');
         }
-        for (let offset = 0; offset < data.length;) {
-          if (frames.length >= MAX_AAC_FRAMES_PER_UNIT) {
-            throw new RangeError('Too many ADTS frames in one delivery unit');
-          }
-          let header = this.#readADTS(data, offset);
-          if (header.configWord !== this.#output.audio.config.readUInt16BE(0)) {
-            throw new Error('ADTS audio format changed during an RTP session');
-          }
-          let payload = data.subarray(offset + header.headerBytes, offset + header.frameBytes);
-          if (payload.length + 4 > this.#output.payloadBytes) {
-            throw new RangeError('AAC AU requires fragmentation');
-          }
-          frames.push(payload);
-          payloadBytes += payload.length;
-          encodedBytes += payload.length + 20;
-          offset += header.frameBytes;
+        if (batch.codec === 'aac-lc' && frame.data.length >= 2 && frame.data[0] === 0xff && (frame.data[1] & 0xf6) === 0xf0) {
+          throw new TypeError('Remove ADTS framing before AAC packetization');
         }
-        this.#reserve(payloadBytes, encodedBytes);
-        // The source timestamp belongs to the first AU. Subsequent ADTS frames
-        // advance by decoded sample count, regardless of this batch's delivery time.
-        for (let index = 0; index < frames.length; index++) {
-          this.#writeAudio(this.#output, {
-            timestamp: timestamp + (index * 1024 * 1000) / this.#output.audio.sampleRate,
-            data: frames[index],
-          });
+        if (
+          batch.codec === 'opus'
+            ? frame.data.length > this.#output.payloadBytes
+            : frame.data.length > 8191 || frame.data.length + 4 > this.#output.payloadBytes
+        ) {
+          throw new RangeError(batch.codec === 'opus' ? 'Opus packet exceeds output packet budget' : 'AAC AU requires fragmentation');
         }
-      } catch (error) {
-        // A framing/configuration failure retires this receiver, preserving other
-        // live viewers and the independent HKSV recording output.
+        payloadBytes += frame.data.length;
+        encodedBytes += frame.data.length + (batch.codec === 'opus' ? 16 : 20);
+      }
+      this.#reserve(payloadBytes, encodedBytes);
+      let samples = 0;
+      for (let frame of batch.frames) {
+        this.#writeAudio(this.#output, {
+          timestamp: timestamp + (samples * 1000) / this.#output.audio.sampleRate,
+          data: frame.data,
+          samples: frame.samples,
+        });
+        samples += frame.samples ?? 0;
+      }
+    } catch (error) {
+      // Preserve standalone ADTS failure handling. Streamer retires the exact
+      // output owner for other packetization failures, leaving siblings running.
+      if (this.#adtsAudio === true) {
         this.#fail(error);
-        throw error;
       }
-    } else {
-      if (Buffer.isBuffer(data) === true) {
-        this.#reserve(data.length, data.length + Math.ceil(data.length / (this.#output.payloadBytes - 4)) * 20);
-      }
-      this.#writeAudio(this.#output, { timestamp, data });
+      throw error;
     }
     return this.blocked('audio') !== true;
   }
@@ -939,7 +1025,7 @@ export default class RTPMuxer {
     }
   }
 
-  #writeAudio(output, { timestamp, data }) {
+  #writeAudio(output, { timestamp, data, samples }) {
     // The timestamp describes the first audio sample on the shared source timeline.
     if (output.closed === true) {
       throw new Error('Output is closed');
@@ -951,56 +1037,18 @@ export default class RTPMuxer {
     }
 
     this.#validateTime(output, track, timestamp);
-    if (Buffer.isBuffer(data) !== true || data.length === 0) {
-      throw new TypeError('Expected audio bytes');
-    }
-
+    // The public write preflights all payloads before sending a batch. Only
+    // receiver time validation and wire framing remain on each access-unit write.
     let rtpTimestamp = this.#timestampFor(output, track, timestamp);
+    let isAAC = output.audio.codec === 'aac-lc';
+    track.lastTimestamp = timestamp;
+    this.#packet(output, track, data, rtpTimestamp, isAAC, { format: isAAC === true ? 'aac' : undefined });
 
-    if (output.audio.codec === 'opus') {
-      // Preserve the compressed Opus payload in one output RTP packet.
-      // RFC 7587 does not allow splitting it across multiple RTP packets.
-      if (data.length > output.payloadBytes) {
-        throw new RangeError('Opus packet exceeds output packet budget');
-      }
-
-      track.lastTimestamp = timestamp;
-      this.#packet(output, track, data, rtpTimestamp, false);
-    } else {
-      // AAC-hbr carries one raw access unit with a 13-bit size and 3-bit index.
-      // ADTS is removed at the delivery boundary; each packet carries one raw AU.
-      // Fragmented AAC access units are not implemented here.
-      if (data.length >= 2 && data[0] === 0xff && (data[1] & 0xf6) === 0xf0) {
-        throw new TypeError('Remove ADTS framing before AAC packetization');
-      }
-
-      if (data.length > 8191 || data.length + 4 > output.payloadBytes) {
-        throw new RangeError('AAC AU requires fragmentation');
-      }
-
-      track.lastTimestamp = timestamp;
-      this.#packet(output, track, data, rtpTimestamp, true, { format: 'aac' });
-    }
-
+    // Joining a new source must not overlap the final encoded samples from its
+    // predecessor. This changes only the common generation offset, never the
+    // spacing or relative presentation times within a source session.
+    track.endTimestamp = timestamp + (samples === undefined ? 1 : (samples * 1000) / track.rate);
     if (this.#audioTiming !== undefined) {
-      let samples = undefined;
-      if (output.audio.codec === 'opus') {
-        // RFC 6716 section 3: TOC configuration sets frame duration, while the
-        // packing code sets frame count. Read headers only, without decoding audio.
-        let config = data[0] >> 3;
-        let code = data[0] & 3;
-        let frames = code === 0 ? 1 : code === 3 ? (data.length > 1 ? data[1] & 63 : 0) : 2;
-        let frameSamples =
-          config >= 16 ? 120 * 2 ** (config & 3) : config >= 12 ? 480 * 2 ** (config & 1) : [480, 960, 1920, 2880][config & 3];
-        if (frames > 0 && frames * frameSamples <= 5760) {
-          samples = frames * frameSamples;
-        }
-      } else {
-        // ADTS validation and raw AAC configuration both require AAC-LC with
-        // one 1024-sample block per AU. Batched ADTS is measured AU by AU.
-        samples = 1024;
-      }
-
       let timing = this.#audioTiming;
       timing.units++;
       if (this.#nextAudioTimestamp !== undefined) {
@@ -1131,6 +1179,8 @@ export default class RTPMuxer {
         }
       }
     })();
+    // Publish only after closure is awaitable: consumer teardown may call close again.
+    this.#onClose?.(this.#failure);
     return this.#closing;
   }
 }

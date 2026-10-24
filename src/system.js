@@ -39,7 +39,7 @@
 // - Uses shared protobuf helpers for schema/type loading and traversal
 // - Creates and updates HomeKitDevice-based instances for supported device types
 //
-// Code version 2026.10.22
+// Code version 2026.10.24
 // Mark Hulskamp
 'use strict';
 
@@ -119,14 +119,15 @@ export default class NestAccfactory {
       log?.warn?.('Verbose logging enabled via configuration');
     }
 
+    // Configuration installs the plugin debug logger independently of Homebridge's
+    // debug flag. Initialise it before emitting startup runtime diagnostics.
+    this.config = processConfig(config, this.log, this.api);
+
     // Output some debug info about the system we're running on, which can be useful for troubleshooting
     this?.log?.debug?.('System: %s %s (%s)', os.platform(), os.release(), os.arch());
     this?.log?.debug?.('CPU: %s (%d cores)', os.cpus()?.[0]?.model, os.cpus()?.length);
     this?.log?.debug?.('Memory: %d MB total', Math.round(os.totalmem() / 1024 / 1024));
     this?.log?.debug?.('Node.js: v%s', process.versions.node);
-
-    // Perform validation on the configuration passed into us and set defaults if not present
-    this.config = processConfig(config, this.log, this.api);
 
     api?.on?.('didFinishLaunching', async () => {
       // We got notified that Homebridge has finished loading

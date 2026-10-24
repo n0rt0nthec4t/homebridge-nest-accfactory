@@ -102,7 +102,14 @@ function setup(t) {
     child.args = args;
     child.stdio = options.stdio.map(() => new PassThrough());
     [child.stdin, child.stdout, child.stderr] = child.stdio;
-    child.kill = t.mock.fn(() => true);
+    child.kill = t.mock.fn(() => {
+      child.stdout.end();
+      if (child.deferClose !== true) {
+        queueMicrotask(() => child.emit('close', 0, 'SIGKILL'));
+      }
+      return true;
+    });
+    child.on('close', () => child.stdout.end());
     processes.push(child);
     return child;
   });
@@ -143,6 +150,63 @@ function setup(t) {
   camera.controller = { forceStopStreamingSession: t.mock.fn() };
   camera.log = { error: t.mock.fn() };
   let video = new PassThrough();
+  // The output boundary owns processes now. Keep these accessory tests isolated
+  // from sockets while executing the real FFmpeg command builder and MP4 reader.
+  let message = undefined;
+  let outputs = [];
+  Object.defineProperty(camera, 'message', {
+    configurable: true,
+    get: () => message,
+    set: (handler) => {
+      let wrapped = async (...args) => {
+        let [, action, request] = args;
+        let result = await handler(...args);
+        if (action !== 'start_live' && action !== 'start_record') {
+          return result;
+        }
+        if (result === undefined) {
+          return result;
+        }
+        let owned = [];
+        let closed = false;
+        let output = {
+          ...result,
+          stopped: false,
+          stop: async () => {
+            if (closed === true) {
+              return;
+            }
+            closed = true;
+            output.stopped = true;
+            for (let handle of owned) {
+              handle.stop('SIGKILL');
+            }
+            request.options.onClose?.();
+          },
+          start: (manager, requirements) => {
+            let settings = { ...requirements, id: request.sessionID, input: result.input, ports: result.ports, talkback: result.talkback };
+            owned = action === 'start_record' ? [manager.startRecording(settings)] : manager.startLive(settings);
+            output.fragments = () => manager.fragments(owned[0], request.options.signal);
+            for (let handle of owned) {
+              handle.finished.then((result) => {
+                if (result.expected !== true && closed === false) {
+                  let error = result.error ?? new Error('FFmpeg exited unexpectedly');
+                  error.message += ' ' + handle.diagnosticLines.join(' | ');
+                  request.options.onClose?.(error);
+                  output.stop();
+                }
+              });
+            }
+          },
+        };
+        request.options.signal?.addEventListener('abort', () => output.stop(), { once: true });
+        outputs.push(output);
+        return output;
+      };
+      wrapped.mock = handler.mock;
+      message = wrapped;
+    },
+  });
   camera.message = t.mock.fn(async () => ({
     video,
     ports: { audioControl: 21001, talkback: 21002 },
@@ -165,7 +229,7 @@ function setup(t) {
     }
     await camera.onShutdown();
   });
-  return { camera, processes, handles, prepare, start, video, sockets };
+  return { camera, processes, handles, prepare, start, video, sockets, outputs };
 }
 
 test('camera cleans up live source and HomeKit on failed FFmpeg spawn', async (t) => {
@@ -176,7 +240,7 @@ test('camera cleans up live source and HomeKit on failed FFmpeg spawn', async (t
   processes[0].emit('close', -2, null);
   await setImmediate();
   assert.equal(
-    camera.message.mock.calls.some((call) => call.arguments[1] === 'stop_live'),
+    handles.every((handle) => handle.active === false),
     true,
   );
   assert.equal(camera.controller.forceStopStreamingSession.mock.callCount(), 1);
@@ -186,13 +250,13 @@ test('camera cleans up live source and HomeKit on failed FFmpeg spawn', async (t
     true,
   );
   assert.equal(
-    camera.log.error.mock.calls.some((call) => call.arguments.includes('ENOENT')),
+    camera.log.error.mock.calls.some((call) => call.arguments.some((value) => String(value).includes('ENOENT'))),
     true,
   );
 });
 
 test('an unrequested successful live process exit also releases camera resources', async (t) => {
-  let { camera, processes, prepare, start } = setup(t);
+  let { camera, handles, processes, prepare, start } = setup(t);
   await camera.prepareStream(prepare, () => {});
   await camera.handleStreamRequest(start, () => {});
   processes[0].emit('exit', 0, null);
@@ -200,7 +264,7 @@ test('an unrequested successful live process exit also releases camera resources
   await setImmediate();
   assert.equal(camera.controller.forceStopStreamingSession.mock.callCount(), 1);
   assert.equal(
-    camera.message.mock.calls.some((call) => call.arguments[1] === 'stop_live'),
+    handles.every((handle) => handle.active === false),
     true,
   );
 });
@@ -277,6 +341,7 @@ test('camera shutdown waits for its FFmpeg process to close', async (t) => {
   camera.streamer.stopEverything = async () => {};
   await camera.prepareStream(prepare, () => {});
   await camera.handleStreamRequest(start, () => {});
+  processes[0].deferClose = true;
   let settled = false;
   let shutdown = camera.onShutdown().then(() => {
     settled = true;
@@ -498,8 +563,8 @@ for (let action of ['stop', 'replace']) {
     assert.equal(callback.mock.callCount(), 1);
     assert.equal(
       camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_live').length,
-      stops + (action === 'stop' ? 1 : 0),
-      'late startup releases only an output with no replacement owner',
+      stops,
+      'late startup releases its exact output without a second broad stop request',
     );
     if (action === 'replace') {
       camera.message = context.mock.fn(async () => ({
@@ -558,13 +623,11 @@ for (let completion of ['error', 'exit', 'clean-exit']) {
     processes[1].emit('close', completion === 'clean-exit' ? 0 : 1, null);
     await setImmediate();
     assert.equal(
-      camera.log.error.mock.calls.some(
-        (call) => call.arguments[1] === 'talkback' && String(call.arguments.at(-1)).includes('Fixture talkback final diagnostic') === true,
-      ),
+      camera.log.error.mock.calls.some((call) => String(call.arguments.at(-1)).includes('Fixture talkback final diagnostic') === true),
       true,
     );
     assert.equal(camera.controller.forceStopStreamingSession.mock.callCount(), 1);
-    assert.equal(camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_live').length, 1);
+    assert.equal(camera.controller.forceStopStreamingSession.mock.callCount(), 1);
     assert.equal(processes[0].kill.mock.callCount(), 1);
     assert.equal(handles.at(-1).active, false);
     assert.equal(sockets.filter((socket) => socket.listenerCount('message') > 0).length, 0);
@@ -601,7 +664,7 @@ test('unexpected HKSV completion wakes a waiting generator and releases the reco
   processes[0].emit('exit', 1, null);
   processes[0].emit('close', 1, null);
   assert.equal((await waiting).done, true);
-  assert.equal(camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_record').length, 1);
+  assert.equal(camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_record').length, 0);
   await Promise.all(handles.map((handle) => handle.finished));
   assert.equal(
     handles.every((handle) => handle.active === false),
@@ -622,7 +685,7 @@ test('HKSV RTP acquisition failure releases its source without spawning FFmpeg',
   });
   await assert.rejects(camera.handleRecordingStreamRequest('source-failure').next(), (caught) => caught === error);
   assert.equal(processes.length, 0);
-  assert.equal(camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_record').length, 1);
+  assert.equal(camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_record').length, 0);
 });
 
 test('late recording completion cannot stop a replacement created during source teardown', async (context) => {
@@ -663,7 +726,7 @@ test('late recording completion cannot stop a replacement created during source 
 for (let sourceCodec of ['pcm', 'opus', 'aac']) {
   for (let codec of ['aac', 'opus']) {
     test('RTP ' + sourceCodec + ' live input maps both tracks and preserves the ' + codec + ' HomeKit encoder', async (context) => {
-      const { camera, processes, prepare, start } = setup(context);
+      let { camera, handles, processes, prepare, start } = setup(context);
       camera.deviceData.audio_enabled = true;
       camera.streamer.codecs = { audio: sourceCodec };
       camera.hap.AudioStreamingCodecType = { AAC_ELD: 'aac', OPUS: 'opus' };
@@ -691,12 +754,12 @@ for (let sourceCodec of ['pcm', 'opus', 'aac']) {
       assert.equal(args.includes('pipe:0'), false);
       assert.equal(args.includes(codec === 'aac' ? 'libfdk_aac' : 'libopus'), true);
       assert.equal(args.includes('-filter:a'), false);
-      assert.equal(args[args.indexOf('-ar') + 1], '16k');
+      assert.equal(args[args.indexOf('-ar') + 1], '16000');
       assert.equal(args[args.indexOf('-ac') + 1], '1');
       assert.equal(camera.ffmpeg.start.mock.calls[0].arguments[0].inputs, undefined);
       await camera.handleStreamRequest({ sessionID: 'one', type: 'stop' });
       assert.equal(
-        camera.message.mock.calls.some((call) => call.arguments[1] === 'stop_live'),
+        handles.every((handle) => handle.active === false),
         true,
       );
     });
@@ -777,7 +840,7 @@ test('recording process creation failure releases the prepared RTP output', asyn
     throw new Error('Spawn failed');
   });
   await assert.rejects(camera.handleRecordingStreamRequest('spawn-failure').next(), /Spawn failed/);
-  assert.equal(camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_record').length, 1);
+  assert.equal(camera.message.mock.calls.filter((call) => call.arguments[1] === 'stop_record').length, 0);
 });
 
 for (let action of ['closeRecordingStream', 'onShutdown']) {
@@ -795,7 +858,7 @@ for (let action of ['closeRecordingStream', 'onShutdown']) {
     assert.equal(processes.length, 0);
     assert.equal(
       camera.message.mock.calls.some((call) => call.arguments[1] === 'stop_record'),
-      true,
+      action === 'closeRecordingStream',
     );
   });
 }

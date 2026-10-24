@@ -58,12 +58,11 @@ test('media health suppresses deltas, recovers via keyframes and falls back on a
   context.mock.timers.enable({ apis: ['Date'], now: 100000 });
   let transport = new StreamTransport();
   let state = transport.getMediaState('video', { badWindowMs: 100, unstableBadThreshold: 2, recoveringCleanTarget: 3 });
-  assert.equal(transport.canAcceptMediaFrame('video'), true);
+  assert.equal(transport.getMediaState('video').suppressDeltas !== true, true);
   transport.markMediaIssue('video', 'loss');
   transport.markMediaIssue('video', 'loss');
   assert.equal(state.state, StreamTransport.MEDIA_STATE.UNSTABLE);
-  assert.equal(transport.canAcceptMediaFrame('video'), false);
-  assert.equal(transport.canAcceptMediaFrame('video', { keyFrame: true }), true);
+  assert.equal(transport.getMediaState('video').suppressDeltas !== true, false);
   transport.markMediaFrame('video', { keyFrame: true });
   assert.equal(state.state, StreamTransport.MEDIA_STATE.RECOVERING);
   transport.markMediaIssue('video', 'loss');
@@ -71,7 +70,7 @@ test('media health suppresses deltas, recovers via keyframes and falls back on a
   transport.markMediaFrame('video', { keyFrame: true });
   transport.markMediaFrame('video');
   assert.equal(state.state, StreamTransport.MEDIA_STATE.STABLE);
-  assert.equal(transport.canAcceptMediaFrame('video'), true);
+  assert.equal(transport.getMediaState('video').suppressDeltas !== true, true);
   assert.equal(state.events.length, 0);
   assert.equal(transport.resetMediaState('video').badWindowMs, 100);
   assert.deepEqual(transport.resetMediaState(), {});
@@ -94,7 +93,7 @@ test('media state starts complete and bounds its expired event history', (contex
   context.mock.timers.enable({ apis: ['Date'], now: 100000 });
   let transport = new StreamTransport();
   let state = transport.getMediaState();
-  assert.equal(transport.canAcceptMediaFrame(), true);
+  assert.equal(transport.getMediaState('video').suppressDeltas !== true, true);
   assert.equal(state.state, StreamTransport.MEDIA_STATE.STABLE);
   for (let index = 0; index < 100; index++) {
     transport.markMediaIssue('video', 'loss');
@@ -122,7 +121,7 @@ test('media recovery resets replace state, retain configured thresholds and isol
       recoveringCleanTarget: 3,
     }),
   );
-  assert.equal(transport.canAcceptMediaFrame('video'), true);
+  assert.equal(transport.getMediaState('video').suppressDeltas !== true, true);
   transport.markMediaIssue('video', 'loss');
   transport.markMediaFrame('video', { keyFrame: true });
   assert.equal(reset.state, StreamTransport.MEDIA_STATE.RECOVERING);
@@ -134,7 +133,7 @@ test('media recovery resets replace state, retain configured thresholds and isol
   transport.resetMediaState();
   assert.notEqual(transport.getMediaState('video'), reset);
   assert.notEqual(transport.getMediaState('audio'), audio);
-  assert.equal(transport.canAcceptMediaFrame('video'), true);
+  assert.equal(transport.getMediaState('video').suppressDeltas !== true, true);
 });
 
 test('transport lifecycle publishes each state once and resets session-learned metadata on reconnect', () => {
@@ -163,15 +162,30 @@ test('transport metadata is learned from SPS and source timing without duplicate
   let logs = [];
   let transport = new StreamTransport({ consumer: { media: (frame) => frames.push(frame) }, log: { debug: (...args) => logs.push(args) } });
   transport.video.codec = 'h264';
-  let data = H264.buildAccessUnit([sequenceParameterSet({ widthMbs: 40, heightMbs: 23, crop: [0, 0, 0, 4] }), Buffer.from([0x65, 1])]).data;
-  for (let index = 0; index < 3; index++) {
+  let data = Buffer.concat([
+    H264.NALUS.START_CODE,
+    sequenceParameterSet({ widthMbs: 40, heightMbs: 23, crop: [0, 0, 0, 4] }),
+    H264.NALUS.START_CODE,
+    Buffer.from([0x65, 1]),
+  ]);
+  for (let index = 0; index <= 20; index++) {
     transport.emitMedia({ type: 'VIDEO', data, timestamp: 100000 + index * 40, keyFrame: index === 0 });
     context.mock.timers.tick(40);
   }
   assert.equal(transport.video.width, 640);
   assert.equal(transport.video.height, 360);
   assert.equal(Math.round(transport.video.fps), 25);
-  assert.deepEqual(Object.keys(frames[0]).sort(), ['codec', 'data', 'keyFrame', 'timestamp', 'type']);
+  assert.deepEqual(Object.keys(frames[0]).sort(), [
+    'bytes',
+    'codec',
+    'config',
+    'hasPPS',
+    'hasSPS',
+    'keyFrame',
+    'nals',
+    'timestamp',
+    'type',
+  ]);
   assert.equal(logs.length, 1);
   transport.updateVideoMetadata({ width: 1280, height: 720, fps: 30 });
   assert.equal(logs.length, 2);
@@ -188,11 +202,11 @@ test('PCM metadata derives bitrate and audio gap counters from emitted frames', 
   context.mock.timers.tick(200);
   transport.emitMedia({ type: 'audio', data: Buffer.from([2]), timestamp: 100200 });
   assert.equal(transport.audio.bitrate, 1536000);
-  assert.deepEqual(Object.keys(frames[0]).sort(), ['codec', 'data', 'keyFrame', 'timestamp', 'type']);
+  assert.deepEqual(Object.keys(frames[0]).sort(), ['bytes', 'codec', 'data', 'keyFrame', 'timestamp', 'type']);
   assert.equal(transport.stats.media.maxAudioGapMs, 200);
   assert.equal(transport.stats.media.largeAudioGaps, 1);
 });
-test('transport repairs diagnostic counters and contains failing consumer callbacks', async () => {
+test('transport initializes diagnostic counters and contains failing consumer callbacks', async () => {
   let logs = [];
   let transport = new StreamTransport({
     consumer: {
@@ -202,14 +216,13 @@ test('transport repairs diagnostic counters and contains failing consumer callba
     },
     log: { debug: (...args) => logs.push(args) },
   });
-  transport.stats.media = null;
   transport.recordVideoDrop('loss');
-  transport.stats.media.videoDrops = null;
   transport.recordVideoDrop('');
-  transport.stats.media.videoReorder = null;
   transport.recordVideoReorder('custom');
   transport.recordKeyframeRequest();
+  assert.equal(transport.stats.media.videoDrops.loss, 1);
   assert.equal(transport.stats.media.videoDrops.unknown, 1);
+  assert.equal(transport.stats.media.keyframeRequests, 1);
   assert.equal(transport.stats.media.videoReorder.custom, 1);
   for (let invalid of [null, {}, { type: 'invalid', data: Buffer.from([1]) }, { type: 'audio', data: Buffer.alloc(0) }]) {
     transport.emitMedia(invalid);
@@ -435,11 +448,70 @@ test('slim frames retain source metadata learning and declared bitrate on the tr
   let frames = [];
   let transport = new StreamTransport({ consumer: { media: (frame) => frames.push(frame) } });
   Object.assign(transport.video, { codec: 'h264', width: 320, height: 240, bitrate: 2000000 });
-  let data = H264.buildAccessUnit([sequenceParameterSet({ widthMbs: 80, heightMbs: 45 }), Buffer.from([0x65, 1])]).data;
+  let data = Buffer.concat([
+    H264.NALUS.START_CODE,
+    sequenceParameterSet({ widthMbs: 80, heightMbs: 45 }),
+    H264.NALUS.START_CODE,
+    Buffer.from([0x65, 1]),
+  ]);
   transport.emitMedia({ type: 'video', data, keyFrame: true, timestamp: 100000 });
   assert.equal(transport.video.width, 1280);
   assert.equal(transport.video.height, 720);
   assert.equal(transport.video.bitrate, 2000000);
-  assert.equal(frames[0].data, data);
-  assert.deepEqual(Object.keys(frames[0]).sort(), ['codec', 'data', 'keyFrame', 'timestamp', 'type']);
+  assert.deepEqual(
+    frames[0].nals,
+    H264.getNALUnits(data).map((nal) => nal.data),
+  );
+  assert.deepEqual(Object.keys(frames[0]).sort(), [
+    'bytes',
+    'codec',
+    'config',
+    'hasPPS',
+    'hasSPS',
+    'keyFrame',
+    'nals',
+    'timestamp',
+    'type',
+  ]);
+});
+
+test('inferred FPS waits for a startup sample instead of logging the first sparse interval', (context) => {
+  context.mock.timers.enable({ apis: ['Date'], now: 100000 });
+  let frames = [];
+  let logs = [];
+  let transport = new StreamTransport({ consumer: { media: (frame) => frames.push(frame) }, log: { debug: (...args) => logs.push(args) } });
+  transport.video.codec = 'h264';
+  let nals = [sequenceParameterSet({ widthMbs: 80, heightMbs: 45 }), Buffer.from([0x65, 1])];
+  let timestamps = [100000, 100000 + 1000 / 3];
+  for (let index = 1; index <= 19; index++) {
+    timestamps.push(100000 + 1000 / 3 + (index * 1000) / 30);
+  }
+  for (let [index, timestamp] of timestamps.entries()) {
+    transport.emitMedia({ type: 'video', timestamp, nals, keyFrame: true });
+    if (index < 20) {
+      assert.equal(logs.length, 0);
+      assert.equal(transport.video.fps, undefined);
+    }
+  }
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0][2], '1280x720 @ 30fps');
+  assert.deepEqual(
+    frames.map((frame) => frame.timestamp),
+    timestamps,
+    'FPS reporting must not retime source frames',
+  );
+  transport.setState(StreamTransport.STATE.RECONNECTING);
+  logs.length = 0;
+  transport.emitMedia({ type: 'video', timestamp: 200000, nals, keyFrame: true });
+  transport.emitMedia({ type: 'video', timestamp: 200040, nals, keyFrame: true });
+  assert.equal(logs.length, 0);
+  assert.equal(transport.video.fps, undefined, 'a replacement source must collect its own startup sample');
+});
+
+test('explicit source FPS reports immediately without waiting for inferred startup samples', () => {
+  let logs = [];
+  let transport = new StreamTransport({ log: { debug: (...args) => logs.push(args) } });
+  transport.updateVideoMetadata({ width: 1280, height: 720, fps: 15 });
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0][2], '1280x720 @ 15fps');
 });

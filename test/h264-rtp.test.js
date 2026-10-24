@@ -55,7 +55,7 @@ for (let [first, mask] of [
   [65535, 0xffff],
   [255, 0xff],
 ]) {
-  test('FU-A reconstruction preserves Annex-B bytes across sequence ' + first, () => {
+  test('FU-A reconstruction preserves raw NAL bytes across sequence ' + first, () => {
     let state = {};
     let start = H264.acceptFuA(state, Buffer.from([0x7c, 0x85, 1, 2]), {
       sequenceNumber: first,
@@ -73,7 +73,7 @@ for (let [first, mask] of [
     });
     assert.equal(result.ok, true);
     assert.equal(result.complete, true);
-    assert.deepEqual(result.data, Buffer.from([0, 0, 0, 1, 0x65, 1, 2, 3, 4]));
+    assert.deepEqual(result.data, Buffer.from([0x65, 1, 2, 3, 4]));
     assert.equal(result.bytes, result.data.length);
     assert.deepEqual(state.fuParts, []);
     assert.equal(state.fuBytes, 0);
@@ -93,7 +93,7 @@ for (let [label, payload, context, reason] of [
     let result = H264.acceptFuA(state, Buffer.from([0x7c, 0xc5, 9]), { rtpTimestamp: 200, sequenceNumber: 20 });
     assert.equal(result.complete, true);
     assert.equal(result.interrupted, true);
-    assert.deepEqual(result.data, Buffer.from([0, 0, 0, 1, 0x65, 9]));
+    assert.deepEqual(result.data, Buffer.from([0x65, 9]));
     assert.deepEqual(state.fuParts, []);
   });
 }

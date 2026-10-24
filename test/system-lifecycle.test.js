@@ -114,3 +114,16 @@ test('a failed device mapper is reported and later data can recover without rest
   await flow.send('DEVICE_TEST', { fixture: { retry: true } });
   assert.equal(flow.registered.length, 1);
 });
+
+for (let debug of [true, false]) {
+  test('startup runtime diagnostics respect configuration debug=' + debug, async (context) => {
+    let flow = await platformHarness(context, { config: { debug } });
+    for (let label of ['System:', 'CPU:', 'Memory:', 'Node.js:']) {
+      let messages = flow.logs.filter((entry) => String(entry[1]).includes(label));
+      assert.equal(messages.length, debug === true ? 1 : 0, label);
+      if (debug === true) {
+        assert.equal(messages[0][0], 'info', 'configuration debug must work without Homebridge debug mode');
+      }
+    }
+  });
+}

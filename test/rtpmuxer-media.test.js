@@ -7,6 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import H264 from '../src/plugins/camera/h264.js';
 import RTPMuxer from '../src/plugins/camera/rtpmuxer.js';
+import FFmpeg from '../src/plugins/camera/ffmpeg.js';
 
 const binary = process.env.FFMPEG_TEST_BINARY;
 let frames;
@@ -135,62 +136,47 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack] of [
       }
       await output.prepare();
       context.after(() => output.close());
-      const child = spawn(binary, [
-        '-hide_banner',
-        '-loglevel',
-        'warning',
-        '-fflags',
-        audioCodec === 'aac' ? '+genpts' : '+genpts+nofillin',
-        '-flags',
-        'low_delay',
-        '-copyts',
-        '-rtsp_transport',
-        'tcp',
-        ...(codec === 'hksv' ? [] : ['-analyzeduration', '500000']),
-        '-i',
-        output.input.url,
-        '-map',
-        '0:v:0',
-        '-map',
-        '0:a:0',
-        ...(codec === 'hksv'
-          ? [
+      let manager = codec === 'hksv' ? new FFmpeg(binary) : undefined;
+      let managed = manager?.startRecording({
+        id: 'media-test',
+        input: output.input,
+        sourceAudio: audioCodec,
+        video: { profile: 'baseline', level: '3.1', fps: 30, iFrameInterval: 4000, bitRate: 200 },
+      });
+      const child =
+        managed === undefined
+          ? spawn(binary, [
+              '-hide_banner',
+              '-loglevel',
+              'warning',
+              '-fflags',
+              audioCodec === 'aac' ? '+genpts' : '+genpts+nofillin',
+              '-flags',
+              'low_delay',
+              '-copyts',
+              '-rtsp_transport',
+              'tcp',
+              '-analyzeduration',
+              '500000',
+              '-i',
+              output.input.url,
+              '-map',
+              '0:v:0',
+              '-map',
+              '0:a:0',
+              '-fps_mode:v',
+              'passthrough',
               '-c:v',
-              'libx264',
-              '-preset',
-              'ultrafast',
-              '-bf',
-              '0',
-              '-filter:v',
-              'fps=fps=30,format=yuv420p',
-              '-fps_mode',
-              'cfr',
-              '-g:v',
-              '120',
-              '-b:v',
-              '400k',
-              '-video_track_timescale',
-              '90000',
-              '-movflags',
-              'frag_keyframe+empty_moov+delay_moov+default_base_moof',
+              codec,
+              '-enc_time_base:v',
+              '1:90000',
               '-c:a',
-              'libfdk_aac',
-              '-profile:a',
-              'aac_low',
-              '-ar',
-              '16000',
-              '-b:a',
-              '16k',
-              '-ac',
-              '1',
-              '-filter:a',
-              'aresample=first_pts=0',
+              'pcm_s16le',
               '-f',
-              'mp4',
+              'framecrc',
               'pipe:1',
-            ]
-          : ['-fps_mode:v', 'passthrough', '-c:v', codec, '-enc_time_base:v', '1:90000', '-c:a', 'pcm_s16le', '-f', 'framecrc', 'pipe:1']),
-      ]);
+            ])
+          : { stdout: managed.stdout, kill: () => managed.stop('SIGKILL') };
       context.after(() => child.kill('SIGKILL'));
       let stdout = '';
       let mp4 = [];
@@ -202,17 +188,30 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack] of [
           context.diagnostic('FFmpeg did not finish. stderr=' + stderr.slice(-4000) + ' stdout=' + stdout.slice(-2000));
         }
       });
-      child.stdout.on('data', (data) => {
-        if (codec === 'hksv') {
-          mp4.push(data);
-        } else {
+      let fragments =
+        managed === undefined
+          ? undefined
+          : (async () => {
+              for await (let fragment of manager.fragments(managed)) {
+                mp4.push(fragment);
+              }
+            })();
+      if (managed === undefined) {
+        child.stdout.on('data', (data) => {
           stdout += data.toString();
-        }
-      });
-      child.stderr.on('data', (data) => {
-        stderr += data.toString();
-      });
-      const finished = once(child, 'close').then(([code]) => {
+        });
+        child.stderr.on('data', (data) => {
+          stderr += data.toString();
+        });
+      }
+      const finished = (
+        managed === undefined
+          ? once(child, 'close').then(([code]) => code)
+          : managed.finished.then((result) => {
+              stderr = managed.diagnosticLines.join('\n');
+              return result.code;
+            })
+      ).then((code) => {
         stopped = true;
         return code;
       });
@@ -268,6 +267,7 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack] of [
       await delay(50);
       await output.close();
       const code = await finished;
+      await fragments;
       assert.equal(code, 0, stderr);
       assert.doesNotMatch(stderr, /non.monoton|Invalid data|corrupt/i);
 

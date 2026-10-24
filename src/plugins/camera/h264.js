@@ -4,10 +4,7 @@
 // H264 byte and RTP payload helpers shared by transports and output code.
 //
 // Provides:
-// - Annex-B start-code wrapping
 // - Annex-B and raw single-NAL parsing
-// - NAL type detection
-// - Annex-B access-unit building with optional SPS/PPS injection
 // - SPS profile, level, chroma format, and display-resolution parsing
 // - RTP payload inspection, timestamp-group completeness and FU-A reconstruction
 //
@@ -15,7 +12,7 @@
 // lifecycle, media timing and output pacing. RTP reconstruction updates only the
 // fragment state supplied by the caller; it does not own a transport session.
 //
-// Code version 2026.10.20
+// Code version 2026.10.24
 // Mark Hulskamp
 'use strict';
 
@@ -43,31 +40,7 @@ export default class H264 {
     },
   };
 
-  // NAL parsing and Annex-B framing
-  static wrapAnnexB(nal) {
-    let part = undefined;
-
-    // Wrap one raw NAL payload with an Annex-B start code.
-    if (Buffer.isBuffer(nal) !== true || nal.length === 0) {
-      return undefined;
-    }
-
-    part = Buffer.allocUnsafe(H264.NALUS.START_CODE.length + nal.length);
-    H264.NALUS.START_CODE.copy(part, 0);
-    nal.copy(part, H264.NALUS.START_CODE.length);
-
-    return part;
-  }
-
-  static ensureAnnexB(nal) {
-    // Return a NAL payload in Annex-B form without double-wrapping existing data.
-    if (Buffer.isBuffer(nal) !== true || nal.length === 0) {
-      return undefined;
-    }
-
-    return nal.indexOf(H264.NALUS.START_CODE) === 0 ? nal : H264.wrapAnnexB(nal);
-  }
-
+  // NAL parsing
   static getNALUnits(data) {
     let nalUnits = [];
     let index = 0;
@@ -142,106 +115,6 @@ export default class H264 {
     }
 
     return nalUnits;
-  }
-
-  static hasNAL(data, nalType) {
-    // Fast shared test for Annex-B or single-NAL buffers.
-    for (let nalu of H264.getNALUnits(data)) {
-      if (nalu.type === nalType) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  static buildAccessUnit(parts, options = {}) {
-    let emitParts = [];
-    let frameParts = [];
-    let data = undefined;
-    let byteLength = 0;
-    let writeOffset = 0;
-    let hasSPS = false;
-    let hasPPS = false;
-
-    // Build one Annex-B access unit from complete NAL buffers. This stays byte-level:
-    // transports still decide packet ordering, timestamp grouping, recovery, and timing.
-    if (Array.isArray(parts) !== true || parts.length === 0) {
-      return undefined;
-    }
-
-    for (let part of parts) {
-      let offset = 0;
-      let type = 0;
-      let annexBPart = undefined;
-
-      if (Buffer.isBuffer(part) !== true || part.length === 0) {
-        continue;
-      }
-
-      // Parts may already be Annex-B access-unit chunks, or raw NAL payloads.
-      // Work out where the NAL header lives before checking SPS/PPS presence.
-      if (part.indexOf(H264.NALUS.START_CODE) === 0) {
-        offset = H264.NALUS.START_CODE.length;
-      }
-
-      if (part.length > offset) {
-        type = part[offset] & 0x1f;
-        hasSPS = hasSPS === true || type === H264.NALUS.TYPES.SPS;
-        hasPPS = hasPPS === true || type === H264.NALUS.TYPES.PPS;
-      }
-
-      // Normalise every emitted part to Annex-B so callers get one stable
-      // access-unit format regardless of transport packetisation.
-      annexBPart = H264.ensureAnnexB(part);
-
-      if (Buffer.isBuffer(annexBPart) === true && annexBPart.length > 0) {
-        frameParts.push(annexBPart);
-      }
-    }
-
-    if (options.keyFrame === true) {
-      // Keyframes need parameter sets before IDR for decoders that attach mid-stream.
-      if (hasSPS !== true && Buffer.isBuffer(options.sps) === true && options.sps.length > 0) {
-        emitParts.push(H264.ensureAnnexB(options.sps));
-        hasSPS = true;
-      }
-
-      if (hasPPS !== true && Buffer.isBuffer(options.pps) === true && options.pps.length > 0) {
-        emitParts.push(H264.ensureAnnexB(options.pps));
-        hasPPS = true;
-      }
-    }
-
-    emitParts = emitParts.concat(frameParts);
-
-    for (let part of emitParts) {
-      byteLength += part.length;
-    }
-
-    if (byteLength <= 0) {
-      return undefined;
-    }
-
-    // Preserve the single-buffer fast path for common already-complete frames.
-    if (emitParts.length === 1) {
-      data = emitParts[0];
-    } else {
-      data = Buffer.allocUnsafe(byteLength);
-
-      for (let part of emitParts) {
-        part.copy(data, writeOffset);
-        writeOffset += part.length;
-      }
-    }
-
-    return {
-      data: data,
-      byteLength: byteLength,
-      hasSPS: hasSPS,
-      hasPPS: hasPPS,
-      hasParameterSets: hasSPS === true && hasPPS === true,
-    };
   }
 
   // SPS metadata
@@ -606,12 +479,10 @@ export default class H264 {
       state.fuFirstPacketTime = receivedAt;
       state.fuLastSequence = sequenceNumber;
 
-      // First FU-A fragment reconstructs the original NAL header and carries
-      // the Annex-B prefix so the completed fragment is one normal NAL.
-      fuPart = Buffer.allocUnsafe(H264.NALUS.START_CODE.length + 1 + fragment.length);
-      H264.NALUS.START_CODE.copy(fuPart, 0);
-      fuPart.writeUInt8(fuNalHeader, H264.NALUS.START_CODE.length);
-      fragment.copy(fuPart, H264.NALUS.START_CODE.length + 1);
+      // Reconstruct only the NAL header; the core retains NALs without Annex-B framing.
+      fuPart = Buffer.allocUnsafe(1 + fragment.length);
+      fuPart.writeUInt8(fuNalHeader, 0);
+      fragment.copy(fuPart, 1);
       state.fuParts.push(fuPart);
       state.fuBytes += fuPart.length;
     } else {

@@ -11,7 +11,7 @@
 // - Nexus authentication and authorisation
 // - Protobuf message framing and parsing
 // - Playback session control
-// - H264 video access-unit assembly
+// - Complete H264 timestamp-group assembly
 // - Direct AAC audio frame emission
 // - Speex talkback/audio send handling
 // - Redirect, reconnect, stall, host-change, and backend-closure recovery
@@ -30,13 +30,13 @@
 // - Protobuf message serialization for proprietary NexusTalk protocol
 // - Multiplexed media and control messages over a single connection
 // - Buffered outbound control-message queue using RingBuffer
-// - H264 video access-unit assembly before media emission
+// - Complete H264 timestamp-group assembly before media emission
 // - Direct AAC audio frame emission with Nexus-derived media timing
 // - Two-way audio/talkback support via Speex
 // - Buffered packet parsing with bounded memory protection
 //
 // Notes:
-// - Video is delivered as H264 NAL units and assembled into complete Annex-B access units before emission
+// - Video is emitted as complete timestamp groups of raw H264 NAL buffers
 // - Audio is delivered as AAC frames and emitted directly
 // - NexusTalk media is delivered over ordered TLS, so playback packets are not RTP-jitter buffered
 // - Emitted timestamps are source media timeline values; Streamer owns output playout timing
@@ -44,7 +44,7 @@
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.10.23
+// Code version 2026.10.24
 // Mark Hulskamp
 'use strict';
 
@@ -146,7 +146,8 @@ export default class NexusTalk extends StreamTransport {
     video: {
       id: undefined,
       startOffset: 0,
-      mediaTime: undefined,
+      timestampBase: undefined, // Fixed session anchor; source ticks accumulate separately
+      timestampTicks: 0,
       pendingTimestamp: undefined,
       pendingKeyFrame: false,
       pendingParts: [],
@@ -157,7 +158,8 @@ export default class NexusTalk extends StreamTransport {
     audio: {
       id: undefined,
       startOffset: 0,
-      mediaTime: undefined,
+      timestampBase: undefined, // Fixed session anchor; source ticks accumulate separately
+      timestampTicks: 0,
     },
   };
 
@@ -823,7 +825,7 @@ export default class NexusTalk extends StreamTransport {
       // Preserve the reported channel relationship, including fractional milliseconds.
       // Clamping or rounding here changes the A/V offset carried into RTP.
       this.#channels.video.startOffset = typeof videoStream.startTime === 'number' ? videoStream.startTime * 1000 - sessionStart : 0;
-      this.#channels.video.mediaTime = sessionStart + this.#channels.video.startOffset;
+      this.#channels.video.timestampBase = sessionStart + this.#channels.video.startOffset;
     }
 
     if (typeof audioStream === 'object' && audioStream !== null) {
@@ -840,7 +842,7 @@ export default class NexusTalk extends StreamTransport {
 
       // Use the same session anchor without changing the source audio offset.
       this.#channels.audio.startOffset = typeof audioStream.startTime === 'number' ? audioStream.startTime * 1000 - sessionStart : 0;
-      this.#channels.audio.mediaTime = sessionStart + this.#channels.audio.startOffset;
+      this.#channels.audio.timestampBase = sessionStart + this.#channels.audio.startOffset;
     }
 
     // Store active playback session id for stop-playback and talkback messages.
@@ -898,11 +900,10 @@ export default class NexusTalk extends StreamTransport {
         return;
       }
 
-      // Normalise incoming NexusTalk video payloads to Annex-B once, here.
-      // This gives the consumer a stable "complete access unit in Annex-B format"
-      // contract and avoids rebuilding multi-NAL video later.
-      if (data.indexOf(H264.NALUS.START_CODE) !== 0) {
-        data = H264.wrapAnnexB(data);
+      // Flush before accepting this timestamp's SPS/PPS so the prior frame
+      // retains the decoder configuration belonging to its own access unit.
+      if (typeof video.pendingTimestamp === 'number' && timestamp !== video.pendingTimestamp) {
+        this.#flushPendingVideo(video);
       }
 
       nalUnits = H264.getNALUnits(data);
@@ -921,11 +922,6 @@ export default class NexusTalk extends StreamTransport {
         }
       }
 
-      // A new timestamp means the prior access unit/frame is complete.
-      if (typeof video.pendingTimestamp === 'number' && timestamp !== video.pendingTimestamp) {
-        this.#flushPendingVideo(video);
-      }
-
       // Initialise pending frame state for this timestamp.
       if (typeof video.pendingTimestamp !== 'number') {
         video.pendingTimestamp = timestamp;
@@ -942,9 +938,11 @@ export default class NexusTalk extends StreamTransport {
         video.pendingBytes = 0;
       }
 
-      // Append Annex-B NAL payload to the current pending frame.
-      video.pendingParts.push(data);
-      video.pendingBytes += data.length;
+      // Retain raw NAL payloads in the current timestamp group.
+      for (let nal of nalUnits) {
+        video.pendingParts.push(nal.data);
+        video.pendingBytes += nal.data.length;
+      }
 
       // Mark pending frame as keyframe if any IDR was observed.
       if (keyFrame === true) {
@@ -1335,32 +1333,20 @@ export default class NexusTalk extends StreamTransport {
   }
 
   #calculateTimestamp(delta, stream, sampleRate) {
-    let deltaMs = 0;
-
-    // Convert signed NexusTalk timestamp deltas into source media time
-    // anchored to the shared playback session start time. Streamer later maps
-    // this source media time onto each output's playout schedule.
-    if (typeof stream?.mediaTime !== 'number') {
-      stream.mediaTime = typeof this.#sessionStartTime === 'number' ? this.#sessionStartTime + (stream?.startOffset ?? 0) : Date.now();
+    // Keep a fixed session anchor shared by both tracks. Adding fractional
+    // milliseconds repeatedly at Unix-epoch scale loses sample precision.
+    if (typeof stream?.timestampBase !== 'number') {
+      stream.timestampBase = typeof this.#sessionStartTime === 'number' ? this.#sessionStartTime + (stream?.startOffset ?? 0) : Date.now();
     }
 
     if (Number.isFinite(sampleRate) !== true || sampleRate <= 0) {
-      return stream.mediaTime;
+      return stream.timestampBase;
     }
 
-    if (typeof delta === 'number') {
-      deltaMs = (delta / sampleRate) * 1000;
-
-      if (Number.isFinite(deltaMs) !== true) {
-        deltaMs = 0;
-      }
-    }
-
-    // Signed deltas describe source time, including a backwards packet. Keep
-    // that clock intact; shared retention rejects non-increasing complete frames.
-    stream.mediaTime += deltaMs;
-
-    return stream.mediaTime;
+    // Protobuf supplies signed integer ticks. Accumulate those exactly, then
+    // convert once from the anchor without changing gaps or backwards deltas.
+    stream.timestampTicks += Number.isFinite(delta) === true ? delta : 0;
+    return stream.timestampBase + (stream.timestampTicks * 1000) / sampleRate;
   }
 
   #getPayloadBuffer(payload) {
@@ -1392,19 +1378,13 @@ export default class NexusTalk extends StreamTransport {
     video.pendingTimestamp = undefined;
     video.pendingKeyFrame = false;
 
-    if (Array.isArray(video.pendingParts) === true) {
-      video.pendingParts.length = 0;
-    } else {
-      video.pendingParts = [];
-    }
-
+    // Emitted frames retain this array. Start a new group without clearing theirs.
+    video.pendingParts = [];
     video.pendingBytes = 0;
   }
 
   #flushPendingVideo(video) {
     let pendingTimestamp = undefined;
-    let pendingData = undefined;
-    let accessUnit = undefined;
 
     if (typeof video !== 'object' || video === null) {
       return;
@@ -1418,22 +1398,6 @@ export default class NexusTalk extends StreamTransport {
 
     pendingTimestamp = video.pendingTimestamp;
 
-    accessUnit = H264.buildAccessUnit(video.pendingParts);
-    pendingData = accessUnit?.data;
-
-    if (Buffer.isBuffer(pendingData) !== true || pendingData.length === 0) {
-      this.#resetPendingVideo(video);
-      return;
-    }
-
-    if (this.canAcceptMediaFrame('video', { keyFrame: video.pendingKeyFrame }) !== true) {
-      this.recordVideoDrop(video.pendingKeyFrame === true ? 'suppressed-keyframe-recovery' : 'suppressed-delta-recovery');
-      this.#resetPendingVideo(video);
-      return;
-    }
-
-    this.markMediaFrame('video', { keyFrame: video.pendingKeyFrame });
-
     try {
       this.emitMedia({
         type: Streamer.MEDIA_TYPE.VIDEO,
@@ -1443,10 +1407,8 @@ export default class NexusTalk extends StreamTransport {
         codecConfig: {
           sps: video.lastSPS,
           pps: video.lastPPS,
-          hasSPS: accessUnit?.hasSPS === true,
-          hasPPS: accessUnit?.hasPPS === true,
         },
-        data: pendingData,
+        nals: video.pendingParts,
       });
 
       if (this.connected === true && this.ready !== true) {
@@ -1465,7 +1427,8 @@ export default class NexusTalk extends StreamTransport {
     // Reset video channel details.
     this.#channels.video.id = undefined;
     this.#channels.video.startOffset = 0;
-    this.#channels.video.mediaTime = undefined;
+    this.#channels.video.timestampBase = undefined;
+    this.#channels.video.timestampTicks = 0;
     this.#channels.video.pendingTimestamp = undefined;
     this.#channels.video.pendingKeyFrame = false;
 
@@ -1482,6 +1445,7 @@ export default class NexusTalk extends StreamTransport {
     // Reset audio channel details.
     this.#channels.audio.id = undefined;
     this.#channels.audio.startOffset = 0;
-    this.#channels.audio.mediaTime = undefined;
+    this.#channels.audio.timestampBase = undefined;
+    this.#channels.audio.timestampTicks = 0;
   }
 }

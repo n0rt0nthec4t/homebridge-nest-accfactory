@@ -6,6 +6,9 @@ import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
 import { importSource } from './helpers/import-source.js';
 import StreamTransport from '../src/plugins/camera/streamtransport.js';
+import H264 from '../src/plugins/camera/h264.js';
+import RTPMuxer from '../src/plugins/camera/rtpmuxer.js';
+import MediaTimeline from '../src/plugins/camera/mediatimeline.js';
 
 // Forward timer calls to Node's per-test fake clock while preserving the production source bytes.
 let location = new URL('../src/plugins/camera/streamer.js', import.meta.url);
@@ -115,8 +118,9 @@ for (let [label, data] of [
   test(label + ' output prepares RTP without opening an unavailable source', async (context) => {
     let { streamer, transport } = setup(context, data);
     let output = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'live' });
-    assert.deepEqual(Object.keys(output).sort(), ['input', 'ports', 'talkback']);
-    assert.equal(output.input.type, 'rtp');
+    assert.deepEqual(Object.keys(output).sort(), ['fragments', 'start', 'stop']);
+    assert.equal(typeof output.start, 'function');
+    assert.equal(hooks.instances[0].input.type, 'rtp');
     assert.deepEqual(transport.calls, []);
     await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_LIVE, { sessionID: 'live' });
     assert.equal(hooks.instances[0].closed, true);
@@ -126,9 +130,8 @@ test('live and recording own independent RTP clocks while sharing one source', a
   let { streamer, transport } = setup(context);
   let live = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'live', options: { includeAudio: true } });
   let record = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, { sessionID: 'record' });
-  assert.equal(typeof live.talkback.write, 'function');
-  assert.equal(record.talkback, null);
-  assert.notEqual(live.input, record.input);
+  assert.notEqual(live, record);
+  assert.notEqual(hooks.instances[0].input, hooks.instances[1].input);
   assert.equal(transport.calls.filter(([type]) => type === 'open').length, 1);
   await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_LIVE, { sessionID: 'live' });
   assert.equal(hooks.instances[0].closed, true);
@@ -145,8 +148,7 @@ test('duplicate starts reuse delivery and talkback, while conflicting types are 
   let { streamer } = setup(context);
   let first = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'same', options: { includeAudio: true } });
   let second = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'same' });
-  assert.equal(first.input, second.input);
-  assert.equal(first.talkback, second.talkback);
+  assert.equal(first, second);
   assert.equal(hooks.instances.length, 1);
   assert.equal(await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, { sessionID: 'same' }), undefined);
 });
@@ -154,7 +156,7 @@ test('only one recording consumer is created across different request ids', asyn
   let { streamer } = setup(context);
   let first = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, { sessionID: 'first' });
   let second = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, { sessionID: 'second' });
-  assert.equal(first.input, second.input);
+  assert.equal(first, second);
   assert.equal(hooks.instances.length, 1);
 });
 for (let type of [Streamer.MESSAGE_TYPE.START_LIVE, Streamer.MESSAGE_TYPE.START_RECORD]) {
@@ -302,6 +304,9 @@ for (let [label, data] of [
     await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'fallback' });
     advance(context, 100);
     assert.equal(media(hooks.instances[0]).length > 0, true);
+    let types = media(hooks.instances[0]).map(({ data }) => data[12] & 31);
+    assert.equal(types.includes(7), true, 'fallback must preserve its SPS');
+    assert.equal(types.includes(8), true, 'fallback must preserve its PPS');
     let muxer = hooks.instances[0];
     hooks.send = () => false;
     advance(context, 50);
@@ -316,7 +321,12 @@ test('talkback still forwards bytes and sends its end marker after inactivity', 
   let sent = [];
   transport.sendAudio = async (data) => sent.push([...data]);
   let output = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'talk', options: { includeAudio: true } });
-  output.talkback.write(Buffer.from([1, 2]));
+  let startLive = context.mock.fn(() => []);
+  output.start({ startLive }, {});
+  let settings = startLive.mock.calls[0].arguments[0];
+  assert.equal(settings.input, hooks.instances[0].input);
+  assert.equal(settings.ports, hooks.instances[0].ports);
+  settings.talkback.write(Buffer.from([1, 2]));
   advance(context, 1000);
   assert.deepEqual(sent, [[1, 2], []]);
   await streamer.stopEverything();
@@ -337,7 +347,8 @@ for (let shutdown of [false, true]) {
     let replacement = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'same' });
     ready.resolve();
     assert.equal(await starting, undefined);
-    assert.notEqual(replacement.input, old.input);
+    assert.equal(typeof replacement.start, 'function');
+    assert.notEqual(hooks.instances[1].input, old.input);
     assert.equal(hooks.instances[1].closed, false);
   });
 }
@@ -350,7 +361,7 @@ test('duplicate pending starts share one RTP preparation', async (context) => {
   await setImmediate();
   assert.equal(hooks.instances.length, 1);
   ready.resolve();
-  assert.equal((await first).input, (await second).input);
+  assert.equal(await first, await second);
 });
 test('RTP preparation failure releases an unused source and allows retry', async (context) => {
   let { streamer, transport } = setup(context);
@@ -409,7 +420,7 @@ test('shutdown waits for a pending source open before close and transport shutdo
     await pending.promise;
     transport.setState(StreamTransport.STATE.READY);
   };
-  let starting = streamer.requestSourceConnect();
+  let starting = streamer.onMessage(Streamer.MESSAGE_TYPE.START_BUFFER);
   await setImmediate();
   let stopping = streamer.stopEverything();
   await setImmediate();
@@ -426,9 +437,9 @@ test('a failed source open is surfaced and does not poison later lifecycle work'
   transport.open = async () => {
     throw failure;
   };
-  await assert.rejects(streamer.requestSourceConnect(), (error) => error === failure);
+  await assert.rejects(streamer.onMessage(Streamer.MESSAGE_TYPE.START_BUFFER), (error) => error === failure);
   transport.open = Transport.prototype.open;
-  await streamer.requestSourceConnect();
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_BUFFER);
   assert.equal(transport.calls.at(-1)[0], 'open');
   await streamer.stopEverything();
   assert.equal(transport.calls.at(-1)[0], 'shutdown');
@@ -443,7 +454,7 @@ test('offline recovery preserves the existing RTP endpoint and source identity u
   await streamer.onUpdate({ online: true });
   assert.equal(transport.calls.at(-1)[0], 'open');
   let recovered = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'same' });
-  assert.equal(recovered.input, live.input);
+  assert.equal(recovered, live);
   await streamer.onUpdate({ nest_google_device_uuid: 'DEVICE_REPLACEMENT' });
   assert.equal(streamer.nest_google_device_uuid, 'DEVICE_REPLACEMENT');
   assert.equal(hooks.instances.length, 1);
@@ -482,6 +493,7 @@ test('invalid AAC configuration retires its receiver without stopping a video-on
   await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'audio', options: { includeAudio: true } });
   await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'video' });
   transport.emitMedia({ type: 'audio', codec: 'aac', timestamp: 100000, data: Buffer.from([1]) });
+  await setImmediate();
   addVideo(transport);
   advance(context, 1000);
   assert.equal(hooks.instances[0].closed, true);
@@ -505,7 +517,7 @@ test('pending stop diagnostics cannot remove a same-id RTP replacement', async (
   assert.equal(streamer.isLiveStreaming(), true);
 });
 
-test('Streamer retained timeline stays bounded under sustained overload and throttles full-buffer warnings', async (context) => {
+test('Streamer retains a bounded byte window under sustained overload without rejecting current media', async (context) => {
   context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
   let warnings = [];
   let info = [];
@@ -529,20 +541,19 @@ test('Streamer retained timeline stays bounded under sustained overload and thro
   for (let index = 0; index < 8300; index++) {
     transport.emitMedia({ type: 'video', timestamp: 100000 + index, data, keyFrame: true });
   }
-  assert.equal(warnings.length, 1);
-  assert.match(warnings[0][0], /retained timeline is full/);
+  assert.equal(warnings.length, 0);
   await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_LIVE, { sessionID: 'overloaded' });
-  assert.equal(info.find((entry) => entry[0].includes('"size"'))[1], 8192);
-  assert.equal(info.find((entry) => entry[0].includes('"capacity"'))[1], 8192);
-  assert.equal(info.find((entry) => entry[0].includes('"droppedItems"'))[1], 108);
+  assert.equal(info.find((entry) => entry[0].includes('"size"'))[1], 54);
+  assert.equal(info.find((entry) => entry[0].includes('"capacity"'))[1], 2048);
+  assert.equal(info.find((entry) => entry[0].includes('"droppedItems"'))[1], 0);
 });
 
 test('source lifecycle clears stale host overrides and returns explicit close completion', async (context) => {
   let { streamer, transport } = setup(context);
-  await streamer.requestSourceConnect({ host: 'old.invalid', quality: 'high' });
-  await streamer.requestSourceClose();
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_BUFFER, { options: { host: 'old.invalid', quality: 'high' } });
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_BUFFER);
   assert.equal(transport.closed, true);
-  await streamer.requestSourceConnect({ quality: 'low' });
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_BUFFER, { options: { quality: 'low' } });
   assert.deepEqual(
     transport.calls.filter(([kind]) => kind === 'open').map((entry) => entry[1]),
     [{ host: 'old.invalid', quality: 'high' }, { quality: 'low' }],
@@ -571,7 +582,8 @@ for (let exit of ['ready', 'closed', 'reconnecting', 'timeout']) {
     }
     advance(context, exit === 'timeout' ? 100 : 25);
     let output = await starting;
-    assert.equal(output.input.type, 'rtp');
+    assert.equal(typeof output.start, 'function');
+    assert.equal(hooks.instances[0].input.type, 'rtp');
     assert.equal(streamer.isLiveStreaming(), true);
   });
 }
@@ -642,7 +654,7 @@ test('reconnect resets decoder startup without replacing the RTP endpoint', asyn
   addVideo(transport, 100500);
   advance(context, 310);
   assert.equal(media(hooks.instances[0]).length, count + 3);
-  assert.equal((await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'recovery' })).input, output.input);
+  assert.equal(await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'recovery' }), output);
 });
 
 for (let [sourceStart, repeated] of [
@@ -730,7 +742,7 @@ test('different recording ids share one pending recording record', async (contex
   assert.equal(streamer.isRecording(), false);
   assert.equal(transport.hasConsumers(), true);
   ready.resolve();
-  assert.equal((await first).input, (await second).input);
+  assert.equal(await first, await second);
   assert.equal(streamer.isRecording(), true);
 });
 
@@ -770,7 +782,7 @@ test('failed old preparation cannot remove or close a same-id replacement', asyn
   await rejected;
   assert.equal(hooks.instances[0].closed, true);
   assert.equal(hooks.instances[1].closed, false);
-  assert.equal((await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'same' })).input, replacement.input);
+  assert.equal(await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'same' }), replacement);
 });
 
 test('source acquisition failure removes its preparing record and permits retry', async (context) => {
@@ -825,7 +837,8 @@ test('source frames arriving during acquisition configure the preparing output s
     transport.setState(StreamTransport.STATE.READY);
   };
   let output = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'startup', options: { includeAudio: true } });
-  assert.equal(output.input.type, 'rtp');
+  assert.equal(typeof output.start, 'function');
+  assert.equal(hooks.instances[0].input.type, 'rtp');
   assert.equal(hooks.instances[0].needsAudioConfig, false);
   assert.equal(streamer.isLiveStreaming(), true);
 });
@@ -1165,3 +1178,346 @@ test('only live audio outputs pass optional talkback routing to their muxer', as
   assert.equal(hooks.instances[1].settings.talkback, undefined);
   assert.equal(hooks.instances[2].settings.talkback, undefined);
 });
+
+test('each camera receives a fresh work budget despite earlier delivery cost', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+  let first = setup(context);
+  let second = setup(context);
+  await first.streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'first' });
+  await second.streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'second' });
+  let firstMuxer = hooks.instances[0];
+  let secondMuxer = hooks.instances[1];
+  let clock = Date.now;
+  let simulatedWork = 0;
+  context.mock.method(Date, 'now', () => clock() + simulatedWork);
+  hooks.send = (muxer, data, metadata) => {
+    if (muxer === firstMuxer && metadata.kind === 'rtp') {
+      simulatedWork += 6;
+    }
+    return true;
+  };
+  for (let index = 0; index < 100; index++) {
+    addVideo(first.transport, 100000 + index * 40);
+    addVideo(second.transport, 100000 + index * 40);
+  }
+  advance(context, 50);
+  let firstPackets = media(firstMuxer).length;
+  let secondPackets = media(secondMuxer).length;
+  context.diagnostic(JSON.stringify({ firstPackets, secondPackets, simulatedWorkMs: simulatedWork }));
+  assert.equal(firstPackets > 0, true);
+  assert.equal(secondPackets > 0, true);
+});
+
+test('a blocked output cannot pin retention or starve a healthy output', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+  let { streamer, transport } = setup(context);
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'blocked' });
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'healthy' });
+  let blocked = hooks.instances[0];
+  let healthy = hooks.instances[1];
+  hooks.send = (muxer, data, metadata) => muxer !== blocked || metadata.kind !== 'rtp';
+  let add = MediaTimeline.prototype.add;
+  let rejected = 0;
+  context.mock.method(MediaTimeline.prototype, 'add', function (item) {
+    let result = add.call(this, item);
+    if (result === undefined) {
+      rejected++;
+    }
+    return result;
+  });
+  addVideo(transport, 100000);
+  advance(context, 310);
+  for (let index = 1; index < 8220; index++) {
+    addVideo(transport, 100000 + index * 40);
+    advance(context, 40);
+  }
+  let before = media(healthy).length;
+  for (let index = 8220; index < 8230; index++) {
+    addVideo(transport, 100000 + index * 40);
+    advance(context, 40);
+  }
+  context.diagnostic(JSON.stringify({ rejected, healthyPacketsBefore: before, healthyPacketsAfter: media(healthy).length }));
+  assert.equal(rejected, 0);
+  assert.equal(media(healthy).length > before, true);
+  assert.equal(healthy.closed, false);
+});
+
+test('shared frames are parsed once and unchanged SPS metadata is reused across outputs', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+  let { streamer, transport } = setup(context);
+  for (let sessionID of ['one', 'two', 'three']) {
+    await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID });
+  }
+  let parse = H264.getNALUnits;
+  let scans = context.mock.method(H264, 'getNALUnits', (data) => parse(data));
+  let info = context.mock.method(H264, 'getSPSInfo', () => ({ width: 1280, height: 720 }));
+  let data = Buffer.from([0, 0, 0, 1, 0x67, 0x42, 0, 0, 0, 1, 0x68, 1, 0, 0, 0, 1, 0x65, 1]);
+  for (let index = 0; index < 10; index++) {
+    transport.emitMedia({ type: 'video', codec: 'h264', timestamp: 100000 + index * 100, keyFrame: true, data });
+    advance(context, 100);
+  }
+  advance(context, 310);
+  context.diagnostic(JSON.stringify({ frames: 10, outputs: 3, annexBScans: scans.mock.callCount(), spsParses: info.mock.callCount() }));
+  assert.equal(scans.mock.callCount(), 10);
+  assert.equal(info.mock.callCount(), 1);
+});
+
+test('source timestamp reset keeps live and recording outputs on a continuous RTP axis', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+  let errors = [];
+  let { streamer, transport } = setup(
+    context,
+    {},
+    {
+      log: {
+        debug() {},
+        info() {},
+        warn() {},
+        success() {},
+        error: (...args) => errors.push(args),
+      },
+    },
+  );
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'one' });
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, { sessionID: 'record' });
+  addVideo(transport, 100000);
+  advance(context, 310);
+  transport.setState(StreamTransport.STATE.RECONNECTING);
+  transport.setState(StreamTransport.STATE.READY);
+  addVideo(transport, 99900);
+  advance(context, 400);
+  await setImmediate();
+  context.diagnostic(
+    JSON.stringify({ schedulerErrors: errors.length, liveClosed: hooks.instances[0].closed, recordingClosed: hooks.instances[1].closed }),
+  );
+  assert.equal(errors.length, 0);
+  assert.equal(hooks.instances[0].closed, false);
+  assert.equal(hooks.instances[1].closed, false);
+});
+
+test('retained IDRs bootstrap with their own configuration and update it at the next IDR', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+  let { streamer, transport } = setup(context);
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_BUFFER);
+  let oldSPS = Buffer.from([0x67, 0x42]);
+  let oldPPS = Buffer.from([0x68, 1]);
+  let newSPS = Buffer.from([0x67, 0x64]);
+  let newPPS = Buffer.from([0x68, 2]);
+  let oldIDR = Buffer.from([0, 0, 0, 1, 0x65, 0x11]);
+  let newIDR = Buffer.from([0, 0, 0, 1, 0x65, 0x22]);
+  transport.emitMedia({
+    type: 'video',
+    timestamp: 100000,
+    keyFrame: true,
+    data: oldIDR,
+    codecConfig: { sps: oldSPS, pps: oldPPS, hasSPS: false, hasPPS: false },
+  });
+  advance(context, 100);
+  transport.emitMedia({
+    type: 'video',
+    timestamp: 100100,
+    keyFrame: true,
+    data: newIDR,
+    codecConfig: { sps: newSPS, pps: newPPS, hasSPS: false, hasPPS: false },
+  });
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, { sessionID: 'config', options: { recordTime: 100000 } });
+  advance(context, 10);
+  let payloads = media(hooks.instances[0]).map((packet) => packet.data.subarray(12));
+  context.diagnostic(JSON.stringify({ firstNALs: payloads.slice(0, 3).map((data) => data.toString('hex')) }));
+  assert.deepEqual(payloads[0], oldSPS);
+  assert.deepEqual(payloads[1], oldPPS);
+  assert.deepEqual(payloads[2], oldIDR.subarray(4));
+  assert.deepEqual(payloads.slice(3), [newSPS, newPPS, newIDR.subarray(4)]);
+});
+
+test('one receiver failure retires its FFmpeg process without stopping concurrent live or recording outputs', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 100000 });
+  let { streamer, transport } = setup(context);
+  let closed = [];
+  let failed = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, {
+    sessionID: 'bad',
+    options: { onClose: (error) => closed.push(error) },
+  });
+  let healthy = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'good' });
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, { sessionID: 'clip' });
+  let completion = Promise.withResolvers();
+  let process = { diagnosticLines: ['Fixture receiver failure'], finished: completion.promise, stop: context.mock.fn() };
+  failed.start({ startLive: () => [process] }, {});
+  assert.throws(() => failed.start({}, {}), /already started/);
+  completion.resolve({ expected: false, code: 1 });
+  await setImmediate();
+  assert.equal(hooks.instances[0].closed, true);
+  assert.equal(hooks.instances[1].closed, false);
+  assert.equal(hooks.instances[2].closed, false);
+  assert.equal(closed.length, 1);
+  assert.match(closed[0].message, /Fixture receiver failure/);
+  assert.equal(process.stop.mock.callCount(), 1);
+  addVideo(transport, 100000);
+  advance(context, 310);
+  assert.equal(media(hooks.instances[1]).length, 3);
+  await failed.stop();
+  assert.equal(hooks.instances[1].closed, false);
+  await healthy.stop();
+  assert.equal(streamer.isRecording(), true);
+});
+
+test('abort during endpoint preparation closes only that owner and leaves a replacement running', async (context) => {
+  let { streamer } = setup(context);
+  let ready = Promise.withResolvers();
+  let controller = new AbortController();
+  hooks.prepare = () => ready.promise;
+  let starting = streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'same', options: { signal: controller.signal } });
+  await setImmediate();
+  controller.abort();
+  await setImmediate();
+  assert.equal(hooks.instances[0].closed, true);
+  hooks.prepare = undefined;
+  let replacement = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'same' });
+  ready.resolve();
+  assert.equal(await starting, undefined);
+  assert.equal(hooks.instances[1].closed, false);
+  await replacement.stop();
+});
+
+test('an already aborted output never acquires a source or endpoint', async (context) => {
+  let { streamer, transport } = setup(context);
+  let controller = new AbortController();
+  controller.abort();
+  assert.equal(
+    await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, { sessionID: 'cancelled', options: { signal: controller.signal } }),
+    undefined,
+  );
+  assert.equal(hooks.instances.length, 0);
+  assert.equal(
+    transport.calls.some(([kind]) => kind === 'open'),
+    false,
+  );
+});
+
+test('repeated output stops await source teardown and an old handle cannot stop its replacement', async (context) => {
+  let { streamer, transport } = setup(context);
+  let output = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'same' });
+  let retired = Promise.withResolvers();
+  transport.close = async () => {
+    await retired.promise;
+    transport.setState(StreamTransport.STATE.CLOSED);
+  };
+  let first = output.stop();
+  let secondDone = false;
+  let second = output.stop().then(() => {
+    secondDone = true;
+  });
+  await setImmediate();
+  assert.equal(secondDone, false);
+  retired.resolve();
+  await Promise.all([first, second]);
+  let replacement = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'same' });
+  await output.stop();
+  assert.equal(hooks.instances[1].closed, false);
+  await replacement.stop();
+});
+
+test('recording output delegates fragment reading to its manager and owns the process through shutdown', async (context) => {
+  let { streamer } = setup(context);
+  let output = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, { sessionID: 'record' });
+  let done = Promise.withResolvers();
+  let process = { finished: done.promise, diagnosticLines: [], stop: context.mock.fn(() => done.resolve({ expected: true })) };
+  let bytes = Buffer.from([1, 2]);
+  let manager = {
+    startRecording: context.mock.fn(() => process),
+    fragments: async function* (handle) {
+      assert.equal(handle, process);
+      yield bytes;
+    },
+  };
+  output.start(manager, { includeAudio: false });
+  let received = [];
+  for await (let fragment of output.fragments()) {
+    received.push(fragment);
+  }
+  assert.deepEqual(received, [bytes]);
+  assert.equal(manager.startRecording.mock.calls[0].arguments[0].id, 'record');
+  await streamer.stopEverything();
+  assert.equal(process.stop.mock.callCount(), 1);
+  assert.throws(() => output.start(manager, {}), /closed/);
+});
+
+test('blocked delivery waits for drain notification instead of repeatedly polling an overdue frame', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 100000 });
+  let { streamer, transport } = setup(context);
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'backpressure' });
+  let muxer = hooks.instances[0];
+  hooks.send = () => false;
+  addVideo(transport, 100000);
+  addVideo(transport, 100040);
+  advance(context, 350);
+  let count = media(muxer).length;
+  let blocked = context.mock.method(muxer, 'blocked');
+  advance(context, 500);
+  assert.equal(blocked.mock.callCount() < 5, true);
+  assert.equal(media(muxer).length, count);
+  hooks.send = () => true;
+  muxer.resume('video');
+  advance(context, 10);
+  assert.equal(media(muxer).length, count + 1);
+});
+
+for (let codec of ['aac', 'opus']) {
+  test('shared ' + codec + ' audio is normalized once for retained replay and concurrent outputs', async (context) => {
+    context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+    let { adts } = await import('./helpers/aac-fixtures.js');
+    let { streamer, transport } = setup(context);
+    transport.audio.codec = codec;
+    let parse = context.mock.method(RTPMuxer, 'normalizeAudio');
+    await streamer.onMessage(Streamer.MESSAGE_TYPE.START_BUFFER);
+    addVideo(transport);
+    let payload =
+      codec === 'aac'
+        ? Buffer.concat([adts(Buffer.from([0x21, 0x10]), { frequency: 4 }), adts(Buffer.from([0x21, 0x11]), { frequency: 4 })])
+        : Buffer.from([0xf8, 0xff, 0xfe]);
+    transport.emitMedia({ type: 'audio', timestamp: 100040, data: payload });
+    assert.equal(parse.mock.callCount(), 1);
+    await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, { sessionID: 'record', options: { includeAudio: true } });
+    await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'live1', options: { includeAudio: true } });
+    await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'live2', options: { includeAudio: true } });
+    transport.emitMedia({ type: 'audio', timestamp: 100100, data: payload });
+    // A stale batch is discarded before parsing, including malformed stale AAC.
+    transport.emitMedia({ type: 'audio', timestamp: 100100, data: Buffer.from([1]) });
+    advance(context, 1000);
+    assert.equal(parse.mock.callCount(), 2, 'configuration and delivery must reuse retained normalization');
+    let frames = codec === 'aac' ? 2 : 1;
+    assert.equal(media(hooks.instances[0], 'audio').length, frames * 2);
+    assert.equal(media(hooks.instances[1], 'audio').length, frames);
+    assert.equal(media(hooks.instances[2], 'audio').length, frames);
+    if (codec === 'aac') {
+      for (let muxer of hooks.instances) {
+        let packets = media(muxer, 'audio');
+        assert.equal((packets[1].data.readUInt32BE(4) - packets[0].data.readUInt32BE(4)) >>> 0, 1024);
+      }
+    }
+    let shared = parse.mock.calls[1].result;
+    assert.equal(shared.frames[0].data.buffer, payload.buffer, 'normalization must not copy payload bytes');
+    assert.equal(shared.frames[0].data.byteOffset, payload.byteOffset + (codec === 'aac' ? 7 : 0));
+  });
+}
+
+for (let codec of ['aac', 'opus']) {
+  test('fallback ' + codec + ' audio shares normalization until its source buffer changes', async (context) => {
+    context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+    let { adts } = await import('./helpers/aac-fixtures.js');
+    let { streamer, transport } = setup(context, { online: false });
+    transport.audio.codec = codec;
+    transport.audio.blank = codec === 'aac' ? adts(Buffer.from([0x21, 1])) : Buffer.from([0xf8, 0xff, 0xfe]);
+    let parse = context.mock.method(RTPMuxer, 'normalizeAudio');
+    for (let sessionID of ['one', 'two']) {
+      await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID, options: { includeAudio: true } });
+    }
+    advance(context, 200);
+    assert.equal(parse.mock.callCount(), 1);
+    assert.ok(media(hooks.instances[0], 'audio').length > 1);
+    assert.equal(media(hooks.instances[0], 'audio').length, media(hooks.instances[1], 'audio').length);
+    transport.audio.blank = Buffer.from(transport.audio.blank);
+    advance(context, 200);
+    assert.equal(parse.mock.callCount(), 2);
+  });
+}

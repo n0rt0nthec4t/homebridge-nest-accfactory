@@ -4,6 +4,30 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.5-alpha.5 (2026/10/24)
+
+### Changed
+
+- Rework the camera pipeline around bounded audio/video retention and independently owned live-view and recording outputs, keeping WebRTC and NexusTalk as separate source transports
+- Retain H264 NAL data and decoder configuration once across viewers, removing repeated access-unit construction and parsing
+- Normalize compressed audio once before sharing it with live views and recordings, retaining source timing and receiver-specific packet limits
+- Move FFmpeg command construction and bounded MP4 fragment reading out of Camera, preserving HomeKit recording and A/V timing requirements
+
+### Fixed
+
+- Preserve exact NexusTalk sample-clock intervals by accumulating integer source ticks, avoiding periodic one-sample RTP timestamp errors
+- Sample startup video timing before reporting inferred FPS, avoiding misleading low WebRTC frame-rate logs
+- Display startup OS, CPU, memory and Node.js diagnostics when configuration debug logging is enabled
+- Prevent a blocked viewer from pinning the shared retention window and starving other live views or recordings
+- Give each output its own delivery budget and isolate receiver failures from other active outputs
+- Keep retained keyframes paired with their original SPS/PPS, including NexusTalk configuration changes, and preserve RTP clock continuity when source sessions restart
+- Preserve all decoder parameter sets in offline, disabled and migration fallback video
+- Release cancelled or replaced outputs by exact owner, including their FFmpeg processes and talkback routing
+
+### Security
+
+- Redact HomeKit SRTP key material from FFmpeg command diagnostics
+
 ## v0.4.5-alpha.4 (2026/10/24)
 
 ### Changed

@@ -9,8 +9,10 @@
 // - Configure HomeKit CameraController or DoorbellController services
 // - Manage HomeKit live streaming and recording session requests
 // - Select and initialise the appropriate streaming backend (WebRTC or NexusTalk)
-// - Coordinate ffmpeg process plumbing for live streaming, talkback, and HKSV recording
+// - Translate HomeKit media requirements for Streamer-owned live and recording outputs
 // - Supply HomeKit return-audio routing to the Streamer-owned RTPMuxer
+// - Adapt bounded FFmpeg recording fragments to the HomeKit async generator
+// - Retain HomeKit session identity, port reservations and the live RTCP watchdog
 // - Handle motion events, cooldown timing, and Eve history integration
 // - Provide snapshot handling with fallback images
 // - Translate Nest / Google camera data into HomeKit-facing state
@@ -34,9 +36,10 @@
 // - Eve Home activity history integration when enabled
 //
 // Notes:
-// - Streamer owns source buffering, transport lifecycle, output pacing, and fallback video
+// - Streamer owns source retention, transport/output lifecycle, pacing, and fallback video
 // - Protocol-specific media transport is handled by StreamTransport implementations
-// - ffmpeg is used for HomeKit-compatible live streaming, talkback, and HKSV recording
+// - FFmpeg owns command construction, process lifecycle and MP4 fragment reading
+// - Recording keeps isLast false for the existing HAP-NodeJS workaround
 // - Motion events trigger HKSV recording and HomeKit automations
 // - Snapshot fallback images are used for offline, disabled, or migration states
 //
@@ -44,7 +47,6 @@
 'use strict';
 
 // Define nodejs module requirements
-import EventEmitter from 'node:events';
 import { Buffer } from 'node:buffer';
 import dgram from 'node:dgram';
 import fs from 'node:fs';
@@ -56,13 +58,7 @@ import Streamer from './camera/streamer.js';
 import NexusTalk from './camera/nexustalk.js';
 import WebRTC from './camera/webrtc.js';
 import FFmpeg from './camera/ffmpeg.js';
-import {
-  processSoftwareVersion,
-  parseDurationToSeconds,
-  scaleValue,
-  buildDeviceDescription,
-  UDPPorts,
-} from '../utils.js';
+import { processSoftwareVersion, parseDurationToSeconds, scaleValue, buildDeviceDescription, UDPPorts } from '../utils.js';
 import { buildMappedObject, createMappingContext } from '../translator.js';
 
 // Define constants
@@ -78,8 +74,6 @@ import {
   LOG_LEVELS,
 } from '../consts.js';
 
-const MP4BOX = 'mp4box';
-
 const STREAMING_PROTOCOL = {
   WEBRTC: 'PROTOCOL_WEBRTC',
   NEXUSTALK: 'PROTOCOL_NEXUSTALK',
@@ -92,7 +86,6 @@ const TRANSPORTS = {
 };
 
 const PREBUFFER_LENGTH = 4000;
-const V4L2_RECORDING_CAPTURE_BUFFERS = 32;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
@@ -135,12 +128,6 @@ export default class NestCamera extends HomeKitDevice {
     // Create ffmpeg object if have been told valid binary
     if (typeof this.deviceData?.ffmpeg?.binary === 'string' && this.deviceData?.ffmpeg?.valid === true) {
       this.ffmpeg = new FFmpeg(this.deviceData?.ffmpeg?.binary);
-      this.ffmpeg.on(FFmpeg.SESSION_EVENT.COMPLETE, (handle, result) => {
-        // EventEmitter notifications are synchronous; explicitly observe asynchronous accessory cleanup.
-        this.#onFFmpegComplete(handle, result).catch((error) => {
-          this?.log?.error?.('Failed to release ffmpeg camera resources: %s', error?.message ?? error);
-        });
-      });
     }
   }
 
@@ -721,236 +708,68 @@ export default class NestCamera extends HomeKitDevice {
 
     // Keep one owner through RTP preparation and process startup. HomeKit close
     // or shutdown can retire it before either asynchronous stage completes.
-    let recording = { ffmpeg: undefined };
+    let recording = { controller: new AbortController(), output: undefined };
+    this.#cleanupRecordingSession(sessionID);
     this.#recordingSessions.set(sessionID, recording);
-    let input = undefined;
+
     try {
-      ({ input } = await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_RECORD, {
+      recording.output = await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_RECORD, {
         sessionID,
-        options: { includeAudio: includeAudio === true, recordTime: Date.now() - PREBUFFER_LENGTH },
-      }));
+        options: {
+          includeAudio,
+          recordTime: Date.now() - PREBUFFER_LENGTH,
+          signal: recording.controller.signal,
+          onClose: (error) => {
+            if (error !== undefined) {
+              this.log?.error?.('Recording output for "%s" stopped: %s', this.deviceData.description, error.message);
+            }
+
+            // The core already owns teardown. Preserve unexpected parser errors;
+            // only a HomeKit cancellation should abort the fragment reader.
+            if (this.#recordingSessions.get(sessionID) === recording) {
+              this.#recordingSessions.delete(sessionID);
+            }
+          },
+        },
+      });
       if (this.#recordingSessions.get(sessionID) !== recording) {
-        // A late source may still need releasing, but never stop its replacement.
-        if (this.#recordingSessions.has(sessionID) === false) {
-          await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_RECORD, { sessionID });
-        }
+        await recording.output?.stop();
         return;
       }
-      if (input?.type !== 'rtp' || typeof input.url !== 'string') {
-        throw new Error('Recording source did not provide an RTP endpoint');
-      }
-    } catch (error) {
-      if (this.#recordingSessions.get(sessionID) === recording) {
-        this.#cleanupRecordingSession(sessionID, recording);
-        await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_RECORD, { sessionID });
-      }
-      throw error;
-    }
 
-    let encoding = this.ffmpeg.getH264EncoderOptions(this.deviceData?.ffmpeg?.hwaccel === true);
-    let commandLine = [
-      '-hide_banner',
-      '-nostats',
-      ...encoding.inputArguments,
-      '-copyts',
-      '-fflags',
-      this.streamer.codecs.audio === Streamer.CODEC_TYPE.AAC ? '+discardcorrupt+genpts' : '+discardcorrupt+genpts+nofillin',
-      '-avoid_negative_ts',
-      'make_zero',
-      '-max_delay',
-      '500000',
-      '-flags',
-      'low_delay',
-
-      // Both source tracks share the RTP timeline; encoding below still produces
-      // HomeKit's requested CFR H264 and AAC-LC fragmented MP4.
-      '-rtsp_transport',
-      'tcp',
-      '-i',
-      input.url,
-
-      // Video output including hardware acceleration if available
-      '-map',
-      '0:v:0',
-
-      '-codec:v',
-      encoding.codec,
-
-      // Extra V4L2 capture buffers prevent the Raspberry Pi encoder from stalling during HKSV recordings.
-      ...(encoding.codec === 'h264_v4l2m2m' ? ['-num_capture_buffers', V4L2_RECORDING_CAPTURE_BUFFERS.toString()] : []),
-
-      '-profile:v',
-      this.#recordingConfig.videoCodec.parameters.profile === this.hap.H264Profile.HIGH
-        ? encoding.codec === 'h264_v4l2m2m'
-          ? '100'
-          : 'high'
-        : this.#recordingConfig.videoCodec.parameters.profile === this.hap.H264Profile.MAIN
-          ? encoding.codec === 'h264_v4l2m2m'
-            ? '77'
-            : 'main'
-          : encoding.codec === 'h264_v4l2m2m'
-            ? '66'
-            : 'baseline',
-
-      // V4L2 uses numeric profiles and does not apply an explicit H264 level.
-      ...(encoding.codec === 'h264_v4l2m2m'
-        ? []
-        : [
-            '-level:v',
-            this.#recordingConfig.videoCodec.parameters.level === this.hap.H264Level.LEVEL4_0
-              ? '4.0'
-              : this.#recordingConfig.videoCodec.parameters.level === this.hap.H264Level.LEVEL3_2
-                ? '3.2'
-                : '3.1',
-          ]),
-
-      ...encoding.outputArguments,
-
-      '-filter:v',
-      'fps=fps=' + this.#recordingConfig.videoCodec.resolution[2] + ',' + encoding.filter,
-      '-fps_mode',
-      'cfr',
-      '-g:v',
-      Math.max(
-        1,
-        Math.round((this.#recordingConfig.videoCodec.resolution[2] * this.#recordingConfig.videoCodec.parameters.iFrameInterval) / 1000),
-      ).toString(),
-      '-b:v',
-      Math.round(this.#recordingConfig.videoCodec.parameters.bitRate * 2) + 'k',
-      '-maxrate',
-      Math.round(this.#recordingConfig.videoCodec.parameters.bitRate * 2) + 'k',
-      '-bufsize',
-      Math.round(this.#recordingConfig.videoCodec.parameters.bitRate * 4) + 'k',
-      '-video_track_timescale',
-      '90000',
-      '-movflags',
-      'frag_keyframe+empty_moov+delay_moov+default_base_moof',
-
-      // Fragmented MP4 can rebase a later audio start to zero. Pad that initial
-      // gap with samples so HKSV retains A/V alignment without async clock correction.
-      // Audio output
-      ...(includeAudio === true
-        ? [
-            '-map',
-            '0:a:0',
-            '-codec:a',
-            'libfdk_aac',
-            '-profile:a',
-            'aac_low',
-            '-ar',
-            '16000',
-            '-b:a',
-            '16k',
-            '-ac',
-            '1',
-            '-filter:a',
-            'aresample=first_pts=0',
-          ]
-        : []),
-
-      '-f',
-      'mp4',
-      'pipe:1',
-    ];
-
-    // FFmpeg reads RTP over TCP and writes fragmented MP4 on stdout.
-    this?.log?.debug?.(
-      'ffmpeg process for recording stream from "%s" will be called using the following commandline: %s',
-      this.deviceData.description,
-      commandLine.join(' '),
-    );
-
-    let ffmpegStream = undefined;
-    try {
-      ffmpegStream = this.ffmpeg.start({
-        id: 'record:' + sessionID,
-        args: commandLine,
-
-        onStderr:
-          this.deviceData.ffmpeg.debug === true
-            ? (data) => {
-                if (data.toString().includes('frame=') === false) {
-                  this?.log?.debug?.(data.toString());
-                }
-              }
-            : undefined,
+      let config = this.#recordingConfig.videoCodec;
+      recording.output.start(this.ffmpeg, {
+        video: {
+          ...this.#homeKitVideo(config.parameters),
+          fps: config.resolution[2],
+          iFrameInterval: config.parameters.iFrameInterval,
+          bitRate: config.parameters.bitRate,
+        },
+        includeAudio,
+        sourceAudio: this.streamer.codecs.audio,
+        hardware: this.deviceData.ffmpeg.hwaccel === true,
+        onCommand: (kind, args) => this.#logCommand(kind, args),
+        onStderr: (data) => {
+          if (this.deviceData.ffmpeg.debug === true && data.toString().includes('frame=') === false) {
+            this.log?.debug?.(data.toString());
+          }
+        },
       });
-    } catch (error) {
-      // Retire this attempt before releasing its prepared source.
-      if (this.#recordingSessions.get(sessionID) === recording) {
-        this.#cleanupRecordingSession(sessionID, recording);
-        await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_RECORD, { sessionID });
+      this.log?.info?.('Started recording from "%s" %s', this.deviceData.description, includeAudio === false ? 'without audio' : '');
+
+      // Keep isLast false for HAP-NodeJS issue #966. The readable owns stdout
+      // backpressure and drains complete fragments even after FFmpeg exits.
+      for await (let data of recording.output.fragments()) {
+        yield { data, isLast: false };
       }
-      throw error;
-    }
-    recording.ffmpeg = ffmpegStream;
-
-    let buffer = Buffer.alloc(0);
-    let mp4boxes = [];
-
-    ffmpegStream?.stdout?.on?.('data', (chunk) => {
-      buffer = Buffer.concat([buffer, chunk]);
-
-      while (buffer.length >= 8) {
-        let boxSize = buffer.readUInt32BE(0);
-        if (boxSize < 8 || buffer.length < boxSize) {
-          // We don't have enough data in the buffer yet to process the full mp4 box
-          // so, exit loop and await more data
-          break;
-        }
-
-        let boxType = buffer.subarray(4, 8).toString();
-
-        // Add it to our queue to be pushed out through the generator function.
-        mp4boxes.push({
-          header: buffer.subarray(0, 8),
-          type: boxType,
-          data: buffer.subarray(8, boxSize),
-        });
-
-        buffer = buffer.subarray(boxSize);
-        this.emit(MP4BOX);
-      }
-    });
-
-    this?.log?.info?.('Started recording from "%s" %s', this.deviceData.description, includeAudio === false ? 'without audio' : '');
-
-    // Loop generating MOOF/MDAT box pairs for HomeKit Secure Video.
-    // HAP-NodeJS cancels this async generator function when recording completes also
-    let segment = [];
-    for (;;) {
-      if (ffmpegStream.active === false) {
-        break;
-      }
-
-      if (mp4boxes.length === 0) {
-        await EventEmitter.once(this, MP4BOX);
-
-        if (ffmpegStream.active === false) {
-          break;
-        }
-
-        if (mp4boxes.length === 0) {
-          continue;
-        }
-      }
-
-      let box = mp4boxes.shift();
-      if (box === undefined) {
-        continue;
-      }
-
-      segment.push(box.header, box.data);
-
-      if (box.type === 'moov' || box.type === 'mdat') {
-        yield { data: Buffer.concat(segment), isLast: false };
-        segment = [];
-      }
+    } finally {
+      this.#cleanupRecordingSession(sessionID, recording);
+      await recording.output?.stop();
     }
   }
 
   async closeRecordingStream(sessionID, closeReason) {
-    // Relinquish process ownership before awaiting source teardown, as live STOP already does.
+    // Cancel the exact HomeKit recording owner before awaiting source teardown.
     this.#cleanupRecordingSession(sessionID);
     await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_RECORD, {
       sessionID: sessionID,
@@ -1141,306 +960,111 @@ export default class NestCamera extends HomeKitDevice {
           (this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.OPUS && this.ffmpeg.supportsEncoder('libopus') === true));
 
       // Start the live streamer process
-      let { talkback, input, ports } = await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_LIVE, {
-        sessionID: request.sessionID,
-        options: {
-          includeAudio: includeAudio === true,
-          // Bind return-audio routing with this output before either FFmpeg process starts.
-          talkback:
-            enableTalkback === true
+      try {
+        session.controller = new AbortController();
+        session.output = await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_LIVE, {
+          sessionID: request.sessionID,
+          options: {
+            includeAudio,
+            talkback: enableTalkback === true ? { port: session.rtpSplitterPort, payloadType: request.audio.pt } : undefined,
+            waitForReady: 2000,
+            signal: session.controller.signal,
+            onClose: (error) => {
+              if (this.#liveSessions.get(request.sessionID) !== session) {
+                return;
+              }
+              if (error !== undefined) {
+                this.log?.error?.('Live output for "%s" stopped: %s', this.deviceData.description, error.message);
+              }
+              this.#cleanupLiveSession(request.sessionID);
+              this.controller?.forceStopStreamingSession?.(request.sessionID);
+            },
+          },
+        });
+        if (this.#liveSessions.get(request.sessionID) !== session) {
+          await session.output?.stop();
+          return callback?.();
+        }
+        session.output.start(this.ffmpeg, {
+          video: {
+            ...this.#homeKitVideo(request.video),
+            bitRate: request.video.max_bit_rate,
+            payloadType: request.video.pt,
+            mtu: request.video.mtu,
+          },
+          audio:
+            includeAudio === true
               ? {
-                  port: session.rtpSplitterPort,
+                  codec: request.audio.codec === this.hap.AudioStreamingCodecType.AAC_ELD ? 'aac-eld' : 'opus',
+                  sampleRate: request.audio.sample_rate * 1000,
+                  bitRate: request.audio.max_bit_rate,
+                  channels: request.audio.channel,
+                  packetTime: request.audio.packet_time,
                   payloadType: request.audio.pt,
                 }
               : undefined,
-          waitForReady: 2000, // Timeout to wait for source_ready before starting ffmpeg process
-        },
-      });
-
-      // STOP or re-prepare may have taken ownership while source startup was awaiting readiness.
-      if (this.#liveSessions.get(request.sessionID) !== session) {
-        if (this.#liveSessions.has(request.sessionID) === false) {
-          // Source connection may have completed after STOP, creating a late output to release.
-          await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_LIVE, { sessionID: request.sessionID });
-        }
-        return callback?.();
-      }
-
-      // Build our ffmpeg command string for the liveview video/audio stream
-      let encoding = this.ffmpeg.getH264EncoderOptions(this.deviceData?.ffmpeg?.hwaccel === true);
-      let commandLine = [
-        '-hide_banner',
-        '-nostats',
-        ...(this.deviceData?.ffmpeg?.transcode === true ? encoding.inputArguments : []),
-
-        // RTP timestamps already use a common zero-based source clock.
-        '-copyts',
-
-        '-fflags',
-        // AAC needs its fixed sample duration to recover the first parser timestamp.
-        // Opus/PCM avoid inference from nominal video FPS while retaining RTP timing.
-        this.streamer.codecs.audio !== Streamer.CODEC_TYPE.AAC ? '+discardcorrupt+genpts+nofillin' : '+discardcorrupt+genpts',
-        '-avoid_negative_ts',
-        'make_zero',
-        '-max_delay',
-        '500000',
-        '-flags',
-        'low_delay',
-
-        // Bound startup analysis once timed RTP media is available.
-        '-analyzeduration',
-        '500000',
-
-        // RTSP negotiates readiness and carries both tracks in one timed input.
-        '-rtsp_transport',
-        'tcp',
-        '-i',
-        input.url,
-
-        // Video output
-        '-map',
-        '0:v:0',
-
-        ...(this.deviceData?.ffmpeg?.transcode === true
-          ? [
-              '-codec:v',
-              encoding.codec,
-
-              '-profile:v',
-              request.video.profile === this.hap.H264Profile.HIGH
-                ? encoding.codec === 'h264_v4l2m2m'
-                  ? '100'
-                  : 'high'
-                : request.video.profile === this.hap.H264Profile.MAIN
-                  ? encoding.codec === 'h264_v4l2m2m'
-                    ? '77'
-                    : 'main'
-                  : encoding.codec === 'h264_v4l2m2m'
-                    ? '66'
-                    : 'baseline',
-
-              // V4L2 uses numeric profiles and does not apply an explicit H264 level.
-              ...(encoding.codec === 'h264_v4l2m2m'
-                ? []
-                : [
-                    '-level:v',
-                    request.video.level === this.hap.H264Level.LEVEL4_0
-                      ? '4.0'
-                      : request.video.level === this.hap.H264Level.LEVEL3_2
-                        ? '3.2'
-                        : '3.1',
-                  ]),
-
-              ...encoding.outputArguments,
-
-              '-filter:v',
-              encoding.filter,
-              '-fps_mode',
-              'passthrough',
-              '-g:v',
-              '15',
-              '-b:v',
-              Math.round(request.video.max_bit_rate * 1.25) + 'k',
-              '-maxrate',
-              Math.round(request.video.max_bit_rate * 1.25) + 'k',
-              '-bufsize',
-              Math.round(request.video.max_bit_rate * 2.5) + 'k',
-            ]
-          : ['-codec:v', 'copy', '-fps_mode', 'passthrough']),
-
-        '-video_track_timescale',
-        '90000',
-        '-payload_type',
-        request.video.pt,
-        '-ssrc',
-        session.videoSSRC,
-        '-f',
-        'rtp',
-        '-srtp_out_suite',
-        this.hap.SRTPCryptoSuites[session.videoCryptoSuite],
-        '-srtp_out_params',
-        session.videoSRTP.toString('base64'),
-        'srtp://' + session.address + ':' + session.videoPort + '?rtcpport=' + session.videoPort + '&pkt_size=' + request.video.mtu,
-
-        // Preserve RTP audio timing without padding or trimming audio to start at zero.
-        // Audio output (if enabled)
-        ...(includeAudio === true
-          ? request.audio.codec === this.hap.AudioStreamingCodecType.AAC_ELD
-            ? ['-map', '0:a:0', '-codec:a', 'libfdk_aac', '-profile:a', 'aac_eld']
-            : request.audio.codec === this.hap.AudioStreamingCodecType.OPUS
-              ? [
-                  '-map',
-                  '0:a:0',
-                  '-codec:a',
-                  'libopus',
-                  '-application',
-                  'lowdelay',
-                  '-frame_duration',
-                  request.audio.packet_time.toString(),
-                ]
-              : []
-          : []),
-
-        // Shared audio output params
-        ...(includeAudio === true
-          ? [
-              '-flags',
-              '+global_header',
-              '-ar',
-              request.audio.sample_rate.toString() + 'k',
-              '-b:a',
-              request.audio.max_bit_rate + 'k',
-              '-ac',
-              request.audio.channel.toString(),
-              '-payload_type',
-              request.audio.pt,
-              '-ssrc',
-              session.audioSSRC,
-              '-f',
-              'rtp',
-              '-srtp_out_suite',
-              this.hap.SRTPCryptoSuites[session.audioCryptoSuite],
-              '-srtp_out_params',
-              session.audioSRTP.toString('base64'),
-              'srtp://' +
-                session.address +
-                ':' +
-                session.audioPort +
-                '?rtcpport=' +
-                session.audioPort +
-                '&localrtcpport=' +
-                ports.audioControl +
-                '&pkt_size=188',
-            ]
-          : []),
-      ];
-
-      this?.log?.debug?.(
-        'ffmpeg process for live streaming from "%s" will be called using the following commandline: %s',
-        this.deviceData.description,
-        commandLine.join(' '),
-      );
-
-      // Launch the ffmpeg process for streaming and connect it to streamer input/output
-      let ffmpegStream = this.ffmpeg.start({
-        id: 'live:' + request.sessionID,
-        args: commandLine,
-        onStderr: (data) => {
-          if (data.toString().includes('frame=') === false && this.deviceData.ffmpeg.debug === true) {
-            this?.log?.debug?.(data.toString());
-          }
-        },
-      });
-      session.ffmpeg = ffmpegStream;
-
-      let ffmpegTalk = null; // No ffmpeg session for talkback yet
-      if (typeof talkback?.write === 'function') {
-        if (enableTalkback === true) {
-          let talkbackCommandLine = [
-            '-hide_banner',
-            '-nostats',
-            '-protocol_whitelist',
-            'pipe,udp,rtp',
-            '-f',
-            'sdp',
-            // HomeKit sends microphone audio only while Talk is active. Wait through idle periods;
-            // the live session STOP path and RTCP watchdog own process termination.
-            '-listen_timeout',
-            '0',
-            '-codec:a',
-            'libfdk_aac',
-            '-i',
-            'pipe:0',
-            '-map',
-            '0:a',
-            ...(this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.SPEEX
-              ? ['-codec:a', 'libspeex', '-frames_per_packet', '4', '-vad', '1', '-ac', '1', '-ar', '16k']
-              : []),
-            ...(this.streamer?.codecs?.talkback === Streamer.CODEC_TYPE.OPUS
-              ? ['-codec:a', 'libopus', '-application', 'lowdelay', '-ac', '2', '-ar', '48k']
-              : []),
-            '-f',
-            'data',
-            'pipe:1',
-          ];
-
-          this?.log?.debug?.(
-            'ffmpeg process for talkback on "%s" will be called using the following commandline: %s',
-            this.deviceData.description,
-            talkbackCommandLine.join(' '),
-          );
-
-          let sdp = [
-            'v=0',
-            'o=- 0 0 IN ' + (session.ipv6 ? 'IP6' : 'IP4') + ' ' + session.address,
-            's=HomeKit Audio Talkback',
-            'c=IN ' + (session.ipv6 ? 'IP6' : 'IP4') + ' ' + session.address,
-            't=0 0',
-            'm=audio ' + ports.talkback + ' RTP/AVP ' + request.audio.pt,
-            'b=AS:' + request.audio.max_bit_rate,
-            'a=ptime:' + request.audio.packet_time,
-          ];
-
-          if (request.audio.codec === this.hap.AudioStreamingCodecType.AAC_ELD) {
-            sdp.push(
-              'a=rtpmap:' + request.audio.pt + ' MPEG4-GENERIC/' + request.audio.sample_rate * 1000 + '/' + request.audio.channel,
-              'a=fmtp:' +
-                request.audio.pt +
-                ' profile-level-id=1;mode=AAC-hbr;sizelength=13;indexlength=3;indexdeltalength=3;config=F8F0212C00BC00',
-            );
-          }
-
-          if (request.audio.codec === this.hap.AudioStreamingCodecType.OPUS) {
-            sdp.push(
-              'a=rtpmap:' + request.audio.pt + ' opus/' + request.audio.sample_rate * 1000 + '/' + request.audio.channel,
-              'a=fmtp:' + request.audio.pt + ' minptime=10;useinbandfec=1',
-            );
-          }
-
-          sdp.push('a=crypto:1 ' + this.hap.SRTPCryptoSuites[session.audioCryptoSuite] + ' inline:' + session.audioSRTP.toString('base64'));
-          ffmpegTalk = this.ffmpeg.start({
-            id: 'talk:' + request.sessionID,
-            args: talkbackCommandLine,
-            inputs: { 0: sdp.join('\r\n') },
-            outputs: { 1: talkback },
-            onStderr: (data) => {
-              if (data.toString().includes('frame=') === false && this.deviceData.ffmpeg.debug === true) {
-                this?.log?.debug?.(data.toString());
-              }
-            },
-          });
-          session.ffmpegTalk = ffmpegTalk;
-        }
-      }
-
-      // Allow startup time for the first RTCP report, then require regular HomeKit feedback.
-      if (this.#liveSessions.get(request.sessionID) === session && session.rtcpSocket === undefined) {
-        let timer = 'live-rtcp-' + request.sessionID;
-        session.rtcpSocket = dgram.createSocket(session.address.includes(':') === true ? 'udp6' : 'udp4');
-        this.addTimer(timer, { delay: 30000, message: { sessionID: request.sessionID } });
-        session.rtcpSocket.on('message', (packet) => {
-          if (packet.length < 4 || packet[0] >> 6 !== 2 || packet[1] < 192 || packet[1] > 223) {
-            return;
-          }
-          this.addTimer(timer, {
-            delay: Math.max(10000, (request.video.rtcp_interval ?? 5) * 2000),
-            reset: true,
-            message: { sessionID: request.sessionID },
-          });
+          target: {
+            address: session.address,
+            videoPort: session.videoPort,
+            audioPort: session.audioPort,
+            videoSSRC: session.videoSSRC,
+            audioSSRC: session.audioSSRC,
+            videoSRTP: session.videoSRTP,
+            audioSRTP: session.audioSRTP,
+            videoSuite: this.hap.SRTPCryptoSuites[session.videoCryptoSuite],
+            audioSuite: this.hap.SRTPCryptoSuites[session.audioCryptoSuite],
+          },
+          sourceAudio: this.streamer.codecs.audio,
+          talkbackCodec: this.streamer.codecs.talkback,
+          hardware: this.deviceData.ffmpeg.hwaccel === true,
+          transcode: this.deviceData.ffmpeg.transcode === true,
+          onCommand: (kind, args) => this.#logCommand(kind, args),
+          onStderr: (data) => {
+            if (this.deviceData.ffmpeg.debug === true && data.toString().includes('frame=') === false) {
+              this.log?.debug?.(data.toString());
+            }
+          },
         });
-        session.rtcpSocket.on('error', (error) => {
-          // Leave the watchdog armed so a failed listener cannot leave a live session running indefinitely.
-          this?.log?.warn?.('Live stream RTCP listener failed on "%s": %s', this.deviceData.description, error.message);
-        });
-        session.rtcpSocket.bind(session.localVideoPort);
-      }
 
-      // We've started the live streaming session with or without two-way audio depending on configuration
-      this?.log?.info?.(
-        'Starting live stream from "%s"%s',
-        this.deviceData.description,
-        ffmpegTalk !== null ? ' (two-way audio enabled)' : '',
-      );
+        // Allow startup time for the first RTCP report, then require regular HomeKit feedback.
+        if (this.#liveSessions.get(request.sessionID) === session && session.rtcpSocket === undefined) {
+          let timer = 'live-rtcp-' + request.sessionID;
+          session.rtcpSocket = dgram.createSocket(session.address.includes(':') === true ? 'udp6' : 'udp4');
+          this.addTimer(timer, { delay: 30000, message: { sessionID: request.sessionID } });
+          session.rtcpSocket.on('message', (packet) => {
+            if (packet.length < 4 || packet[0] >> 6 !== 2 || packet[1] < 192 || packet[1] > 223) {
+              return;
+            }
+            this.addTimer(timer, {
+              delay: Math.max(10000, (request.video.rtcp_interval ?? 5) * 2000),
+              reset: true,
+              message: { sessionID: request.sessionID },
+            });
+          });
+          session.rtcpSocket.on('error', (error) => {
+            // Leave the watchdog armed so a failed listener cannot leave a live session running indefinitely.
+            this?.log?.warn?.('Live stream RTCP listener failed on "%s": %s', this.deviceData.description, error.message);
+          });
+          session.rtcpSocket.bind(session.localVideoPort);
+        }
+
+        // We've started the live streaming session with or without two-way audio depending on configuration
+        this?.log?.info?.(
+          'Starting live stream from "%s"%s',
+          this.deviceData.description,
+          enableTalkback === true ? ' (two-way audio enabled)' : '',
+        );
+      } catch (error) {
+        if (this.#liveSessions.get(request.sessionID) === session) {
+          this.#cleanupLiveSession(request.sessionID);
+        }
+        await session.output?.stop();
+        if (typeof callback === 'function') {
+          callback(error);
+          return;
+        }
+        throw error;
+      }
     }
 
     if (request.type === this.hap.StreamRequestTypes.STOP && session !== undefined) {
@@ -1624,70 +1248,23 @@ export default class NestCamera extends HomeKitDevice {
     });
   }
 
-  async #onFFmpegComplete(handle, { state, code, signal, error, expected }) {
-    // Wake generators for retired recordings too: their HomeKit owner may already have been replaced.
-    this.emit(MP4BOX);
-    if (expected === true) {
-      return;
-    }
+  #homeKitVideo(video) {
+    // HomeKit enums are interpreted here; encoder-specific values belong to FFmpeg.
+    return {
+      profile: video.profile === this.hap.H264Profile.HIGH ? 'high' : video.profile === this.hap.H264Profile.MAIN ? 'main' : 'baseline',
+      level: video.level === this.hap.H264Level.LEVEL4_0 ? '4.0' : video.level === this.hap.H264Level.LEVEL3_2 ? '3.2' : '3.1',
+    };
+  }
 
-    for (let [sessionID, recording] of this.#recordingSessions) {
-      if (recording.ffmpeg !== handle) {
-        continue;
-      }
-      if (state === FFmpeg.SESSION_STATE.FAILED) {
-        this?.log?.error?.(
-          'ffmpeg recording process for "%s" failed. Reason was "%s"',
-          this.deviceData.description,
-          error?.message ?? code ?? signal,
-        );
-      }
-      // Relinquish this exact owner before source teardown can yield to a replacement.
-      this.#cleanupRecordingSession(sessionID, recording);
-      try {
-        await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_RECORD, { sessionID });
-      } catch {
-        // Ignore errors if streamer already stopped.
-      }
-      return;
-    }
-
-    for (let [sessionID, session] of this.#liveSessions) {
-      let talkback = session.ffmpegTalk === handle;
-      if (session.ffmpeg !== handle && talkback === false) {
-        continue;
-      }
-      this?.log?.error?.(
-        'ffmpeg %s process for "%s" stopped unexpectedly. Reason was "%s"',
-        talkback === true ? 'talkback' : 'live streaming',
-        this.deviceData.description,
-        error?.message ?? code ?? signal,
-      );
-      // A clean exit can still mean an idle talkback receiver stopped; retain its explanation too.
-      let diagnosticLines = handle.diagnosticLines;
-      if (diagnosticLines.length > 0) {
-        this?.log?.error?.(
-          'Recent ffmpeg diagnostic lines for %s stream "%s": %s',
-          talkback === true ? 'talkback' : 'live',
-          this.deviceData.description,
-          diagnosticLines.join(' | '),
-        );
-      }
-      try {
-        await this.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_LIVE, { sessionID });
-      } catch {
-        // Ignore errors if streamer already stopped.
-      }
-      // Source teardown can yield to a replacement; only the original owner may close HomeKit resources.
-      if (
-        this.#liveSessions.get(sessionID) === session &&
-        (talkback === true ? session.ffmpegTalk === handle : session.ffmpeg === handle)
-      ) {
-        this.controller?.forceStopStreamingSession?.(sessionID);
-        this.#cleanupLiveSession(sessionID);
-      }
-      return;
-    }
+  #logCommand(kind, args) {
+    // Command diagnostics must never disclose HomeKit SRTP key material.
+    let safe = args.map((arg, index) => (args[index - 1] === '-srtp_out_params' ? '[redacted]' : arg));
+    this.log?.debug?.(
+      'ffmpeg process for %s from "%s" will be called using the following commandline: %s',
+      kind,
+      this.deviceData.description,
+      safe.join(' '),
+    );
   }
 
   #cleanupLiveSession(sessionID) {
@@ -1704,10 +1281,9 @@ export default class NestCamera extends HomeKitDevice {
     UDPPorts.release(session?.localVideoPort);
     UDPPorts.release(session?.rtpSplitterPort);
 
-    session?.ffmpegTalk?.stop('SIGKILL');
-    session?.ffmpeg?.stop('SIGKILL');
-
     this.#liveSessions.delete(sessionID);
+    session?.controller?.abort();
+    session?.output?.stop().catch((error) => this.log?.error?.('Live output cleanup failed: %s', error.message));
   }
 
   #cleanupRecordingSession(sessionID, owner) {
@@ -1715,10 +1291,10 @@ export default class NestCamera extends HomeKitDevice {
       if ((sessionID === undefined || id === sessionID) && (owner === undefined || recording === owner)) {
         // Detach ownership first: stopping a process can notify lifecycle listeners.
         this.#recordingSessions.delete(id);
-        recording.ffmpeg?.stop('SIGKILL');
+        recording.controller.abort();
+        recording.output?.stop().catch((error) => this.log?.error?.('Recording output cleanup failed: %s', error.message));
       }
     }
-    this.emit(MP4BOX);
   }
 }
 

@@ -19,8 +19,8 @@
 //   - STAP-A aggregation packets
 //   - FU-A fragmented NAL reassembly
 //   - RTX retransmission recovery
-// - Assemble each complete jitter group independently and emit Annex-B frames
-// - Inject SPS/PPS before IDR frames when required
+// - Assemble each complete jitter group independently and retain raw NAL buffers
+// - Retain SPS/PPS so each complete frame keeps its matching decoder configuration
 // - Preserve ordered native Opus audio for downstream Streamer outputs
 // - Inject media into Streamer for live streaming and HKSV recording
 // - Support two-way audio (talkback) via outbound RTP/Opus pipeline
@@ -48,10 +48,10 @@
 // - Audio remains compressed until FFmpeg performs the HomeKit codec conversion
 // - Emitted timestamps preserve RTP intervals; paired sender reports establish the A/V relationship
 // - Arrival time is an estimate until both sender reports are available; synchronization never rewinds either track
-// - Output playout timing, catch-up, and live latency policy are owned by Streamer
+// - Streamer owns retention and delivery pacing; source timestamps are not playout deadlines
 // - Incomplete keyframes and pathological access units are dropped/recovered locally rather than blocking the plugin process
 //
-// Code version 2026.10.23
+// Code version 2026.10.24
 // Mark Hulskamp
 'use strict';
 
@@ -1062,9 +1062,15 @@ export default class WebRTC extends StreamTransport {
   }
 
   #keyframeByteLimit() {
-    let spsInfo = H264.getSPSInfo(this.#tracks?.video?.h264?.lastSPS);
-    let width = this.video?.width ?? spsInfo?.width ?? 0;
-    let height = this.video?.height ?? spsInfo?.height ?? 0;
+    let width = this.video?.width;
+    let height = this.video?.height;
+
+    // Only startup needs SPS parsing before learned dimensions are available.
+    if (width === undefined || height === undefined) {
+      let spsInfo = H264.getSPSInfo(this.#tracks?.video?.h264?.lastSPS);
+      width ??= spsInfo?.width;
+      height ??= spsInfo?.height;
+    }
     let bitrate = Number.isFinite(this.video?.bitrate) === true ? this.video.bitrate : 0;
 
     // The first startup keyframe may arrive before StreamTransport has learned
@@ -1072,7 +1078,7 @@ export default class WebRTC extends StreamTransport {
     // high-resolution startup frames receive the same adaptive allowance.
     return Math.min(
       KEYFRAME_MAX_BYTES,
-      Math.max(KEYFRAME_DEFAULT_BYTES, width * height * KEYFRAME_BYTES_PER_PIXEL, (bitrate * KEYFRAME_BITRATE_SECONDS) / 8),
+      Math.max(KEYFRAME_DEFAULT_BYTES, (width ?? 0) * (height ?? 0) * KEYFRAME_BYTES_PER_PIXEL, (bitrate * KEYFRAME_BITRATE_SECONDS) / 8),
     );
   }
 
@@ -1171,7 +1177,7 @@ export default class WebRTC extends StreamTransport {
 
   #appendH264NalUnit(frame, nal) {
     let type = nal[0] & 0x1f;
-    let part = H264.wrapAnnexB(nal);
+    let part = nal;
 
     frame.parts.push(part);
     frame.bytes += part.length;
@@ -1436,7 +1442,7 @@ export default class WebRTC extends StreamTransport {
       return;
     }
 
-    // Reject known unusable frames before allocating their combined access unit.
+    // Reject known unusable frames before handing their NAL buffers to retention.
     // Delta frames do not need keyframe limits or another SPS parse.
     let keyframeByteLimit = pendingKeyFrame === true ? this.#keyframeByteLimit() : undefined;
     if (pendingKeyFrame === true && frame.bytes > keyframeByteLimit) {
@@ -1444,28 +1450,19 @@ export default class WebRTC extends StreamTransport {
       this.#requestVideoRecovery('oversized-keyframe');
       return;
     }
-    let accessUnit = H264.buildAccessUnit(frame.parts, {
-      keyFrame: pendingKeyFrame,
-      sps: h264.lastSPS,
-      pps: h264.lastPPS,
-    });
-    let data = accessUnit?.data;
-    let keyframeHasParameterSets = pendingKeyFrame === true && accessUnit?.hasParameterSets === true;
-    if (Buffer.isBuffer(data) !== true || data.length === 0) {
-      return;
-    }
-
+    let nals = frame.parts;
+    let keyframeHasParameterSets = Buffer.isBuffer(h264.lastSPS) === true && Buffer.isBuffer(h264.lastPPS) === true;
     // A complete IDR remains usable after slow delivery. Validate decoder
     // configuration and size here; incomplete-frame expiry belongs to jitter release.
     if (pendingKeyFrame === true) {
-      if (keyframeHasParameterSets !== true || data.length > keyframeByteLimit) {
+      if (keyframeHasParameterSets !== true || frame.bytes > keyframeByteLimit) {
         this.recordVideoDrop('invalid-keyframe');
 
         this?.log?.debug?.(
           'Dropping invalid keyframe for uuid "%s": rtpTs=%s bytes=%s hasParameterSets=%s limitBytes=%s',
           this.uuid,
           pendingRtpTimestamp,
-          data.length,
+          frame.bytes,
           keyframeHasParameterSets === true ? 'true' : 'false',
           keyframeByteLimit,
         );
@@ -1537,10 +1534,8 @@ export default class WebRTC extends StreamTransport {
       codecConfig: {
         sps: h264.lastSPS,
         pps: h264.lastPPS,
-        hasSPS: accessUnit?.hasSPS === true,
-        hasPPS: accessUnit?.hasPPS === true,
       },
-      data: data,
+      nals: nals,
     });
 
     this.markMediaFrame('video', { keyFrame: pendingKeyFrame === true });

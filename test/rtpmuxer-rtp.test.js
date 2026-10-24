@@ -485,3 +485,56 @@ test('decoded PCM formats are rejected at RTP output creation', () => {
     assert.throws(() => new RTPMuxer({ audio, writePacket: () => {} }), /supported mono\/stereo audio format/);
   }
 });
+
+test('a new source generation starts after the previous encoded audio unit ends', async () => {
+  let flow = setup({ audio: opus });
+  let packet = Buffer.from([0xf8, 0xff, 0xfe]); // One 20 ms Opus unit.
+  flow.audio(1000, packet);
+  let previous = flow.media('audio').at(-1).readUInt32BE(4);
+  flow.muxer.setSourceEpoch(0, 1);
+  flow.audio(0, packet);
+  let resumed = flow.media('audio').at(-1).readUInt32BE(4);
+  assert.equal((resumed - previous) >>> 0, 960);
+  await flow.muxer.close();
+});
+
+test('invalid source epochs do not poison subsequent RTP timestamps', async () => {
+  let flow = setup();
+  flow.muxer.setSourceEpoch(NaN, 1);
+  flow.video(20, [Buffer.from([0x61, 2])]);
+  assert.equal(flow.media('video').length, 4);
+  await flow.muxer.close();
+});
+
+test('shared normalized AAC keeps receiver packet limits and whole-batch validation local', async () => {
+  let { adts } = await import('./helpers/aac-fixtures.js');
+  let raw = Buffer.alloc(80, 0x21);
+  let batch = RTPMuxer.normalizeAudio(adts(raw), 'aac');
+  let receivers = [];
+  for (let maxPacketBytes of [64, 1200]) {
+    let packets = [];
+    let muxer = new RTPMuxer({ audio: { codec: 'aac' }, maxPacketBytes, writePacket: (data) => packets.push(data) });
+    muxer.configureAudio(batch);
+    receivers.push({ muxer, packets });
+  }
+  assert.throws(() => receivers[0].muxer.writeAudio(batch, 0), /fragmentation/);
+  assert.equal(receivers[0].packets.length, 0);
+  assert.equal(receivers[0].muxer.closed, true);
+  receivers[1].muxer.writeAudio(batch, 0);
+  assert.equal(receivers[1].packets.length, 1);
+  assert.deepEqual(receivers[1].packets[0].subarray(16), raw);
+  assert.equal(receivers[1].muxer.closed, false);
+  await Promise.all(receivers.map(({ muxer }) => muxer.close()));
+});
+
+test('audio normalization rejects malformed or mixed-format AAC batches before fan-out', async () => {
+  let { adts } = await import('./helpers/aac-fixtures.js');
+  let first = adts(Buffer.from([0x21, 1]));
+  for (let [data, error] of [
+    [Buffer.concat([first, first.subarray(0, 8)]), /Truncated/],
+    [Buffer.concat([first, adts(Buffer.from([0x21, 2]), { frequency: 4 })]), /format changed/],
+    [Buffer.concat(Array(257).fill(first)), /Too many/],
+  ]) {
+    assert.throws(() => RTPMuxer.normalizeAudio(data, 'aac'), error);
+  }
+});
