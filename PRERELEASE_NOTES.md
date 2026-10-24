@@ -14,6 +14,7 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
 ### Fixed
 
+- Fix Node.js 26 release validation for shared talkback streams and stabilize time-sensitive Eve configuration tests
 - Set live-view AAC-ELD audio to HomeKit's required 480-sample blocks instead of the encoder's 512-sample default
 - Replay recording prebuffer audio and video in source-time order, excluding audio before the recording's first video keyframe
 
@@ -23,7 +24,7 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
 - Rework the camera pipeline around bounded audio/video retention and independently owned live-view and recording outputs, keeping WebRTC and NexusTalk as separate source transports
 - Retain H264 NAL data and decoder configuration once across viewers, removing repeated access-unit construction and parsing
-- Normalize compressed audio once before sharing it with live views and recordings, retaining source timing and receiver-specific packet limits
+- Normalise compressed audio once before sharing it with live views and recordings, retaining source timing and receiver-specific packet limits
 - Move FFmpeg command construction and bounded MP4 fragment reading out of Camera, preserving HomeKit recording and A/V timing requirements
 
 ### Fixed
@@ -60,7 +61,7 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 - Reset audio-gap diagnostics between camera sessions so idle time is not reported as a playback stall
 - Preserve NexusTalk's reported audio/video start offsets instead of limiting them to 250 ms
 - Preserve source presentation times through streaming instead of repairing each track with estimated frame durations
-- Synchronize WebRTC audio/video using paired RTCP sender reports when available, retaining fractional RTP timing
+- Synchronise WebRTC audio/video using paired RTCP sender reports when available, retaining fractional RTP timing
 - Preserve recording A/V alignment when audio starts later than video, preventing audio from playing several seconds ahead in HKSV clips
 
 ## v0.4.5-alpha.3 (2026/10/23)
@@ -117,7 +118,7 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 - Remove the `@evan/opus` dependency; FFmpeg now handles the required Opus decoding
 - Read NexusTalk AAC settings from the incoming audio headers and carry the audio alongside video through the same RTP connection
 - Remove the raw-pipe output backend; Streamer now manages an independent RTP output for each viewer or recording, sharing source buffering while retaining prebuffer playback, pacing, decoder startup and session cleanup
-- Normalize incoming media once in StreamTransport before Streamer retains and schedules it, removing duplicate codec, timestamp and sequence fallback handling
+- Normalise incoming media once in StreamTransport before Streamer retains and schedules it, removing duplicate codec, timestamp and sequence fallback handling
 - Track preparing and active stream outputs in one registry, sharing setup promises and retaining exact ownership through cancellation, replacement and shutdown
 - Consolidate pending and running HKSV recording ownership into one registry, preserving cancellation and exact-process generator ownership
 - Define shared encoder tuning in FFmpeg while retaining separate live-stream and recording output settings

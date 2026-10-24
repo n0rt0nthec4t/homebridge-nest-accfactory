@@ -931,9 +931,11 @@ test('stopping one process preserves a shared talkback destination and replaceme
   let talkback = new PassThrough();
   let first = ffmpeg.start({ id: 'talk', input: 'first SDP', output: talkback });
   let replacement = ffmpeg.start({ id: 'talk', input: 'replacement SDP', output: talkback });
+  // Verify each writer independently; read() need not coalesce buffered chunks.
   first.stdout.write('first');
+  assert.equal(talkback.read().toString(), 'first');
   replacement.stdout.write('replacement');
-  assert.equal(talkback.read().toString(), 'firstreplacement');
+  assert.equal(talkback.read().toString(), 'replacement');
   let finished = first.stop('SIGKILL');
   first.stdout.write('stopped');
   replacement.stdout.write('still connected');
