@@ -42,6 +42,36 @@ This project exposes device functionality through HomeKit services and character
 
 Custom characteristics must accurately represent the underlying device capability and use appropriate identifiers, data types, permissions and values.
 
+New plugin-owned custom HomeKit types use UUID v5 with the permanent project
+namespace `FBDB87BD-3DCF-5B78-9699-80FA1610AEA1`, stored privately in `src/consts.js`.
+It was generated once from `uuidv5('homebridge-nest-accfactory', uuidv5.DNS)`.
+Keep the stored namespace unchanged even if the project is renamed.
+
+Derive each type UUID from a permanent, case-sensitive identifier such as
+`characteristic.replace-by-date`. Use `characteristic.` for characteristic types
+and `service.` for service types, keeping their identities separate. Display
+names, device identifiers and translated text must not be used as generation
+inputs. Renaming a generation identifier changes its UUID, so keep identifiers
+and their meaning permanent even when a type is renamed for display or retired.
+
+Record built-in characteristic UUIDs in `CUSTOM_CHARACTERISTIC_UUID` and import
+its named exports from device plugins. For example:
+
+```js
+REPLACE_BY_DATE: uuidv5('characteristic.replace-by-date', CUSTOM_UUID_NAMESPACE).toUpperCase(),
+```
+
+The catalogue below documents existing types; numeric allocation is unnecessary.
+Retain retired entries and identifiers to prevent their reuse. Independent
+third-party addons must define their own permanent namespace unless their type
+is explicitly included in this project. Existing Apple, Eve and other established
+third-party UUIDs retain their original identifiers. HomeKitDevice accepts supplied
+UUIDs and does not generate project-specific identities.
+
+| Permanent identifier | Registry name | UUID | Purpose | Status |
+| --- | --- | --- | --- | --- |
+| `characteristic.replace-by-date` | `REPLACE_BY_DATE` | `391ED041-9783-577A-81EB-4B6BFEE97869` | Reported device replacement date, exposed as a read-only local date string | Active |
+
 Where no appropriate HomeKit representation exists, do not expose the functionality through an unrelated service or characteristic:
 
 - Do not create artificial switches, outlets, lights or other unrelated services to work around missing native HomeKit functionality.

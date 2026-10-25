@@ -11,6 +11,7 @@
 // - Monitor battery status and low battery conditions
 // - Report device status (online/offline, fault conditions)
 // - Record event history for Eve Home integration
+// - Expose the reported replacement date as a read-only, locally formatted string
 //
 // Services:
 // - SmokeSensor
@@ -43,7 +44,7 @@ import { processSoftwareVersion, scaleValue, buildDeviceDescription } from '../u
 import { buildMappedObject, createMappingContext } from '../translator.js';
 
 // Define constants
-import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from '../consts.js';
+import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE, CUSTOM_CHARACTERISTIC_UUID } from '../consts.js';
 
 function hasSafetySummaryFailure(raw, failureType) {
   if (typeof failureType !== 'string' || failureType.trim() === '') {
@@ -59,7 +60,7 @@ function hasSafetySummaryFailure(raw, failureType) {
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.PROTECT;
-  static VERSION = '2026.10.18'; // Code version
+  static VERSION = '2026.10.25'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -83,6 +84,11 @@ export default class NestProtect extends HomeKitDevice {
 
     this.addCharacteristic(this.smokeService, this.hap.Characteristic.StatusActive);
     this.addCharacteristic(this.smokeService, this.hap.Characteristic.StatusFault);
+    this.addCharacteristic(this.smokeService, {
+      name: 'Replace By Date',
+      uuid: CUSTOM_CHARACTERISTIC_UUID.REPLACE_BY_DATE,
+      props: { format: this.hap.Formats.STRING, perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.NOTIFY] },
+    });
 
     // Setup the carbon monoxide service if not already present on the accessory
     this.carbonMonoxideService = this.addService(this.hap.Service.CarbonMonoxideSensor, '', 1);
@@ -144,6 +150,17 @@ export default class NestProtect extends HomeKitDevice {
     this.batteryService.updateCharacteristic(this.hap.Characteristic.ChargingState, this.hap.Characteristic.ChargingState.NOT_CHARGEABLE);
 
     let isProtectActive = deviceData.online === true && Math.floor(Date.now() / 1000) <= deviceData.replacement_date;
+
+    // Update Protect replacement date.
+    let date =
+      Number.isFinite(deviceData.replacement_date) === true && deviceData.replacement_date > 0
+        ? new Date(deviceData.replacement_date * 1000)
+        : undefined;
+    let replacementDate =
+      date === undefined || Number.isFinite(date.getTime()) !== true
+        ? 'Unavailable'
+        : date.toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
+    this.smokeService.updateCharacteristic(this.hap.Characteristic.ReplaceByDate, replacementDate);
 
     // Update smoke details
     // If Protect isn't online, replacement date has passed, or smoke self-test failed, report fault in HomeKit

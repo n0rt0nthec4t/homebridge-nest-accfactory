@@ -21,22 +21,34 @@
 // - Resource paths and fallback H264 frames for offline states
 // - Temperature, elevation, and duration constraints
 // - Logging levels and shared redaction text
+// - Stable UUID namespace for plugin-owned custom HomeKit types
 //
 // Notes:
-// - This module contains no runtime logic — constants only
+// - Values, including deterministic custom UUIDs, are defined once at module load
 // - Imported throughout the codebase for consistency and reuse
 // - Changes here may affect multiple subsystems (devices, streaming, APIs)
 //
-// Code version 2026.10.24
+// Code version 2026.10.25
 // Mark Hulskamp
 'use strict';
 
 // Define nodejs module requirements
 import path from 'node:path';
 import url from 'node:url';
+import { v5 as uuidv5 } from 'uuid';
 
 // Define constants
 export const MIN_NODE_VERSION = 22; // Minimum required Node.js version
+
+// Permanent project namespace: uuidv5('homebridge-nest-accfactory', uuidv5.DNS).
+// Keep this value if the project is renamed; existing HomeKit identities must stay stable.
+const CUSTOM_UUID_NAMESPACE = 'FBDB87BD-3DCF-5B78-9699-80FA1610AEA1';
+
+export const CUSTOM_CHARACTERISTIC_UUID = {
+  // Permanent type names are separate from display names. Never rename or reuse them.
+  // This catalogue records built-in types; independent addons use their own namespace.
+  REPLACE_BY_DATE: uuidv5('characteristic.replace-by-date', CUSTOM_UUID_NAMESPACE).toUpperCase(),
+};
 
 export const TIMERS = {
   CAMERA_EVENTS: { name: 'camera_events', interval: 2000 }, // Camera events polling interval (ms)

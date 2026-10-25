@@ -156,6 +156,15 @@ for (let [type, expected] of [
 
 let protectGoogle = fixtures.find((fixture) => fixture.name === 'protect' && fixture.source !== DATA_SOURCE.NEST);
 let protectNest = fixtures.find((fixture) => fixture.name === 'protect' && fixture.source === DATA_SOURCE.NEST);
+test('Protect preserves the reported replacement timestamp from both Google and Nest', () => {
+  let timestamp = Date.UTC(2030, 9, 25) / 1000;
+  let google = setup(protectGoogle, { legacy_protect_device_settings: { replaceByDate: { seconds: String(timestamp) } } });
+  let nest = setup(protectNest, { replace_by_date_utc_secs: timestamp });
+  for (let flow of [google, nest]) {
+    assert.equal(Object.values(flow.run())[0].data.replacement_date, timestamp);
+  }
+});
+
 for (let generation of [1, 2]) {
   for (let wired of [true, false]) {
     test('Protect model identification across both APIs: generation=' + generation + ', wired=' + wired, () => {

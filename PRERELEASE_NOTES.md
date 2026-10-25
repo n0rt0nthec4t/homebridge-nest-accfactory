@@ -4,6 +4,17 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.5-alpha.7 (2026/10/xx)
+
+### Added
+
+- Add a read-only, locally formatted Replace By Date characteristic to Nest Protect's primary smoke service, refreshed with device updates and showing `Unavailable` when the date is missing or invalid
+
+### Changed
+
+- Generate plugin-owned custom HomeKit UUIDs with UUID v5 using a permanent project namespace and stable type identifiers
+- Update HomeKitDevice to `2026.10.25`, supporting custom characteristic definitions through its existing API while preserving existing UUIDs and cached instances
+
 ## v0.4.5-alpha.6 (2026/10/25)
 
 ### Changed

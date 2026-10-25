@@ -9,7 +9,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { importSource } from './helpers/import-source.js';
 import HomeKitDevice from '../src/HomeKitDevice/HomeKitDevice.js';
-import { LOW_BATTERY_LEVEL } from '../src/consts.js';
+import { LOW_BATTERY_LEVEL, CUSTOM_CHARACTERISTIC_UUID } from '../src/consts.js';
 
 let C = hap.Characteristic;
 let classes = {};
@@ -222,6 +222,75 @@ for (let wired of [true, false]) {
     });
   }
 }
+
+test('Protect exposes its replacement date as a read-only local string and preserves cached identity', async (context) => {
+  let timestamp = Date.UTC(2030, 9, 25, 12) / 1000;
+  let flow = await setup(context, 'protect', { replacement_date: timestamp });
+  await flow.device.onUpdate(flow.device.deviceData);
+  let type = C.ReplaceByDate;
+  let service = flow.device.smokeService;
+  let characteristic = service.getCharacteristic(type);
+  assert.equal(type.UUID, CUSTOM_CHARACTERISTIC_UUID.REPLACE_BY_DATE);
+  assert.equal(characteristic.displayName, 'Replace By Date');
+  assert.equal(characteristic.getHandler, undefined);
+  assert.equal(
+    characteristic.value,
+    new Date(timestamp * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }),
+  );
+  assert.equal(characteristic.props.format, hap.Formats.STRING);
+  assert.deepEqual(characteristic.props.perms, [hap.Perms.PAIRED_READ, hap.Perms.NOTIFY]);
+  assert.equal(characteristic.props.perms.includes(hap.Perms.PAIRED_WRITE), false);
+  assert.equal(
+    await characteristic.handleGetRequest(),
+    new Date(timestamp * 1000).toLocaleDateString(undefined, {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    }),
+  );
+  await flow.device.update({ replacement_date: timestamp + 86400 });
+  assert.equal(
+    await characteristic.handleGetRequest(),
+    new Date((timestamp + 86400) * 1000).toLocaleDateString(undefined, {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    }),
+  );
+  await flow.device.onAdd();
+  assert.equal(flow.device.smokeService, service);
+  assert.equal(service.getCharacteristic(type), characteristic);
+  assert.equal(service.characteristics.filter((item) => item.UUID === type.UUID).length, 1);
+  assert.equal(flow.device.carbonMonoxideService.testCharacteristic(type), false);
+  let second = await setup(context, 'protect', { replacement_date: timestamp });
+  assert.equal(C.ReplaceByDate, type);
+  assert.equal(second.device.smokeService.getCharacteristic(type).UUID, characteristic.UUID);
+  assert.deepEqual(flow.writes, []);
+  assert.deepEqual(flow.warnings, []);
+});
+
+test('Protect stores Unavailable for unknown replacement dates and recovers on the next valid update', async (context) => {
+  for (let replacement_date of [undefined, null, 0, -1, NaN, Infinity, 'invalid', 1e20]) {
+    let flow = await setup(context, 'protect', { replacement_date });
+    await flow.device.onUpdate(flow.device.deviceData);
+    let characteristic = flow.device.smokeService.getCharacteristic(C.ReplaceByDate);
+    assert.equal(await characteristic.handleGetRequest(), 'Unavailable');
+    assert.equal(characteristic.statusCode, hap.HAPStatus.SUCCESS);
+    await flow.device.update({ replacement_date: Date.UTC(2030, 9, 25) / 1000 });
+    assert.equal(
+      characteristic.value,
+      new Date(Date.UTC(2030, 9, 25)).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }),
+    );
+    assert.equal(await characteristic.handleGetRequest(), characteristic.value);
+    // Undefined partial updates preserve known fields; null explicitly clears the date.
+    await flow.device.update({ replacement_date: replacement_date ?? null });
+    assert.equal(await characteristic.handleGetRequest(), 'Unavailable');
+    assert.equal(characteristic.statusCode, hap.HAPStatus.SUCCESS);
+    assert.equal(flow.device.smokeService.getCharacteristic(C.ReplaceByDate), characteristic);
+    assert.deepEqual(flow.writes, []);
+    assert.deepEqual(flow.warnings, []);
+  }
+});
 
 test('Heat Link updates temperature and boost independently, and restores optional capabilities', async (context) => {
   let flow = await setup(context, 'heatlink');
