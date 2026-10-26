@@ -28,7 +28,7 @@
 // - Imported throughout the codebase for consistency and reuse
 // - Changes here may affect multiple subsystems (devices, streaming, APIs)
 //
-// Code version 2026.10.25
+// Code version 2026.10.26
 // Mark Hulskamp
 'use strict';
 
