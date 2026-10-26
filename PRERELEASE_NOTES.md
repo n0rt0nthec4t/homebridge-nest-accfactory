@@ -6,6 +6,10 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
 ## v0.4.5-alpha.8 (2026/10/26)
 
+### Added
+
+- Expose thermostat Eco Mode On/Off through a custom characteristic for compatible HomeKit apps, scenes and automations
+
 ### Changed
 
 - Move media diagnostics from `supportDump` to FFmpeg debugging, with concise per-stream close summaries including audio clock/sample timing and process outcomes instead of the long streaming dump and routine FFmpeg stderr output

@@ -48,6 +48,7 @@ export const CUSTOM_CHARACTERISTIC_UUID = {
   // Permanent type names are separate from display names. Never rename or reuse them.
   // This catalogue records built-in types; independent addons use their own namespace.
   REPLACE_BY_DATE: uuidv5('characteristic.replace-by-date', CUSTOM_UUID_NAMESPACE).toUpperCase(),
+  ECO_MODE: uuidv5('characteristic.eco-mode', CUSTOM_UUID_NAMESPACE).toUpperCase(),
 };
 
 export const TIMERS = {

@@ -239,6 +239,8 @@ test('Eco translation normalises Observe states, including missing and unknown v
   delete flow.values.eco_mode_state;
   await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
   assert.equal(flow.device.deviceData.eco_mode, 'unknown');
+  let control = flow.device.thermostatService.getCharacteristic(hap.Characteristic.EcoMode);
+  await assert.rejects(control.handleGetRequest(), (error) => error === hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
   for (let [mode, expected] of [
     ['ECO_MODE_INACTIVE', 'off'],
     ['ECO_MODE_MANUAL_ECO', 'manual'],
@@ -250,6 +252,104 @@ test('Eco translation normalises Observe states, including missing and unknown v
   ]) {
     await flow.send([trait('DEVICE_THERMOSTAT', 'eco_mode_state', { ecoMode: mode })]);
     assert.equal(flow.device.deviceData.eco_mode, expected);
+    if (expected === 'unknown') {
+      await assert.rejects(control.handleGetRequest(), (error) => error === hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+      await assert.rejects(control.handleSetRequest(true), (error) => error === hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+    } else {
+      assert.equal(await control.handleGetRequest(), expected !== 'off');
+    }
+  }
+  assert.deepEqual(flow.commands, []);
+});
+
+test('Eco characteristic writes use the existing command path and publish accepted state', async (context) => {
+  let flow = await setup(context);
+  await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
+  let control = flow.device.thermostatService.getCharacteristic(hap.Characteristic.EcoMode);
+  let notifications = [];
+  control.on('change', (change) => notifications.push(change.newValue));
+  assert.equal(await control.handleGetRequest(), false);
+  for (let [value, mode] of [
+    [1, 'manual'],
+    [0, 'off'],
+  ]) {
+    await control.handleSetRequest(value, {});
+    assert.equal(flow.device.deviceData.eco_mode, mode);
+    assert.equal(await control.handleGetRequest(), value === 1);
+    assert.equal(flow.commands.at(-1)[3].resourceRequest.resourceId, 'DEVICE_THERMOSTAT');
+    assert.equal(
+      flow.commands.at(-1)[3].resourceCommands[0].command.value.ecoMode,
+      value === 1 ? 'ECO_MODE_MANUAL_ECO' : 'ECO_MODE_INACTIVE',
+    );
+  }
+  await flow.send([trait('DEVICE_THERMOSTAT', 'eco_mode_state', { ecoMode: 'ECO_MODE_AUTO_ECO' })]);
+  assert.equal(await control.handleGetRequest(), true);
+  await control.handleSetRequest(false);
+  assert.equal(flow.device.deviceData.eco_mode, 'off');
+  assert.equal(await control.handleGetRequest(), false);
+  assert.equal(flow.commands.length, 3, 'Observe changes must not echo commands');
+  assert.deepEqual(notifications, [true, false, true, false]);
+  await flow.send([trait('DEVICE_THERMOSTAT', 'eco_mode_state', { ecoMode: 'ECO_MODE_AUTO_ECO' })]);
+  await control.handleSetRequest(true);
+  assert.equal(flow.device.deviceData.eco_mode, 'manual', 'On explicitly selects manual Eco even when automatic Eco is active');
+  assert.equal(await control.handleGetRequest(), true);
+  assert.equal(flow.commands.at(-1)[3].resourceCommands[0].command.value.ecoMode, 'ECO_MODE_MANUAL_ECO');
+  assert.equal(flow.commands.length, 4);
+  assert.equal(flow.device.deviceData.target_temperature_low, 20);
+  assert.equal(flow.device.deviceData.target_temperature_high, 24);
+});
+
+test('Eco characteristic waits for command acceptance and reports failures without changing state', async (context) => {
+  let flow = await setup(context);
+  await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
+  let control = flow.device.thermostatService.getCharacteristic(hap.Characteristic.EcoMode);
+  let command = flow.connection.grpcTransport.command;
+  let started = Promise.withResolvers();
+  let response = Promise.withResolvers();
+  flow.connection.grpcTransport.command = () => {
+    started.resolve();
+    return response.promise;
+  };
+  let rejected = assert.rejects(control.handleSetRequest(true), (error) => error === hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+  await started.promise;
+  assert.equal(flow.device.deviceData.eco_mode, 'off');
+  assert.equal(control.value, false);
+  response.resolve({ status: 4 });
+  await rejected;
+  assert.equal(flow.device.deviceData.eco_mode, 'off');
+  assert.equal(control.value, false);
+  assert.equal(await control.handleGetRequest(), false, 'A failed write must not hide known device state');
+  flow.connection.grpcTransport.command = command;
+  await control.handleSetRequest(true);
+  assert.equal(await control.handleGetRequest(), true);
+  flow.connection.grpcTransport.command = async () => ({
+    status: 0,
+    data: [{ traitOperations: [{ progress: 'COMPLETE', status: { code: 7 } }] }],
+  });
+  await assert.rejects(control.handleSetRequest(false), (error) => error === hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+  assert.equal(flow.device.deviceData.eco_mode, 'manual');
+  assert.equal(control.value, true);
+  assert.equal(await control.handleGetRequest(), true, 'A rejected command must not poison subsequent reads');
+  await flow.send([trait('DEVICE_THERMOSTAT', 'eco_mode_state', { ecoMode: 'ECO_MODE_INACTIVE' })]);
+  assert.equal(await control.handleGetRequest(), false);
+});
+
+test('Eco characteristic blocks unavailable devices and recovers from upstream state', async (context) => {
+  let flow = await setup(context);
+  await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
+  let control = flow.device.thermostatService.getCharacteristic(hap.Characteristic.EcoMode);
+  for (let data of [
+    { online: false, removed_from_base: false, eco_mode: 'manual' },
+    { online: true, removed_from_base: true, eco_mode: 'manual' },
+    { online: true, removed_from_base: false, eco_mode: 'unknown' },
+  ]) {
+    await flow.device.update(data);
+    await assert.rejects(control.handleGetRequest(), (error) => error === hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+    for (let value of [false, true]) {
+      await assert.rejects(control.handleSetRequest(value), (error) => error === hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+    }
+    await flow.device.update({ online: true, removed_from_base: false, eco_mode: 'auto' });
+    assert.equal(await control.handleGetRequest(), true);
   }
   assert.deepEqual(flow.commands, []);
 });

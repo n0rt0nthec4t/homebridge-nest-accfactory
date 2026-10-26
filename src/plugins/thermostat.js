@@ -68,6 +68,7 @@ import {
   __dirname,
   DEVICE_TYPE,
   FAN_DURATION_TIMES,
+  CUSTOM_CHARACTERISTIC_UUID,
 } from '../consts.js';
 
 export default class NestThermostat extends HomeKitDevice {
@@ -97,6 +98,37 @@ export default class NestThermostat extends HomeKitDevice {
       primary: true,
       history: { messages: this.message.bind(this) },
     });
+
+    this.addCharacteristic(
+      this.thermostatService,
+      {
+        name: 'Eco Mode',
+        uuid: CUSTOM_CHARACTERISTIC_UUID.ECO_MODE,
+        props: { format: this.hap.Formats.BOOL, perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.PAIRED_WRITE, this.hap.Perms.NOTIFY] },
+      },
+      {
+        onGet: () => {
+          if (
+            this.deviceData.online !== true ||
+            this.deviceData.removed_from_base === true ||
+            ['off', 'manual', 'auto'].includes(this.deviceData.eco_mode) === false
+          ) {
+            throw new this.hap.HapStatusError(this.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+          }
+          return this.deviceData.eco_mode !== 'off';
+        },
+        onSet: async (value) => {
+          if (
+            this.deviceData.online !== true ||
+            this.deviceData.removed_from_base === true ||
+            ['off', 'manual', 'auto'].includes(this.deviceData.eco_mode) === false
+          ) {
+            throw new this.hap.HapStatusError(this.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+          }
+          await this.set({ uuid: this.deviceData.nest_google_device_uuid, eco_mode: value === true ? 'manual' : 'off' });
+        },
+      },
+    );
 
     // Fix for coding error with versions below 2025.08.20 where fan specific characteristics were added directly to the thermostat service
     // Thanks to @gizmotronic for raising this issue
@@ -320,6 +352,14 @@ export default class NestThermostat extends HomeKitDevice {
     ) {
       return;
     }
+
+    let ecoMode = deviceData.online === true && deviceData.removed_from_base !== true ? deviceData.eco_mode : 'unknown';
+    this.thermostatService.updateCharacteristic(
+      this.hap.Characteristic.EcoMode,
+      ['off', 'manual', 'auto'].includes(ecoMode) === true
+        ? ecoMode !== 'off'
+        : new this.hap.HapStatusError(this.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE),
+    );
 
     let historyEntry = {};
     let temperatureScale = deviceData.temperature_scale?.toUpperCase?.() === 'F' ? 'F' : 'C';

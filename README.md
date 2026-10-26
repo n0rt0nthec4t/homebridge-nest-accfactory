@@ -34,6 +34,8 @@ The accessory supports connections using a Nest account AND/OR a Google (migrate
 
 **Note: Google ended online support for 1st and 2nd generation Nest Learning Thermostats on October 25, 2025. These models are no longer supported by this plugin, but can still be controlled directly on the thermostat.** [Learn more](https://support.google.com/googlehome/answer/16233096).
 
+Thermostats expose **Eco Mode** as a custom On/Off characteristic on the existing thermostat service. Compatible apps such as Eve can use it in scenes and automations: On enables manual Eco and Off disables Eco. Both manual and automatic Eco report On. When the thermostat is offline, detached from its base or its Eco state is unknown, Eco Mode cannot be read or changed. No configuration option is required. Apple Home does not currently display this custom characteristic.
+
 ## Configuration
 
 ### Obtaining an **access token** for Nest Accounts
