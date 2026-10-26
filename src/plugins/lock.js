@@ -54,7 +54,7 @@ import { DATA_SOURCE, DEVICE_TYPE, PROTOBUF_RESOURCES, LOW_BATTERY_LEVEL } from 
 
 export default class NestLock extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.LOCK;
-  static VERSION = '2026.10.18'; // Code version
+  static VERSION = '2026.10.26'; // Code version
 
   // Define lock bolt states
   static STATE = {
@@ -79,8 +79,7 @@ export default class NestLock extends HomeKitDevice {
 
   onAdd() {
     // Setup lock service if not already present on the accessory and link it to the Eve app if configured to do so
-    this.lockService = this.addService(this.hap.Service.LockMechanism, '', 1, {});
-    this.lockService.setPrimaryService();
+    this.lockService = this.addService(this.hap.Service.LockMechanism, '', 1, { primary: true, history: {} });
 
     // Setup set characteristics
     this.addCharacteristic(this.lockService, this.hap.Characteristic.LockCurrentState, {
@@ -151,8 +150,7 @@ export default class NestLock extends HomeKitDevice {
     });
 
     // Setup battery service if not already present on the accessory
-    this.batteryService = this.addService(this.hap.Service.Battery, '', 1);
-    this.batteryService.setHiddenService(true);
+    this.batteryService = this.addService(this.hap.Service.Battery, '', 1, { hidden: true });
   }
 
   onRemove() {

@@ -529,10 +529,10 @@ test('invalid AAC configuration retires its receiver without stopping a video-on
   assert.equal(streamer.isLiveStreaming(), true);
 });
 test('pending stop diagnostics cannot remove a same-id RTP replacement', async (context) => {
-  let { streamer, transport } = setup(context);
+  let { streamer } = setup(context);
   let ready = Promise.withResolvers();
-  transport.refreshDiagnostics = () => ready.promise;
-  streamer.supportDump = true;
+  hooks.close = (muxer) => (muxer === hooks.instances[0] ? ready.promise : undefined);
+  streamer.ffmpegDebug = true;
   await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'same' });
   let stopping = streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_LIVE, { sessionID: 'same' });
   await setImmediate();
@@ -552,13 +552,13 @@ test('Streamer retains a bounded byte window under sustained overload without re
     context,
     {},
     {
-      supportDump: true,
+      ffmpegDebug: true,
       log: {
-        debug() {},
+        debug: (...args) => info.push(args),
         error() {},
         success() {},
         warn: (...args) => warnings.push(args),
-        info: (...args) => info.push(args),
+        info() {},
       },
     },
   );
@@ -570,9 +570,10 @@ test('Streamer retains a bounded byte window under sustained overload without re
   }
   assert.equal(warnings.length, 0);
   await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_LIVE, { sessionID: 'overloaded' });
-  assert.equal(info.find((entry) => entry[0].includes('"size"'))[1], 54);
-  assert.equal(info.find((entry) => entry[0].includes('"capacity"'))[1], 2048);
-  assert.equal(info.find((entry) => entry[0].includes('"droppedItems"'))[1], 0);
+  let retained = info.find((entry) => entry[0].startsWith('Media delivery'))[3].sharedRetention;
+  assert.equal(retained.size, 54);
+  assert.equal(retained.capacity, 2048);
+  assert.equal(retained.droppedItems, 0);
 });
 
 test('source lifecycle clears stale host overrides and returns explicit close completion', async (context) => {
@@ -623,7 +624,7 @@ for (let diagnostics of [false, true]) {
       context,
       {},
       {
-        supportDump: diagnostics,
+        ffmpegDebug: diagnostics,
         log: {
           debug: (...args) => logs.push(args),
           info() {},
@@ -943,7 +944,7 @@ for (let diagnostics of [false, true]) {
     let { streamer, transport } = setup(
       context,
       {},
-      { supportDump: diagnostics, log: { debug() {}, error() {}, success() {}, warn() {}, info: (...args) => logs.push(args) } },
+      { ffmpegDebug: diagnostics, log: { debug: (...args) => logs.push(args), error() {}, success() {}, warn() {}, info() {} } },
     );
     await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'queue-diagnostics' });
     let muxer = hooks.instances[0];
@@ -961,8 +962,8 @@ for (let diagnostics of [false, true]) {
     // The access-unit reservation queries once regardless of diagnostics.
     assert.equal(query.mock.callCount(), diagnostics === true ? 2 : 1);
     await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_LIVE, { sessionID: 'queue-diagnostics' });
-    let maximum = logs.find((entry) => entry[0].includes('"maxQueuedBytes"'));
-    assert.equal(maximum?.[1], diagnostics === true ? queued : undefined);
+    let maximum = logs.find((entry) => entry[0].startsWith('Media delivery'));
+    assert.equal(maximum?.[3].maxQueuedBytes, diagnostics === true ? queued : undefined);
     assert.equal(
       logs.some((entry) => entry[0].includes('"maxAudioQueuedBytes"')),
       false,
@@ -978,8 +979,15 @@ for (let diagnostics of [false, true]) {
       context,
       {},
       {
-        supportDump: diagnostics,
-        log: { debug: (...args) => logs.push(args), info: (...args) => logs.push(args), warn() {}, error() {}, success() {} },
+        ffmpegDebug: diagnostics,
+        supportDump: diagnostics !== true,
+        log: {
+          debug: (...args) => logs.push(args),
+          info: () => assert.fail('Media summaries must use debug logging'),
+          warn() {},
+          error() {},
+          success() {},
+        },
       },
     );
     await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'live-timing', options: { includeAudio: true } });
@@ -990,16 +998,18 @@ for (let diagnostics of [false, true]) {
       advance(context, 40);
     }
     advance(context, 500);
-    let summaries = () => logs.filter((entry) => entry[0].startsWith('RTP audio timing'));
+    let summaries = () => logs.filter((entry) => entry[0].startsWith('Media timing'));
     assert.equal(summaries().length, 0);
     await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_LIVE, { sessionID: 'live-timing' });
     await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_RECORD, { sessionID: 'record-timing' });
     assert.equal(summaries().length, diagnostics === true ? 2 : 0);
     for (let entry of summaries()) {
-      assert.equal(entry[4].gaps, 1);
-      assert.equal(entry[4].maxGapMs, 120);
-      assert.equal(entry[4].overlaps, 1);
-      assert.equal(entry[4].maxOverlapMs, 10);
+      assert.equal(entry[3].audio.encodedDurationMs, 80);
+      assert.equal(entry[3].audio.clockDurationMs, 190);
+      assert.equal(entry[3].audio.gaps, 1);
+      assert.equal(entry[3].audio.maxGapMs, 120);
+      assert.equal(entry[3].audio.overlaps, 1);
+      assert.equal(entry[3].audio.maxOverlapMs, 10);
     }
     // Duplicate stops never produce another summary or reset another receiver's counters.
     await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_LIVE, { sessionID: 'live-timing' });
@@ -1007,6 +1017,36 @@ for (let diagnostics of [false, true]) {
     assert.equal(summaries().length, diagnostics === true ? 2 : 0);
   });
 }
+
+test('close summaries await the exact FFmpeg process while a same-id replacement remains active', async (context) => {
+  let logs = [];
+  let { streamer } = setup(
+    context,
+    {},
+    {
+      ffmpegDebug: true,
+      log: { debug: (...args) => logs.push(args), info() {}, error() {}, warn() {}, success() {} },
+    },
+  );
+  let output = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'same-summary' });
+  let finished = Promise.withResolvers();
+  let handle = { diagnosticLines: [], finished: finished.promise, stop() {} };
+  output.start({ startLive: () => [handle] }, {});
+  let stopping = output.stop();
+  try {
+    await setImmediate();
+    assert.equal(logs.filter((entry) => entry[0].startsWith('Media stream summary')).length, 0);
+    await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'same-summary' });
+  } finally {
+    finished.resolve({ expected: true, state: 'exited', code: null, signal: 'SIGKILL' });
+    await stopping;
+  }
+  let summaries = logs.filter((entry) => entry[0].startsWith('Media stream summary'));
+  assert.equal(summaries.length, 1);
+  assert.deepEqual(summaries[0][4].ffmpeg, [{ expected: true, state: 'exited', code: null, signal: 'SIGKILL' }]);
+  assert.equal(hooks.instances[1].closed, false);
+  assert.equal(streamer.isLiveStreaming(), true);
+});
 
 test('fixed live playout spaces 200 ms audio batches without changing RTP timing', async (context) => {
   context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
@@ -1119,7 +1159,7 @@ for (let restart of ['reopen', 'reconnect']) {
       context,
       {},
       {
-        supportDump: true,
+        ffmpegDebug: true,
         log: { debug: (...args) => logs.push(args), info() {}, warn() {}, error() {}, success() {} },
       },
     );
@@ -1157,7 +1197,7 @@ test('audio gap logs and stop statistics measure the same accepted writes', asyn
     context,
     {},
     {
-      supportDump: true,
+      ffmpegDebug: true,
       log: { debug: (...args) => logs.push(args), info: (...args) => logs.push(args), warn() {}, error() {}, success() {} },
     },
   );
@@ -1178,15 +1218,14 @@ test('audio gap logs and stop statistics measure the same accepted writes', asyn
   let gaps = logs.filter((entry) => entry[0].includes('output audio write gap'));
   assert.equal(gaps.length, 1, 'gap logging remains throttled');
   assert.equal(gaps[0][4], 250);
+  assert.equal(logs.find((entry) => entry[0].startsWith('Media stream summary'))[4].firstAudioMs, 310);
   for (let [name, expected] of [
-    ['firstWrite', '310ms'],
-    ['firstAudioWrite', '310ms'],
     ['maxAudioWriteGapMs', 600],
     ['audioWriteGapsOver100Ms', 3],
     ['audioWriteGapsOver250Ms', 2],
     ['audioWriteGapsOver500Ms', 1],
   ]) {
-    assert.equal(logs.find((entry) => entry[0].includes('"' + name + '"'))?.[1], expected, name);
+    assert.equal(logs.find((entry) => entry[0].startsWith('Media timing'))?.[3][name], expected, name);
   }
 });
 

@@ -32,7 +32,7 @@
 // - Protocol signalling, packet reordering and frame assembly remain in the source
 // - FFmpeg owns command construction and the bounded MP4 fragment reader
 //
-// Code version 2026.10.24
+// Code version 2026.10.26
 // Mark Hulskamp
 'use strict';
 
@@ -61,7 +61,7 @@ const OUTPUT_PLAYOUT_DELAY_MS = 300; // Fixed A/V headroom for bursty source del
 // Initial capacity is per track; the retained-item limit is shared across both.
 const STREAMER_INITIAL_BUFFER_CAPACITY = 1024;
 const STREAMER_MAX_BUFFER_CAPACITY = 8192;
-const STREAMER_AUDIO_GAP_LOG_MS = 120; // Support-dump audio gap threshold for clearly audible source/output pauses
+const STREAMER_AUDIO_GAP_LOG_MS = 120; // FFmpeg-debug audio gap threshold for clearly audible source/output pauses
 const STREAMER_AUDIO_GAP_LOG_INTERVAL_MS = 30000; // Throttle targeted audio gap diagnostics
 const STREAMER_AV_CORRELATION_WINDOW_MS = 750; // Correlate audio gaps with nearby accepted keyframes
 
@@ -100,7 +100,7 @@ export default class Streamer {
   static #due = Infinity;
   static #timer = undefined; // Shared timer for all active streamers
 
-  supportDump = false; // Enable support for dumping stats on demand for this streamer instance
+  ffmpegDebug = false; // Enable bounded media diagnostics and per-output close summaries
   log = undefined; // Logging function object
   videoEnabled = undefined; // Video stream on camera enabled or not
   audioEnabled = undefined; // Audio from camera enabled or not
@@ -185,7 +185,7 @@ export default class Streamer {
     };
 
     this.#lastFallbackFrameTime = Date.now();
-    this.supportDump = options?.supportDump === true;
+    this.ffmpegDebug = options?.ffmpegDebug === true;
 
     // Setup retained media buffer duration.
     // Clamp to sane bounds to avoid invalid or excessive retention sizes.
@@ -445,7 +445,7 @@ export default class Streamer {
         sourceAudioGapMs = now - this.#lastSourceAudioAt;
 
         if (
-          this.supportDump === true &&
+          this.ffmpegDebug === true &&
           sourceAudioGapMs >= STREAMER_AUDIO_GAP_LOG_MS &&
           (typeof this.#lastSourceAudioGapLogTime !== 'number' ||
             now - this.#lastSourceAudioGapLogTime >= STREAMER_AUDIO_GAP_LOG_INTERVAL_MS)
@@ -663,7 +663,7 @@ export default class Streamer {
     muxer = new RTPMuxer({
       includeAudio,
       audio: this.#transport?.audio,
-      audioDiagnostics: this.supportDump === true,
+      audioDiagnostics: this.ffmpegDebug === true,
       onReady: () => Streamer.#wake(),
       onClose: (error) => {
         this.#stopOutput(sessionID, type, output, error).catch((failure) =>
@@ -721,9 +721,9 @@ export default class Streamer {
 
       // Debug instrumentation is not allocated for normal streaming.
       stats:
-        this.supportDump === true
+        this.ffmpegDebug === true
           ? {
-              startedAt: Date.now(),
+              startedAt: startTime,
               firstWriteAt: undefined,
               firstVideoWriteAt: undefined,
               firstAudioWriteAt: undefined,
@@ -866,32 +866,16 @@ export default class Streamer {
     output.closing = Promise.resolve().then(async () => {
       let closingOutput = this.#cleanupOutput(output);
       output.callback?.(error);
-      let audioTiming = wasActive === true && this.supportDump === true ? output.muxer?.audioTiming : undefined;
-      if (audioTiming !== undefined && audioTiming.units > 0) {
-        // One bounded summary for each live or recording receiver. These are source
-        // presentation gaps/overlaps at RTP delivery, not network-arrival delays.
-        this?.log?.info?.(
-          'RTP audio timing for device uuid "%s": session="%s" type="%s" %j',
-          this.nest_google_device_uuid,
-          output.sessionID,
-          type,
-          audioTiming,
-        );
-      }
-      let diagnostics = undefined;
-      if (wasActive === true && type === Streamer.STREAM_TYPE.LIVE && this.supportDump === true && this.isLiveStreaming() === false) {
-        diagnostics = Promise.resolve().then(async () => {
-          await this.#transport?.refreshDiagnostics?.();
-          this.#outputStats(output, Date.now());
-        });
-      }
       this?.log?.debug?.(
         'Stopping %s stream from device uuid "%s" and session id "%s"',
         type,
         this.nest_google_device_uuid,
         output.sessionID,
       );
-      await Promise.all([closingOutput, closingSource, diagnostics]);
+      let results = await Promise.all([closingOutput, closingSource]);
+      if (wasActive === true && output.stats !== undefined) {
+        this.#outputStats(output, Date.now(), results[0].slice(1), error);
+      }
       if (this.#outputs.size === 0 && this.#bufferEnabled !== true) {
         // Preserve retained statistics until final diagnostics finish, and retain
         // the source if a replacement took ownership during asynchronous closure.
@@ -1067,7 +1051,7 @@ export default class Streamer {
   }
 
   #statsWrite(output, type, dateNow) {
-    if (this.supportDump !== true) {
+    if (output.stats === undefined) {
       return;
     }
 
@@ -1136,7 +1120,7 @@ export default class Streamer {
   }
 
   #statsDrop(output, type) {
-    if (this.supportDump !== true) {
+    if (output.stats === undefined) {
       return;
     }
 
@@ -1198,7 +1182,7 @@ export default class Streamer {
     if (output.videoCursor < timeline.start('video')) {
       output.videoCursor = timeline.start('video');
       output.seenKeyFrame = false;
-      if (this.supportDump === true) {
+      if (this.ffmpegDebug === true) {
         output.stats.drops.bufferTrimmed++;
       }
     }
@@ -1271,7 +1255,7 @@ export default class Streamer {
                   pps: item.hasPPS === true ? undefined : item.config?.pps,
                 };
           let writable = muxer.writeVideo(item.nals, item.time, bootstrap);
-          if (writable === false && this.supportDump === true) {
+          if (writable === false && this.ffmpegDebug === true) {
             output.stats.diagnostics.videoBackpressureStops++;
           }
           output.seenKeyFrame = true;
@@ -1344,134 +1328,44 @@ export default class Streamer {
     return next;
   }
 
-  #outputStats(output, dateNow) {
-    let outputStats = output.stats;
-    let outputWrites = outputStats.writes;
-    let outputDrops = outputStats.drops;
-    let diagnostics = outputStats.diagnostics;
-    let lifecycleStats = this.#transport?.stats?.lifecycle;
-    let mediaStats = this.#transport?.stats?.media;
-    let timelineStats = this.#timeline?.stats;
-    let video = this.#transport?.video;
-    let audio = this.#transport?.audio;
-    let videoDrops = typeof mediaStats?.videoDrops === 'object' && mediaStats.videoDrops !== null ? mediaStats.videoDrops : {};
-    let videoReorder = typeof mediaStats?.videoReorder === 'object' && mediaStats.videoReorder !== null ? mediaStats.videoReorder : {};
-    let reconnectReasons = {};
-    let webRTCStats = this.#transport?.stats?.webrtc;
+  #outputStats(output, dateNow, results, error) {
+    let stats = output.stats;
+    let diagnostics = stats.diagnostics;
 
-    if (typeof lifecycleStats?.reconnectReasons === 'object' && lifecycleStats.reconnectReasons !== null) {
-      reconnectReasons = lifecycleStats.reconnectReasons;
-    }
-
-    let elapsed = (start, end) => (typeof start === 'number' && typeof end === 'number' ? end - start + 'ms' : '-');
-
-    let age = (time) => {
-      if (typeof time !== 'number') {
-        return '-';
-      }
-
-      return dateNow - time < 1000 ? '<1s' : Math.floor((dateNow - time) / 1000) + 's';
-    };
-
-    this?.log?.info?.(
-      'Support dump for device uuid "%s" data will be logged below for troubleshooting purposes.',
+    // These counters belong to this output, including concurrent viewers and
+    // recordings. Process outcomes are final because cleanup awaited pipe closure.
+    this.log?.debug?.(
+      'Media stream summary for device uuid "%s": session="%s" type="%s" %j',
       this.nest_google_device_uuid,
+      output.sessionID,
+      output.type,
+      {
+        source: this.#transport?.constructor.name,
+        audioCodec: this.#transport?.audio?.codec,
+        durationMs: dateNow - stats.startedAt,
+        firstVideoMs: stats.firstVideoWriteAt === undefined ? undefined : stats.firstVideoWriteAt - stats.startedAt,
+        firstAudioMs: stats.firstAudioWriteAt === undefined ? undefined : stats.firstAudioWriteAt - stats.startedAt,
+        outcome: error?.name ?? 'stopped',
+        ffmpeg: results.map((result) => ({ state: result.state, code: result.code, signal: result.signal, expected: result.expected })),
+      },
     );
-    this?.log?.info?.('  {');
-    this?.log?.info?.('    "startup": {');
-    this?.log?.info?.('      "connect": "%s"', elapsed(lifecycleStats?.connectingAt, lifecycleStats?.connectedAt));
-    this?.log?.info?.('      "ready": "%s"', elapsed(lifecycleStats?.connectingAt, lifecycleStats?.readyAt));
-    this?.log?.info?.('      "video": "%s"', elapsed(lifecycleStats?.connectingAt, mediaStats?.firstVideoAt));
-    this?.log?.info?.('      "audio": "%s"', elapsed(lifecycleStats?.connectingAt, mediaStats?.firstAudioAt));
-    this?.log?.info?.('      "keyframe": "%s"', elapsed(lifecycleStats?.connectingAt, mediaStats?.firstKeyframeAt));
-    this?.log?.info?.('    },');
-    this?.log?.info?.('    "duration": {');
-    this?.log?.info?.(
-      '      "transport": "%s"',
-      typeof lifecycleStats?.connectedAt === 'number' ? Math.round((dateNow - lifecycleStats.connectedAt) / 1000) + 's' : '-',
-    );
-    this?.log?.info?.(
-      '      "output": "%s"',
-      typeof outputStats.startedAt === 'number' ? Math.round((dateNow - outputStats.startedAt) / 1000) + 's' : '-',
-    );
-    this?.log?.info?.('    },');
-    this?.log?.info?.('    "video": {');
-    this?.log?.info?.('      "codec": "%s"', video?.codec ?? 'unknown');
-    this?.log?.info?.(
-      '      "resolution": "%s"',
-      typeof video?.width === 'number' && typeof video?.height === 'number' ? video.width + 'x' + video.height : 'waiting for video…',
-    );
-    this?.log?.info?.('      "fps": %s', typeof video?.fps === 'number' ? Math.round(video.fps) : 'null');
-    this?.log?.info?.('      "bitrate": %s', typeof video?.bitrate === 'number' ? video.bitrate : 'null');
-    this?.log?.info?.('    },');
-    this?.log?.info?.('    "audio": {');
-    this?.log?.info?.('      "codec": "%s"', audio?.codec ?? 'unknown');
-    this?.log?.info?.('      "sampleRate": %s', typeof audio?.sampleRate === 'number' ? audio.sampleRate : 'null');
-    this?.log?.info?.('      "channels": %s', typeof audio?.channels === 'number' ? audio.channels : 'null');
-    this?.log?.info?.('      "bitrate": %s', typeof audio?.bitrate === 'number' ? audio.bitrate : 'null');
-    this?.log?.info?.('      "frameDuration": %s', typeof audio?.frameDuration === 'number' ? Math.round(audio.frameDuration) : 'null');
-    this?.log?.info?.('    },');
-    this?.log?.info?.('    "media": {');
-    this?.log?.info?.('      "videoFrames": %s', mediaStats?.videoFrames ?? 0);
-    this?.log?.info?.('      "audioFrames": %s', mediaStats?.audioFrames ?? 0);
-    this?.log?.info?.('      "keyframes": %s', mediaStats?.keyframes ?? 0);
-    this?.log?.info?.('    },');
-    this?.log?.info?.('    "timeline": {');
-    this?.log?.info?.('      "startIndex": %s', timelineStats?.startIndex ?? 0);
-    this?.log?.info?.('      "nextIndex": %s', timelineStats?.nextIndex ?? 0);
-    this?.log?.info?.('      "size": %s', timelineStats?.size ?? 0);
-    this?.log?.info?.('      "capacity": %s', timelineStats?.capacity ?? 0);
-    this?.log?.info?.('      "maxCapacity": %s', timelineStats?.maxCapacity ?? 0);
-    this?.log?.info?.('      "videoItems": %s', timelineStats?.videoItems ?? 0);
-    this?.log?.info?.('      "audioItems": %s', timelineStats?.audioItems ?? 0);
-    this?.log?.info?.('      "keyframeIndexes": %s', timelineStats?.keyframeIndexes ?? 0);
-    this?.log?.info?.('      "trimmedItems": %s', timelineStats?.trimmedItems ?? 0);
-    this?.log?.info?.('      "droppedItems": %s', timelineStats?.droppedItems ?? 0);
-    this?.log?.info?.('    },');
-    this?.log?.info?.('    "transportDiagnostics": {');
-    this?.log?.info?.('      "maxVideoGapMs": %s', mediaStats?.maxVideoGapMs ?? 0);
-    this?.log?.info?.('      "maxAudioGapMs": %s', mediaStats?.maxAudioGapMs ?? 0);
-    this?.log?.info?.('      "largeAudioGaps": %s', mediaStats?.largeAudioGaps ?? 0);
-    this?.log?.info?.('      "keyframeRequests": %s', mediaStats?.keyframeRequests ?? 0);
-    this?.log?.info?.('      "videoReorder": %j', videoReorder);
-    this?.log?.info?.('      "videoDrops": %j', videoDrops);
-    this?.log?.info?.('    },');
-    this?.log?.info?.('    "webrtc": %j,', webRTCStats ?? null);
-    this?.log?.info?.('    "drops": {');
-    this?.log?.info?.('      "videoBeforeKeyframe": %s', outputDrops.videoBeforeKeyframe);
-    this?.log?.info?.('      "audioBeforeKeyframe": %s', outputDrops.audioBeforeKeyframe);
-    this?.log?.info?.('      "bufferTrimmed": %s', outputDrops.bufferTrimmed);
-    this?.log?.info?.('    },');
-    this?.log?.info?.('    "output": {');
-    this?.log?.info?.('      "startup": {');
-    this?.log?.info?.('        "firstWrite": "%s"', elapsed(outputStats.startedAt, outputStats.firstWriteAt));
-    this?.log?.info?.('        "firstVideoWrite": "%s"', elapsed(outputStats.startedAt, outputStats.firstVideoWriteAt));
-    this?.log?.info?.('        "firstAudioWrite": "%s"', elapsed(outputStats.startedAt, outputStats.firstAudioWriteAt));
-    this?.log?.info?.('      },');
-    this?.log?.info?.('      "writes": {');
-    this?.log?.info?.('        "total": %s', outputWrites.total);
-    this?.log?.info?.('        "video": %s', outputWrites.video);
-    this?.log?.info?.('        "audio": %s', outputWrites.audio);
-    this?.log?.info?.('      },');
-    this?.log?.info?.('      "diagnostics": {');
-    this?.log?.info?.('        "maxVideoWriteGapMs": %s', diagnostics.maxVideoWriteGapMs);
-    this?.log?.info?.('        "maxAudioWriteGapMs": %s', diagnostics.maxAudioWriteGapMs);
-    this?.log?.info?.('        "audioWriteGapsOver100Ms": %s', diagnostics.audioWriteGapsOver100Ms);
-    this?.log?.info?.('        "audioWriteGapsOver250Ms": %s', diagnostics.audioWriteGapsOver250Ms);
-    this?.log?.info?.('        "audioWriteGapsOver500Ms": %s', diagnostics.audioWriteGapsOver500Ms);
-    this?.log?.info?.('        "videoBackpressureStops": %s', diagnostics.videoBackpressureStops);
-    this?.log?.info?.('        "maxQueuedBytes": %s', diagnostics.maxQueuedBytes);
-    this?.log?.info?.('      },');
-    this?.log?.info?.('    },');
-    this?.log?.info?.('    "last": {');
-    this?.log?.info?.('      "video": "%s"', age(mediaStats?.lastVideoAt));
-    this?.log?.info?.('      "audio": "%s"', age(mediaStats?.lastAudioAt));
-    this?.log?.info?.('      "keyframe": "%s"', age(mediaStats?.lastKeyframeAt));
-    this?.log?.info?.('    },');
-    this?.log?.info?.('    "reconnects": %s,', lifecycleStats?.reconnects ?? 0);
-    this?.log?.info?.('    "reconnectReasons": %j', reconnectReasons);
-    this?.log?.info?.('  }');
-    this?.log?.info?.('End of support dump for device uuid "%s" data.', this.nest_google_device_uuid);
+    // Source-clock gaps and encoded sample duration are distinct from delivery
+    // pauses. Comparing both helps locate A/V drift without a full support dump.
+    this.log?.debug?.('Media timing for device uuid "%s": session="%s" %j', this.nest_google_device_uuid, output.sessionID, {
+      audio: output.muxer.audioTiming,
+      maxVideoWriteGapMs: diagnostics.maxVideoWriteGapMs,
+      maxAudioWriteGapMs: diagnostics.maxAudioWriteGapMs,
+      audioWriteGapsOver100Ms: diagnostics.audioWriteGapsOver100Ms,
+      audioWriteGapsOver250Ms: diagnostics.audioWriteGapsOver250Ms,
+      audioWriteGapsOver500Ms: diagnostics.audioWriteGapsOver500Ms,
+    });
+    this.log?.debug?.('Media delivery for device uuid "%s": session="%s" %j', this.nest_google_device_uuid, output.sessionID, {
+      sharedRetention: this.#timeline?.stats,
+      writes: stats.writes,
+      drops: stats.drops,
+      videoBackpressureStops: diagnostics.videoBackpressureStops,
+      maxQueuedBytes: diagnostics.maxQueuedBytes,
+    });
   }
 
   static #wake(delay = 0) {

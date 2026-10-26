@@ -51,7 +51,7 @@
 // - Streamer owns retention and delivery pacing; source timestamps are not playout deadlines
 // - Incomplete keyframes and pathological access units are dropped/recovered locally rather than blocking the plugin process
 //
-// Code version 2026.10.24
+// Code version 2026.10.26
 // Mark Hulskamp
 'use strict';
 
@@ -88,13 +88,14 @@ const RTP_OPUS_AUDIO_PAYLOAD_TYPE = 111; // Opus audio payload type
 const GOOGLE_HOME_FOYER_PREFIX = 'google.internal.home.foyer.v1.';
 const KEYFRAME_MAX_ASSEMBLY_MS = 2500; // Expire incomplete keyframes during established playback
 const KEYFRAME_STARTUP_MAX_ASSEMBLY_MS = 4000; // First decodable keyframe may be slow while WebRTC starts
-const KEYFRAME_BLOCKING_MAX_ASSEMBLY_MS = 900; // Do not let one broken IDR block newer timestamp groups for seconds
+const KEYFRAME_BLOCKING_MAX_ASSEMBLY_MS = 900; // Inactivity limit when an incomplete IDR blocks newer groups
 const KEYFRAME_DEFAULT_BYTES = 2 * 1024 * 1024; // Startup allowance before source resolution/bitrate is known
 const KEYFRAME_MAX_BYTES = 4 * 1024 * 1024; // Absolute bound for unusually large high-resolution keyframes
 const KEYFRAME_BYTES_PER_PIXEL = 0.5; // Conservative compressed-IDR allowance derived from learned resolution
 const KEYFRAME_BITRATE_SECONDS = 4; // Allow an IDR burst up to four seconds of the learned average bitrate
 const STALLED_TIMEOUT = 10000; // Time with no playback packets before we consider stream stalled and attempt restart
-const AUDIO_RTP_REORDER_DELAY_MS = 50; // Hold audio RTP briefly so reordered Opus packets can arrive before emission
+// Allow delayed Opus packets to arrive within the existing 300 ms playout headroom.
+const AUDIO_RTP_REORDER_DELAY_MS = 150;
 const AUDIO_RTP_REORDER_MAX_PACKETS = 64; // Bound audio RTP reorder queue
 const VIDEO_RTP_REORDER_DELAY_MS = 250; // Hold video RTP briefly so reordered fragments/RTX can arrive before FU-A assembly
 const VIDEO_RTP_REORDER_MAX_PACKETS = 4096; // Bound video RTP queue while allowing a fragmented 4MiB keyframe plus packet overhead
@@ -893,7 +894,7 @@ export default class WebRTC extends StreamTransport {
       this.#tracks.video.clock = { rtpTimestamp: undefined, timestamp: undefined, lastTimestamp: undefined, report: undefined };
       this.#tracks.video.ssrc = undefined;
       this.#clockSynchronized = false;
-      this.#tracks.video.deltaAudit = { hasAcceptedKeyframe: false };
+      this.#tracks.video.deltaAudit = { hasAcceptedKeyframe: false, recoveryGroup: undefined };
       this.#tracks.video.h264 = { lastSPS: undefined, lastPPS: undefined };
 
       if (typeof this.#tracks.video.jitter === 'object' && this.#tracks.video.jitter !== null) {
@@ -1023,7 +1024,7 @@ export default class WebRTC extends StreamTransport {
     video.keyframeRequestInFlight ??= false;
     video.rtp ??= { lastSequence: undefined };
     video.health ??= this.getMediaState('video');
-    video.deltaAudit ??= { hasAcceptedKeyframe: false };
+    video.deltaAudit ??= { hasAcceptedKeyframe: false, recoveryGroup: undefined };
 
     if (typeof video.jitter !== 'object' || video.jitter === null || video.jitter.groupByTimestamp !== true) {
       video.jitter = this.createJitterBuffer({
@@ -1061,13 +1062,13 @@ export default class WebRTC extends StreamTransport {
     return audio;
   }
 
-  #keyframeByteLimit() {
+  #keyframeByteLimit(sps = this.#tracks.video.h264.lastSPS) {
     let width = this.video?.width;
     let height = this.video?.height;
 
     // Only startup needs SPS parsing before learned dimensions are available.
     if (width === undefined || height === undefined) {
-      let spsInfo = H264.getSPSInfo(this.#tracks?.video?.h264?.lastSPS);
+      let spsInfo = H264.getSPSInfo(sps);
       width ??= spsInfo?.width;
       height ??= spsInfo?.height;
     }
@@ -1105,6 +1106,10 @@ export default class WebRTC extends StreamTransport {
       return;
     }
 
+    if (video.deltaAudit.recoveryGroup !== undefined && jitter.groupIndex.has(video.deltaAudit.recoveryGroup.rtpTimestamp) !== true) {
+      video.deltaAudit.recoveryGroup = undefined;
+    }
+
     for (group of this.releaseJitterGroups(jitter, {
       force: force,
       maxGroups: force === true ? undefined : VIDEO_RTP_DRAIN_MAX_GROUPS,
@@ -1118,16 +1123,36 @@ export default class WebRTC extends StreamTransport {
         groupAgeMs = now - (entry?.firstReceivedAt || now);
         packetCount = this.countJitterPackets(jitter);
         groupCount = this.sizeJitterBuffer(jitter);
-        keyframeAssemblyLimitMs =
-          groupCount > 1
-            ? KEYFRAME_BLOCKING_MAX_ASSEMBLY_MS
-            : this.ready === true
-              ? KEYFRAME_MAX_ASSEMBLY_MS
-              : KEYFRAME_STARTUP_MAX_ASSEMBLY_MS;
+        // A validated newer IDR can replace an incomplete predecessor immediately.
+        // Keep the normal drain budgets; remember the candidate across bounded drains.
+        if (
+          video.deltaAudit.recoveryGroup !== undefined &&
+          jitter.groupIndex.has(video.deltaAudit.recoveryGroup.rtpTimestamp) === true &&
+          (video.deltaAudit.recoveryGroup.rtpTimestamp - entry.rtpTimestamp + RTP_TIMESTAMP_MASK) % RTP_TIMESTAMP_MASK <
+            RTP_TIMESTAMP_MAX_DELTA
+        ) {
+          entry.assemblyLimitMs = 'n/a';
+          return false;
+        }
+
+        keyframeAssemblyLimitMs = this.ready === true ? KEYFRAME_MAX_ASSEMBLY_MS : KEYFRAME_STARTUP_MAX_ASSEMBLY_MS;
         keyframeTimedOut = entry?.hasKeyFrame === true && groupAgeMs >= keyframeAssemblyLimitMs;
+
+        // Continuing fragment progress may outlive the shorter blocking deadline,
+        // but never the absolute assembly cap. Duplicate packets do not refresh progress.
+        if (groupCount > 1 && now - entry.lastReceivedAt >= KEYFRAME_BLOCKING_MAX_ASSEMBLY_MS) {
+          keyframeAssemblyLimitMs = KEYFRAME_BLOCKING_MAX_ASSEMBLY_MS;
+          keyframeTimedOut = entry?.hasKeyFrame === true;
+        }
 
         if (entry?.hasKeyFrame === true && keyframeTimedOut !== true) {
           return true;
+        }
+
+        // Retain this group's expiry limit for diagnostics; a drain can release
+        // several groups whose blocking/startup limits differ.
+        if (keyframeTimedOut === true) {
+          entry.assemblyLimitMs = keyframeAssemblyLimitMs;
         }
 
         return groupAgeMs < VIDEO_RTP_REORDER_DELAY_MS && packetCount < VIDEO_RTP_REORDER_MAX_PACKETS;
@@ -1144,11 +1169,15 @@ export default class WebRTC extends StreamTransport {
             jitter.lastDropLogTime = now;
             this?.log?.debug?.(
               'Dropping incomplete jittered WebRTC keyframe for uuid "%s": rtpTs="%s" packets="%s" ageMs="%s" ' +
-                'marker="%s" fuStart="%s" fuEnd="%s"',
+                'idleMs="%s" spanMs="%s" limitMs="%s" forced="%s" marker="%s" fuStart="%s" fuEnd="%s"',
               this.uuid,
               group.rtpTimestamp,
               Array.isArray(group.packets) === true ? group.packets.length : 0,
               Math.round(groupAgeMs),
+              Math.round(now - group.lastReceivedAt),
+              Math.round(group.lastReceivedAt - group.firstReceivedAt),
+              force === true ? 'n/a' : group.assemblyLimitMs,
+              force,
               group.markerSeen === true ? 'true' : 'false',
               group.hasFragmentStart === true ? 'true' : 'false',
               group.hasFragmentEnd === true ? 'true' : 'false',
@@ -1166,7 +1195,13 @@ export default class WebRTC extends StreamTransport {
       }
 
       jitter.lastReleasedSequence = group.packets.at(-1).sequenceNumber;
-      this.#assemblePlaybackVideoGroup(group);
+      let frame = group.frame ?? this.#assemblePlaybackVideoGroup(group);
+      if (frame !== undefined) {
+        this.#emitPlaybackVideoFrame(group, frame);
+      }
+      if (video.deltaAudit.recoveryGroup === group) {
+        video.deltaAudit.recoveryGroup = undefined;
+      }
       jitter.lastReleasedTimestamp = group.rtpTimestamp;
     }
 
@@ -1184,13 +1219,13 @@ export default class WebRTC extends StreamTransport {
     frame.keyFrame = frame.keyFrame === true || type === H264.NALUS.TYPES.IDR;
     frame.hasVcl = frame.hasVcl === true || type === H264.NALUS.TYPES.IDR || type === H264.NALUS.TYPES.SLICE_NON_IDR;
 
-    // Parameter sets survive individual groups so an IDR can initialise a new
-    // consumer even when the camera does not repeat SPS/PPS with that frame.
+    // Keep parameter sets on the assembled frame until ordered delivery. Validating
+    // a queued recovery IDR must not change the current decoder configuration.
     if (type === H264.NALUS.TYPES.SPS) {
-      this.#tracks.video.h264.lastSPS = Buffer.from(nal);
+      frame.lastSPS = Buffer.from(nal);
     }
     if (type === H264.NALUS.TYPES.PPS) {
-      this.#tracks.video.h264.lastPPS = Buffer.from(nal);
+      frame.lastPPS = Buffer.from(nal);
     }
   }
 
@@ -1294,12 +1329,40 @@ export default class WebRTC extends StreamTransport {
       return;
     }
 
+    let group = jitter.groupIndex.get(rtpTimestamp);
+    // More packets invalidate a prepared candidate still waiting behind a drain budget.
+    if (group?.frame !== undefined) {
+      group.frame = undefined;
+      if (video.deltaAudit.recoveryGroup === group) {
+        video.deltaAudit.recoveryGroup = undefined;
+      }
+    }
+    if (
+      group?.hasKeyFrame === true &&
+      jitter.queue.getByOffset(0) !== group &&
+      H264.isTimestampGroupComplete(group) === true &&
+      this.sortJitterGroupPackets(jitter, group) !== true
+    ) {
+      group.frame = this.#assemblePlaybackVideoGroup(group);
+      // Aggregate marker/FU flags alone cannot authorise discarding older frames.
+      // Require complete byte-level reconstruction, decoder configuration and size.
+      if (
+        group.frame?.keyFrame === true &&
+        group.frame.failure === undefined &&
+        group.frame.bytes <= this.#keyframeByteLimit(group.frame.lastSPS ?? video.h264.lastSPS) &&
+        Buffer.isBuffer(group.frame.lastSPS ?? video.h264.lastSPS) === true &&
+        Buffer.isBuffer(group.frame.lastPPS ?? video.h264.lastPPS) === true
+      ) {
+        video.deltaAudit.recoveryGroup = group;
+      }
+    }
+
     this.#drainPlaybackVideoJitterBuffer();
   }
 
   #assemblePlaybackVideoGroup(group) {
     let video = this.#tracks.video;
-    let frame = { parts: [], bytes: 0, keyFrame: false, hasVcl: false };
+    let frame = { parts: [], bytes: 0, keyFrame: false, hasVcl: false, lastSPS: undefined, lastPPS: undefined };
     let fragments = {};
     let failure = undefined;
     let sequenceDelta = 0;
@@ -1312,8 +1375,6 @@ export default class WebRTC extends StreamTransport {
         return;
       }
     }
-    video.rtp.lastSequence = group.packets.at(-1).sequenceNumber;
-    this.#refreshStallTimer();
     H264.resetFragmentState(fragments);
 
     // All reconstruction state belongs to this timestamp. A failed group can
@@ -1374,21 +1435,9 @@ export default class WebRTC extends StreamTransport {
     if (fragments.fuParts.length > 0) {
       failure ??= 'fu-incomplete';
     }
-    if (failure !== undefined) {
-      this.recordVideoDrop(failure);
-      this?.log?.debug?.(
-        'Dropping invalid WebRTC timestamp group for uuid "%s": rtpTs="%s" reason="%s"',
-        this.uuid,
-        group.rtpTimestamp,
-        failure,
-      );
-      if (group.hasKeyFrame === true) {
-        this.#requestVideoRecovery(failure);
-      }
-      return;
-    }
+    frame.failure = failure;
 
-    this.#emitPlaybackVideoFrame(group, frame);
+    return frame;
   }
 
   #emitPlaybackVideoFrame(group, frame) {
@@ -1404,6 +1453,25 @@ export default class WebRTC extends StreamTransport {
     let now = Date.now();
     let deltaTicks = 0;
     let recoveringDeltaProbe = false;
+
+    if (frame.failure !== undefined) {
+      this.recordVideoDrop(frame.failure);
+      this?.log?.debug?.(
+        'Dropping invalid WebRTC timestamp group for uuid "%s": rtpTs="%s" reason="%s"',
+        this.uuid,
+        group.rtpTimestamp,
+        frame.failure,
+      );
+      if (group.hasKeyFrame === true) {
+        this.#requestVideoRecovery(frame.failure);
+      }
+      return;
+    }
+
+    video.rtp.lastSequence = group.packets.at(-1).sequenceNumber;
+    this.#refreshStallTimer();
+    h264.lastSPS = frame.lastSPS ?? h264.lastSPS;
+    h264.lastPPS = frame.lastPPS ?? h264.lastPPS;
 
     if (frame.hasVcl !== true) {
       return;
@@ -1757,8 +1825,9 @@ export default class WebRTC extends StreamTransport {
   }
 
   #requestVideoRecovery(reason) {
-    // A damaged keyframe needs both an upstream replacement request and a
-    // health signal so StreamTransport can apply its existing recovery policy.
+    // A lost IDR invalidates following deltas immediately, independently of the
+    // health counter threshold. Only an accepted replacement IDR restores them.
+    this.#tracks.video.deltaAudit.hasAcceptedKeyframe = false;
     this.#requestVideoKeyframe();
     this.markMediaIssue('video', reason);
   }

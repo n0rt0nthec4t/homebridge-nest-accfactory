@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises';
 import { setImmediate } from 'node:timers/promises';
 import { URL } from 'node:url';
 import test from 'node:test';
+import { format } from 'node:util';
 import GrpcTransport from '../src/grpctransport.js';
 import StreamTransport from '../src/plugins/camera/streamtransport.js';
 import H264 from '../src/plugins/camera/h264.js';
@@ -281,9 +282,9 @@ test('WebRTC audio RTP preserves sample-clock timing and ignores malformed or du
     payload: Buffer.from([1, 2]),
   });
   track.onReceiveRtp.emit(packet(1, 0));
-  t.mock.timers.tick(60);
+  t.mock.timers.tick(160);
   track.onReceiveRtp.emit(packet(2, 960));
-  t.mock.timers.tick(60);
+  t.mock.timers.tick(160);
   track.onReceiveRtp.emit(packet(3, 1920));
   assert.ok(context.media.length >= 2);
   assert.equal(context.media[1].timestamp - context.media[0].timestamp, 20);
@@ -721,9 +722,9 @@ test('WebRTC preserves native ordered Opus payloads and source timing', async (c
       payload,
     });
   send(1, 0);
-  context.mock.timers.tick(60);
+  context.mock.timers.tick(160);
   send(2, 960);
-  context.mock.timers.tick(60);
+  context.mock.timers.tick(160);
   send(3, 1920);
   assert.equal(flow.transport.audio.codec, 'opus');
   assert.equal(flow.transport.audio.profile, undefined);
@@ -1022,11 +1023,11 @@ test('WebRTC RTP from a retired audio track cannot enter the replacement audio p
       payload: Buffer.from([sequence]),
     });
   send(old, 1);
-  context.mock.timers.tick(60);
+  context.mock.timers.tick(160);
   send(old, 2);
   assert.deepEqual(flow.media, []);
   send(current, 3);
-  context.mock.timers.tick(60);
+  context.mock.timers.tick(160);
   send(current, 4);
   assert.equal(flow.media.length, 1);
   assert.deepEqual(flow.media[0].data, Buffer.from([3]));
@@ -1046,7 +1047,7 @@ test('a retired WebRTC audio track event cannot discard the current reorder queu
       payload: Buffer.from([sequence]),
     });
   send(1);
-  context.mock.timers.tick(60);
+  context.mock.timers.tick(160);
   old.transceivers.find((entry) => entry.kind === 'audio').onTrack.emit({ codec: { payloadType: 111 }, onReceiveRtp: event() });
   send(2);
   assert.equal(flow.media.length, 1);
@@ -1063,7 +1064,7 @@ for (let kind of ['audio', 'video']) {
         header: { sequenceNumber: sequence, timestamp: sequence * 3000, payloadType: 120, ssrc: 7, marker: true },
         payload: Buffer.from([0x65, 1]),
       });
-      context.mock.timers.tick(60);
+      context.mock.timers.tick(160);
     }
     assert.deepEqual(flow.media, []);
     assert.equal(flow.transport.ready, false);
@@ -1101,6 +1102,34 @@ for (let delay of [850, 950]) {
     assert.equal(flow.media.filter((item) => item.keyFrame === true).length, 2);
   });
 }
+
+test('WebRTC keyframe expiry logs recent fragment progress without changing the deadline', async (context) => {
+  let flow = await videoFlow(context);
+  let logs = [];
+  flow.transport.log = { debug: (...args) => logs.push(format(...args)) };
+  flow.keyframe(0);
+  flow.emit(Buffer.from([0x7c, 0x85, 1]), 3000, false, { sequenceNumber: 1 });
+  context.mock.timers.tick(2501);
+  flow.emit(Buffer.from([0x7c, 0x05, 2]), 3000, false, { sequenceNumber: 2 });
+  let drop = logs.find((line) => line.startsWith('Dropping incomplete jittered'));
+  assert.match(drop, /ageMs="2501" idleMs="0" spanMs="2501" limitMs="2500" forced="false"/);
+  assert.equal(flow.transport.stats.media.videoDrops['jitter-keyframe-incomplete'], 1);
+});
+
+test('WebRTC expiry logs retain the first group deadline when one drain expires multiple keyframes', async (context) => {
+  let flow = await videoFlow(context);
+  let logs = [];
+  flow.transport.log = { debug: (...args) => logs.push(format(...args)) };
+  flow.keyframe(0);
+  flow.emit(Buffer.from([0x7c, 0x85, 1]), 3000, false, { sequenceNumber: 1 });
+  flow.emit(Buffer.from([0x7c, 0x85, 2]), 6000, false, { sequenceNumber: 2 });
+  context.mock.timers.tick(2600);
+  flow.emit(Buffer.from([0x7c, 0x05, 3]), 6000, false, { sequenceNumber: 3 });
+  let drops = logs.filter((line) => line.startsWith('Dropping incomplete jittered'));
+  assert.equal(drops.length, 1);
+  assert.match(drops[0], /rtpTs="3000".*idleMs="2600" spanMs="0" limitMs="900" forced="false"/);
+  assert.equal(flow.transport.stats.media.videoDrops['jitter-keyframe-incomplete'], 2);
+});
 
 test('WebRTC expires an incomplete blocking IDR and ignores its late end fragment', async (context) => {
   let flow = await videoFlow(context);
@@ -1233,12 +1262,12 @@ test('WebRTC discards suppressed deltas without reparsing their NAL data', async
   assert.equal(parse.mock.callCount(), 0);
 });
 
-test('WebRTC close drains a queued complete group while discarding its incomplete predecessor', async (context) => {
+test('WebRTC releases a complete recovery IDR before close and ignores retired fragments', async (context) => {
   let flow = await videoFlow(context);
   flow.keyframe(0);
   flow.emit(Buffer.from([0x7c, 0x85, 1]), 3000, false);
   flow.keyframe(6000);
-  assert.equal(flow.media.length, 1);
+  assert.equal(flow.media.length, 2);
   flow.stopConsumers();
   await flow.transport.close();
   assert.equal(flow.media.length, 2);
@@ -1263,7 +1292,7 @@ test('WebRTC releases audio at its reorder deadline without another arrival and 
   emit(1);
   context.mock.timers.tick(10);
   emit(0);
-  context.mock.timers.tick(39);
+  context.mock.timers.tick(139);
   assert.equal(flow.media.length, 0);
   context.mock.timers.tick(1);
   assert.equal(flow.media.length, 0, 'the earlier sequence still needs its reorder hold');
@@ -1296,7 +1325,7 @@ test('WebRTC audio deadline from a closed peer cannot release its replacement au
   attach().onReceiveRtp.emit(packet);
   context.mock.timers.tick(25);
   assert.equal(flow.media.length, 0);
-  context.mock.timers.tick(25);
+  context.mock.timers.tick(125);
   assert.equal(flow.media.length, 1);
   await flow.transport.close();
   context.mock.timers.tick(300);
@@ -1369,7 +1398,7 @@ for (let [earlyReports, offset, videoOrigin = 0, audioOrigin = 456000] of [
     context.mock.timers.tick(100);
     sendAudio(1, (audioOrigin + 4800) >>> 0);
     flow.emit(Buffer.from([0x41, 2]), (videoOrigin + 9000) >>> 0);
-    context.mock.timers.tick(60);
+    context.mock.timers.tick(160);
     let videos = flow.media.filter((item) => item.type === 'video');
     let audios = flow.media.filter((item) => item.type === 'audio');
     assert.equal(videos.length, 2);
@@ -1380,7 +1409,7 @@ for (let [earlyReports, offset, videoOrigin = 0, audioOrigin = 456000] of [
     // Once established, newer reports do not independently step either clock.
     audio.onReceiveRtcp.emit(senderReport(20, (audioOrigin + 4800) >>> 0, 9990000));
     sendAudio(2, (audioOrigin + 5760) >>> 0);
-    context.mock.timers.tick(60);
+    context.mock.timers.tick(160);
     assert.ok(Math.abs(flow.media.filter((item) => item.type === 'audio')[2].timestamp - audios[1].timestamp - 20) < 0.000001);
   });
 }
@@ -1410,10 +1439,10 @@ test('WebRTC retains fractional RTP intervals and discards duplicate audio seque
       payload: Buffer.from([0xf8, 0xff, 0xfe]),
     });
   send(0, 0xffffffff);
-  context.mock.timers.tick(60);
+  context.mock.timers.tick(160);
   send(0, 0xffffffff);
   send(1, 0);
-  context.mock.timers.tick(60);
+  context.mock.timers.tick(160);
   assert.equal(flow.media.length, 2);
   assert.ok(Math.abs(flow.media[1].timestamp - flow.media[0].timestamp - 1000 / 48000) < 0.000001);
 });
@@ -1426,4 +1455,202 @@ test('WebRTC reuses learned dimensions for later keyframe size checks', async (c
   flow.keyframe(3000);
   assert.equal(flow.media.length, 2);
   assert.equal(parse.mock.callCount(), 0);
+});
+
+test('WebRTC keeps an IDR progressing beyond the blocking inactivity deadline', async (context) => {
+  let flow = await videoFlow(context);
+  flow.keyframe(0);
+  flow.emit(Buffer.from([0x7c, 0x85, 1]), 3000, false, { sequenceNumber: 1 });
+  context.mock.timers.tick(100);
+  flow.emit(Buffer.from([0x41, 9]), 6000, true, { sequenceNumber: 4 });
+  context.mock.timers.tick(850);
+  flow.emit(Buffer.from([0x7c, 0x05, 2]), 3000, false, { sequenceNumber: 2 });
+  context.mock.timers.tick(20);
+  flow.emit(Buffer.from([0x7c, 0x45, 3]), 3000, true, { sequenceNumber: 3 });
+  assert.equal(flow.media.filter((frame) => frame.keyFrame === true).length, 2);
+});
+
+test('WebRTC immediately releases a newer complete IDR past an incomplete older IDR', async (context) => {
+  let flow = await videoFlow(context);
+  flow.keyframe(0);
+  flow.emit(Buffer.from([0x7c, 0x85, 1]), 3000, false, { sequenceNumber: 1 });
+  context.mock.timers.tick(100);
+  flow.emit(flow.stap([flow.sps, flow.pps, Buffer.from([0x65, 9])]), 6000, true, { sequenceNumber: 3 });
+  assert.equal(flow.media.filter((frame) => frame.keyFrame === true).length, 2);
+});
+
+test('WebRTC suppresses deltas immediately after losing an established keyframe', async (context) => {
+  let flow = await videoFlow(context);
+  flow.keyframe(0);
+  flow.emit(Buffer.from([0x7c, 0x85, 1]), 3000, false, { sequenceNumber: 1 });
+  context.mock.timers.tick(1000);
+  flow.emit(Buffer.from([0x41, 9]), 6000, true, { sequenceNumber: 3 });
+  assert.equal(
+    flow.media.some((frame) => frame.keyFrame !== true),
+    false,
+  );
+  flow.emit(Buffer.from([0x65, 9]), 9000, true, { sequenceNumber: 4 });
+  flow.emit(Buffer.from([0x41, 10]), 12000, true, { sequenceNumber: 5 });
+  assert.deepEqual(
+    flow.media.map((frame) => frame.keyFrame),
+    [true, true, false],
+  );
+});
+
+test('WebRTC retains every ordered Opus packet through a source arrival pause', async (context) => {
+  let flow = setup(context);
+  await flow.transport.open();
+  let track = { codec: { payloadType: 111 }, onReceiveRtp: event() };
+  flow.peers[0].transceivers.find((entry) => entry.kind === 'audio').onTrack.emit(track);
+  let emit = (sequence) =>
+    track.onReceiveRtp.emit({
+      header: { payloadType: 111, ssrc: 20, sequenceNumber: sequence, timestamp: sequence * 960 },
+      payload: Buffer.from([0xf8, 0xff, 0xfe]),
+    });
+  emit(0);
+  context.mock.timers.tick(400);
+  for (let sequence = 1; sequence <= 8; sequence++) {
+    emit(sequence);
+  }
+  context.mock.timers.tick(150);
+  assert.equal(flow.media.length, 9);
+  assert.equal(flow.media.at(-1).timestamp - flow.media[0].timestamp, 160);
+});
+
+test('WebRTC recovers six delayed Opus packets without creating a source-clock gap', async (context) => {
+  let flow = setup(context);
+  await flow.transport.open();
+  let track = { codec: { payloadType: 111 }, onReceiveRtp: event() };
+  flow.peers[0].transceivers.find((entry) => entry.kind === 'audio').onTrack.emit(track);
+  let emit = (sequence) =>
+    track.onReceiveRtp.emit({
+      header: { payloadType: 111, ssrc: 20, sequenceNumber: sequence, timestamp: sequence * 960 },
+      payload: Buffer.from([0xf8, 0xff, 0xfe]),
+    });
+  emit(0);
+  context.mock.timers.tick(60);
+  emit(7);
+  context.mock.timers.tick(60);
+  for (let sequence = 1; sequence <= 6; sequence++) {
+    emit(sequence);
+  }
+  emit(8);
+  context.mock.timers.tick(150);
+  assert.equal(flow.media.length, 9);
+  for (let index = 1; index < flow.media.length; index++) {
+    assert.equal(flow.media[index].timestamp - flow.media[index - 1].timestamp, 20);
+  }
+});
+
+for (let invalid of ['malformed-stap', 'interrupted-fu', 'missing-nal', 'oversized']) {
+  test('WebRTC does not promote an invalid newer IDR: ' + invalid, async (context) => {
+    let flow = await videoFlow(context);
+    flow.keyframe(0);
+    flow.emit(Buffer.from([0x7c, 0x85, 1]), 3000, false, { sequenceNumber: 1 });
+    context.mock.timers.tick(100);
+    if (invalid === 'malformed-stap') {
+      flow.emit(Buffer.from([0x78, 0, 2, 0x65, 1, 0xff]), 6000, true, { sequenceNumber: 3 });
+    } else if (invalid === 'missing-nal') {
+      flow.emit(Buffer.from([0x65, 1]), 6000, false, { sequenceNumber: 3 });
+      flow.emit(Buffer.from([0x41, 2]), 6000, true, { sequenceNumber: 5 });
+    } else if (invalid === 'interrupted-fu') {
+      flow.emit(Buffer.from([0x7c, 0x85, 1]), 6000, false, { sequenceNumber: 3 });
+      flow.emit(Buffer.from([0x7c, 0x85, 2]), 6000, false, { sequenceNumber: 4 });
+      flow.emit(Buffer.from([0x7c, 0x45, 3]), 6000, true, { sequenceNumber: 5 });
+    } else {
+      let payload = Buffer.alloc(4 * 1024 * 1024 + 1);
+      payload[0] = 0x65;
+      flow.emit(payload, 6000, true, { sequenceNumber: 3 });
+    }
+    assert.equal(flow.media.length, 1);
+    assert.equal(flow.transport.stats.media.videoDrops['jitter-keyframe-incomplete'], undefined);
+    flow.emit(Buffer.from([0x7c, 0x45, 2]), 3000, true, { sequenceNumber: 2 });
+    assert.ok(flow.media.length >= 2, 'the older IDR must remain recoverable');
+    assert.equal(flow.media[1].keyFrame, true);
+    assert.deepEqual(H264.getNALUnits(flow.media[1].data).at(-1).data, Buffer.from([0x65, 1, 2]));
+  });
+}
+
+test('WebRTC recovery IDR can cross both RTP timestamp and sequence rollover', async (context) => {
+  let flow = await videoFlow(context);
+  flow.emit(flow.stap([flow.sps, flow.pps, Buffer.from([0x65, 1])]), 0xffffe000, true, { sequenceNumber: 65533 });
+  flow.emit(Buffer.from([0x7c, 0x85, 1]), 0xfffff000, false, { sequenceNumber: 65534 });
+  flow.emit(Buffer.from([0x65, 2]), 3000, true, { sequenceNumber: 0 });
+  assert.equal(flow.media.length, 2);
+  assert.equal(flow.media[1].keyFrame, true);
+  assert.ok(flow.media[1].timestamp > flow.media[0].timestamp);
+});
+
+test('WebRTC duplicate fragments do not extend the blocking inactivity deadline', async (context) => {
+  let flow = await videoFlow(context);
+  flow.keyframe(0);
+  flow.emit(Buffer.from([0x7c, 0x85, 1]), 3000, false, { sequenceNumber: 1 });
+  context.mock.timers.tick(800);
+  flow.emit(Buffer.from([0x7c, 0x85, 1]), 3000, false, { sequenceNumber: 1 });
+  context.mock.timers.tick(101);
+  flow.emit(Buffer.from([0x41, 2]), 6000, true, { sequenceNumber: 3 });
+  assert.equal(flow.transport.stats.media.videoDrops['jitter-keyframe-incomplete'], 1);
+  assert.equal(flow.media.length, 1);
+});
+
+test('WebRTC retains a validated recovery IDR across bounded video drains', async (context) => {
+  let flow = await videoFlow(context);
+  flow.keyframe(0);
+  for (let index = 1; index <= 10; index++) {
+    flow.emit(Buffer.from([0x7c, 0x85, 1]), index * 3000, false, { sequenceNumber: index });
+  }
+  flow.emit(Buffer.from([0x65, 9]), 33000, true, { sequenceNumber: 11 });
+  assert.equal(flow.media.length, 1, 'the first drain must retain its eight-group work bound');
+  flow.emit(Buffer.from([0x41, 10]), 36000, true, { sequenceNumber: 12 });
+  assert.deepEqual(
+    flow.media.map((frame) => frame.keyFrame),
+    [true, true, false],
+  );
+});
+
+test('WebRTC ignores a video group removed by the packet bound during insertion', async (context) => {
+  let flow = await videoFlow(context);
+  flow.keyframe(0);
+  for (let index = 1; index <= 4097; index++) {
+    flow.emit(Buffer.from([0x7c, index === 1 ? 0x85 : 0x05, 1]), 3000, false, { sequenceNumber: index });
+  }
+  assert.equal(flow.media.length, 1);
+  flow.emit(Buffer.from([0x65, 9]), 6000, true, { sequenceNumber: 4098 });
+  assert.equal(flow.media.length, 2);
+});
+
+test('WebRTC validates startup recovery size using the candidate SPS', async (context) => {
+  let flow = await videoFlow(context);
+  flow.emit(Buffer.from([0x7c, 0x85, 1]), 0, false, { sequenceNumber: 0 });
+  let sps = sequenceParameterSet({ widthMbs: 240, heightMbs: 135 });
+  flow.emit(flow.stap([sps, flow.pps]), 3000, false, { sequenceNumber: 2 });
+  let payload = Buffer.alloc(3 * 1024 * 1024);
+  payload[0] = 0x65;
+  flow.emit(payload, 3000, true, { sequenceNumber: 3 });
+  assert.equal(flow.media.length, 1);
+  assert.equal(flow.media[0].keyFrame, true);
+  assert.equal(flow.transport.video.width, 3840);
+});
+
+test('WebRTC revalidates a waiting recovery IDR when more packets change its completeness', async (context) => {
+  let flow = await videoFlow(context);
+  flow.keyframe(0);
+  for (let index = 1; index <= 10; index++) {
+    flow.emit(Buffer.from([0x7c, 0x85, 1]), index * 3000, false, { sequenceNumber: index });
+  }
+  flow.emit(Buffer.from([0x7c, 0x85, 9]), 33000, false, { sequenceNumber: 11 });
+  flow.emit(Buffer.from([0x7c, 0x45, 9]), 33000, true, { sequenceNumber: 12 });
+  assert.equal(flow.transport.stats.media.videoDrops['jitter-keyframe-incomplete'], 8);
+  flow.emit(Buffer.from([0x41, 10]), 33000, true, { sequenceNumber: 14 });
+  assert.equal(
+    flow.transport.stats.media.videoDrops['jitter-keyframe-incomplete'],
+    8,
+    'a now-incomplete candidate cannot retire more frames',
+  );
+  flow.emit(Buffer.from([0x41, 11]), 33000, false, { sequenceNumber: 13 });
+  assert.deepEqual(
+    flow.media.map((frame) => frame.keyFrame),
+    [true, true],
+  );
+  assert.equal(H264.getNALUnits(flow.media[1].data).length, 3);
 });

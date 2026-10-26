@@ -72,7 +72,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.THERMOSTAT;
-  static VERSION = '2026.10.21'; // Code version
+  static VERSION = '2026.10.26'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -93,8 +93,10 @@ export default class NestThermostat extends HomeKitDevice {
     // End of pre-0.4.0 cleanup
 
     // Setup the thermostat service if not already present on the accessory, and link it to the Eve app if configured to do so
-    this.thermostatService = this.addService(this.hap.Service.Thermostat, '', 1, { messages: this.message.bind(this) });
-    this.thermostatService.setPrimaryService();
+    this.thermostatService = this.addService(this.hap.Service.Thermostat, '', 1, {
+      primary: true,
+      history: { messages: this.message.bind(this) },
+    });
 
     // Fix for coding error with versions below 2025.08.20 where fan specific characteristics were added directly to the thermostat service
     // Thanks to @gizmotronic for raising this issue
@@ -224,8 +226,7 @@ export default class NestThermostat extends HomeKitDevice {
     }
 
     // Setup battery service if not already present on the accessory
-    this.batteryService = this.addService(this.hap.Service.Battery, '', 1);
-    this.batteryService.setHiddenService(true);
+    this.batteryService = this.addService(this.hap.Service.Battery, '', 1, { hidden: true });
     this.thermostatService.addLinkedService(this.batteryService);
 
     // Setup fan service if supported by the thermostat and not already present on the accessory

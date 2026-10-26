@@ -374,6 +374,9 @@ for (let audioDiagnostics of [false, true]) {
     );
     if (audioDiagnostics === true) {
       assert.deepEqual(muxer.audioTiming, {
+        samples: 4800,
+        clockDurationMs: 210,
+        encodedDurationMs: 100,
         units: 5,
         unknownDurations: 0,
         gaps: 1,

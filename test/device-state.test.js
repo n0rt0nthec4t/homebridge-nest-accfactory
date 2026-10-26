@@ -223,6 +223,83 @@ for (let wired of [true, false]) {
   }
 }
 
+for (let [name, primary] of [
+  ['thermostat', 'thermostatService'],
+  ['heatlink', 'thermostatService'],
+  ['lock', 'lockService'],
+  ['protect', 'smokeService'],
+  ['tempsensor', 'temperatureService'],
+  ['weather', 'temperatureService'],
+]) {
+  test(name + ' service options retain primary and hidden flags across repeated setup', async (context) => {
+    let flow = await setup(context, name);
+    assert.equal(flow.device[primary].isPrimaryService, true);
+    if (flow.device.batteryService !== undefined) {
+      assert.equal(flow.device.batteryService.isHiddenService, true);
+    }
+    let service = flow.device[primary];
+    await flow.device.onAdd();
+    assert.equal(flow.device[primary], service);
+    assert.equal(service.isPrimaryService, true);
+    if (flow.device.batteryService !== undefined) {
+      assert.equal(flow.device.batteryService.isHiddenService, true);
+    }
+  });
+}
+
+test('custom services use real HAP characteristic lists, distinct subtypes and restored cache instances', async (context) => {
+  let flow = await setup(context, 'protect');
+  let definition = {
+    name: 'Custom Test Sensor',
+    uuid: '12345678-1234-4123-8123-123456789ABC',
+    required: [C.Name, C.StatusActive],
+    optional: [C.StatusFault],
+  };
+  context.after(() => delete hap.Service.CustomTestSensor);
+  let first = flow.device.addService(definition, 'First', 'first', { primary: true, hidden: true });
+  let type = hap.Service.CustomTestSensor;
+  assert.ok(first instanceof hap.Service);
+  assert.equal(first.constructor, type);
+  assert.equal(first.isPrimaryService, true);
+  assert.equal(first.isHiddenService, true);
+  assert.equal(
+    Object.getOwnPropertySymbols(first).some((key) => first[key]?.history !== undefined),
+    false,
+    'flags alone must not request history linking',
+  );
+  assert.equal(first.getCharacteristic(C.Name).value, 'First');
+  assert.equal(first.characteristics.filter((item) => item.UUID === C.Name.UUID).length, 1);
+  assert.equal(first.testCharacteristic(C.StatusActive), true);
+  assert.equal(first.testCharacteristic(C.StatusFault), false);
+  assert.equal(
+    first.optionalCharacteristics.some((item) => item.UUID === C.StatusFault.UUID),
+    true,
+  );
+  assert.equal(flow.device.addService(definition, 'Ignored', 'first'), first);
+  assert.equal(first.isPrimaryService, true);
+  assert.equal(first.isHiddenService, true);
+  let second = flow.device.addService(type, 'Second', 'second');
+  assert.notEqual(second, first);
+
+  // Restore before custom type registration, as happens when loading an accessory cache.
+  delete hap.Service.CustomTestSensor;
+  let cached = hap.Service.deserialize(hap.Service.serialize(first));
+  assert.notEqual(cached.constructor, type);
+  flow.device.accessory.removeService(first);
+  flow.device.accessory.addService(cached);
+  assert.equal(flow.device.addService(definition, 'Ignored', 'first'), cached);
+  assert.equal(cached.isPrimaryService, true);
+  assert.equal(cached.isHiddenService, true);
+  assert.equal(flow.device.addService(definition, 'Ignored', 'first', { primary: false, hidden: false }), cached);
+  assert.equal(cached.isPrimaryService, false);
+  assert.equal(cached.isHiddenService, false);
+  flow.device.addService(type, 'Ignored', 'first', { hidden: true });
+  assert.equal(cached.isPrimaryService, false);
+  assert.equal(cached.isHiddenService, true);
+  assert.equal(flow.device.addService(type, 'Ignored', 'second'), second);
+  assert.deepEqual(flow.warnings, []);
+});
+
 test('Protect exposes its replacement date as a read-only local string and preserves cached identity', async (context) => {
   let timestamp = Date.UTC(2030, 9, 25, 12) / 1000;
   let flow = await setup(context, 'protect', { replacement_date: timestamp });

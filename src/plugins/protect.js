@@ -60,7 +60,7 @@ function hasSafetySummaryFailure(raw, failureType) {
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.PROTECT;
-  static VERSION = '2026.10.25'; // Code version
+  static VERSION = '2026.10.26'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -71,16 +71,18 @@ export default class NestProtect extends HomeKitDevice {
   onAdd() {
     // Setup the smoke sensor service if not already present on the accessory
     this.smokeService = this.addService(this.hap.Service.SmokeSensor, '', 1, {
-      messages: this.message.bind(this),
-      EveSmoke_lastalarmtest: this.deviceData.latest_alarm_test,
-      EveSmoke_alarmtest: this.deviceData.self_test_in_progress,
-      EveSmoke_heatstatus: this.deviceData.heat_status,
-      EveSmoke_hushedstate: this.deviceData.hushed_state,
-      EveSmoke_statusled: this.deviceData.ntp_green_led_enable,
-      EveSmoke_smoketestpassed: this.deviceData.smoke_test_passed,
-      EveSmoke_heattestpassed: this.deviceData.heat_test_passed,
+      primary: true,
+      history: {
+        messages: this.message.bind(this),
+        EveSmoke_lastalarmtest: this.deviceData.latest_alarm_test,
+        EveSmoke_alarmtest: this.deviceData.self_test_in_progress,
+        EveSmoke_heatstatus: this.deviceData.heat_status,
+        EveSmoke_hushedstate: this.deviceData.hushed_state,
+        EveSmoke_statusled: this.deviceData.ntp_green_led_enable,
+        EveSmoke_smoketestpassed: this.deviceData.smoke_test_passed,
+        EveSmoke_heattestpassed: this.deviceData.heat_test_passed,
+      },
     });
-    this.smokeService.setPrimaryService();
 
     this.addCharacteristic(this.smokeService, this.hap.Characteristic.StatusActive);
     this.addCharacteristic(this.smokeService, this.hap.Characteristic.StatusFault);
@@ -97,8 +99,7 @@ export default class NestProtect extends HomeKitDevice {
     this.addCharacteristic(this.carbonMonoxideService, this.hap.Characteristic.StatusFault);
 
     // Setup battery service if not already present on the accessory
-    this.batteryService = this.addService(this.hap.Service.Battery, '', 1);
-    this.batteryService.setHiddenService(true);
+    this.batteryService = this.addService(this.hap.Service.Battery, '', 1, { hidden: true });
 
     // Setup motion service if not already present on the accessory and Nest protect is a wired version
     if (this.deviceData?.wired_or_battery === false) {

@@ -4,7 +4,30 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.4.5-alpha.7 (2026/10/xx)
+## v0.4.5-alpha.8 (2026/10/26)
+
+### Changed
+
+- Move media diagnostics from `supportDump` to FFmpeg debugging, with concise per-stream close summaries including audio clock/sample timing and process outcomes instead of the long streaming dump and routine FFmpeg stderr output
+
+- Update HomeKitDevice to `2026.10.26`, adding custom service definitions, identity checks, and primary/hidden setup options; nest history configuration under `history` and migrate device plugins to the new service options
+
+- Include fragment arrival timing, assembly deadline and forced teardown in incomplete WebRTC keyframe debug logs
+
+### Fixed
+
+- Keep progressing WebRTC keyframes within bounded assembly limits, recover promptly at a valid newer keyframe, and suppress dependent video frames after keyframe loss
+- Allow 150 ms for WebRTC audio packet reordering to reduce avoidable gaps from delayed packets while preserving source timestamps and bounded buffering
+
+### Testing
+
+- Listen for crackling or regular audio pauses during longer live views on both WebRTC and NexusTalk cameras
+- Check WebRTC startup time and any video freezes after playback begins
+- Check HKSV audio/video sync, especially on NexusTalk cameras, using visible actions with clear sounds; report whether audio leads or trails and whether the offset grows
+- WebRTC startup/video pauses and NexusTalk recording sync remain under investigation. Initial short live-view tests show continuous audio timing, but do not establish that all audio issues are resolved
+- When reporting an issue, include the camera model, plugin version and host hardware. Enable `ffmpegDebug`, reproduce the issue, then include the per-stream summary, timing and delivery lines logged when the live view or recording closes; `supportDump` is not required
+
+## v0.4.5-alpha.7 (2026/10/25)
 
 ### Added
 

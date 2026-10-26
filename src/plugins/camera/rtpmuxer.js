@@ -26,7 +26,7 @@
 // type. After prepare, ports exposes the internal audioControl and talkback ports
 // for FFmpeg arguments. FFmpeg retains SRTP and codec handling.
 //
-// Code version 2026.10.24
+// Code version 2026.10.26
 // Mark Hulskamp
 'use strict';
 
@@ -113,6 +113,9 @@ export default class RTPMuxer {
     this.#talkback = talkback === undefined ? undefined : { ...talkback };
     if (audioDiagnostics === true) {
       this.#audioTiming = {
+        firstTimestamp: undefined,
+        samples: 0,
+        clockDurationMs: 0,
         units: 0,
         unknownDurations: 0,
         gaps: 0,
@@ -654,7 +657,13 @@ export default class RTPMuxer {
 
   // Detached counter snapshot for stop-time diagnostics; undefined when collection is disabled.
   get audioTiming() {
-    return this.#audioTiming === undefined ? undefined : { ...this.#audioTiming };
+    if (this.#audioTiming === undefined) {
+      return undefined;
+    }
+    let timing = { ...this.#audioTiming };
+    delete timing.firstTimestamp;
+    timing.encodedDurationMs = timing.samples === 0 ? 0 : (timing.samples * 1000) / this.#output.audio.sampleRate;
+    return timing;
   }
 
   get hasAudio() {
@@ -1050,6 +1059,9 @@ export default class RTPMuxer {
     track.endTimestamp = timestamp + (samples === undefined ? 1 : (samples * 1000) / track.rate);
     if (this.#audioTiming !== undefined) {
       let timing = this.#audioTiming;
+      timing.firstTimestamp ??= timestamp;
+      timing.samples += samples ?? 0;
+      timing.clockDurationMs = track.endTimestamp - timing.firstTimestamp;
       timing.units++;
       if (this.#nextAudioTimestamp !== undefined) {
         // Compare the actual wire clock, preserving signed differences through

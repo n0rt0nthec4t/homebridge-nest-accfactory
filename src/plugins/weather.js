@@ -50,7 +50,7 @@ import { DATA_SOURCE, DEVICE_TYPE, MAX_ELEVATION, MIN_ELEVATION, NESTLABS_MAC_PR
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.WEATHER;
-  static VERSION = '2026.10.15'; // Code version
+  static VERSION = '2026.10.26'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -60,20 +60,18 @@ export default class NestWeather extends HomeKitDevice {
   // Class functions
   onAdd() {
     // Setup temperature service if not already present on the accessory
-    this.temperatureService = this.addService(this.hap.Service.TemperatureSensor, '', 1);
-    this.temperatureService.setPrimaryService();
+    this.temperatureService = this.addService(this.hap.Service.TemperatureSensor, '', 1, { primary: true });
 
     // Setup humidity service if not already present on the accessory
     this.humidityService = this.addService(this.hap.Service.HumiditySensor, '', 1);
 
     // Setup battery service if not already present on the accessory (required for EveHome support)
-    this.batteryService = this.addService(this.hap.Service.Battery, '', 1);
-    this.batteryService.setHiddenService(true);
+    this.batteryService = this.addService(this.hap.Service.Battery, '', 1, { hidden: true });
 
     // Add custom weather service and characteristics if they have been defined
     if (this.hap.Service?.EveAirPressureSensor !== undefined) {
       // This will be linked to the Eve app if configured to do so
-      this.airPressureService = this.addService(this.hap.Service.EveAirPressureSensor, '', 1, {});
+      this.airPressureService = this.addService(this.hap.Service.EveAirPressureSensor, '', 1, { history: {} });
     }
 
     if (this.hap.Characteristic?.ForecastDay !== undefined) {

@@ -56,7 +56,7 @@ import {
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.HEATLINK;
-  static VERSION = '2026.10.18'; // Code version
+  static VERSION = '2026.10.26'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
@@ -231,8 +231,10 @@ export default class NestHeatlink extends HomeKitDevice {
   }
 
   #setupHotwaterTemperature(deviceData = this.deviceData) {
-    this.thermostatService = this.addService(this.hap.Service.Thermostat, '', 1, { messages: this.message.bind(this) });
-    this.thermostatService.setPrimaryService();
+    this.thermostatService = this.addService(this.hap.Service.Thermostat, '', 1, {
+      primary: true,
+      history: { messages: this.message.bind(this) },
+    });
 
     this.addCharacteristic(this.thermostatService, this.hap.Characteristic.StatusActive);
 

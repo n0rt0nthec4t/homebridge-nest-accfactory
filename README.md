@@ -145,13 +145,13 @@ The following options are available in the `config.json` `"options"` object. The
 | elevation          | Height above sea level for weather station(s)                                                | 0              |
 | eveHistory         | Provide history in EveHome application where applicable                                      | true           |
 | exclude            | Exclude all device(s)                                                                        | false          |
-| ffmpegDebug        | Enable additional debugging output when ffmpeg is invoked                                    | false          |
+| ffmpegDebug        | Enable media diagnostics and concise debug summaries when streams close                     | false          |
 | ffmpegHWaccel      | Enable video hardware acceleration for camera(s) and doorbell(s) where supported             | false          |
 | ffmpegPath         | Path to the ffmpeg binary, directory containing ffmpeg, or command name available in system PATH | ffmpeg |
 | ffmpegTranscode    | Enable video transcoding for camera(s) and doorbell(s) (higher CPU usage)                    | false          |
 | logMotionEvents    | Enable logging of motion events for camera(s), doorbell(s) and Nest Protect device(s)        | true           |
 | maxStreams         | Maximum simultaneous live view streams per camera (integer from 1 to 4)                       | 2              |
-| supportDump        | Enable redacted Nest/Google API support dumps and streaming diagnostics                      | false          |
+| supportDump        | Enable redacted Nest/Google API support dumps                                                | false          |
 
 API support-dump blocks redact credentials, personal details, network addresses and camera URLs. Device and home identifiers use consistent aliases within a plugin run. Collection and output are bounded; empty delta updates produce no dump. Normal plugin logs and streaming debug messages can still contain device names and identifiers.
 
@@ -173,7 +173,7 @@ The `"name"` field is optional and is only used to help identify the entry in th
 | eveHistory         | Provide history in the EveHome application where applicable for this device                  | true    |
 | exclude            | Exclude this device                                                                          | false   |
 | fanDuration        | Fan runtime duration                                                                         |         |
-| ffmpegDebug        | Enable additional debugging output when ffmpeg is invoked                                    | false   |
+| ffmpegDebug        | Enable media diagnostics and concise debug summaries when streams close                     | false          |
 | ffmpegHWaccel      | Enable video hardware acceleration for camera(s) and doorbell(s) where supported             | false   |
 | ffmpegTranscode    | Enable video transcoding for camera(s) and doorbell(s) (higher CPU usage)                    | false   |
 | hotwaterBoostTime  | Duration for hot water boost heating (30, 60, 120 mins)                                      | 30mins  |

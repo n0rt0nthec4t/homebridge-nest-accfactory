@@ -90,7 +90,7 @@ const PREBUFFER_LENGTH = 4000;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.10.24'; // Code version
+  static VERSION = '2026.10.26'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -163,7 +163,7 @@ export default class NestCamera extends HomeKitDevice {
     // Setup the motion service if not already present on the accessory, and link it to the Eve app if configured to do so
     // We also need to add the active characteristic to the motion service for it to work with HKSV
     // This needs to be done before we setup the HomeKit camera controller
-    this.motionService = this.addService(this.hap.Service.MotionSensor, '', 1, {});
+    this.motionService = this.addService(this.hap.Service.MotionSensor, '', 1, { history: {} });
     this.addCharacteristic(this.motionService, this.hap.Characteristic.Active, {}); // Required for HKSV
     this.motionService.updateCharacteristic(this.hap.Characteristic.Active, true); // Required for HKSV
     this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
@@ -188,8 +188,7 @@ export default class NestCamera extends HomeKitDevice {
 
     // Setup battery service if required and not already present on the accessory
     if (this.deviceData.model.includes('battery') === true && Number.isFinite(Number(this.deviceData?.battery_level)) === true) {
-      this.batteryService = this.addService(this.hap.Service.Battery, '', 1);
-      this.batteryService.setHiddenService(true);
+      this.batteryService = this.addService(this.hap.Service.Battery, '', 1, { hidden: true });
     }
 
     // Setup set characteristics
@@ -750,11 +749,6 @@ export default class NestCamera extends HomeKitDevice {
         sourceAudio: this.streamer.codecs.audio,
         hardware: this.deviceData.ffmpeg.hwaccel === true,
         onCommand: (kind, args) => this.#logCommand(kind, args),
-        onStderr: (data) => {
-          if (this.deviceData.ffmpeg.debug === true && data.toString().includes('frame=') === false) {
-            this.log?.debug?.(data.toString());
-          }
-        },
       });
       this.log?.info?.('Started recording from "%s" %s', this.deviceData.description, includeAudio === false ? 'without audio' : '');
 
@@ -1020,11 +1014,6 @@ export default class NestCamera extends HomeKitDevice {
           hardware: this.deviceData.ffmpeg.hwaccel === true,
           transcode: this.deviceData.ffmpeg.transcode === true,
           onCommand: (kind, args) => this.#logCommand(kind, args),
-          onStderr: (data) => {
-            if (this.deviceData.ffmpeg.debug === true && data.toString().includes('frame=') === false) {
-              this.log?.debug?.(data.toString());
-            }
-          },
         });
 
         // Allow startup time for the first RTCP report, then require regular HomeKit feedback.
@@ -1243,7 +1232,7 @@ export default class NestCamera extends HomeKitDevice {
 
     return new Streamer(this.uuid, deviceData, {
       log: this.log,
-      supportDump: deviceData.supportDump === true,
+      ffmpegDebug: deviceData.ffmpeg?.debug === true,
       bufferDuration: PREBUFFER_LENGTH * 2,
       transport: transportInstance,
     });
@@ -1771,7 +1760,6 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
           : config.options?.logMotionEvents === false
             ? false
             : true;
-      tempDevice.supportDump = config.options.supportDump === true;
 
       // Process additional exclusion details
       tempDevice.excluded =
