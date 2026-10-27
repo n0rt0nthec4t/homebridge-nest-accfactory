@@ -37,6 +37,7 @@ async function setup(context, name, data = {}) {
       current_humidity: 45,
       temperature_scale: 'C',
       hvac_mode: 'off',
+      eco_mode: 'off',
       hvac_state: 'off',
       can_heat: true,
       can_cool: true,
@@ -94,6 +95,38 @@ async function setup(context, name, data = {}) {
 function value(service, type) {
   return service.getCharacteristic(type).value;
 }
+
+test('thermostat Eco characteristic retains its type and cached service without adding a switch', async (context) => {
+  let flow = await setup(context, 'thermostat', { eco_mode: 'manual' });
+  await flow.device.onUpdate(flow.device.deviceData);
+  let service = flow.device.thermostatService;
+  let control = service.getCharacteristic(C.EcoMode);
+  assert.equal(control.UUID, CUSTOM_CHARACTERISTIC_UUID.ECO_MODE);
+  assert.equal(control.displayName, 'Eco Mode');
+  assert.equal(control.props.format, hap.Formats.BOOL);
+  assert.deepEqual(control.props.perms, [hap.Perms.PAIRED_READ, hap.Perms.PAIRED_WRITE, hap.Perms.NOTIFY]);
+  assert.equal(flow.device.accessory.getService(hap.Service.Switch), undefined);
+  let uuid = flow.device.accessory.UUID;
+  let services = flow.device.accessory.services.map((item) => [item.UUID, item.subtype]);
+  flow.device.accessory = hap.Accessory.deserialize(hap.Accessory.serialize(flow.device.accessory));
+  let cachedService = flow.device.accessory.getService(hap.Service.Thermostat);
+  let cachedControl = cachedService.getCharacteristic(C.EcoMode);
+  await flow.device.onAdd();
+  await flow.device.onUpdate(flow.device.deviceData);
+  assert.equal(flow.device.accessory.UUID, uuid);
+  assert.deepEqual(
+    flow.device.accessory.services.map((item) => [item.UUID, item.subtype]),
+    services,
+  );
+  assert.equal(flow.device.thermostatService, cachedService);
+  assert.equal(cachedService.getCharacteristic(C.EcoMode), cachedControl);
+  assert.equal(cachedService.characteristics.filter((item) => item.UUID === control.UUID).length, 1);
+  assert.equal(await cachedControl.handleGetRequest(), true);
+  assert.equal(typeof cachedControl.setHandler, 'function');
+  assert.equal(typeof cachedControl.getHandler, 'function');
+  assert.deepEqual(flow.writes, []);
+  assert.deepEqual(flow.warnings, []);
+});
 
 for (let [capability, canHeat, canCool, modes] of [
   ['heat/cool', true, true, ['off', 'heat', 'cool', 'range', 'ecoheat', 'ecocool', 'ecorange']],

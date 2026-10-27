@@ -71,6 +71,7 @@ UUIDs and does not generate project-specific identities.
 | Permanent identifier | Registry name | UUID | Purpose | Status |
 | --- | --- | --- | --- | --- |
 | `characteristic.replace-by-date` | `REPLACE_BY_DATE` | `391ED041-9783-577A-81EB-4B6BFEE97869` | Reported device replacement date, exposed as a read-only local date string | Active |
+| `characteristic.eco-mode` | `ECO_MODE` | `3EA35F7F-3CB1-5991-84B7-00B36A8CF698` | Boolean thermostat Eco control; On enables manual Eco, Off disables Eco | Active |
 
 Where no appropriate HomeKit representation exists, do not expose the functionality through an unrelated service or characteristic:
 

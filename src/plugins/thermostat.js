@@ -68,11 +68,12 @@ import {
   __dirname,
   DEVICE_TYPE,
   FAN_DURATION_TIMES,
+  CUSTOM_CHARACTERISTIC_UUID,
 } from '../consts.js';
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.THERMOSTAT;
-  static VERSION = '2026.10.26'; // Code version
+  static VERSION = '2026.10.27'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -97,6 +98,23 @@ export default class NestThermostat extends HomeKitDevice {
       primary: true,
       history: { messages: this.message.bind(this) },
     });
+
+    this.addCharacteristic(
+      this.thermostatService,
+      {
+        name: 'Eco Mode',
+        uuid: CUSTOM_CHARACTERISTIC_UUID.ECO_MODE,
+        props: { format: this.hap.Formats.BOOL, perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.PAIRED_WRITE, this.hap.Perms.NOTIFY] },
+      },
+      {
+        onGet: () => {
+          return ['MANUAL', 'AUTO'].includes(this.deviceData.eco_mode?.toUpperCase?.()) === true;
+        },
+        onSet: async (value) => {
+          await this.set({ uuid: this.deviceData.nest_google_device_uuid, eco_mode: value === true ? 'manual' : 'off' });
+        },
+      },
+    );
 
     // Fix for coding error with versions below 2025.08.20 where fan specific characteristics were added directly to the thermostat service
     // Thanks to @gizmotronic for raising this issue
@@ -320,6 +338,11 @@ export default class NestThermostat extends HomeKitDevice {
     ) {
       return;
     }
+
+    this.thermostatService.updateCharacteristic(
+      this.hap.Characteristic.EcoMode,
+      ['MANUAL', 'AUTO'].includes(deviceData.eco_mode?.toUpperCase?.()) === true,
+    );
 
     let historyEntry = {};
     let temperatureScale = deviceData.temperature_scale?.toUpperCase?.() === 'F' ? 'F' : 'C';
