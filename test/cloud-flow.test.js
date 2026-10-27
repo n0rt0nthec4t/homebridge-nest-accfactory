@@ -240,7 +240,7 @@ test('Eco translation normalises Observe states, including missing and unknown v
   await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
   assert.equal(flow.device.deviceData.eco_mode, 'unknown');
   let control = flow.device.thermostatService.getCharacteristic(hap.Characteristic.EcoMode);
-  await assert.rejects(control.handleGetRequest(), (error) => error === hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+  assert.equal(await control.handleGetRequest(), false);
   for (let [mode, expected] of [
     ['ECO_MODE_INACTIVE', 'off'],
     ['ECO_MODE_MANUAL_ECO', 'manual'],
@@ -252,12 +252,8 @@ test('Eco translation normalises Observe states, including missing and unknown v
   ]) {
     await flow.send([trait('DEVICE_THERMOSTAT', 'eco_mode_state', { ecoMode: mode })]);
     assert.equal(flow.device.deviceData.eco_mode, expected);
-    if (expected === 'unknown') {
-      await assert.rejects(control.handleGetRequest(), (error) => error === hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
-      await assert.rejects(control.handleSetRequest(true), (error) => error === hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
-    } else {
-      assert.equal(await control.handleGetRequest(), expected !== 'off');
-    }
+    assert.equal(control.value, expected === 'manual' || expected === 'auto');
+    assert.equal(await control.handleGetRequest(), expected === 'manual' || expected === 'auto');
   }
   assert.deepEqual(flow.commands, []);
 });
@@ -334,29 +330,58 @@ test('Eco characteristic waits for command acceptance and reports failures witho
   assert.equal(await control.handleGetRequest(), false);
 });
 
-test('Eco characteristic blocks unavailable devices and recovers from upstream state', async (context) => {
+test('Eco characteristic uses thermostat fault status and preserves known state', async (context) => {
   let flow = await setup(context);
   await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
   let control = flow.device.thermostatService.getCharacteristic(hap.Characteristic.EcoMode);
+  let fault = flow.device.thermostatService.getCharacteristic(hap.Characteristic.StatusFault);
+  let attempts = 0;
+  flow.connection.grpcTransport.command = async () => {
+    attempts++;
+    return { status: 14 };
+  };
   for (let data of [
     { online: false, removed_from_base: false, eco_mode: 'manual' },
     { online: true, removed_from_base: true, eco_mode: 'manual' },
     { online: true, removed_from_base: false, eco_mode: 'unknown' },
   ]) {
     await flow.device.update(data);
-    await assert.rejects(control.handleGetRequest(), (error) => error === hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
-    for (let value of [false, true]) {
-      await assert.rejects(control.handleSetRequest(value), (error) => error === hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
-    }
+    assert.equal(
+      fault.value,
+      data.online === true && data.removed_from_base === false
+        ? hap.Characteristic.StatusFault.NO_FAULT
+        : hap.Characteristic.StatusFault.GENERAL_FAULT,
+    );
+    assert.equal(control.value, data.eco_mode === 'manual');
+    assert.equal(await control.handleGetRequest(), data.eco_mode === 'manual');
+    await assert.rejects(control.handleSetRequest(false), (error) => error === hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+    assert.equal(await control.handleGetRequest(), data.eco_mode === 'manual', 'Cloud failures must not hide the current Eco state');
     await flow.device.update({ online: true, removed_from_base: false, eco_mode: 'auto' });
     assert.equal(await control.handleGetRequest(), true);
+    assert.equal(fault.value, hap.Characteristic.StatusFault.NO_FAULT);
   }
+  assert.equal(attempts, 3, 'Writes must use the existing command path rather than an Eco-specific availability gate');
+});
+
+test('Eco characteristic normalises state casing for notifications and reads', async (context) => {
+  let flow = await setup(context);
+  await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
+  let control = flow.device.thermostatService.getCharacteristic(hap.Characteristic.EcoMode);
+  let notifications = [];
+  control.on('change', (change) => notifications.push(change.newValue));
+  for (let mode of ['manual', 'auto', 'off', 'MANUAL', 'AUTO', 'OFF', 'mAnUaL', 'aUtO', 'oFf']) {
+    await flow.device.update({ eco_mode: mode });
+    assert.equal(control.value, mode.toUpperCase() !== 'OFF');
+    assert.equal(await control.handleGetRequest(), mode.toUpperCase() !== 'OFF');
+  }
+  assert.deepEqual(notifications, [true, true, false, true, true, false, true, true, false]);
   assert.deepEqual(flow.commands, []);
 });
 
 test('Eco commands target one thermostat, commit accepted state and reconcile Observe updates', async (context) => {
   let flow = await setup(context);
   await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
+  let control = flow.device.thermostatService.getCharacteristic(hap.Characteristic.EcoMode);
   for (let [value, mode] of [
     ['manual', 'ECO_MODE_MANUAL_ECO'],
     ['auto', 'ECO_MODE_AUTO_ECO'],
@@ -381,8 +406,11 @@ test('Eco commands target one thermostat, commit accepted state and reconcile Ob
     assert.equal(command.command.value.ecoModeActor.method, 'HVAC_ACTOR_METHOD_IOS');
     assert.equal(command.command.value.ecoModeActor.originator.resourceId, 'DEVICE_THERMOSTAT');
     assert.equal(flow.device.deviceData.eco_mode, value, 'Accepted SET commits the requested value, matching HVAC mode');
+    assert.equal(await control.handleGetRequest(), mode !== 'ECO_MODE_INACTIVE');
     await flow.send([trait('DEVICE_THERMOSTAT', 'eco_mode_state', { ecoMode: mode })]);
     assert.equal(flow.device.deviceData.eco_mode, value.toLowerCase(), 'Observe restores canonical lowercase state');
+    assert.equal(control.value, mode !== 'ECO_MODE_INACTIVE');
+    assert.equal(await control.handleGetRequest(), mode !== 'ECO_MODE_INACTIVE');
   }
   await flow.send([trait('DEVICE_THERMOSTAT', 'eco_mode_state', { ecoMode: 'ECO_MODE_AUTO_ECO' })]);
   await flow.device.set({ uuid: 'DEVICE_THERMOSTAT', eco_mode: 'off' });

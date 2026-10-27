@@ -73,7 +73,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.THERMOSTAT;
-  static VERSION = '2026.10.26'; // Code version
+  static VERSION = '2026.10.27'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -108,23 +108,9 @@ export default class NestThermostat extends HomeKitDevice {
       },
       {
         onGet: () => {
-          if (
-            this.deviceData.online !== true ||
-            this.deviceData.removed_from_base === true ||
-            ['off', 'manual', 'auto'].includes(this.deviceData.eco_mode) === false
-          ) {
-            throw new this.hap.HapStatusError(this.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
-          }
-          return this.deviceData.eco_mode !== 'off';
+          return ['MANUAL', 'AUTO'].includes(this.deviceData.eco_mode?.toUpperCase?.()) === true;
         },
         onSet: async (value) => {
-          if (
-            this.deviceData.online !== true ||
-            this.deviceData.removed_from_base === true ||
-            ['off', 'manual', 'auto'].includes(this.deviceData.eco_mode) === false
-          ) {
-            throw new this.hap.HapStatusError(this.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
-          }
           await this.set({ uuid: this.deviceData.nest_google_device_uuid, eco_mode: value === true ? 'manual' : 'off' });
         },
       },
@@ -353,12 +339,9 @@ export default class NestThermostat extends HomeKitDevice {
       return;
     }
 
-    let ecoMode = deviceData.online === true && deviceData.removed_from_base !== true ? deviceData.eco_mode : 'unknown';
     this.thermostatService.updateCharacteristic(
       this.hap.Characteristic.EcoMode,
-      ['off', 'manual', 'auto'].includes(ecoMode) === true
-        ? ecoMode !== 'off'
-        : new this.hap.HapStatusError(this.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE),
+      ['MANUAL', 'AUTO'].includes(deviceData.eco_mode?.toUpperCase?.()) === true,
     );
 
     let historyEntry = {};
