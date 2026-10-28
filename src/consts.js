@@ -35,13 +35,25 @@
 // Define nodejs module requirements
 import path from 'node:path';
 import url from 'node:url';
-import { v5 as uuidv5 } from 'uuid';
+import { Buffer } from 'node:buffer';
+import { createHash } from 'node:crypto';
 
 // Define constants
 export const MIN_NODE_VERSION = 22; // Minimum required Node.js version
 
-// Permanent project namespace: uuidv5('homebridge-nest-accfactory', uuidv5.DNS).
+// Permanent project namespace: UUID v5 of 'homebridge-nest-accfactory' in the standard DNS namespace.
 // Keep this value if the project is renamed; existing HomeKit identities must stay stable.
+// Generate UUID v5 identities for the fixed type names and namespace below.
+const uuidv5 = (name, namespace) => {
+  let namespaceBytes = Buffer.from(namespace.replaceAll('-', ''), 'hex');
+  let bytes = createHash('sha1').update(namespaceBytes).update(name, 'utf8').digest().subarray(0, 16);
+  // RFC 9562: retain the hash bits except for the UUID version and variant.
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  let hex = bytes.toString('hex');
+  return hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
+};
+
 const CUSTOM_UUID_NAMESPACE = 'FBDB87BD-3DCF-5B78-9699-80FA1610AEA1';
 
 export const CUSTOM_CHARACTERISTIC_UUID = {

@@ -1,13 +1,26 @@
 // Follow Google Observe -> cache -> mapper -> accessory -> HAP, and HomeKit SET -> cloud -> commit.
 // Only account authorisation and remote gRPC are replaced; platform and device code stay file-backed.
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import hap from './helpers/homebridge-hap.js';
 import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
 import { importSource } from './helpers/import-source.js';
 import HomeKitDevice from '../src/HomeKitDevice/HomeKitDevice.js';
 let { default: NestAPI } = await importSource(new URL('../src/api/nest.js', import.meta.url));
-let { default: GoogleAPI } = await importSource(new URL('../src/api/google.js', import.meta.url));
+let transportModule =
+  'data:text/javascript,' +
+  encodeURIComponent(
+    'export const runtime = {}; export default class Transport { static STATUS = { UNAUTHENTICATED: 16 };' +
+      'constructor() { return runtime.transport; } }',
+  );
+let { runtime: grpcRuntime } = await import(transportModule);
+let googleLocation = new URL('../src/api/google.js', import.meta.url);
+let googleSource = (await readFile(googleLocation, 'utf8')).replace(
+  'from \'../grpctransport.js\'',
+  'from ' + JSON.stringify(transportModule),
+);
+let { default: GoogleAPI } = await importSource(googleLocation, googleSource);
 
 let { default: Platform } = await importSource(new URL('../src/system.js', import.meta.url));
 let { default: Accounts } = await importSource(new URL('../src/accounts.js', import.meta.url));
@@ -41,7 +54,6 @@ async function setup(context, options = {}) {
     userID: 'fixture-user',
     type: 'Google',
     authorised: true,
-    snapshotWaiters: new Map(),
     grpcTransport: {
       observe: (...args) => {
         consume = args.at(-1);
@@ -66,14 +78,16 @@ async function setup(context, options = {}) {
     auth = async (uuid, account) => {
       let options = {
         uuid,
-        account,
         log: supplied.log,
-        getResource: supplied.getResource,
-        isCurrent: () => accounts.get(uuid) === account,
-        onUnauthorised: () => {
-          account.authorised = false;
-          account.nestAPI.disconnect();
-          account.googleAPI.disconnect();
+        session: {
+          account,
+          connect: async () => account.authorised,
+          on() {},
+          markUnauthorised: () => {
+            account.authorised = false;
+            account.nestAPI.disconnect();
+            account.googleAPI.disconnect();
+          },
         },
         onData: (batch) => {
           let run = account.dataQueue.then(() => (batch.isCurrent() === true ? supplied.onData(uuid, batch) : undefined));
@@ -82,6 +96,7 @@ async function setup(context, options = {}) {
         },
       };
       account.nestAPI = new NestAPI(options);
+      grpcRuntime.transport = account.grpcTransport;
       account.googleAPI = new GoogleAPI(options);
       await supplied.onAuthorised(uuid, account);
       await account.nestAPI.connect();
@@ -269,11 +284,12 @@ test('Nest REST ingestion creates Protect and withholds incomplete thermostat/se
   assert.equal(protect.smokeService.getCharacteristic(hap.Characteristic.StatusActive).value, true);
 });
 
-test('Eco translation normalises Observe states, including missing and unknown values', async (context) => {
+test('Eco translation waits for its Observe trait and normalises reported states', async (context) => {
   let flow = await setup(context);
   delete flow.values.eco_mode_state;
   await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
-  assert.equal(flow.device.deviceData.eco_mode, 'unknown');
+  // An absent dependency is omitted; only a received Eco trait can supply a mapped state.
+  assert.equal(Object.hasOwn(flow.device.deviceData, 'eco_mode'), false);
   let control = flow.device.thermostatService.getCharacteristic(hap.Characteristic.EcoMode);
   assert.equal(await control.handleGetRequest(), false);
   for (let [mode, expected] of [
@@ -289,6 +305,10 @@ test('Eco translation normalises Observe states, including missing and unknown v
     assert.equal(flow.device.deviceData.eco_mode, expected);
     assert.equal(control.value, expected === 'manual' || expected === 'auto');
     assert.equal(await control.handleGetRequest(), expected === 'manual' || expected === 'auto');
+    // A temperature-only patch must preserve the last reported Eco state and characteristic.
+    await flow.send([trait('DEVICE_THERMOSTAT', 'current_temperature', { temperatureValue: { temperature: { value: 22 } } })]);
+    assert.equal(flow.device.deviceData.eco_mode, expected);
+    assert.equal(control.value, expected === 'manual' || expected === 'auto');
   }
   assert.deepEqual(flow.commands, []);
 });

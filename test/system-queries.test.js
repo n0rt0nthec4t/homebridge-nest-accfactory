@@ -191,7 +191,6 @@ for (let [label, url] of [
     flow.connection.grpcTransport.command = async () => ({ status: 14 });
     let result = (await flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true })).camera_snapshot;
     assert.deepEqual(result, url === '' ? undefined : image);
-    assert.equal(flow.connection.snapshotWaiters.size, 0);
   });
 }
 test('Google snapshot observes a fresh image, clears its waiter and fetches the new URL', async (context) => {
@@ -209,7 +208,6 @@ test('Google snapshot observes a fresh image, clears its waiter and fetches the 
   };
   assert.deepEqual((await flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true })).camera_snapshot, Buffer.from([9]));
   await delivered;
-  assert.equal(flow.connection.snapshotWaiters.size, 0);
   assert.equal(flow.requests.at(-1)[1], 'https://image.invalid/new.jpg');
 });
 test('snapshot command rejection cleans its waiter and GET degrades safely', async (context) => {
@@ -218,7 +216,6 @@ test('snapshot command rejection cleans its waiter and GET degrades safely', asy
     throw new Error('Fixture command failure');
   };
   assert.equal((await flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true })).camera_snapshot, undefined);
-  assert.equal(flow.connection.snapshotWaiters.size, 0);
   delete flow.raw.DEVICE_TEST;
   assert.equal(await flow.device.get({ uuid: 'DEVICE_TEST', unknown: true }), undefined);
 });
@@ -241,11 +238,9 @@ test('Google snapshot times out its Observe wait and fetches the previously avai
   await started.promise;
   let replayed = flow.send('DEVICE_TEST', { upload_live_image: { liveImageUrl: 'https://image.invalid/cached.jpg' } });
   await setImmediate();
-  assert.equal(flow.connection.snapshotWaiters.size, 1);
   context.mock.timers.tick(3000);
   assert.deepEqual((await request).camera_snapshot, Buffer.from([4]));
   await replayed;
-  assert.equal(flow.connection.snapshotWaiters.size, 0);
   assert.equal(
     flow.logs.some((args) => String(args[1]).includes('using the last available image')),
     false,
@@ -270,7 +265,6 @@ test('overall snapshot timeout lets HomeKit continue when a cloud command never 
   await started.promise;
   context.mock.timers.tick(7000);
   assert.equal((await request).camera_snapshot, undefined);
-  assert.equal(flow.connection.snapshotWaiters.size, 0);
   let requests = flow.requests.length;
   // A late successful reply must not start another Observe wait or fetch a discarded image.
   pending.resolve({
@@ -281,7 +275,6 @@ test('overall snapshot timeout lets HomeKit continue when a cloud command never 
   context.mock.timers.tick(3000);
   await setImmediate();
   assert.equal(flow.requests.length, requests);
-  assert.equal(flow.connection.snapshotWaiters.size, 0);
 });
 
 test('snapshot expiry removes only its own waiter while an overlapping request completes', async (context) => {
@@ -303,15 +296,12 @@ test('snapshot expiry removes only its own waiter while an overlapping request c
   context.mock.timers.tick(1000);
   let second = flow.connection.googleAPI.get('DEVICE_TEST', 'camera_snapshot');
   await setImmediate();
-  assert.equal(flow.connection.snapshotWaiters.size, 2);
   context.mock.timers.tick(6000);
   assert.equal(await first, undefined);
-  assert.equal(flow.connection.snapshotWaiters.size, 1);
   await flow.send('DEVICE_TEST', { upload_live_image: { liveImageUrl: 'https://image.invalid/fresh.jpg' } });
   let success = { status: 0, data: [{ traitOperations: [{ progress: 'COMPLETE', event: { event: { status: 'STATUS_SUCCESSFUL' } } }] }] };
   commands[1].resolve(success);
   assert.deepEqual(await second, Buffer.from([8]));
-  assert.equal(flow.connection.snapshotWaiters.size, 0);
   let requests = flow.requests.length;
   commands[0].resolve(success);
   await setImmediate();
@@ -340,7 +330,6 @@ test('overall snapshot deadline aborts an in-flight HTTP image fetch', async (co
   context.mock.timers.tick(7000);
   assert.equal((await request).camera_snapshot, undefined);
   assert.equal(signal.aborted, true);
-  assert.equal(flow.connection.snapshotWaiters.size, 0);
 });
 
 for (let [label, before, fresh] of [
@@ -382,14 +371,12 @@ for (let [label, before, fresh] of [
     for (let update of stale) {
       delivered.push(flow.send('DEVICE_TEST', { upload_live_image: update }));
       await setImmediate();
-      assert.equal(flow.connection.snapshotWaiters.size, 1, 'A stale or empty update must not finish the snapshot wait');
       assert.equal(flow.requests.length, fetches, 'Do not fetch the cached image while a fresh update can still arrive');
     }
     delivered.push(flow.send('DEVICE_TEST', { upload_live_image: fresh }));
     assert.deepEqual((await request).camera_snapshot, image);
     await Promise.all(delivered);
     assert.equal(flow.requests.at(-1)[1], fresh.liveImageUrl);
-    assert.equal(flow.connection.snapshotWaiters.size, 0);
   });
 }
 
@@ -409,12 +396,8 @@ test('connection cleanup can release a snapshot freshness waiter without an imag
   };
   let request = flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true });
   await started.promise;
-  for (let waiter of flow.connection.snapshotWaiters.keys()) {
-    waiter();
-  }
-  flow.connection.snapshotWaiters.clear();
+  flow.connection.googleAPI.disconnect();
   assert.deepEqual((await request).camera_snapshot, image);
-  assert.equal(flow.connection.snapshotWaiters.size, 0);
 });
 
 test('Google snapshot fetches its accepted image even if a later cache update replays an old URL', async (context) => {
@@ -436,7 +419,6 @@ test('Google snapshot fetches its accepted image even if a later cache update re
   };
   assert.deepEqual((await flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true })).camera_snapshot, Buffer.from([9]));
   assert.equal(flow.requests.at(-1)[1], 'https://image.invalid/new.jpg');
-  assert.equal(flow.connection.snapshotWaiters.size, 0);
 });
 
 test('System enriches a newly discovered Google structure through Nest REST and refreshes its weather location', async (context) => {

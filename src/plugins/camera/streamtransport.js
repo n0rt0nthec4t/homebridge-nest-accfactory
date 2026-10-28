@@ -35,7 +35,7 @@
 // Lifecycle states:
 // - CONNECTING, CONNECTED, READY, RECONNECTING, CLOSING and CLOSED
 //
-// Code version 2026.10.24
+// Code version 2026.10.29
 // Mark Hulskamp
 'use strict';
 
@@ -80,7 +80,6 @@ export default class StreamTransport {
     H264: 'h264',
     AAC: 'aac',
     OPUS: 'opus',
-    PCM: 'pcm',
     SPEEX: 'speex',
     META: 'meta',
     UNKNOWN: 'undefined',
@@ -643,17 +642,6 @@ export default class StreamTransport {
 
     if (Number.isFinite(explicitBitrate) === true && explicitBitrate > 0) {
       mediaInfo.bitrate = Math.round(explicitBitrate);
-      return mediaInfo.bitrate;
-    }
-
-    if (
-      mediaType === 'audio' &&
-      mediaInfo.codec === StreamTransport.CODEC_TYPE.PCM &&
-      Number.isFinite(mediaInfo.sampleRate) === true &&
-      Number.isFinite(mediaInfo.channels) === true
-    ) {
-      // PCM bitrate is determined by sample format, not packet arrival cadence.
-      mediaInfo.bitrate = Math.round(mediaInfo.sampleRate * mediaInfo.channels * 16);
       return mediaInfo.bitrate;
     }
 

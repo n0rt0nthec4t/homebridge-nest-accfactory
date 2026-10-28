@@ -197,7 +197,7 @@ for (let [bank0, bank1, expected] of [
   [5.4, 4.95, 50],
   [undefined, 5.4, 100],
   [4.95, undefined, 50],
-  [0, 'bad', undefined],
+  [0, 'bad', null],
 ]) {
   test('Protect voltage banks normalise battery percentage: ' + bank0 + '/' + bank1, () => {
     let flow = setup(protectGoogle, {
@@ -296,5 +296,63 @@ for (let passed of [false, true]) {
       let data = Object.values(flow.run())[0].data;
       assert.partialDeepStrictEqual(data, { smoke_test_passed: passed, heat_test_passed: passed, co_test_passed: passed });
     }
+  });
+}
+
+for (let [indicator, expected] of [
+  ['BATTERY_REPLACEMENT_INDICATOR_NOT_AT_ALL', false],
+  ['BATTERY_REPLACEMENT_INDICATOR_SOON', true],
+  ['BATTERY_REPLACEMENT_INDICATOR_IMMEDIATELY', true],
+  ['BATTERY_REPLACEMENT_INDICATOR_UNSPECIFIED', undefined],
+  ['UNKNOWN', undefined],
+  [undefined, undefined],
+]) {
+  test('Protect replacement indicator supplies independent battery health: ' + indicator, () => {
+    let flow = setup(protectGoogle, {
+      battery: { present: true, replacementIndicator: indicator },
+      battery_voltage_bank0: {},
+      battery_voltage_bank1: {},
+      wall_power: { present: true, status: 'POWER_SOURCE_STATUS_ACTIVE' },
+    });
+    let data = Object.values(flow.run())[0].data;
+    assert.equal(data.battery_low, expected);
+    assert.equal(data.battery_level, null);
+  });
+}
+
+test('Protect battery-powered dump retains voltage percentage and explicit healthy replacement status', () => {
+  let flow = setup(protectGoogle, {
+    battery: {
+      present: true,
+      condition: 'POWER_SOURCE_CONDITION_NOMINAL',
+      replacementIndicator: 'BATTERY_REPLACEMENT_INDICATOR_NOT_AT_ALL',
+    },
+    battery_voltage_bank0: { batteryValue: { batteryVoltage: { value: 4.732107639312744 } } },
+    battery_voltage_bank1: { batteryValue: { batteryVoltage: { value: 4.745050430297852 } } },
+  });
+  let data = Object.values(flow.run())[0].data;
+  assert.equal(data.battery_level, 26);
+  assert.equal(data.battery_low, false);
+});
+
+for (let [state, expected] of [
+  [0, false],
+  [1, true],
+  [2, true],
+  [3, true],
+  [undefined, undefined],
+  [null, undefined],
+  ['0', undefined],
+  ['bad', undefined],
+  [-1, undefined],
+  [0.5, undefined],
+  [NaN, undefined],
+  [Infinity, undefined],
+]) {
+  test('Nest Protect health maps independently of missing voltage: ' + String(state), () => {
+    let flow = setup(protectNest, { battery_health_state: state, battery_level: 0, wired_or_battery: 0 });
+    let data = Object.values(flow.run())[0].data;
+    assert.equal(data.battery_low, expected);
+    assert.equal(data.battery_level, null);
   });
 }

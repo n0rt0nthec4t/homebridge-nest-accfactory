@@ -21,7 +21,8 @@ for (let name of ['nest', 'google']) {
   let apiLocation = new URL('../../src/api/' + name + '.js', import.meta.url);
   let apiSource = (await readFile(apiLocation, 'utf8'))
     .replace('from \'../fetchWrapper.js\'', 'from ' + JSON.stringify(boundary))
-    .replace('from \'node:timers\'', 'from ' + JSON.stringify(boundary));
+    .replace('from \'node:timers\'', 'from ' + JSON.stringify(boundary))
+    .replace('from \'../grpctransport.js\'', 'from ' + JSON.stringify(boundary));
   apiClasses[name] = (await importSource(apiLocation, apiSource)).default;
 }
 let { default: Platform } = await importSource(location, source);
@@ -53,7 +54,6 @@ export async function platformHarness(context, options = {}) {
     token: 'fixture-token',
     userID: 'fixture-user',
     cameraAuth: { key: 'Authorization', value: 'Basic ', token: 'fixture-token' },
-    snapshotWaiters: new Map(),
     grpcTransport: {
       observe: (...args) => {
         observations.push(args);
@@ -89,13 +89,16 @@ export async function platformHarness(context, options = {}) {
       let transport = account.grpcTransport;
       account.googleAPI?.disconnect();
       account.grpcTransport = transport;
+      runtime.transport = transport;
       let options = {
         uuid,
-        account,
+        session: {
+          account,
+          connect: async () => account.authorised,
+          on() {},
+          markUnauthorised: (reason) => markUnauthorised(uuid, reason),
+        },
         log: supplied.log,
-        getResource: supplied.getResource,
-        isCurrent: () => accounts.get(uuid) === account,
-        onUnauthorised: (reason) => markUnauthorised(uuid, reason),
         onData: (batch) => {
           let run = account.dataQueue.then(() => (batch.isCurrent() === true ? supplied.onData(uuid, batch) : undefined));
           account.dataQueue = run.catch(() => {});

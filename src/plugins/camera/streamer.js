@@ -32,7 +32,7 @@
 // - Protocol signalling, packet reordering and frame assembly remain in the source
 // - FFmpeg owns command construction and the bounded MP4 fragment reader
 //
-// Code version 2026.10.26
+// Code version 2026.10.28
 // Mark Hulskamp
 'use strict';
 
@@ -772,7 +772,9 @@ export default class Streamer {
     if (output?.closing !== undefined) {
       return output.closing;
     }
-    if (output === undefined && type === Streamer.STREAM_TYPE.RECORD) {
+    // Only an omitted ID requests the current recording. A delayed STOP for
+    // an old explicit ID must not retire its replacement.
+    if (output === undefined && sessionID === undefined && type === Streamer.STREAM_TYPE.RECORD) {
       for (let candidate of this.#outputs.values()) {
         if (candidate.type === type) {
           output = candidate;
@@ -1105,7 +1107,6 @@ export default class Streamer {
     let muxer = output.muxer;
     let audioEnabled = output.includeAudio === true && muxer.hasAudio === true;
     let budget = performance.now() + 2;
-    let next = 1000;
     let processed = 0;
 
     // Expired readers rejoin bounded retention instead of pinning older media.
@@ -1145,26 +1146,12 @@ export default class Streamer {
       processed < MAX_BUFFERED_ITEMS_PER_OUTPUT_PER_TICK &&
       performance.now() < budget
     ) {
-      let dueVideo =
-        video === undefined
-          ? Infinity
-          : video.index < (output.prebufferEnd.video ?? 0)
-            ? now
-            : output.wallclockBaseTime + video.time - output.sourceBaseTime;
-      let dueAudio =
-        audio === undefined
-          ? Infinity
-          : audio.index < (output.prebufferEnd.audio ?? 0)
-            ? now
-            : output.wallclockBaseTime + audio.time - output.sourceBaseTime;
-
-      next = Math.min(next, Math.max(1, Math.min(dueVideo, dueAudio) - now));
       // Prebuffer frames share a send-now deadline. Merge by source time so
       // video cannot drain first and admit audio from before its starting IDR.
       let useVideo = audio === undefined || (video !== undefined && video.time <= audio.time);
       let item = useVideo === true ? video : audio;
       let type = useVideo === true ? 'video' : 'audio';
-      let due = useVideo === true ? dueVideo : dueAudio;
+      let due = item.index < (output.prebufferEnd[type] ?? 0) ? now : output.wallclockBaseTime + item.time - output.sourceBaseTime;
       if (due > now) {
         break;
       }
@@ -1210,7 +1197,15 @@ export default class Streamer {
       }
     }
 
-    return video !== undefined || audio !== undefined ? next : 1000;
+    // Schedule from the next unconsumed item. A frame already delivered must
+    // not leave a 1 ms wakeup behind when the remaining media is due later.
+    let pending = audio === undefined || (video !== undefined && video.time <= audio.time) ? video : audio;
+    if (pending === undefined) {
+      return 1000;
+    }
+    let track = pending === video ? 'video' : 'audio';
+    let due = pending.index < (output.prebufferEnd[track] ?? 0) ? now : output.wallclockBaseTime + pending.time - output.sourceBaseTime;
+    return Math.max(1, Math.min(1000, due - now));
   }
 
   #processOutput(now) {
@@ -1311,10 +1306,13 @@ export default class Streamer {
         this.#due = Infinity;
         let next = Infinity;
         for (let streamer of this.#streamers.values()) {
-          next = Math.min(next, streamer.#processOutput(Date.now()));
+          let now = Date.now();
+          next = Math.min(next, now + streamer.#processOutput(now));
         }
         if (Number.isFinite(next) === true) {
-          this.#wake(next);
+          // Later cameras consume time too. Preserve the earliest absolute
+          // deadline rather than starting its original delay after the whole pass.
+          this.#wake(Math.max(0, next - Date.now()));
         }
       },
       Math.max(0, delay),

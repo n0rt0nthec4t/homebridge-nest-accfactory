@@ -265,3 +265,92 @@ test('serialization cannot invoke a copied toJSON method that bypasses redaction
   assert.equal(called, false);
   assert.equal(output.lines.join('\n').includes('Secret Token'), false);
 });
+
+for (let delta of [false, true]) {
+  test('large Google startup dump splits resource traits without losing data; delta=' + delta, () => {
+    let output = capture();
+    let value = { access_token: 'PRIVATE_TOKEN', serialNumber: 'PRIVATE_SERIAL' };
+    for (let index = 0; index < 80; index++) {
+      value['trait_' + index] = { reading: index, payload: 'x'.repeat(1100) };
+    }
+    let raw = { DEVICE_PRIVATE_SERIAL: { connection: 'account', source: DATA_SOURCE.GOOGLE, value } };
+    let before = structuredClone(raw);
+    output.dump(raw, 'account', delta === true ? new Map([['DEVICE_PRIVATE_SERIAL', { fields: new Set(Object.keys(value)) }]]) : undefined);
+    let blocks = output.lines
+      .join('\n')
+      .match(/\{\n[\s\S]*?\n\}/g)
+      .map((text) => {
+        assert.ok(text.length <= 65536);
+        return JSON.parse(text);
+      });
+    assert.ok(blocks.length > 1);
+    let combined = Object.assign({}, ...blocks.map((block) => Object.values(block)[0]));
+    for (let index = 0; index < 80; index++) {
+      assert.deepEqual(combined['trait_' + index], value['trait_' + index]);
+    }
+    assert.equal(output.lines.join('\n').includes('PRIVATE_TOKEN'), false);
+    assert.equal(output.lines.join('\n').includes('PRIVATE_SERIAL'), false);
+    assert.deepEqual(output.warnings, []);
+    assert.deepEqual(raw, before);
+  });
+}
+
+test('node and output limits apply to blocks rather than the combined Nest and Google startup batch', () => {
+  let output = capture();
+  let raw = {};
+  for (let index = 0; index < 40; index++) {
+    raw['DEVICE_PRIVATE_' + index] = {
+      connection: 'account',
+      source: index % 2 === 0 ? DATA_SOURCE.NEST : DATA_SOURCE.GOOGLE,
+      value: { sample: index, readings: Array.from({ length: 300 }, (_, reading) => reading) },
+    };
+  }
+  raw.DEVICE_OTHER = { connection: 'other', source: DATA_SOURCE.GOOGLE, value: { wrongAccount: true } };
+  output.dump(raw, 'account');
+  let text = output.lines.join('\n');
+  assert.ok(text.length > 65536);
+  let blocks = text.match(/\{\n[\s\S]*?\n\}/g).map((block) => JSON.parse(block));
+  assert.equal(blocks.length, 40);
+  assert.equal(text.includes('wrongAccount'), false);
+  assert.equal(text.includes('PRIVATE'), false);
+  assert.deepEqual(output.warnings, []);
+});
+
+for (let stage of ['collection', 'serialization']) {
+  test('unsafe resource during ' + stage + ' does not discard a healthy Google device', () => {
+    let output = capture();
+    let bad =
+      stage === 'collection'
+        ? { readings: Array.from({ length: 9000 }, () => 1) }
+        : { readings: Array.from({ length: 100 }, () => 'x'.repeat(1000)) };
+    output.dump(
+      {
+        'topaz.PRIVATE_BAD': { connection: 'account', source: DATA_SOURCE.NEST, value: { access_token: 'SECRET', ...bad } },
+        DEVICE_PRIVATE_GOOD: {
+          connection: 'account',
+          source: DATA_SOURCE.GOOGLE,
+          value: { wall_power: { present: true }, battery_voltage_bank0: {} },
+        },
+      },
+      'account',
+    );
+    let text = output.lines.join('\n');
+    assert.equal(text.includes('Google API'), true);
+    assert.equal(text.includes('wall_power'), true);
+    assert.equal(text.includes('battery_voltage_bank0'), true);
+    assert.equal(text.includes('SECRET'), false);
+    assert.equal(text.includes('PRIVATE'), false);
+    assert.equal(text.includes('topaz.'), false);
+    assert.equal(output.warnings.length, 1);
+  });
+}
+
+test('top-level resource keys remain private when output is split into fields', () => {
+  let output = capture();
+  output.dump(
+    { DEVICE_PRIVATE: { connection: 'account', source: DATA_SOURCE.GOOGLE, value: { DEVICE_OTHER_PRIVATE: { reading: 1 } } } },
+    'account',
+  );
+  assert.equal(output.lines.join('\n').includes('PRIVATE'), false);
+  assert.deepEqual(output.warnings, []);
+});

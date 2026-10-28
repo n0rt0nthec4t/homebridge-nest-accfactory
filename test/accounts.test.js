@@ -17,8 +17,9 @@ let { network } = await import(networkModule);
 let grpcModule =
   'data:text/javascript,' +
   encodeURIComponent(
-    'export const grpcRuntime = { observations: [] };' +
-      'export default class Transport { static STATUS = { UNAUTHENTICATED: 16 }; constructor(options) { this.options = options; }' +
+    'export const grpcRuntime = { observations: [], transports: [] };' +
+      'export default class Transport { static STATUS = { UNAUTHENTICATED: 16 };' +
+      'constructor(options) { this.options = options; grpcRuntime.transports.push(this); }' +
       'observe(...args) { grpcRuntime.observations.push(args); return new Promise(() => {}); }' +
       'release() { this.released = true; } }',
   );
@@ -65,11 +66,19 @@ let account = { name: 'Test', type: 'nest', access_token: 'access-token' };
 let session = { access_token: 'session-token', userid: 'user', urls: { transport_url: 'https://transport.example' } };
 let response = (value) => ({ json: async () => value });
 
+let owners = new WeakMap();
+function transportFor(connection) {
+  return grpcRuntime.transports.findLast((transport) => transport.options.uuid === owners.get(connection) && transport.released !== true);
+}
+
 function setup(t, accounts = [account], options = {}, runtimeOptions = {}) {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let manager = Accounts.fromConfig({ accounts, options: runtimeOptions }, options);
   t.after(() => manager.shutdown());
   let [uuid, connection] = manager.entries().next().value ?? [];
+  if (connection !== undefined) {
+    owners.set(connection, uuid);
+  }
   return { manager, uuid, connection };
 }
 
@@ -93,7 +102,8 @@ test('Accounts builds isolated runtime entries and skips excluded/invalid accoun
   assert.notEqual(entries[0][0], entries[1][0]);
   assert.equal(entries[0][1].cameraAPIHost, 'camera.home.nest.com');
   assert.equal(entries[1][1].cameraAPIHost, 'camera.home.ft.nest.com');
-  assert.notEqual(entries[0][1].snapshotWaiters, entries[1][1].snapshotWaiters);
+  assert.equal(Object.hasOwn(entries[0][1], 'snapshotWaiters'), false);
+  assert.equal(Object.hasOwn(entries[1][1], 'grpcTransport'), false);
   assert.equal(manager.start('missing'), false);
 });
 
@@ -112,14 +122,16 @@ test('Accounts authenticates Nest and refreshes the same entry while releasing o
   assert.equal(connection.refreshDelay, 86400000);
   assert.equal(requests.mock.calls[1].arguments[2].headers.Authorization, 'Basic access-token');
   let released = 0;
-  let resolved = 0;
-  connection.grpcTransport = { release: () => released++ };
-  connection.snapshotWaiters.set(() => resolved++, 'camera');
+  if (transportFor(connection) === undefined) {
+    await connection.googleAPI.connect();
+  }
+  t.mock.method(transportFor(connection), 'release', function () {
+    this.released = true;
+    released++;
+  });
   await startAndAuthenticate(manager, uuid);
   assert.equal(manager.get(uuid), connection);
   assert.equal(released, 1);
-  assert.equal(resolved, 1);
-  assert.equal(connection.snapshotWaiters.size, 0);
   assert.equal(notices[1][2].wasAuthorised, true);
 });
 
@@ -188,13 +200,28 @@ test('Accounts schedules refresh after successful auth and tolerates callback fa
   manager.start(uuid);
   await setImmediate();
   assert.equal(connection.authorised, true);
-  assert.equal(requests.mock.callCount(), 2);
+  assert.equal(
+    requests.mock.calls.filter(
+      (call) => call.arguments[1].includes('/app_launch') === false && call.arguments[1].includes('/v5/subscribe') === false,
+    ).length,
+    2,
+  );
   t.mock.timers.tick(connection.refreshDelay - 1);
   await setImmediate();
-  assert.equal(requests.mock.callCount(), 2);
+  assert.equal(
+    requests.mock.calls.filter(
+      (call) => call.arguments[1].includes('/app_launch') === false && call.arguments[1].includes('/v5/subscribe') === false,
+    ).length,
+    2,
+  );
   t.mock.timers.tick(1);
   await setImmediate();
-  assert.equal(requests.mock.callCount(), 4);
+  assert.equal(
+    requests.mock.calls.filter(
+      (call) => call.arguments[1].includes('/app_launch') === false && call.arguments[1].includes('/v5/subscribe') === false,
+    ).length,
+    4,
+  );
 });
 
 test('Accounts prevents duplicate auth attempts and cannot resurrect after shutdown', async (t) => {
@@ -213,27 +240,29 @@ test('Accounts prevents duplicate auth attempts and cannot resurrect after shutd
   assert.equal(requests.mock.callCount(), 1);
 });
 
-test('Accounts invalidation resolves all snapshot waiters and shutdown cancels scheduled retries', async (t) => {
+test('Accounts invalidation releases its API transport and shutdown cancels scheduled retries', async (t) => {
   let { manager, connection } = setup(t);
   let requests = t.mock.method(network, 'request', async () => {
     throw new Error('unexpected request');
   });
   let released = 0;
-  let resolved = 0;
   connection.authorised = true;
-  connection.grpcTransport = { release: () => released++ };
-  connection.snapshotWaiters.set(() => resolved++, 'same-camera');
-  connection.snapshotWaiters.set(() => resolved++, 'same-camera');
+  if (transportFor(connection) === undefined) {
+    await connection.googleAPI.connect();
+  }
+  t.mock.method(transportFor(connection), 'release', function () {
+    this.released = true;
+    released++;
+  });
   assert.equal(connection.session.markUnauthorised(), true);
   assert.equal(connection.authorised, false);
   assert.equal(released, 1);
-  assert.equal(resolved, 2);
   manager.shutdown();
   manager.shutdown();
   t.mock.timers.tick(60000);
   await setImmediate();
   assert.equal(connection.timer, undefined);
-  assert.equal(connection.grpcTransport, undefined);
+  assert.equal(transportFor(connection), undefined);
   assert.equal(manager.size, 0);
   assert.equal(requests.mock.callCount(), 0);
 });
@@ -252,7 +281,7 @@ for (let [label, replies, retry] of [
     await startAndAuthenticate(manager, uuid);
     assert.equal(connection.authorised, false);
     assert.equal(connection.allowRetry, retry);
-    assert.equal(connection.grpcTransport, undefined);
+    assert.equal(transportFor(connection), undefined);
   });
 }
 for (let [expires, delay] of [
@@ -334,7 +363,7 @@ for (let fieldTest of [false, true]) {
       response(url.endsWith('/session') === true ? { ...session, access_token: token } : { items: [{ session_token: 'camera-cookie' }] }),
     );
     await startAndAuthenticate(manager, uuid);
-    let transport = connection.grpcTransport;
+    let transport = transportFor(connection);
     assert.equal(transport.options.uuid, uuid);
     assert.equal(transport.options.endpointHost, fieldTest === true ? 'https://apigw.ft.nest.com' : 'https://apigw.production.nest.com');
     assert.equal(transport.options.getAuthHeader(), 'Basic first-session');
@@ -350,8 +379,8 @@ for (let fieldTest of [false, true]) {
     token = 'refreshed-session';
     await startAndAuthenticate(manager, uuid);
     assert.equal(transport.released, true);
-    assert.notEqual(connection.grpcTransport, transport);
-    let replacement = connection.grpcTransport;
+    assert.notEqual(transportFor(connection), transport);
+    let replacement = transportFor(connection);
     assert.equal(replacement.options.getAuthHeader(), 'Basic refreshed-session');
     manager.shutdown();
     assert.equal(replacement.released, true);
@@ -441,8 +470,8 @@ for (let failure of [new Error('Fixture callback failure'), 'Fixture non-error c
     await startAndAuthenticate(manager, uuid);
     assert.equal(connection.authorised, true);
     assert.equal(connection.token, session.access_token);
-    assert.equal(logs.at(-1)[2], failure.message ?? String(failure));
-    assert.equal(logs.at(-1)[0].startsWith('Authorised account callback failed'), true);
+    let failureLog = logs.find((entry) => entry[0].startsWith('Authorised account callback failed'));
+    assert.equal(failureLog[2], failure.message ?? String(failure));
     await startAndAuthenticate(manager, uuid);
     assert.equal(
       logs.some((entry) => entry[0].startsWith('Performing periodic token refresh')),
@@ -524,17 +553,17 @@ test('invalidation logs its reason, replaces the refresh timer and releases pend
   assert.equal(logs.at(-1)[2], 'fixture-expired');
   context.mock.timers.tick(14999);
   await setImmediate();
-  assert.equal(requests.mock.callCount(), 2);
+  assert.equal(requests.mock.callCount(), 3);
   context.mock.timers.tick(1);
   await setImmediate();
-  assert.equal(requests.mock.callCount(), 4);
+  assert.equal(requests.mock.callCount(), 6);
   assert.equal(connection.authorised, true);
   assert.equal(connection.retryDelay, 15000);
   manager.shutdown();
   context.mock.timers.tick(100000000);
   await setImmediate();
   assert.equal(scheduled, 0);
-  assert.equal(requests.mock.callCount(), 4);
+  assert.equal(requests.mock.callCount(), 6);
 });
 
 test('Accounts.fromConfig accepts an empty configuration without scheduling network work', async () => {
@@ -597,13 +626,19 @@ test('successful refresh retires only Google ingestion; failed refresh retires b
   connection.session.on('disconnect', (refreshing) => {
     events.push(refreshing === true ? 'refresh' : 'invalidate');
   });
-  connection.grpcTransport = { release: () => events.push('transport-release') };
+  context.mock.method(transportFor(connection), 'release', function () {
+    this.released = true;
+    events.push('transport-release');
+  });
   events.length = 0;
   await startAndAuthenticate(manager, uuid);
   assert.deepEqual(events, ['transport-release', 'refresh', 'authorised']);
   assert.equal(connection.authorised, true);
 
-  connection.grpcTransport = { release: () => events.push('transport-release') };
+  context.mock.method(transportFor(connection), 'release', function () {
+    this.released = true;
+    events.push('transport-release');
+  });
   events.length = 0;
   fail = true;
   await startAndAuthenticate(manager, uuid);
@@ -618,7 +653,6 @@ for (let outcome of ['success', 'failure', 'retired']) {
     let release = Promise.withResolvers();
     let batches = [];
     let { manager, uuid, connection } = setup(context, [account], {
-      getResource: () => undefined,
       onData: async (owner, batch) => {
         assert.equal(owner, uuid);
         if (batch.source !== 'Google') {
@@ -667,7 +701,6 @@ for (let outcome of ['success', 'failure', 'retired']) {
 test('account clients survive refresh without restarting Nest polling or retaining the old Google transport', async (context) => {
   grpcRuntime.observations = [];
   let { manager, uuid, connection } = setup(context, [account], {
-    getResource: () => undefined,
     onData: async () => true,
   });
   let nestAPI = connection.nestAPI;
@@ -684,12 +717,12 @@ test('account clients survive refresh without restarting Nest polling or retaini
   assert.equal(connection.authorised, false);
   assert.equal(requests.mock.callCount(), 0);
   await startAndAuthenticate(manager, uuid);
-  let transport = connection.grpcTransport;
+  let transport = transportFor(connection);
   await startAndAuthenticate(manager, uuid);
   assert.equal(connection.nestAPI, nestAPI);
   assert.equal(connection.googleAPI, googleAPI);
   assert.equal(transport.released, true);
-  assert.notEqual(connection.grpcTransport, transport);
+  assert.notEqual(transportFor(connection), transport);
   assert.equal(grpcRuntime.observations.length, 2);
   assert.equal(requests.mock.calls.filter((call) => call.arguments[1].includes('/app_launch')).length, 1);
   context.mock.timers.tick(1000);
@@ -705,7 +738,6 @@ test('both API clients ignore removed flags and share authentication, REST queri
     context,
     [account],
     {
-      getResource: () => undefined,
       onData: async (owner, batch) => {
         batches.push(batch);
         return true;
@@ -725,7 +757,7 @@ test('both API clients ignore removed flags and share authentication, REST queri
   await startAndAuthenticate(manager, uuid);
   await setImmediate();
   assert.equal(batches[0].source, 'Nest');
-  assert.notEqual(connection.grpcTransport, undefined);
+  assert.notEqual(transportFor(connection), undefined);
   assert.equal(typeof connection.googleAPI.get, 'function');
   assert.equal(
     await connection.nestAPI.get('STRUCTURE_HOME', 'location_weather', { location: { postal_code: '2000', country_code: 'AU' } }),
@@ -745,15 +777,12 @@ for (let source of ['nest', 'google']) {
     let logs = [];
     let { manager, uuid, connection } = setup(context, [account], {
       log: { debug: (...args) => logs.push(args) },
-      getResource: () => undefined,
       onData: async () => true,
-      onAuthorised: async (owner, account) => {
+      onAuthorised: async () => {
         if (source === 'google') {
-          account.grpcTransport = {
-            observe: () => {
-              throw new Error('fixture Observe startup failure');
-            },
-          };
+          context.mock.method((await import(grpcModule)).default.prototype, 'observe', () => {
+            throw new Error('fixture Observe startup failure');
+          });
         }
       },
     });
@@ -776,7 +805,6 @@ for (let source of ['nest', 'google']) {
 for (let configured of [account, { name: 'Google', type: 'google', issueToken: 'https://oauth.invalid/token', cookie: 'cookie' }]) {
   test('both API entry points share login and scheduled refresh for ' + configured.type + ' accounts', async (context) => {
     let { manager, connection } = setup(context, [configured], {
-      getResource: () => undefined,
       onData: async () => true,
     });
     let login = Promise.withResolvers();
@@ -811,21 +839,21 @@ for (let configured of [account, { name: 'Google', type: 'google', issueToken: '
     let callsPerLogin = configured.type === 'nest' ? 2 : 3;
     assert.equal(authCalls, callsPerLogin);
     assert.equal(subscriptions, 1);
-    assert.notEqual(connection.grpcTransport, undefined);
+    assert.notEqual(transportFor(connection), undefined);
     context.mock.timers.tick(connection.refreshDelay);
     await setImmediate();
     assert.equal(authCalls, callsPerLogin * 2, 'direct API connect also schedules account refresh');
     assert.equal(subscriptions, 1, 'Nest subscription survives refresh');
     connection.googleAPI.disconnect();
-    assert.equal(connection.grpcTransport, undefined);
+    assert.equal(transportFor(connection), undefined);
     await connection.session.connect(true);
     await setImmediate();
-    assert.equal(connection.grpcTransport, undefined, 'account refresh does not reconnect an explicitly disconnected API');
+    assert.equal(transportFor(connection), undefined, 'account refresh does not reconnect an explicitly disconnected API');
     assert.equal(subscriptions, 1, 'disconnecting protobuf does not stop REST polling');
     let beforeReconnect = authCalls;
     await connection.googleAPI.connect();
     assert.equal(authCalls, beforeReconnect, 'reconnecting one API reuses valid account credentials');
-    assert.notEqual(connection.grpcTransport, undefined);
+    assert.notEqual(transportFor(connection), undefined);
     manager.shutdown();
     await assert.rejects(connection.nestAPI.connect(), /disconnected/);
   });
@@ -846,7 +874,64 @@ for (let client of ['nestAPI', 'googleAPI']) {
     await setImmediate();
     assert.equal(connection.authorised, true);
     if (client === 'googleAPI') {
-      assert.equal(connection.grpcTransport, undefined);
+      assert.equal(transportFor(connection), undefined);
     }
+  });
+}
+
+for (let client of ['nestAPI', 'googleAPI']) {
+  test(client + ' remains disconnected through shared refresh while the other API continues', async (context) => {
+    let { manager, uuid, connection } = setup(context, [account], { onData: async () => true });
+    let subscriptions = 0;
+    let beforeObserve = grpcRuntime.observations.length;
+    context.mock.method(network, 'request', async (method, url) => {
+      if (url.includes('/app_launch') === true || url.includes('/v5/subscribe') === true) {
+        subscriptions++;
+        return new Promise(() => {});
+      }
+      return response(url.endsWith('/session') === true ? session : { items: [{ session_token: 'cookie' }] });
+    });
+    await startAndAuthenticate(manager, uuid);
+    await setImmediate();
+    assert.equal(subscriptions, 1);
+    assert.equal(grpcRuntime.observations.length - beforeObserve, 1);
+    connection[client].disconnect();
+    await connection.session.connect(true);
+    await setImmediate();
+    assert.equal(subscriptions, 1, 'refresh must not reopen a disconnected or already-running Nest client');
+    assert.equal(grpcRuntime.observations.length - beforeObserve, client === 'googleAPI' ? 1 : 2);
+    assert.equal(transportFor(connection) === undefined, client === 'googleAPI');
+    await connection[client].connect();
+    await setImmediate();
+    assert.equal(subscriptions, client === 'nestAPI' ? 2 : 1);
+    assert.equal(grpcRuntime.observations.length - beforeObserve, 2);
+  });
+
+  test(client + ' reconnect during pending login retires the earlier connection request', async (context) => {
+    let { connection } = setup(context, [account], { onData: async () => true });
+    let login = Promise.withResolvers();
+    let subscriptions = 0;
+    let beforeObserve = grpcRuntime.observations.length;
+    context.mock.method(network, 'request', async (method, url) => {
+      if (url.includes('/app_launch') === true || url.includes('/v5/subscribe') === true) {
+        subscriptions++;
+        return new Promise(() => {});
+      }
+      await login.promise;
+      return response(url.endsWith('/session') === true ? session : { items: [{ session_token: 'cookie' }] });
+    });
+    let first = connection[client].connect();
+    connection[client].disconnect();
+    let second = connection[client].connect();
+    login.resolve();
+    await Promise.all([first, second]);
+    await setImmediate();
+    assert.equal(subscriptions, client === 'nestAPI' ? 1 : 0);
+    assert.equal(grpcRuntime.observations.length - beforeObserve, client === 'googleAPI' ? 1 : 0);
+    connection[client].disconnect();
+    await connection.session.connect(true);
+    await setImmediate();
+    assert.equal(subscriptions, client === 'nestAPI' ? 1 : 0);
+    assert.equal(grpcRuntime.observations.length - beforeObserve, client === 'googleAPI' ? 1 : 0);
   });
 }

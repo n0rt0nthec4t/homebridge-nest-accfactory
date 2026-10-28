@@ -7,12 +7,12 @@
 // Entry points:
 // - connect() ensures account authentication and starts resource ingestion
 // - disconnect() retires this API without logging the shared account out
-// - get(resourceId, key, values = {}) returns camera snapshots or event history
+// - get(resourceId, key, values = {}) reads source fields, camera snapshots or event history
 // - set(resourceId, values) sends supported protobuf settings and commands
 //
 // Responsibilities:
-// - Build Observe subscriptions and resolve ACCEPTED/CONFIRMED trait precedence
-// - Publish partial resource updates, removals and discovered home identifiers
+// - Build Observe streams and resolve ACCEPTED/CONFIRMED trait precedence
+// - Maintain source resources and report updates, removals and discovered home identifiers
 // - Validate settings and execute protobuf updates and commands
 // - Request fresh camera images, await committed references and download image buffers
 // - Bound snapshot deadlines and release image waiters with the protobuf transport
@@ -21,11 +21,11 @@
 // Ownership:
 // - AccountSession owns login, token refresh and authentication retry scheduling
 // - Either legacy Nest or Google account authentication may use this API
-// - Resource lookups are read-only; System owns cache commits and HomeKit delivery
-// - connect() starts ingestion; discovered data arrives through onData
+// - This client owns source resources; System maintains its combined HomeKit view
+// - connect() starts ingestion without a consumer; onData optionally reports committed changes
 // - Google Home Foyer media signalling belongs to the WebRTC camera transport
 //
-// Code version 2026.10.27
+// Code version 2026.10.29
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -52,86 +52,66 @@ const API_STREAM_RETRY_INITIAL = 5000;
 const API_STREAM_RETRY_MAX = 60000;
 
 export default class GoogleAPI {
-  #options = {}; // Account, read-only resource lookups and awaited batch delivery
-  #enabled = false; // An explicit disconnect stays disconnected across account refresh.
-  #subscription = undefined; // Current Observe run and its authenticated transport.
+  resources = new Map(); // Source resource records maintained by this client.
+  #options = {}; // Shared authentication, logging and optional change notification
+  #snapshotWaiters = new Map(); // Pending image refreshes owned by this client.
+  #observation = undefined; // Requested Observe lifecycle, including login and recovery.
   #timer = undefined;
   #retryDelay = undefined;
 
-  // The session supplies live credentials. Resource lookups return committed
-  // { source, value, ...metadata } records and must remain read-only here.
-  // onData resolves true after System stores a batch; isCurrent retires work
-  // belonging to an account removed while a request or commit was awaiting I/O.
+  // Authentication is shared; resource state and observation identity are local.
+  // onData is optional. Consumers may return false or reject to retry delivery;
+  // source data remains available through resources and get() independently.
   constructor(options = {}) {
-    this.#options = options;
-    if (options.session !== undefined) {
-      this.#options.account = options.session.account;
-    }
+    this.#options = { session: options.session, uuid: options.uuid, log: options.log, onData: options.onData };
 
     options.session?.on('authorised', () => {
-      if (this.#enabled === true) {
+      if (this.#observation !== undefined) {
         this.connect().catch((error) => options.log?.debug?.('Unable to connect google API: %s', String(error)));
       }
     });
     options.session?.on('disconnect', () => {
-      this.#stop();
+      this.#stop(true);
     });
   }
 
   // Authenticate through the shared session, then start this API once.
   // Returning means startup was requested; resource data arrives through onData.
   async connect() {
-    // Keep the caller's intent across token refresh, but allow disconnect() to
-    // cancel startup while the shared account login is still in flight.
-    this.#enabled = true;
-    if (this.#options.session !== undefined) {
-      let authorised = await this.#options.session.connect();
-
-      if (authorised !== true) {
-        throw new Error('Unable to authenticate account');
-      }
+    // Allocate the requested connection before login. An explicit disconnect or
+    // a replaced run makes this particular login completion stale.
+    let observation = (this.#observation ??= {});
+    let authorised = await this.#options.session?.connect();
+    if (authorised !== true) {
+      throw new Error('Unable to authenticate account');
     }
 
-    if (this.#enabled !== true) {
+    if (this.#observation !== observation) {
       return;
     }
 
-    let { account, uuid, log, session } = this.#options;
+    let { uuid, log, session } = this.#options;
+    let account = session.account;
 
-    // This transport belongs to the protobuf client, while authentication belongs
-    // to the account. REST polling can continue when this transport is replaced.
-    if (account.authorised === true && account.grpcTransport === undefined) {
-      account.grpcTransport = new GrpcTransport({
-        log,
-        protoPath: path.join(__dirname, 'protobuf/root.proto'),
-        endpointHost: 'https://' + account.grpcEndpointHost,
-        uuid,
-        userAgent: USER_AGENT,
-        getAuthHeader: () => {
-          let token = session?.account.authorised === false ? undefined : account.token;
-
-          return typeof token === 'string' && token.trim() !== '' ? 'Basic ' + token : '';
-        },
-      });
-    }
-
-    if (typeof this.#options.onData !== 'function') {
+    // A transport on this run means Observe is already active. Repeated
+    // connect calls and the shared authorised event must not start Observe twice.
+    if (account.authorised !== true || observation.transport !== undefined) {
       return;
     }
 
-    // Reuse Observe only while it belongs to the current transport. Successful
-    // account refresh releases that transport and requires a new subscription.
-    if (
-      this.#options.account?.authorised !== true ||
-      this.#options.isCurrent() !== true ||
-      (this.#subscription !== undefined && this.#subscription.transport === this.#options.account.grpcTransport)
-    ) {
-      return;
-    }
-
-    // Invalidate callbacks from the previous transport before assigning the replacement.
-    this.#stop(false);
-    this.#subscription = { transport: this.#options.account.grpcTransport };
+    // The observation owns its transport. Authentication remains owned by the
+    // shared session, whose current credentials are read for every request.
+    observation.transport = new GrpcTransport({
+      log,
+      protoPath: path.join(__dirname, 'protobuf/root.proto'),
+      endpointHost: 'https://' + account.grpcEndpointHost,
+      uuid,
+      userAgent: USER_AGENT,
+      getAuthHeader: () => {
+        let token = session.account.authorised === true ? session.account.token : undefined;
+        return typeof token === 'string' && token.trim() !== '' ? 'Basic ' + token : '';
+      },
+    });
 
     return await this.#observe();
   }
@@ -139,46 +119,36 @@ export default class GoogleAPI {
   // An explicit disconnect also prevents session refresh from reopening this API.
   // The other API can continue using the account and its refresh scheduler.
   disconnect() {
-    this.#enabled = false;
     this.#stop();
   }
 
-  #stop(releaseTransport = true) {
-    // Clearing the run identity makes in-flight replies and already queued
-    // callbacks stale, even when the underlying request cannot be cancelled.
-    this.#subscription = undefined;
+  #stop(reconnect = false) {
+    let observation = this.#observation;
+    // Recovery retains a fresh pending connection; explicit disconnect clears it.
+    // Both invalidate replies and queued work belonging to the previous run.
+    this.#observation = reconnect === true && observation !== undefined ? {} : undefined;
     clearTimeout(this.#timer);
     this.#timer = undefined;
     this.#retryDelay = undefined;
-    if (releaseTransport === true) {
-      let account = this.#options.account;
-      account.grpcTransport?.release?.();
-      account.grpcTransport = undefined;
+    observation?.transport?.release?.();
 
-      // A snapshot may be waiting for an Observe update from this transport.
-      // Resolve it without an image so it can use its existing fallback URL.
-      for (let waiter of account.snapshotWaiters?.keys() ?? []) {
-        if (typeof waiter === 'function') {
-          waiter();
-        }
-      }
-
-      account.snapshotWaiters?.clear();
+    // A snapshot may be waiting for an Observe update from this transport.
+    // Resolve it without an image so it can use its existing fallback URL.
+    for (let waiter of this.#snapshotWaiters.keys()) {
+      waiter();
     }
+
+    this.#snapshotWaiters.clear();
   }
 
   async #observe() {
-    let { account, log } = this.#options;
-    let subscription = this.#subscription;
-    let grpcTransport = subscription?.transport;
+    let { log, session } = this.#options;
+    let account = session.account;
+    let observation = this.#observation;
+    let grpcTransport = observation?.transport;
 
     // Account identity and this exact run must both survive asynchronous work.
-    let isCurrent = () =>
-      subscription !== undefined &&
-      this.#subscription === subscription &&
-      this.#options.isCurrent() === true &&
-      account.authorised === true &&
-      account.grpcTransport === grpcTransport;
+    let isCurrent = () => observation !== undefined && this.#observation === observation && account.authorised === true;
     let observeFailed = false;
 
     // A scheduled retry can outlive disconnect or account shutdown.
@@ -186,7 +156,7 @@ export default class GoogleAPI {
       return;
     }
 
-    // Build trait subscriptions from the loaded schemas. Legacy Nest logins omit
+    // Build the observed trait list from the loaded schemas. Legacy Nest logins omit
     // camera/doorbell traits; Google logins also include Google camera traits.
     let observeTraitsList = getProtoTypes(path.join(__dirname, 'protobuf/root.proto'), log)
       .filter((type) => {
@@ -230,8 +200,21 @@ export default class GoogleAPI {
             return;
           }
 
+          // Retry a rejected consumer notification before publishing later data.
+          // Keep the original removal records even though the source cache owns them already.
+          if (observation.pending !== undefined) {
+            let accepted = await this.#options.onData?.(observation.pending);
+            if (isCurrent() !== true) {
+              return;
+            }
+            if (accepted === false) {
+              throw new Error('Google resource batch was not accepted');
+            }
+            observation.pending = undefined;
+          }
+
           let observeResponses = Array.isArray(message?.observeResponse) === true ? message.observeResponse : [message].filter(Boolean);
-          let changes = []; // Ordered cache-ready patches; System owns committing them
+          let changes = []; // Ordered source patches for local storage and consumer notification
 
           // Resource status can remove an existing device immediately. Additions
           // wait for trait data so device modules can check required fields before
@@ -302,23 +285,47 @@ export default class GoogleAPI {
             return;
           }
 
-          // System acknowledges cache writes independently of potentially slow accessory updates.
-          let committed = await this.#options.onData({ source: DATA_SOURCE.GOOGLE, changes, isCurrent });
+          // Commit source state before notifying consumers. Standalone clients do
+          // not require System or a listener to maintain discovery and command data.
+          for (let change of changes) {
+            if (change.remove === true) {
+              this.resources.delete(change.resourceId);
+            } else {
+              this.resources.set(change.resourceId, {
+                source: DATA_SOURCE.GOOGLE,
+                value: { ...this.resources.get(change.resourceId)?.value, ...change.value },
+              });
+            }
+          }
 
-          if (committed === true && isCurrent() === true) {
-            // The awaited acknowledgement confirms System has stored these images.
-            for (let change of changes) {
-              let image = change.value?.upload_live_image;
+          // Image requests use this client's committed state immediately; an
+          // optional consumer must not delay snapshot completion.
+          for (let change of changes) {
+            let image = change.value?.upload_live_image;
 
-              if (image !== undefined) {
-                for (let [waiter, deviceId] of account.snapshotWaiters) {
-                  // A waiter stays registered when its freshness check rejects this image.
-                  if (deviceId === change.resourceId && waiter(image) !== false) {
-                    account.snapshotWaiters.delete(waiter);
-                  }
+            if (image !== undefined) {
+              for (let [waiter, deviceId] of this.#snapshotWaiters) {
+                // A waiter stays registered when its freshness check rejects this image.
+                if (deviceId === change.resourceId && waiter(image) !== false) {
+                  this.#snapshotWaiters.delete(waiter);
                 }
               }
             }
+          }
+
+          // A failed consumer keeps one notification for retry, independently
+          // of the source cache and image requests that already accepted it.
+          let notification = { source: DATA_SOURCE.GOOGLE, changes, isCurrent };
+          try {
+            let committed = await this.#options.onData?.(notification);
+            if (committed === false && changes.length > 0) {
+              observation.pending = notification;
+            }
+          } catch (error) {
+            if (changes.length > 0) {
+              observation.pending = notification;
+            }
+            throw error;
           }
 
           if (isCurrent() === true) {
@@ -334,7 +341,7 @@ export default class GoogleAPI {
         // Observe request with the same token. A retired transport must not
         // invalidate credentials installed by a refresh while it was closing.
         if (result.status === GrpcTransport.STATUS.UNAUTHENTICATED && isCurrent() === true) {
-          this.#options.onUnauthorised('google-api-' + result.status);
+          this.#options.session?.markUnauthorised('google-api-' + result.status);
         }
       })
       .catch((error) => {
@@ -376,7 +383,7 @@ export default class GoogleAPI {
   // Success resolves without a value; SET does not mutate the committed cache.
   // AggregateError can mean partial cloud success; subscriptions reconcile actual state.
   async set(resourceId, values) {
-    let account = this.#options.account;
+    let account = this.#options.session?.account;
 
     // Reject malformed requests before resource lookup or network work.
     if (
@@ -390,13 +397,13 @@ export default class GoogleAPI {
       throw new Error('SET requires valid parameters and an authorised device account');
     }
 
-    let resource = this.#options.getResource(resourceId);
+    let resource = this.resources.get(resourceId);
 
     if (typeof resource !== 'object' || resource === null || resource.source !== DATA_SOURCE.GOOGLE) {
       throw new Error('SET requires an available authorised device account');
     }
 
-    if (account.grpcTransport === undefined) {
+    if (this.#observation?.transport === undefined) {
       throw new Error('Google command transport is unavailable');
     }
 
@@ -406,17 +413,12 @@ export default class GoogleAPI {
     let appliedTraits = new Map(); // Successful writes in this SET; Observe remains the authoritative cache writer.
     for (let [key, value] of Object.entries(values)) {
       try {
-        if (key === 'uuid') {
-          // Ignore the HomeKitDevice routing identifier; it is not a cloud setting.
-          continue;
-        }
-
         let handled = false;
 
         // An awaited write can allow Observe to change the selected resource.
-        let currentResource = this.#options.getResource(resourceId);
+        let currentResource = this.resources.get(resourceId);
 
-        if (currentResource?.source === DATA_SOURCE.GOOGLE && account.grpcTransport !== undefined) {
+        if (currentResource?.source === DATA_SOURCE.GOOGLE && this.#observation?.transport !== undefined) {
           // The fan-state command consumes these fields together, regardless of
           // property order. Invalid companions prevent that command being built.
           if (['fan_duration', 'fan_timer_speed'].includes(key) === true && Object.hasOwn(values, 'fan_state') === true) {
@@ -427,7 +429,7 @@ export default class GoogleAPI {
 
           // Submit the trait update for this setting and verify Google accepted it.
           if (update !== undefined) {
-            let grpcResult = await account.grpcTransport.command('nestlabs.gateway.v1.', 'TraitBatchApi', 'BatchUpdateState', {
+            let grpcResult = await this.#observation?.transport.command('nestlabs.gateway.v1.', 'TraitBatchApi', 'BatchUpdateState', {
               batchUpdateStateRequest: [update],
             });
             let commandResponse = Array.isArray(grpcResult?.data) === true ? grpcResult.data[0] : undefined;
@@ -444,7 +446,7 @@ export default class GoogleAPI {
 
           // Submit resource commands separately and verify each operation completed.
           if (command !== undefined) {
-            let grpcResult = await account.grpcTransport.command('nestlabs.gateway.v1.', 'ResourceApi', 'SendCommand', command);
+            let grpcResult = await this.#observation?.transport.command('nestlabs.gateway.v1.', 'ResourceApi', 'SendCommand', command);
             let commandResponse = Array.isArray(grpcResult?.data) === true ? grpcResult.data[0] : undefined;
             let operation = commandResponse?.traitOperations?.[0];
 
@@ -481,6 +483,10 @@ export default class GoogleAPI {
 
   #buildSetting(resourceId, key, value, values, resource, appliedTraits) {
     // Return protocol requests for one setting; set() owns execution and errors.
+    // Settings below choose either a trait-state update or a resource command.
+    // Most target this device; light, sensor selection and vacation mode resolve
+    // a related service, parent thermostat or structure instead. Unmatched or
+    // invalid settings leave both requests empty and are rejected by set().
     // Clone committed traits or earlier accepted writes from this SET so changing
     // one field preserves its siblings without mutating the shared resource cache.
     const timestamp = (milliseconds) => ({
@@ -508,7 +514,8 @@ export default class GoogleAPI {
       resourceCommands: [],
     };
 
-    // Build a trait update from an explicit value or the latest committed resource state.
+    // Build a trait update from an earlier accepted write, an explicit related
+    // resource value, or this device's committed trait, in that order.
     let setUpdateTrait = (traitLabel, typeURL, traitValue = undefined, updates = undefined) => {
       updateElement.traitRequest.traitLabel = traitLabel;
       updateElement.state.type_url = typeURL;
@@ -569,7 +576,8 @@ export default class GoogleAPI {
         resource?.value?.eco_mode_state?.ecoMode === 'ECO_MODE_INACTIVE' &&
         isNumeric(value) === true)
     ) {
-      // Set either the 'mode' and/or non-eco temperatures on the target thermostat
+      // HVAC mode always uses the normal target trait. Temperature writes use
+      // it only when Eco is explicitly inactive; the next branch handles Eco targets.
       setUpdateTrait('target_temperature_settings', 'type.nestlabs.com/nest.trait.hvac.TargetTemperatureSettingsTrait');
 
       let setpointType = updateElement.state.value.targetTemperature?.setpointType;
@@ -616,7 +624,8 @@ export default class GoogleAPI {
       resource?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE' &&
       isNumeric(value) === true
     ) {
-      // Set eco mode temperatures on the target thermostat
+      // Eco has separate limits and enable flags. A single target is unambiguous
+      // only when one side is enabled; with both enabled, require low or high.
       setUpdateTrait('eco_mode_settings', 'type.nestlabs.com/nest.trait.hvac.EcoModeSettingsTrait');
 
       let heatEnabled = updateElement.state.value.ecoTemperatureHeat?.enabled === true;
@@ -683,7 +692,8 @@ export default class GoogleAPI {
     }
 
     if (key === 'streaming_enabled' && typeof value === 'boolean') {
-      // Turn camera video on/off
+      // Camera power uses the recording toggle trait, rather than a live-session
+      // command. Carry the change reason and timestamp with the requested state.
       setUpdateTrait('recording_toggle_settings', 'type.nestlabs.com/nest.trait.product.camera.RecordingToggleSettingsTrait');
       updateElement.state.value.targetCameraState = value === true ? 'CAMERA_ON' : 'CAMERA_OFF';
       updateElement.state.value.changeModeReason = 2;
@@ -708,7 +718,8 @@ export default class GoogleAPI {
     }
 
     if (key === 'light_enabled' && typeof value === 'boolean' && typeof resource?.value?.related_resources?.relatedResources === 'object') {
-      // Turn on/off light on supported camera devices. Need to find the related SERVICE_ object
+      // Floodlight power belongs to the related Aziz service, while brightness
+      // below belongs to the camera's floodlight settings trait.
       let serviceUUID = Object.values(resource.value.related_resources.relatedResources).find(
         (resource) =>
           resource?.resourceTypeName?.resourceName === 'google.resource.AzizResource' &&
@@ -727,23 +738,27 @@ export default class GoogleAPI {
       });
     }
 
-    if (
-      key === 'active_sensor' &&
-      typeof value === 'boolean' &&
-      typeof this.#options.getResource(resource?.value?.associated_thermostat)?.value?.remote_comfort_sensing_settings === 'object'
-    ) {
-      // Sensor selection belongs to the associated thermostat's settings trait.
-      // The selected sensor remains the resource ID inside that trait value.
-      updateElement.traitRequest.resourceId = resource.value.associated_thermostat;
-      setUpdateTrait(
-        'remote_comfort_sensing_settings',
-        'type.nestlabs.com/nest.trait.hvac.RemoteComfortSensingSettingsTrait',
-        this.#options.getResource(resource.value.associated_thermostat).value.remote_comfort_sensing_settings,
+    if (key === 'active_sensor' && typeof value === 'boolean') {
+      // Resolve the parent from this API's observed relationships; a standalone
+      // client must not rely on System injecting a thermostat ID into the sensor.
+      let parent = [...this.resources].find(
+        ([, candidate]) =>
+          candidate.value?.remote_comfort_sensing_settings?.associatedRcsSensors?.some(
+            (sensor) => sensor.deviceId?.resourceId === resourceId,
+          ) === true,
       );
-      updateElement.state.value.activeRcsSelection =
-        value === true
-          ? { rcsSourceType: 'RCS_SOURCE_TYPE_SINGLE_SENSOR', activeRcsSensor: { resourceId } }
-          : { rcsSourceType: 'RCS_SOURCE_TYPE_BACKPLATE' };
+      if (parent !== undefined) {
+        updateElement.traitRequest.resourceId = parent[0];
+        setUpdateTrait(
+          'remote_comfort_sensing_settings',
+          'type.nestlabs.com/nest.trait.hvac.RemoteComfortSensingSettingsTrait',
+          parent[1].value.remote_comfort_sensing_settings,
+        );
+        updateElement.state.value.activeRcsSelection =
+          value === true
+            ? { rcsSourceType: 'RCS_SOURCE_TYPE_SINGLE_SENSOR', activeRcsSensor: { resourceId } }
+            : { rcsSourceType: 'RCS_SOURCE_TYPE_BACKPLATE' };
+      }
     }
 
     if (
@@ -754,7 +769,8 @@ export default class GoogleAPI {
       (value.time === undefined || isNumeric(value.time, { min: 0 }) === true) &&
       resource?.value?.hvac_equipment_capabilities?.hasHotWaterControl === true
     ) {
-      // Turn hotwater boost heating on/off
+      // Boost and water temperature share one trait. Preserve its other fields
+      // and use an absolute expiry, or zero to cancel; default boost is 30 minutes.
       setUpdateTrait('hot_water_settings', 'type.nestlabs.com/nest.trait.hvac.HotWaterSettingsTrait');
 
       let boostTime = value.time === undefined ? 30 * 60 : Number(value.time);
@@ -776,7 +792,8 @@ export default class GoogleAPI {
     }
 
     if (key === 'bolt_lock' && typeof value === 'boolean') {
-      // Set lock state
+      // Bolt motion is an explicit command with actor metadata; automatic relock
+      // below changes a persistent setting instead of moving the bolt now.
       setCommandTrait('bolt_lock', 'type.nestlabs.com/weave.trait.security.BoltLockTrait.BoltLockChangeRequest', {
         state: value === true ? 'BOLT_STATE_EXTENDED' : 'BOLT_STATE_RETRACTED',
         boltLockActor: {
@@ -818,7 +835,9 @@ export default class GoogleAPI {
       typeof value === 'boolean' &&
       resource?.value?.hvac_equipment_capabilities?.hasDehumidifier === true
     ) {
-      // Set dehumidifier on/off on the target thermostat
+      // Humidity controls below share one trait but keep separate equipment
+      // targets. Merge each nested object so enable and percentage writes retain
+      // one another, including earlier accepted writes from this same SET.
       setUpdateTrait('humidity_control_settings', 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait');
       updateElement.state.value.dehumidifierTargetHumidity = {
         ...(updateElement.state.value.dehumidifierTargetHumidity ?? {}),
@@ -871,7 +890,7 @@ export default class GoogleAPI {
   // camera_events -> array. Location weather is a Nest REST query, routed by System.
   // Invalid input/account/resource rejects; an unknown key on an available resource returns undefined.
   async get(resourceId, key, values = {}) {
-    let account = this.#options.account;
+    let account = this.#options.session?.account;
 
     // Validate the public request before any resource lookup or network work.
     if (
@@ -887,20 +906,20 @@ export default class GoogleAPI {
       throw new Error('GET requires valid query parameters and an authorised account');
     }
 
-    let resource = this.#options.getResource(resourceId);
+    let resource = this.resources.get(resourceId);
 
     if (typeof resource !== 'object' || resource === null) {
       throw new Error('GET requires an available resource');
     }
 
-    let result = undefined;
+    let result = Object.hasOwn(resource?.value ?? {}, key) === true ? structuredClone(resource.value[key]) : undefined;
 
     // Camera queries require a committed resource and its account's live transport.
     let cameraAvailable =
       typeof resource?.value === 'object' &&
       resource.value !== null &&
       resourceId.startsWith('DEVICE_') === true &&
-      account.grpcTransport !== undefined;
+      this.#observation?.transport !== undefined;
 
     if (key === 'camera_snapshot') {
       let type = resource?.value?.device_info?.typeName;
@@ -943,13 +962,13 @@ export default class GoogleAPI {
   }
 
   async #getCameraSnapshot(resourceId, signal) {
-    let account = this.#options.account;
+    let account = this.#options.session?.account;
 
     let snapshot = undefined;
 
     // Record the protobuf upload_live_image state before asking for a new snapshot
     // so we can fall back to the previously available image URL if no newer data arrives
-    let beforeRequestUploadLiveImage = structuredClone(this.#options.getResource(resourceId)?.value?.upload_live_image ?? {});
+    let beforeRequestUploadLiveImage = structuredClone(this.resources.get(resourceId)?.value?.upload_live_image ?? {});
     let beforeRequestUrl = beforeRequestUploadLiveImage?.liveImageUrl ?? '';
 
     // Each request keeps the image it accepts, even if later Observe updates change the cache.
@@ -979,10 +998,10 @@ export default class GoogleAPI {
 
       return true;
     };
-    account.snapshotWaiters.set(waiter, resourceId);
+    this.#snapshotWaiters.set(waiter, resourceId);
     let waitTimer = undefined;
     let cancelWait = () => {
-      account.snapshotWaiters.delete(waiter);
+      this.#snapshotWaiters.delete(waiter);
       resolveSnapshotUpdate();
     };
     signal.addEventListener('abort', cancelWait, { once: true });
@@ -990,7 +1009,7 @@ export default class GoogleAPI {
     // Register the waiter before sending the command: Observe may deliver the
     // image while SendCommand is still awaiting its completion response.
     try {
-      let grpcResult = await account.grpcTransport.command(
+      let grpcResult = await this.#observation?.transport.command(
         'nestlabs.gateway.v1.',
         'ResourceApi',
         'SendCommand',
@@ -1034,7 +1053,7 @@ export default class GoogleAPI {
       }
     } finally {
       // Remove only this request, including when the refresh command fails.
-      account.snapshotWaiters.delete(waiter);
+      this.#snapshotWaiters.delete(waiter);
       clearTimeout(waitTimer);
       signal.removeEventListener('abort', cancelWait);
     }
@@ -1044,7 +1063,7 @@ export default class GoogleAPI {
     // Prefer this request's accepted image. An Observe wait timeout or transport
     // cleanup can use the latest committed URL; the overall abort above stops
     // all further work once the caller's snapshot deadline has expired.
-    let latestUrl = (acceptedImage ?? this.#options.getResource(resourceId)?.value?.upload_live_image)?.liveImageUrl ?? '';
+    let latestUrl = (acceptedImage ?? this.resources.get(resourceId)?.value?.upload_live_image)?.liveImageUrl ?? '';
 
     // Use the pre-request URL when the committed image state has no usable URL.
     if (latestUrl === '') {
@@ -1100,9 +1119,7 @@ export default class GoogleAPI {
   }
 
   async #getCameraEvents(resourceId) {
-    let account = this.#options.account;
-
-    let grpcResult = await account.grpcTransport.command(
+    let grpcResult = await this.#observation?.transport.command(
       'nestlabs.gateway.v1.',
       'ResourceApi',
       'SendCommand',

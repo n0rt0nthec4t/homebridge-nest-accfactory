@@ -60,7 +60,7 @@ function hasSafetySummaryFailure(raw, failureType) {
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.PROTECT;
-  static VERSION = '2026.10.26'; // Code version
+  static VERSION = '2026.10.28'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -69,6 +69,18 @@ export default class NestProtect extends HomeKitDevice {
 
   // Class functions
   onAdd() {
+    // Pre-0.4.5-alpha.10 cleanup
+    // Earlier versions retained a percentage on Protects without voltage data.
+    // Remove only that optional characteristic; keep the cached battery service.
+    if (typeof this.deviceData.battery_level !== 'number' || Number.isFinite(this.deviceData.battery_level) !== true) {
+      for (let service of this.accessory.services) {
+        if (service.UUID === this.hap.Service.Battery.UUID) {
+          this.removeCharacteristic(service, this.hap.Characteristic.BatteryLevel);
+        }
+      }
+    }
+    // End of pre-0.4.5-alpha.10 cleanup
+
     // Setup the smoke sensor service if not already present on the accessory
     this.smokeService = this.addService(this.hap.Service.SmokeSensor, '', 1, {
       primary: true,
@@ -138,14 +150,28 @@ export default class NestProtect extends HomeKitDevice {
       return;
     }
 
-    // Update battery level and status
-    if (deviceData.battery_level !== undefined) {
+    // Update battery percentage only when a usable reading exists.
+    let hasLevel = typeof deviceData.battery_level === 'number' && Number.isFinite(deviceData.battery_level) === true;
+    if (hasLevel === true) {
       this.batteryService.updateCharacteristic(this.hap.Characteristic.BatteryLevel, deviceData.battery_level);
+    } else {
+      this.removeCharacteristic(this.batteryService, this.hap.Characteristic.BatteryLevel);
+    }
+
+    // An explicit replacement indicator takes precedence over the voltage estimate.
+    // Unknown health preserves the last known warning rather than inventing a state.
+    let low =
+      typeof deviceData.battery_low === 'boolean'
+        ? deviceData.battery_low
+        : hasLevel === true
+          ? deviceData.battery_level <= LOW_BATTERY_LEVEL
+          : undefined;
+    if (low !== undefined) {
       this.batteryService.updateCharacteristic(
         this.hap.Characteristic.StatusLowBattery,
-        deviceData.battery_level > LOW_BATTERY_LEVEL
-          ? this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL
-          : this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW,
+        low === true
+          ? this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW
+          : this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL,
       );
     }
     this.batteryService.updateCharacteristic(this.hap.Characteristic.ChargingState, this.hap.Characteristic.ChargingState.NOT_CHARGEABLE);
@@ -431,6 +457,27 @@ const PROTECT_FIELD_MAP = {
     nest: {
       fields: ['wired_or_battery'],
       translate: ({ raw }) => raw?.value?.wired_or_battery === 1,
+    },
+  },
+
+  battery_low: {
+    google: {
+      fields: ['battery'],
+      translate: ({ raw }) => {
+        let indicator = raw?.value?.battery?.replacementIndicator;
+        return indicator === 'BATTERY_REPLACEMENT_INDICATOR_NOT_AT_ALL'
+          ? false
+          : ['BATTERY_REPLACEMENT_INDICATOR_SOON', 'BATTERY_REPLACEMENT_INDICATOR_IMMEDIATELY'].includes(indicator) === true
+              ? true
+              : undefined;
+      },
+    },
+    nest: {
+      fields: ['battery_health_state'],
+      translate: ({ raw }) => {
+        let state = raw?.value?.battery_health_state;
+        return Number.isInteger(state) === true && state >= 0 ? state !== 0 : undefined;
+      },
     },
   },
 
@@ -723,6 +770,10 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
           }),
           new Set(Object.keys(value?.value ?? {})),
         );
+
+        // An explicit absence clears a previous percentage when HomeKit merges
+        // updates; undefined would retain the old value after a source change.
+        mappedResult.data.battery_level ??= null;
 
         let serialNumber = mappedResult?.data?.serialNumber;
         let existingDevice = devices[serialNumber];

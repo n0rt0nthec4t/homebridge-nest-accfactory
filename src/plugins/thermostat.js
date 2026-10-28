@@ -99,8 +99,6 @@ export default class NestThermostat extends HomeKitDevice {
       history: { messages: this.message.bind(this) },
     });
 
-    this.#configureEcoMode(this.deviceData);
-
     // Fix for coding error with versions below 2025.08.20 where fan specific characteristics were added directly to the thermostat service
     // Thanks to @gizmotronic for raising this issue
     this.removeCharacteristic(this.thermostatService, this.hap.Characteristic.RotationSpeed);
@@ -278,6 +276,25 @@ export default class NestThermostat extends HomeKitDevice {
       this.humidityService = undefined;
     }
 
+    // Eco control via custom characteristic
+    this.addCharacteristic(
+      this.thermostatService,
+      {
+        name: 'Eco Mode',
+        uuid: CUSTOM_CHARACTERISTIC_UUID.ECO_MODE,
+        props: { format: this.hap.Formats.BOOL, perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.PAIRED_WRITE, this.hap.Perms.NOTIFY] },
+      },
+      {
+        onGet: () => {
+          return ['MANUAL', 'AUTO'].includes(this.deviceData.eco_mode?.toUpperCase?.()) === true;
+        },
+        onSet: async (value) => {
+          await this.set({ uuid: this.deviceData.nest_google_device_uuid, eco_mode: value === true ? 'manual' : 'off' });
+          this?.log?.info?.('Set Eco Mode on thermostat "%s" to "%s"', this.deviceData.description, value === true ? 'On' : 'Off');
+        },
+      },
+    );
+
     // Load external module if configured
     // Supports flexible functions: cool, heat, fan, dehumidifier, humidifier, off
     // This is undocumented as it's for my specific use case
@@ -298,32 +315,6 @@ export default class NestThermostat extends HomeKitDevice {
 
     // Extra setup details for output
     this.humidityService !== undefined && this.postSetupDetail('Separate humidity sensor');
-  }
-
-  // REST fallback has no verified Eco command contract. Adjust only this optional
-  // characteristic when source capability changes; retain the thermostat service.
-  #configureEcoMode(deviceData) {
-    if (deviceData.supports_eco_mode === false) {
-      this.removeCharacteristic(this.thermostatService, this.hap.Characteristic.EcoMode);
-    } else {
-      this.addCharacteristic(
-        this.thermostatService,
-        {
-          name: 'Eco Mode',
-          uuid: CUSTOM_CHARACTERISTIC_UUID.ECO_MODE,
-          props: { format: this.hap.Formats.BOOL, perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.PAIRED_WRITE, this.hap.Perms.NOTIFY] },
-        },
-        {
-          onGet: () => {
-            return ['MANUAL', 'AUTO'].includes(this.deviceData.eco_mode?.toUpperCase?.()) === true;
-          },
-          onSet: async (value) => {
-            await this.set({ uuid: this.deviceData.nest_google_device_uuid, eco_mode: value === true ? 'manual' : 'off' });
-            this?.log?.info?.('Set Eco Mode on thermostat "%s" to "%s"', this.deviceData.description, value === true ? 'On' : 'Off');
-          },
-        },
-      );
-    }
   }
 
   onRemove() {
@@ -348,16 +339,6 @@ export default class NestThermostat extends HomeKitDevice {
       this.batteryService === undefined
     ) {
       return;
-    }
-
-    if (deviceData.supports_eco_mode !== undefined && deviceData.supports_eco_mode !== this.deviceData.supports_eco_mode) {
-      this.#configureEcoMode(deviceData);
-    }
-    if (this.thermostatService.testCharacteristic(this.hap.Characteristic.EcoMode) === true) {
-      this.thermostatService.updateCharacteristic(
-        this.hap.Characteristic.EcoMode,
-        ['MANUAL', 'AUTO'].includes(deviceData.eco_mode?.toUpperCase?.()) === true,
-      );
     }
 
     let historyEntry = {};
@@ -434,6 +415,12 @@ export default class NestThermostat extends HomeKitDevice {
     if (deviceData.current_humidity !== undefined) {
       this.thermostatService.updateCharacteristic(this.hap.Characteristic.CurrentRelativeHumidity, deviceData.current_humidity);
     }
+
+    // Update eco mode custom characteristic
+    this.thermostatService.updateCharacteristic(
+      this.hap.Characteristic.EcoMode,
+      ['MANUAL', 'AUTO'].includes(deviceData.eco_mode?.toUpperCase?.()) === true,
+    );
 
     // Check for fan setup change on thermostat
     if (deviceData.has_fan !== this.deviceData.has_fan) {
@@ -2116,15 +2103,24 @@ const THERMOSTAT_FIELD_MAP = {
   },
 
   // HVAC mode / setpoint fields
-  supports_eco_mode: {
-    google: { fields: [], translate: () => true },
-    nest: { fields: [], translate: () => false },
-  },
-
   eco_mode: {
+    nest: {
+      fields: ['eco'],
+      translate: ({ raw }) => {
+        switch (raw?.value?.eco?.mode?.toLowerCase?.()) {
+          case 'schedule':
+            return 'off';
+          case 'manual-eco':
+            return 'manual';
+          case 'auto-eco':
+            return 'auto';
+          default:
+            return 'unknown';
+        }
+      },
+    },
     google: {
-      // Expose unknown during startup too, before the Eco trait is available.
-      fields: [],
+      fields: ['eco_mode_state'],
       translate: ({ raw }) => {
         switch (raw?.value?.eco_mode_state?.ecoMode) {
           case 'ECO_MODE_INACTIVE':

@@ -26,7 +26,7 @@
 // - Aliases remain private to the writer and are released on platform shutdown
 // - Normal plugin logs and streaming debug messages are outside this module
 //
-// Code version 2026.10.24
+// Code version 2026.10.28
 // Mark Hulskamp
 'use strict';
 
@@ -36,7 +36,8 @@ import { isIP } from 'node:net';
 // Define constants
 import { DATA_SOURCE, NEST_API_BUCKETS, REDACTED } from './consts.js';
 
-// Diagnostic limits apply to each emission, except the identifier map retained across calls.
+// Bound each field traversal and output block separately so a large startup batch
+// does not discard otherwise safe device data. Also cap total work/output per call.
 // Stop collection before excessive depth or size can turn malformed API data into unbounded logging.
 const MAX_IDENTIFIERS = 4096;
 const MAX_IDENTIFIER_LENGTH = 256;
@@ -44,6 +45,9 @@ const MAX_NODES = 8192;
 const MAX_DEPTH = 32;
 const MAX_STRING_LENGTH = 4096;
 const MAX_OUTPUT_CHARACTERS = 65536;
+const MAX_RESOURCES = 128;
+const MAX_FIELDS = 4096;
+const MAX_DUMP_CHARACTERS = 1048576;
 // Retain retired REST prefixes for private references even though they are no longer requested.
 // A prefixed resource and its bare serial must still share an alias.
 const RESOURCE_PREFIX = new RegExp(
@@ -277,6 +281,8 @@ function createSupportDump(log) {
     let isDelta = changedData instanceof Map;
     let selected = [];
     let nodes = 0;
+    let resources = 0;
+    let fieldCount = 0;
     try {
       // Discover identifiers before redaction so forward references receive the same alias as their definitions.
       const collect = (value, key, depth) => {
@@ -334,17 +340,36 @@ function createSupportDump(log) {
         if (isDelta === true && fields instanceof Set === false) {
           continue;
         }
-        // Copy selected fields into a container without a prototype, leaving the raw cache intact.
-        let value = Object.create(null);
-        for (let key in data.value) {
-          if (Object.hasOwn(data.value, key) === true && (isDelta === false || fields.has(key) === true)) {
-            collect(data.value[key], key, 0);
-            value[key] = data.value[key];
-          }
+        if (++resources > MAX_RESOURCES) {
+          log?.warn?.('Support dump truncated: resource limit reached');
+          break;
         }
-        if (Object.keys(value).length > 0) {
-          let alias = registerIdentifier(objectKey);
-          selected.push({ source: data.source, alias, value });
+        // Isolate malformed resources while discovering all safe identifiers before
+        // logging. Forward references still share aliases across sources and blocks.
+        try {
+          let value = Object.create(null);
+          for (let key in data.value) {
+            if (Object.hasOwn(data.value, key) === true && (isDelta === false || fields.has(key) === true)) {
+              if (++fieldCount > MAX_FIELDS) {
+                throw new RangeError('Support dump field limit');
+              }
+              nodes = 0;
+              collect(data.value[key], key, 0);
+              value[key] = data.value[key];
+            }
+          }
+          if (Object.keys(value).length > 0) {
+            let alias = registerIdentifier(objectKey);
+            selected.push({ source: data.source, alias, value });
+          }
+        } catch {
+          log?.warn?.(
+            'Support dump resource omitted for %s API data: data could not be safely redacted within diagnostic limits',
+            data.source,
+          );
+        }
+        if (fieldCount > MAX_FIELDS) {
+          break;
         }
       }
 
@@ -406,16 +431,59 @@ function createSupportDump(log) {
         return rule === 'alias' && value !== null ? REDACTED : typeof value === 'bigint' ? value.toString() : value;
       };
 
-      // Finish all serialisation before logging: unsafe/oversized data must never fall back to unredacted output.
+      // Redact and serialise one resource completely before accepting its blocks.
+      // Split between top-level traits/bucket fields, never within a JSON value.
       let output = [];
       let characters = 0;
       for (let entry of selected) {
-        let text = JSON.stringify({ [entry.alias]: redact(entry.value, '') }, null, 2);
-        characters += text.length;
-        if (characters > MAX_OUTPUT_CHARACTERS) {
-          throw new RangeError('Support dump output limit');
+        try {
+          let blocks = [];
+          let properties = [];
+          let prefix = '{\n  ' + JSON.stringify(entry.alias) + ': {\n';
+          let suffix = '\n  }\n}';
+          let size = prefix.length + suffix.length;
+          let resourceSize = 0;
+          for (let key of Object.keys(entry.value)) {
+            nodes = 0;
+            let field = pattern === undefined ? key : key.replace(pattern, (match) => identifiers.get(match));
+            let property = JSON.stringify({ [field]: redact(entry.value[key], key) }, null, 2)
+              .slice(2, -2)
+              .split('\n')
+              .map((line) => '  ' + line)
+              .join('\n');
+            if (prefix.length + property.length + suffix.length > MAX_OUTPUT_CHARACTERS) {
+              throw new RangeError('Support dump field output limit');
+            }
+            if (size + property.length + (properties.length > 0 ? 2 : 0) > MAX_OUTPUT_CHARACTERS) {
+              blocks.push(prefix + properties.join(',\n') + suffix);
+              resourceSize += size;
+              properties = [];
+              size = prefix.length + suffix.length;
+            }
+            size += property.length + (properties.length > 0 ? 2 : 0);
+            properties.push(property);
+            if (resourceSize + size > MAX_DUMP_CHARACTERS) {
+              throw new RangeError('Support dump resource output limit');
+            }
+          }
+          if (properties.length > 0) {
+            blocks.push(prefix + properties.join(',\n') + suffix);
+          }
+          let resourceCharacters = blocks.reduce((total, block) => total + block.length, 0);
+          if (characters + resourceCharacters > MAX_DUMP_CHARACTERS) {
+            log?.warn?.('Support dump truncated: total output limit reached');
+            break;
+          }
+          characters += resourceCharacters;
+          for (let text of blocks) {
+            output.push({ source: entry.source, text });
+          }
+        } catch {
+          log?.warn?.(
+            'Support dump resource omitted for %s API data: data could not be safely redacted within diagnostic limits',
+            entry.source,
+          );
         }
-        output.push({ source: entry.source, text });
       }
       // Emit only the completed redacted blocks, grouping the two API sources under their existing headings.
       for (let source of [DATA_SOURCE.NEST, DATA_SOURCE.GOOGLE]) {

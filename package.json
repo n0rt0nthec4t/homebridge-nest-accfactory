@@ -2,7 +2,7 @@
     "name": "homebridge-nest-accfactory",
     "displayName": "Nest Accfactory",
     "type": "module",
-    "version": "0.4.5-alpha.9",
+    "version": "0.4.5-alpha.10",
     "description": "Homebridge support for Nest/Google devices including HomeKit Secure Video (HKSV) support for doorbells and cameras",
     "author": "n0rt0nthec4t",
     "license": "Apache-2.0",
@@ -70,7 +70,6 @@
     "dependencies": {
         "chalk": "^6.0.1",
         "protobufjs": "^8.8.1",
-        "uuid": "^14.0.3",
         "werift": "^0.25.2"
     }
 }

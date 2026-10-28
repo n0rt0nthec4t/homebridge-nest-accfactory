@@ -193,18 +193,21 @@ test('transport metadata is learned from SPS and source timing without duplicate
   transport.updateVideoMetadata({ fps: 15 });
   assert.equal(logs.length, 3);
 });
-test('PCM metadata derives bitrate and audio gap counters from emitted frames', (context) => {
+test('encoded audio derives bitrate and gap counters from emitted frames', (context) => {
   context.mock.timers.enable({ apis: ['Date'], now: 100000 });
   let frames = [];
   let transport = new StreamTransport({ consumer: { media: (frame) => frames.push(frame) } });
-  Object.assign(transport.audio, { codec: 'pcm', sampleRate: 48000, channels: 2, frameDuration: 20 });
-  transport.emitMedia({ type: 'audio', data: Buffer.from([1]), timestamp: 100000 });
+  Object.assign(transport.audio, { codec: 'opus', sampleRate: 48000, channels: 2, frameDuration: 20 });
+  transport.emitMedia({ type: 'audio', data: Buffer.alloc(80), timestamp: 100000 });
   context.mock.timers.tick(200);
-  transport.emitMedia({ type: 'audio', data: Buffer.from([2]), timestamp: 100200 });
-  assert.equal(transport.audio.bitrate, 1536000);
+  transport.emitMedia({ type: 'audio', data: Buffer.alloc(80), timestamp: 100200 });
+  assert.equal(transport.audio.bitrate, undefined, 'bitrate estimation waits for a full sampling window');
+  context.mock.timers.tick(800);
+  transport.emitMedia({ type: 'audio', data: Buffer.alloc(80), timestamp: 101000 });
+  assert.equal(transport.audio.bitrate, 1920);
   assert.deepEqual(Object.keys(frames[0]).sort(), ['bytes', 'codec', 'data', 'keyFrame', 'timestamp', 'type']);
-  assert.equal(transport.stats.media.maxAudioGapMs, 200);
-  assert.equal(transport.stats.media.largeAudioGaps, 1);
+  assert.equal(transport.stats.media.maxAudioGapMs, 800);
+  assert.equal(transport.stats.media.largeAudioGaps, 2);
 });
 test('transport initializes diagnostic counters and contains failing consumer callbacks', async () => {
   let logs = [];

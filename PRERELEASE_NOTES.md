@@ -4,6 +4,30 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.5-alpha.10 (2026/10/29)
+
+### Fixed
+
+- Log successful thermostat Eco Mode On/Off commands in the normal Homebridge log [#354](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/pull/354) [@jakemike1](https://github.com/jakemike1)
+- Ignore stale recording STOP requests so an earlier session cannot stop its replacement
+- Preserve camera output deadlines across shared scheduler work and avoid extra 1 ms wakeups for frames already delivered
+- Use Google Protect replacement indicators and Nest battery health independently of percentage; clean up cached battery percentages when readings are unavailable while retaining backup-battery warnings on wired Protects
+- Split large support dumps into bounded JSON blocks so startup Google data is retained; an unsafe resource no longer discards diagnostics for other devices
+- Support Eco Mode reads and On/Off commands for Nest REST thermostats, with Off returning to scheduled operation
+
+### Changed
+
+- Complete self-contained Nest and Google API clients with shared session authentication, API-owned source resources and connection state, and optional change notifications; keep HomeKit routing in System
+- Remove obsolete PCM camera-source code and update source tests to cover encoded audio
+- Align Eco Observe flow tests with dependency-based mapping and verify unrelated temperature updates preserve the reported Eco state
+- Separate System's accessory delivery worker from API batch commits and clarify lifecycle, reconciliation and request routing responsibilities
+
+### Testing
+
+- Check discovery, controls and snapshots with Google and legacy Nest accounts, including after a token refresh; devices represented by both APIs should keep their selected source and accessory identity
+- Check existing wired and battery Protect accessories after restart: wired models without voltage readings should lose the percentage characteristic, retain the same battery service and show the reported battery health
+- Enable `supportDump` and restart Homebridge; check that initial Google API device traits appear, including Protect battery and power fields where provided, with large resources split across JSON blocks
+
 ## v0.4.5-alpha.9 (2026/10/28)
 
 ### Added
@@ -12,7 +36,6 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
 ### Fixed
 
-- Log successful thermostat Eco Mode On/Off commands in the normal Homebridge log
 - Restore Nest REST fallback for thermostats, temperature sensors and Heat Links not available through protobuf, while preferring complete Google data when both sources represent the device
 - Correct WebRTC FIR packet length and media-source SSRC so keyframe recovery feedback and its following REMB packet have valid wire boundaries
 - Preserve earlier accepted Google trait changes when one request updates multiple settings on the same trait

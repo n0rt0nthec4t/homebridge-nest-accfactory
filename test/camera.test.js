@@ -31,7 +31,7 @@ let streamModule =
     'export default class { static MESSAGE = "streamer"; ' +
       'static MESSAGE_TYPE = { START_LIVE: "start_live", STOP_LIVE: "stop_live",' +
       'START_RECORD: "start_record", STOP_RECORD: "stop_record" };' +
-      'static CODEC_TYPE = { PCM: "pcm", AAC: "aac", SPEEX: "speex", OPUS: "opus" }; }',
+      'static CODEC_TYPE = { AAC: "aac", SPEEX: "speex", OPUS: "opus" }; }',
   );
 let replacements = {
   '../HomeKitDevice.js': baseModule,
@@ -723,7 +723,7 @@ test('late recording completion cannot stop a replacement created during source 
   await handles[1].finished;
 });
 
-for (let sourceCodec of ['pcm', 'opus', 'aac']) {
+for (let sourceCodec of ['opus', 'aac']) {
   for (let codec of ['aac', 'opus']) {
     test('RTP ' + sourceCodec + ' live input maps both tracks and preserves the ' + codec + ' HomeKit encoder', async (context) => {
       let { camera, handles, processes, prepare, start } = setup(context);

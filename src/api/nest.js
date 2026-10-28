@@ -7,7 +7,7 @@
 // Entry points:
 // - connect() ensures account authentication and starts resource ingestion
 // - disconnect() retires this API without logging the shared account out
-// - get(resourceId, key, values = {}) returns a snapshot, event list or weather data
+// - get(resourceId, key, values = {}) reads source fields, snapshots, events or weather
 // - set(resourceId, values) sends supported Nest device settings
 //
 // Responsibilities:
@@ -15,18 +15,18 @@
 // - Stage partial updates, resource removals and discovered home identifiers
 // - Enrich camera properties and weather while retaining available cached fallbacks
 // - Build authenticated snapshot URLs and download image buffers
-// - Publish resource batches through the awaited onData callback
+// - Maintain source resources and optionally notify consumers of committed changes
 // - Own subscription retries and reject callbacks from retired runs
 //
 // Ownership:
 // - AccountSession owns login, token refresh and authentication retry scheduling
 // - Successful token refresh preserves polling and its acknowledged bucket revisions
 // - A new polling run starts with fresh discovery and an empty revision map
-// - Resource lookups are read-only; System owns cache commits and HomeKit delivery
-// - connect() starts ingestion; discovered data arrives through onData
+// - This client owns source resources; System maintains its combined HomeKit view
+// - connect() starts ingestion without a consumer; onData optionally reports committed changes
 // - Camera media streaming belongs to the separate camera transport modules
 //
-// Code version 2026.10.28
+// Code version 2026.10.29
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -49,31 +49,27 @@ const API_STREAM_RETRY_INITIAL = 5000;
 const API_STREAM_RETRY_MAX = 60000;
 
 export default class NestAPI {
-  #options = {}; // Account, read-only resource lookups and awaited batch delivery
-  #enabled = false; // An explicit disconnect stays disconnected across account refresh.
-  #subscription = undefined; // Identity of the current polling run; cleared on stop.
+  resources = new Map(); // Source resource records maintained by this client.
+  #options = {}; // Shared authentication, logging and optional change notification
+  #subscription = undefined; // Requested polling lifecycle, including login and recovery.
   #buckets = new Map(); // Acknowledged bucket revisions used by incremental subscriptions.
   #timer = undefined;
   #retryDelay = undefined;
 
-  // The session supplies live credentials. Resource lookups return committed
-  // { source, value } records and must remain read-only here.
-  // onData resolves true after System stores a batch; isCurrent retires work
-  // belonging to an account removed while a request or commit was awaiting I/O.
+  // Authentication is shared; resource state and subscription identity are local.
+  // onData is optional. Consumers may return false or reject to retry delivery;
+  // source data remains available through resources and get() independently.
   constructor(options = {}) {
-    this.#options = options;
-    if (options.session !== undefined) {
-      this.#options.account = options.session.account;
-    }
+    this.#options = { session: options.session, uuid: options.uuid, log: options.log, onData: options.onData };
 
     options.session?.on('authorised', () => {
-      if (this.#enabled === true) {
+      if (this.#subscription !== undefined) {
         this.connect().catch((error) => options.log?.debug?.('Unable to connect nest API: %s', String(error)));
       }
     });
     options.session?.on('disconnect', (refreshing) => {
       if (refreshing !== true) {
-        this.#stop();
+        this.#stop(true);
       }
     });
   }
@@ -81,33 +77,25 @@ export default class NestAPI {
   // Authenticate through the shared session, then start this API once.
   // Returning means startup was requested; resource data arrives through onData.
   async connect() {
-    // Keep the caller's intent across token refresh, but allow disconnect() to
-    // cancel startup while the shared account login is still in flight.
-    this.#enabled = true;
-    if (this.#options.session !== undefined) {
-      let authorised = await this.#options.session.connect();
-
-      if (authorised !== true) {
-        throw new Error('Unable to authenticate account');
-      }
+    // Allocate the requested connection before login. An explicit disconnect or
+    // a replaced run makes this particular login completion stale.
+    let subscription = (this.#subscription ??= {});
+    let authorised = await this.#options.session?.connect();
+    if (authorised !== true) {
+      throw new Error('Unable to authenticate account');
     }
 
-    if (this.#enabled !== true) {
-      return;
-    }
-
-    if (typeof this.#options.onData !== 'function') {
+    if (this.#subscription !== subscription) {
       return;
     }
 
     // Start one subscription loop for this authorised account.
-    if (this.#subscription !== undefined || this.#options.account?.authorised !== true || this.#options.isCurrent() !== true) {
+    if (subscription.request !== undefined || this.#options.session?.account?.authorised !== true) {
       return;
     }
 
-    // A fresh object distinguishes this polling run from a stopped run on the
-    // same account. Account identity alone cannot reject those older replies.
-    this.#subscription = {};
+    // The authenticated run begins with full discovery. Repeated connect calls
+    // retain the current run's request and acknowledged bucket revisions.
     this.#buckets.clear();
 
     return await this.#subscribe();
@@ -116,30 +104,27 @@ export default class NestAPI {
   // An explicit disconnect also prevents session refresh from reopening this API.
   // The other API can continue using the account and its refresh scheduler.
   disconnect() {
-    this.#enabled = false;
     this.#stop();
   }
 
-  #stop() {
-    // Clearing the run identity makes in-flight replies and already queued
-    // callbacks stale, even when the underlying request cannot be cancelled.
-    this.#subscription = undefined;
+  #stop(reconnect = false) {
+    // Recovery retains a fresh pending connection; explicit disconnect clears it.
+    // Both invalidate replies and queued work belonging to the previous run.
+    this.#subscription = reconnect === true && this.#subscription !== undefined ? {} : undefined;
     this.#buckets.clear();
     clearTimeout(this.#timer);
     this.#timer = undefined;
     this.#retryDelay = undefined;
   }
 
-  async #subscribe(firstRun = true, fullRead = true) {
-    let { account, log } = this.#options;
+  async #subscribe() {
+    let { log, session } = this.#options;
+    let account = session.account;
     let subscription = this.#subscription;
+    let buckets = this.#buckets;
 
     // Account identity and this exact run must both survive asynchronous work.
-    let isCurrent = () =>
-      subscription !== undefined &&
-      this.#subscription === subscription &&
-      this.#options.isCurrent() === true &&
-      account.authorised === true;
+    let isCurrent = () => subscription !== undefined && this.#subscription === subscription && account.authorised === true;
     let subscribeFailed = false;
 
     // A scheduled retry can outlive disconnect or account shutdown.
@@ -151,18 +136,19 @@ export default class NestAPI {
     // subscribe requests resume from revisions acknowledged during this run.
     let subscribeJSONData = undefined;
 
-    // Incremental polling requires an acknowledged cursor. Even when the caller
-    // requests a partial read, an empty bucket map must rediscover the account.
-    if (firstRun !== false || fullRead !== false || this.#buckets.size === 0) {
+    // An empty revision map always requires full account discovery.
+    if (buckets.size === 0) {
       log?.debug?.('Starting Nest API subscribe for account "%s"', account.name);
       subscribeJSONData = { known_bucket_types: NEST_API_BUCKETS, known_bucket_versions: [] };
     } else {
       subscribeJSONData = {
-        objects: Array.from(this.#buckets, ([object_key, revision]) => ({ object_key, ...revision })),
+        objects: Array.from(buckets, ([object_key, revision]) => ({ object_key, ...revision })),
       };
     }
 
-    fetchWrapper(
+    // Keep the request promise between polls so connect() can recognise a
+    // running loop without a separate connection-enabled flag.
+    subscription.request = fetchWrapper(
       'post',
       subscribeJSONData?.objects !== undefined
         ? new URL('/v5/subscribe', account.transport_url).href
@@ -194,7 +180,20 @@ export default class NestAPI {
         // One reply may change the same bucket more than once. Later entries
         // must see earlier changes/removals before System commits the whole batch.
         let staged = new Map();
-        let getResource = (id) => (staged.has(id) === true ? staged.get(id) : this.#options.getResource(id));
+        // Keep one unacknowledged notification per run. Source data is already
+        // committed, so retries must retain removals that no longer exist in the cache.
+        if (subscription.pending !== undefined) {
+          let accepted = await this.#options.onData?.(subscription.pending);
+          if (isCurrent() !== true) {
+            return;
+          }
+          if (accepted === false) {
+            throw new Error('Nest resource batch was not accepted');
+          }
+          subscription.pending = undefined;
+        }
+
+        let getResource = (id) => (staged.has(id) === true ? staged.get(id) : this.resources.get(id));
         let objects = [];
 
         if (Array.isArray(data?.updated_buckets) === true) {
@@ -206,8 +205,6 @@ export default class NestAPI {
           // Incremental subscribe update response
           objects = data.objects;
         }
-
-        fullRead = false; // Reset full refresh flag unless triggered below
 
         for (let object of objects) {
           if (isCurrent() !== true) {
@@ -299,7 +296,11 @@ export default class NestAPI {
               // Queue its removal and rediscover buckets on the next request.
               for (let childObjectKey of existingValue.buckets) {
                 if (newBucketsSet.has(childObjectKey) === false) {
-                  fullRead = true;
+                  // Replace the cursor so this reply cannot refill it after
+                  // acknowledgement. The next poll must rediscover the account.
+                  if (this.#buckets === buckets) {
+                    this.#buckets = new Map();
+                  }
 
                   changes.push({
                     resourceId: childObjectKey,
@@ -318,7 +319,7 @@ export default class NestAPI {
           }
 
           // Stage revisions alongside the reply-local values. They become the
-          // next subscription cursor only after System acknowledges the whole batch.
+          // next subscription cursor after optional consumer acknowledgement.
           changes.push({
             resourceId: objectKey,
             value: incomingValue,
@@ -336,30 +337,47 @@ export default class NestAPI {
           return;
         }
 
-        // A failed commit must not advance the cursor past data System did not
-        // store. Recheck the run after the acknowledgement so late commits cannot
-        // populate a replacement subscription's revision map.
-        let committed = await this.#options.onData({ source: DATA_SOURCE.NEST, changes, isCurrent });
-
-        if (isCurrent() !== true) {
-          return;
-        }
-
-        if (committed !== true) {
-          throw new Error('Nest resource batch was not committed');
-        }
-
-        // A successful full discovery replaces the previous bucket set. Partial
-        // replies update only their own revisions, including staged removals.
-        if (subscribeJSONData.objects === undefined) {
-          this.#buckets.clear();
-        }
-
-        for (let [objectKey, entry] of staged) {
-          if (entry === undefined) {
-            this.#buckets.delete(objectKey);
+        // Commit source state before notifying consumers. Standalone clients do
+        // not require System or a listener to maintain discovery and command data.
+        for (let change of changes) {
+          if (change.remove === true) {
+            this.resources.delete(change.resourceId);
           } else {
-            this.#buckets.set(objectKey, entry.revision);
+            this.resources.set(change.resourceId, {
+              source: DATA_SOURCE.NEST,
+              value: { ...this.resources.get(change.resourceId)?.value, ...change.value },
+            });
+          }
+        }
+
+        // A failed notification must not advance the cursor past data a consumer
+        // has not accepted. Recheck the run after the acknowledgement so late commits cannot
+        // populate a replacement subscription's revision map.
+        let notification = { source: DATA_SOURCE.NEST, changes, isCurrent };
+        try {
+          let committed = await this.#options.onData?.(notification);
+          if (isCurrent() !== true) {
+            return;
+          }
+          if (committed === false) {
+            throw new Error('Nest resource batch was not committed');
+          }
+        } catch (error) {
+          if (changes.length > 0) {
+            subscription.pending = notification;
+          }
+          throw error;
+        }
+
+        // Only acknowledge revisions if topology changes did not invalidate
+        // this reply's cursor while its resources were being processed.
+        if (this.#buckets === buckets) {
+          for (let [objectKey, entry] of staged) {
+            if (entry === undefined) {
+              buckets.delete(objectKey);
+            } else {
+              buckets.set(objectKey, entry.revision);
+            }
           }
         }
 
@@ -371,12 +389,6 @@ export default class NestAPI {
         }
 
         subscribeFailed = true;
-
-        // Until a full discovery is acknowledged, an empty/incomplete cursor
-        // cannot replace it. Incremental failures retry the unchanged revisions.
-        if (subscribeJSONData.objects === undefined) {
-          fullRead = true;
-        }
 
         // fetchWrapper failures may carry a code or HTTP status. Authentication
         // failures restart the account; other failures use this API's own backoff.
@@ -391,7 +403,7 @@ export default class NestAPI {
         // lifecycle so it can re-authorise and reschedule itself.
         if ((statusCode === 401 || statusCode === 403) && isCurrent() === true) {
           log?.debug?.('Account "%s" is no longer authorised with the Nest API, will attempt to reconnect', account.name);
-          this.#options.onUnauthorised('nest-api-' + statusCode);
+          this.#options.session?.markUnauthorised('nest-api-' + statusCode);
 
           return;
         }
@@ -428,7 +440,7 @@ export default class NestAPI {
           this.#timer = setTimeout(() => {
             this.#timer = undefined;
             if (isCurrent() === true) {
-              this.#subscribe(false, fullRead);
+              this.#subscribe();
             }
           }, subscribeDelay);
         }
@@ -439,7 +451,7 @@ export default class NestAPI {
   // Success resolves without a value; SET does not mutate the committed cache.
   // AggregateError can mean partial cloud success; subscriptions reconcile actual state.
   async set(resourceId, values) {
-    let account = this.#options.account;
+    let account = this.#options.session?.account;
 
     // Reject malformed requests before resource lookup or network work.
     if (
@@ -453,7 +465,7 @@ export default class NestAPI {
       throw new Error('SET requires valid parameters and an authorised device account');
     }
 
-    let resource = this.#options.getResource(resourceId);
+    let resource = this.resources.get(resourceId);
 
     if (typeof resource !== 'object' || resource === null || resource.source !== DATA_SOURCE.NEST) {
       throw new Error('SET requires an available authorised device account');
@@ -465,11 +477,6 @@ export default class NestAPI {
 
     for (let [key, value] of Object.entries(values)) {
       try {
-        if (key === 'uuid') {
-          // Ignore the HomeKitDevice routing identifier; it is not a cloud setting.
-          continue;
-        }
-
         // Commands consuming companion fields are built once, independent of
         // object property order. Their validation rejects invalid companions.
         if (
@@ -482,7 +489,9 @@ export default class NestAPI {
 
         let handled = false;
 
-        if (this.#options.getResource(resourceId)?.source === DATA_SOURCE.NEST) {
+        // Recheck availability after earlier writes have yielded to subscription updates.
+        // Cameras use their property endpoint; other devices use bucket MERGE operations.
+        if (this.resources.get(resourceId)?.source === DATA_SOURCE.NEST) {
           if (resourceId.startsWith('quartz.') === true) {
             // Map supported camera and doorbell settings to Nest REST property names.
             let mappedKey = {
@@ -533,14 +542,8 @@ export default class NestAPI {
 
           if (resourceId.startsWith('quartz.') === false) {
             // Send supported bucket updates through the Nest transport.
-            let subscribeJSONData = { objects: [] };
-
             let operation = this.#buildSetting(resourceId, key, value, values, resource);
             if (operation !== undefined) {
-              subscribeJSONData.objects.push(operation);
-            }
-
-            if (subscribeJSONData.objects.length !== 0) {
               let response = await fetchWrapper(
                 fetchWrapper.POST,
                 new URL('/v5/put', account.transport_url).href,
@@ -557,7 +560,7 @@ export default class NestAPI {
                   },
                   retry: 3,
                 },
-                JSON.stringify(subscribeJSONData),
+                JSON.stringify({ objects: [operation] }),
               );
               let data = await response.json();
 
@@ -595,17 +598,28 @@ export default class NestAPI {
 
   // Construct one REST MERGE operation without changing the committed resource.
   // Related settings are combined here; set() owns request execution and failures.
+  // Thermostat branches select both the payload and its owning bucket:
+  // device for Eco, fan, display, hot water and humidity; shared for HVAC mode
+  // and setpoints; structure for vacation mode. Sensor selection uses rcs_settings.
+  // An invalid value or missing capability leaves setting undefined, which set() rejects.
   #buildSetting(resourceId, key, value, values, resource) {
     let device = resource.value ?? {};
     let objectKey = resourceId;
     let setting = undefined;
     let thermostat = resourceId.startsWith('device.') === true;
     let serial = resourceId.split('.')[1];
-    let shared = this.#options.getResource('shared.' + serial)?.value;
+    let shared = this.resources.get('shared.' + serial)?.value;
 
     if (thermostat === true) {
-      if (['target_temperature', 'target_temperature_low', 'target_temperature_high'].includes(key) === true && isNumeric(value) === true) {
-        // beta.7 writes thermostat setpoints through the shared bucket.
+      if (key === 'eco_mode' && typeof value === 'string' && ['MANUAL', 'OFF'].includes(value.toUpperCase()) === true) {
+        // Eco belongs to the device bucket. Returning to schedule restores the
+        // thermostat's normal mode without overwriting its shared setpoints.
+        setting = { eco: { mode: value.toUpperCase() === 'MANUAL' ? 'manual-eco' : 'schedule' } };
+      } else if (
+        ['target_temperature', 'target_temperature_low', 'target_temperature_high'].includes(key) === true &&
+        isNumeric(value) === true
+      ) {
+        // REST setpoint writes use the shared bucket even while Eco mode is active.
         let mode = shared?.target_temperature_type?.toLowerCase?.();
         let heating = key === 'target_temperature_low' || (key === 'target_temperature' && mode === 'heat');
         let cooling = key === 'target_temperature_high' || (key === 'target_temperature' && mode === 'cool');
@@ -618,6 +632,8 @@ export default class NestAPI {
         typeof value === 'string' &&
         ['OFF', 'HEAT', 'COOL', 'RANGE'].includes(value.toUpperCase()) === true
       ) {
+        // Off needs no heating/cooling capability; every enabled mode must match
+        // the equipment flags before the shared mode is marked pending.
         let mode = value.toLowerCase();
         if (
           mode === 'off' ||
@@ -635,11 +651,14 @@ export default class NestAPI {
         isNumeric(values.fan_duration, { min: 0 }) === true &&
         (values.fan_timer_speed === undefined || isNumeric(values.fan_timer_speed, { type: 'integer', min: 0, max: 3 }) === true)
       ) {
+        // fan_state owns the combined request. Nest expects an absolute expiry
+        // in seconds, with zero cancelling the timer; speed zero maps to stage1.
         setting = { fan_state: value, fan_timer_timeout: value === true ? Math.floor(Date.now() / 1000) + Number(values.fan_duration) : 0 };
         if (values.fan_timer_speed !== undefined) {
           setting.fan_timer_speed = 'stage' + (Number(values.fan_timer_speed) || 1);
         }
       } else if (key === 'fan_timer_speed' && device.has_fan === true && isNumeric(value, { type: 'integer', min: 0, max: 3 }) === true) {
+        // A standalone speed change leaves the current fan timer untouched.
         setting = { fan_timer_speed: 'stage' + (Number(value) || 1) };
       } else if (key === 'temperature_lock' && typeof value === 'boolean') {
         setting = { temperature_lock: value };
@@ -653,6 +672,8 @@ export default class NestAPI {
         device.has_hot_water_control === true &&
         (value.time === undefined || isNumeric(value.time, { min: 0 }) === true)
       ) {
+        // Like the fan timer, boost uses an absolute expiry; omitted duration
+        // means 30 minutes and disabling boost clears the expiry.
         let seconds = value.time === undefined ? 1800 : Number(value.time);
         setting = { hot_water_boost_time_to_end: value.state === true ? Math.floor(Date.now() / 1000) + seconds : 0 };
       } else if (key === 'hot_water_temperature' && isNumeric(value) === true && device.has_hot_water_temperature === true) {
@@ -660,6 +681,8 @@ export default class NestAPI {
       } else if (
         ['humidifier_state', 'dehumidifier_state', 'target_humidity_humidifier', 'target_humidity_dehumidifier'].includes(key) === true
       ) {
+        // Both equipment types map to Nest's generic humidity fields. When state
+        // and target arrive together, the state branch owns one combined write.
         let humidifier = ['humidifier_state', 'target_humidity_humidifier'].includes(key) === true;
         let stateKey = humidifier === true ? 'humidifier_state' : 'dehumidifier_state';
         let targetKey = humidifier === true ? 'target_humidity_humidifier' : 'target_humidity_dehumidifier';
@@ -678,8 +701,10 @@ export default class NestAPI {
           }
         }
       } else if (key === 'vacation_mode' && typeof value === 'boolean') {
-        let structure = this.#options.getResource('link.' + serial)?.value?.structure;
-        if (typeof structure === 'string' && this.#options.getResource(structure)?.source === DATA_SOURCE.NEST) {
+        // The device link identifies the owning structure; never write this
+        // household-wide setting onto the thermostat's own bucket.
+        let structure = this.resources.get('link.' + serial)?.value?.structure;
+        if (typeof structure === 'string' && this.resources.get(structure)?.source === DATA_SOURCE.NEST) {
           objectKey = structure;
           setting = { vacation_mode: value };
         }
@@ -692,11 +717,10 @@ export default class NestAPI {
       if (settingsId === undefined) {
         settingsId = Array.from(this.#buckets.keys()).find(
           (id) =>
-            id.startsWith('rcs_settings.') === true &&
-            this.#options.getResource(id)?.value?.associated_rcs_sensors?.includes(resourceId) === true,
+            id.startsWith('rcs_settings.') === true && this.resources.get(id)?.value?.associated_rcs_sensors?.includes(resourceId) === true,
         );
       }
-      let settings = settingsId === undefined ? undefined : this.#options.getResource(settingsId)?.value;
+      let settings = settingsId === undefined ? undefined : this.resources.get(settingsId)?.value;
       if (settings?.associated_rcs_sensors?.includes(resourceId) === true) {
         objectKey = settingsId;
         setting =
@@ -705,6 +729,7 @@ export default class NestAPI {
             : { active_rcs_sensors: [], rcs_control_setting: 'OFF' };
       }
     } else if (resourceId.startsWith('topaz.') === true && key === 'ntp_green_led_enable' && typeof value === 'boolean') {
+      // Protect's night-time status light is stored directly on its topaz bucket.
       setting = { ntp_green_led_enable: value };
     }
 
@@ -716,7 +741,7 @@ export default class NestAPI {
   // Weather accepts { location: { postal_code, country_code } }; omission uses cached location.
   // Invalid input/account/resource rejects; an unknown key on an available resource returns undefined.
   async get(resourceId, key, values = {}) {
-    let account = this.#options.account;
+    let account = this.#options.session?.account;
 
     // Validate the public request before any resource lookup or network work.
     if (
@@ -732,7 +757,7 @@ export default class NestAPI {
       throw new Error('GET requires valid query parameters and an authorised account');
     }
 
-    let resource = this.#options.getResource(resourceId);
+    let resource = this.resources.get(resourceId);
 
     // System can enrich a Google location before its structure has been committed.
     let explicitLocation = key === 'location_weather' && typeof values.location === 'object' && values.location !== null;
@@ -741,7 +766,7 @@ export default class NestAPI {
       throw new Error('GET requires an available resource or an explicit weather location');
     }
 
-    let result = undefined;
+    let result = Object.hasOwn(resource?.value ?? {}, key) === true ? structuredClone(resource.value[key]) : undefined;
     let endpoint = resource?.value?.nexus_api_http_server_url;
 
     // Both camera queries require the same Nest source endpoint and credentials.
@@ -776,7 +801,7 @@ export default class NestAPI {
   }
 
   async #getCameraSnapshot(resourceId, nexus_api_url) {
-    let account = this.#options.account;
+    let account = this.#options.session?.account;
 
     // Use the camera's Nexus endpoint and the account's camera credentials.
     // This URL/authentication flow differs from Google's protobuf image reference.
@@ -823,7 +848,7 @@ export default class NestAPI {
   }
 
   async #getCameraEvents(resourceId, nexus_api_url) {
-    let account = this.#options.account;
+    let account = this.#options.session?.account;
 
     try {
       let response = await fetchWrapper(
@@ -891,7 +916,7 @@ export default class NestAPI {
   }
 
   async #getWeather(resourceId, postal_code, country_code) {
-    let account = this.#options.account;
+    let account = this.#options.session?.account;
 
     if (
       account.authorised !== true ||
@@ -976,7 +1001,7 @@ export default class NestAPI {
 
   async #getCameraProperties(resourceId) {
     // Subscription dispatch has checked the active account and selected a camera bucket.
-    let account = this.#options.account;
+    let account = this.#options.session?.account;
 
     try {
       let response = await fetchWrapper(

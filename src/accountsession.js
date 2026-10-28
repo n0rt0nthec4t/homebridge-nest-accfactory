@@ -19,7 +19,7 @@
 // - Camera credential notification completes before clients resume ingestion
 // - This session does not own resource data, API transports or HomeKit accessories
 //
-// Code version 2026.10.27
+// Code version 2026.10.29
 // Mark Hulskamp
 'use strict';
 
@@ -65,7 +65,6 @@ export default class AccountSession extends EventEmitter {
       cameraAPIHost: fieldTest === true ? 'camera.home.ft.nest.com' : 'camera.home.nest.com',
       grpcEndpointHost: fieldTest === true ? 'apigw.ft.nest.com' : 'apigw.production.nest.com',
       protobufAPIHost: fieldTest === true ? 'grpc-web.ft.nest.com' : 'grpc-web.production.nest.com',
-      snapshotWaiters: new Map(),
     };
 
     this.#uuid = uuid;
@@ -96,8 +95,8 @@ export default class AccountSession extends EventEmitter {
       this.#pending = this.#authenticate().finally(() => {
         this.#pending = undefined;
 
-        // Registry startup runs the same scheduler. Direct API connect() calls
-        // also need refresh/retry ownership, without starting another login.
+        // API connect() calls share this scheduler, so standalone clients also
+        // keep refresh/retry ownership without starting another login.
         if (this.#account.connecting !== true) {
           this.#schedule();
         }

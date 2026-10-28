@@ -62,7 +62,7 @@ function setup(source, response, options = {}) {
     globalThis.crypto,
     'test-agent',
   );
-  return { run: (values) => host.run(id, values), requests, raw, id };
+  return { run: (values) => host.run(id, values), requests, raw, id, connection };
 }
 
 HomeKitDevice.PLUGIN_NAME = 'system-set-test';
@@ -225,5 +225,17 @@ for (let [reason, options] of [
     }
     await assert.rejects(flow.run({ temperature_scale: 'F' }));
     assert.equal(flow.requests.length, 0);
+  });
+}
+
+for (let source of [DATA_SOURCE.NEST, DATA_SOURCE.GOOGLE]) {
+  test('System removes HomeKit routing before ' + source + ' SET without mutating the request', async (context) => {
+    let flow = setup(source, {});
+    let api = source === DATA_SOURCE.NEST ? flow.connection.nestAPI : flow.connection.googleAPI;
+    let send = context.mock.method(api, 'set', async () => undefined);
+    let values = { uuid: flow.id, temperature_scale: 'F' };
+    await flow.run(values);
+    assert.deepEqual(send.mock.calls[0].arguments, [flow.id, { temperature_scale: 'F' }]);
+    assert.deepEqual(values, { uuid: flow.id, temperature_scale: 'F' });
   });
 }

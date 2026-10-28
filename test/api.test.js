@@ -38,8 +38,6 @@ function setup(context, kind = 'google', overrides = {}) {
   let observations = [];
   let pending = [];
   let changed = [];
-  let removed = [];
-  let unauthorised = [];
   let logs = [];
   let connection = {
     authorised: true,
@@ -50,7 +48,6 @@ function setup(context, kind = 'google', overrides = {}) {
     restAPIHost: 'rest.invalid',
     transport_url: 'https://transport.invalid',
     token: 'token',
-    snapshotWaiters: new Map(),
     grpcTransport: {
       observe: (...args) => {
         observations.push(args);
@@ -62,7 +59,6 @@ function setup(context, kind = 'google', overrides = {}) {
   };
   let transport = connection.grpcTransport;
   runtime.transport = () => ({ ...transport });
-  let current = connection;
   runtime.fetch = (...args) => {
     requests.push(args);
     let request = Promise.withResolvers();
@@ -71,25 +67,55 @@ function setup(context, kind = 'google', overrides = {}) {
   };
   let options = {
     uuid: 'account',
-    account: connection,
+    session: { account: connection, connect: () => connection.authorised, on() {} },
     rawData: {},
-    getResource: (id) => options.rawData[id],
     homes: [],
-    isCurrent: () => current === connection,
     onData: async (batch) => {
       changed.push(batch);
       return true;
     },
-    onRemove: async (id) => removed.push(id),
-    onUnauthorised: (reason) => {
-      unauthorised.push(reason);
-      connection.authorised = false;
-    },
-    getCameraProperties: async () => undefined,
     log: { debug: (...args) => logs.push(args), warn: (...args) => logs.push(args) },
     ...overrides,
   };
-  let api = new classes[kind](options);
+  let api = new classes[kind]({ ...options, onData: (...args) => options.onData?.(...args) });
+  // Test fixtures seed the client's own resource collection, independently of System.
+  options.rawData = new Proxy(options.rawData, {
+    set(target, id, resource) {
+      target[id] = resource;
+      api.resources.set(id, resource);
+      return true;
+    },
+    deleteProperty(target, id) {
+      delete target[id];
+      api.resources.delete(id);
+      return true;
+    },
+  });
+  let connected = false;
+  let connect = api.connect.bind(api);
+  api.connect = async (...args) => {
+    connected = true;
+    return await connect(...args);
+  };
+  for (let method of ['get', 'set']) {
+    let request = api[method].bind(api);
+    api[method] = async (...args) => {
+      if (
+        kind === 'google' &&
+        connected === false &&
+        api.resources.size > 0 &&
+        connection.authorised === true &&
+        connection.grpcTransport !== undefined
+      ) {
+        let types = runtime.types;
+        runtime.types = [];
+        await connect();
+        runtime.types = types;
+        connected = true;
+      }
+      return await request(...args);
+    };
+  }
   context.after(() => api.disconnect());
   return {
     api,
@@ -99,15 +125,43 @@ function setup(context, kind = 'google', overrides = {}) {
     observations,
     pending,
     changed,
-    removed,
-    unauthorised,
     logs,
-    replace: (value) => {
-      current = value;
-    },
   };
 }
 let reply = (data) => ({ json: async () => data });
+
+for (let [mode, expected] of [
+  ['manual', 'manual-eco'],
+  ['MANUAL', 'manual-eco'],
+  ['off', 'schedule'],
+  ['OFF', 'schedule'],
+]) {
+  test('Nest Eco ' + mode + ' writes the device bucket without changing shared HVAC settings', async (context) => {
+    let flow = setup(context, 'nest');
+    let device = { eco: { mode: 'auto-eco' } };
+    let shared = { target_temperature_type: 'heat', target_temperature: 21 };
+    flow.api.resources.set('device.TEST', { source: DATA_SOURCE.NEST, value: structuredClone(device) });
+    flow.api.resources.set('shared.TEST', { source: DATA_SOURCE.NEST, value: structuredClone(shared) });
+    let write = flow.api.set('device.TEST', { eco_mode: mode });
+    assert.equal(new URL(flow.requests[0][1]).pathname, '/v5/put');
+    assert.deepEqual(JSON.parse(flow.requests[0][3]), {
+      objects: [{ object_key: 'device.TEST', op: 'MERGE', value: { eco: { mode: expected } } }],
+    });
+    flow.pending[0].resolve(reply({ objects: [{}] }));
+    await write;
+    assert.deepEqual(flow.api.resources.get('device.TEST').value, device);
+    assert.deepEqual(flow.api.resources.get('shared.TEST').value, shared);
+  });
+}
+
+for (let mode of ['auto', 'unknown', '', true, null]) {
+  test('Nest rejects unsupported Eco write ' + JSON.stringify(mode) + ' without a request', async (context) => {
+    let flow = setup(context, 'nest');
+    flow.api.resources.set('device.TEST', { source: DATA_SOURCE.NEST, value: {} });
+    await assert.rejects(flow.api.set('device.TEST', { eco_mode: mode }), AggregateError);
+    assert.equal(flow.requests.length, 0);
+  });
+}
 
 test('Google Observe normal completion restarts after one second; duplicate starts do not open streams', async (context) => {
   let flow = setup(context);
@@ -143,19 +197,27 @@ test('Google Observe rejection backs off and a processed update resets the retry
 });
 
 for (let kind of ['nest', 'google']) {
-  for (let reason of ['unauthorised', 'replaced']) {
-    test(kind + ' API does not start when ' + reason, async (context) => {
-      let flow = setup(context, kind);
-      if (reason === 'unauthorised') {
-        flow.connection.authorised = false;
-      }
-      if (reason === 'replaced') {
-        flow.replace(undefined);
-      }
-      await flow.api.connect();
-      assert.equal(flow.pending.length, 0);
+  test(kind + ' API does not start without authorisation', async (context) => {
+    let flow = setup(context, kind);
+    flow.connection.authorised = false;
+    await assert.rejects(flow.api.connect(), /Unable to authenticate/);
+    assert.equal(flow.pending.length, 0);
+  });
+  test(kind + ' API cannot restart a disconnected shared session', async (context) => {
+    let flow = setup(context, kind);
+    let client = new classes[kind]({
+      session: {
+        account: flow.connection,
+        on() {},
+        connect: async () => {
+          throw new Error('Account session has been disconnected');
+        },
+      },
     });
-  }
+    context.after(() => client.disconnect());
+    await assert.rejects(client.connect(), /session has been disconnected/);
+    assert.equal(flow.pending.length, 0);
+  });
   test(kind + ' stopped-run callbacks cannot affect a restart on the same account', async (context) => {
     let flow = setup(context, kind);
     await flow.api.connect();
@@ -172,10 +234,10 @@ for (let kind of ['nest', 'google']) {
       await flow.observations[1][4]({ observeResponse: [] });
     }
     await setImmediate();
-    assert.equal(flow.options.rawData['topaz.old'], undefined);
-    assert.equal(flow.options.rawData.DEVICE_OLD, undefined);
+    assert.equal(flow.api.resources.get('topaz.old'), undefined);
+    assert.equal(flow.api.resources.get('DEVICE_OLD'), undefined);
     assert.equal(flow.changed.length, 1);
-    assert.deepEqual(flow.unauthorised, []);
+    assert.equal(flow.connection.authorised, true);
   });
 }
 
@@ -202,7 +264,7 @@ for (let type of [ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST]) {
   });
 }
 
-test('Google Observe with no schemas or transport does not schedule a restart', async (context) => {
+test('Google Observe with no schemas does not open or schedule a subscription', async (context) => {
   let flow = setup(context);
   runtime.types = [];
   await flow.api.connect();
@@ -211,7 +273,6 @@ test('Google Observe with no schemas or transport does not schedule a restart', 
     true,
   );
   flow.api.disconnect();
-  flow.connection.grpcTransport = undefined;
   await flow.api.connect();
   context.mock.timers.tick(120000);
   assert.equal(flow.observations.length, 0);
@@ -233,7 +294,9 @@ test('Google Observe favours ACCEPTED patches and removes resources through the 
     ],
   });
   assert.equal(flow.options.rawData.DEVICE_NEW, undefined, 'API publication must not mutate the caller cache');
-  assert.ok(flow.options.rawData.DEVICE_OLD);
+  assert.ok(flow.options.rawData.DEVICE_OLD, 'The caller cache is independent of API-owned resources');
+  assert.equal(flow.api.resources.has('DEVICE_OLD'), false);
+  assert.deepEqual(flow.api.resources.get('DEVICE_NEW').value.fixture, { enabled: true });
   assert.deepEqual(flow.changed[0].changes[0], { resourceId: 'DEVICE_OLD', remove: true, notify: true });
   assert.deepEqual(flow.changed[0].changes[1].value.fixture, { enabled: true });
   assert.deepEqual([...flow.changed[0].changes[1].fields], ['fixture']);
@@ -322,7 +385,7 @@ test('Nest subscription keeps bucket allowlisting, account ownership and idempot
   flow.options.rawData[patch.resourceId] = { source: DATA_SOURCE.NEST, connection: 'account', value: patch.value };
   context.mock.timers.tick(1000);
   assert.deepEqual(flow.requests[1][3].objects, [{ object_key: 'topaz.valid', object_revision: 1, object_timestamp: 2 }]);
-  assert.equal(flow.options.rawData['unsupported.ignored'], undefined);
+  assert.equal(flow.api.resources.get('unsupported.ignored'), undefined);
 });
 
 for (let kind of ['nest', 'google']) {
@@ -334,20 +397,23 @@ for (let kind of ['nest', 'google']) {
     ['boolean settings', 'DEVICE_TEST', true],
   ]) {
     test(kind + ' SET rejects ' + label + ' before resource lookup', async (context) => {
-      let flow = setup(context, kind, { getResource: () => assert.fail('Invalid SET reached lookup') });
+      let flow = setup(context, kind);
+      context.mock.method(flow.api.resources, 'get', () => assert.fail('Invalid SET reached lookup'));
       await assert.rejects(flow.api.set(resourceId, values), /SET requires valid parameters/);
       assert.equal(flow.requests.length, 0);
     });
   }
   for (let resource of [undefined, null, {}, { source: 'other' }]) {
     test(kind + ' SET rejects unavailable/wrong-source resource: ' + JSON.stringify(resource), async (context) => {
-      let flow = setup(context, kind, { getResource: () => resource });
+      let flow = setup(context, kind);
+      flow.api.resources.set('DEVICE_TEST', resource);
       await assert.rejects(flow.api.set('DEVICE_TEST', { temperature_scale: 'C' }), /SET requires an available/);
       assert.equal(flow.requests.length, 0);
     });
   }
   test(kind + ' SET checks authorisation before looking up a resource', async (context) => {
-    let flow = setup(context, kind, { getResource: () => assert.fail('Unauthorised SET reached lookup') });
+    let flow = setup(context, kind);
+    context.mock.method(flow.api.resources, 'get', () => assert.fail('Unauthorised SET reached lookup'));
     flow.connection.authorised = false;
     await assert.rejects(flow.api.set('DEVICE_TEST', {}), /authorised device account/);
   });
@@ -394,7 +460,7 @@ for (let missing of ['authorisation', 'resource', 'referer', 'camera host', 'cam
       delete flow.connection.cameraAuth.value;
     }
     if (missing === 'connection') {
-      flow.options.account = undefined;
+      flow.connection.authorised = false;
     }
     if (['authorisation', 'resource', 'connection'].includes(missing) === true) {
       await assert.rejects(flow.api.get('quartz.TEST', 'camera_snapshot'), /GET requires/);
@@ -434,27 +500,24 @@ for (let failure of ['transport', 'malformed']) {
 }
 
 for (let outcome of ['committed', 'rejected', 'retired']) {
-  test('Google image waiters await the commit acknowledgement: ' + outcome, async (context) => {
+  test('Google owns image state independently of consumer acknowledgement: ' + outcome, async (context) => {
     let commit = Promise.withResolvers();
     let flow = setup(context, 'google', { onData: () => commit.promise });
-    let received = [];
-    let image = { liveImageUrl: 'https://image.invalid/new.jpg' };
-    flow.connection.snapshotWaiters.set((value) => received.push(value), 'DEVICE_TEST');
     await flow.api.connect();
+    let image = { liveImageUrl: 'https://image.invalid/new' };
     let update = flow.observations[0][4]({
       traitStates: [
         { traitId: { resourceId: 'DEVICE_TEST', traitLabel: 'upload_live_image' }, stateTypes: ['ACCEPTED'], patch: { values: image } },
       ],
     });
     await setImmediate();
-    assert.deepEqual(received, []);
+    assert.deepEqual(flow.api.resources.get('DEVICE_TEST').value.upload_live_image, image);
     if (outcome === 'retired') {
       flow.api.disconnect();
     }
     commit.resolve(outcome !== 'rejected');
     await update;
-    assert.deepEqual(received, outcome === 'committed' ? [image] : outcome === 'retired' ? [undefined] : []);
-    assert.equal(flow.connection.snapshotWaiters.size, outcome === 'rejected' ? 1 : 0);
+    assert.deepEqual(flow.api.resources.get('DEVICE_TEST').value.upload_live_image, image);
   });
 }
 
@@ -505,7 +568,8 @@ for (let kind of ['nest', 'google']) {
     ['non-string key', 'DEVICE_TEST', null, {}],
   ]) {
     test(kind + ' GET rejects ' + label + ' before lookup or network work', async (context) => {
-      let flow = setup(context, kind, { getResource: () => assert.fail('Invalid GET reached resource lookup') });
+      let flow = setup(context, kind);
+      context.mock.method(flow.api.resources, 'get', () => assert.fail('Invalid GET reached resource lookup'));
       await assert.rejects(flow.api.get(resourceId, key, values), /GET requires valid query parameters/);
       assert.equal(flow.requests.length, 0);
     });
@@ -517,7 +581,8 @@ for (let kind of ['nest', 'google']) {
       assert.equal(flow.requests.length, 0);
     });
     test(kind + ' GET rejects unauthorised accounts for ' + key, async (context) => {
-      let flow = setup(context, kind, { getResource: () => assert.fail('Unauthorised GET reached resource lookup') });
+      let flow = setup(context, kind);
+      context.mock.method(flow.api.resources, 'get', () => assert.fail('Unauthorised GET reached resource lookup'));
       flow.connection.authorised = false;
       await assert.rejects(
         flow.api.get('DEVICE_TEST', key, { location: { postal_code: '2000', country_code: 'AU' } }),
@@ -549,7 +614,6 @@ for (let kind of ['nest', 'google']) {
         };
         assert.deepEqual(await flow.api.get(id, key), key === 'camera_events' ? [] : undefined);
         assert.equal(flow.requests.length, 0);
-        assert.equal(flow.connection.snapshotWaiters.size, 0);
       });
     }
   }
@@ -685,6 +749,54 @@ for (let outcome of ['false', 'reject']) {
   });
 }
 
+for (let outcome of ['accept', 'false', 'reject']) {
+  test('Nest rediscovers removed topology buckets after a ' + outcome + ' acknowledgement', async (context) => {
+    let flow = setup(context, 'nest');
+    await flow.api.connect();
+    flow.pending[0].resolve(
+      reply({
+        updated_buckets: [
+          { object_key: 'buckets.home', object_revision: 1, object_timestamp: 10, value: { buckets: ['link.TEST'] } },
+          { object_key: 'link.TEST', object_revision: 1, object_timestamp: 10, value: {} },
+        ],
+      }),
+    );
+    await setImmediate();
+    context.mock.timers.tick(1000);
+    assert.equal(flow.requests[1][3].objects.length, 2);
+    let removals = [];
+    flow.options.onData = async (batch) => {
+      removals.push(...batch.changes.filter((change) => change.remove === true));
+      if (outcome === 'reject') {
+        throw new Error('Fixture topology commit failed');
+      }
+      return outcome === 'accept';
+    };
+    flow.pending[1].resolve(
+      reply({ objects: [{ object_key: 'buckets.home', object_revision: 2, object_timestamp: 20, value: { buckets: [] } }] }),
+    );
+    await setImmediate();
+    assert.deepEqual(removals, [{ resourceId: 'link.TEST', remove: true, notify: false }]);
+    assert.equal(flow.api.resources.has('link.TEST'), false);
+    context.mock.timers.tick(outcome === 'accept' ? 1000 : 5000);
+    assert.equal(flow.requests[2][3].objects, undefined, 'even non-accessory removals invalidate the revision cursor');
+    assert.deepEqual(flow.requests[2][3].known_bucket_types, NEST_API_BUCKETS);
+    flow.options.onData = async (batch) => {
+      removals.push(...batch.changes.filter((change) => change.remove === true));
+      return true;
+    };
+    flow.pending[2].resolve(
+      reply({
+        updated_buckets: [{ object_key: 'buckets.home', object_revision: 3, object_timestamp: 30, value: { buckets: [] } }],
+      }),
+    );
+    await setImmediate();
+    assert.equal(removals.length, outcome === 'accept' ? 1 : 2, 'unacknowledged removals are replayed');
+    context.mock.timers.tick(1000);
+    assert.deepEqual(flow.requests[3][3].objects, [{ object_key: 'buckets.home', object_revision: 3, object_timestamp: 30 }]);
+  });
+}
+
 for (let outcome of ['resolve', 'reject']) {
   test('a stopped Nest run cannot change replacement revisions after its commit promise ' + outcome + 's', async (context) => {
     let commit = Promise.withResolvers();
@@ -771,5 +883,217 @@ for (let active of [true, false]) {
     delete flow.options.rawData['rcs_settings.PARENT'];
     await assert.rejects(flow.api.set('kryptonite.SENSOR', { active_sensor: active }), AggregateError);
     assert.equal(flow.requests.length, 2);
+  });
+}
+
+for (let kind of ['nest', 'google']) {
+  test(
+    kind + ' client connects, stores data, reads values and sends settings without System or notification callbacks',
+    async (context) => {
+      let flow = setup(context, kind);
+      let commands = [];
+      flow.connection.grpcTransport.command = async (...args) => {
+        commands.push(args);
+        return { status: 0, data: [{ traitOperations: [{ progress: 'COMPLETE' }] }] };
+      };
+      let client = new classes[kind]({
+        session: {
+          account: flow.connection,
+          connect: async () => true,
+          on() {},
+        },
+      });
+      context.after(() => client.disconnect());
+      await client.connect();
+      let id = kind === 'nest' ? 'topaz.TEST' : 'DEVICE_TEST';
+      let value = kind === 'nest' ? { serial_number: 'TEST', ntp_green_led_enable: false } : { temperatureScale: 'TEMPERATURE_SCALE_C' };
+      if (kind === 'nest') {
+        flow.pending[0].resolve(reply({ objects: [{ object_key: id, object_revision: 1, object_timestamp: 10, value }] }));
+        await setImmediate();
+      } else {
+        await flow.observations[0][4]({
+          traitStates: [
+            { traitId: { resourceId: id, traitLabel: 'display_settings' }, stateTypes: ['ACCEPTED'], patch: { values: value } },
+          ],
+        });
+      }
+      let key = kind === 'nest' ? 'serial_number' : 'display_settings';
+      assert.deepEqual(await client.get(id, key), kind === 'nest' ? 'TEST' : value);
+      assert.equal(await client.get(id, 'constructor'), undefined);
+      if (kind === 'nest') {
+        let write = client.set(id, { ntp_green_led_enable: true });
+        flow.pending[1].resolve(reply({ objects: [{}] }));
+        await write;
+        assert.equal(JSON.parse(flow.requests[1][3]).objects[0].value.ntp_green_led_enable, true);
+      } else {
+        await client.set(id, { temperature_scale: 'F' });
+        assert.equal(commands[0][3].batchUpdateStateRequest[0].state.value.temperatureScale, 'TEMPERATURE_SCALE_F');
+        let read = await client.get(id, key);
+        read.temperatureScale = 'CHANGED_BY_CALLER';
+        assert.equal((await client.get(id, key)).temperatureScale, 'TEMPERATURE_SCALE_C');
+      }
+    },
+  );
+}
+
+for (let active of [true, false]) {
+  test('standalone Google sensor selection resolves its observed parent: ' + active, async (context) => {
+    let flow = setup(context);
+    let commands = [];
+    flow.connection.grpcTransport.command = async (...args) => {
+      commands.push(args);
+      return { status: 0, data: [{ traitOperations: [{ progress: 'COMPLETE' }] }] };
+    };
+    await flow.api.connect();
+    await flow.observations[0][4]({
+      traitStates: [
+        {
+          traitId: { resourceId: 'DEVICE_SENSOR', traitLabel: 'device_identity' },
+          stateTypes: ['ACCEPTED'],
+          patch: { values: { serialNumber: 'SENSOR' } },
+        },
+        {
+          traitId: { resourceId: 'DEVICE_PARENT', traitLabel: 'remote_comfort_sensing_settings' },
+          stateTypes: ['ACCEPTED'],
+          patch: { values: { associatedRcsSensors: [{ deviceId: { resourceId: 'DEVICE_SENSOR' } }] } },
+        },
+      ],
+    });
+    await flow.api.set('DEVICE_SENSOR', { active_sensor: active });
+    let update = commands[0][3].batchUpdateStateRequest[0];
+    assert.equal(update.traitRequest.resourceId, 'DEVICE_PARENT');
+    assert.equal(
+      update.state.value.activeRcsSelection.rcsSourceType,
+      active === true ? 'RCS_SOURCE_TYPE_SINGLE_SENSOR' : 'RCS_SOURCE_TYPE_BACKPLATE',
+    );
+    assert.equal(flow.api.resources.get('DEVICE_SENSOR').value.associated_thermostat, undefined);
+  });
+}
+
+test('Google snapshots complete from the client cache while a consumer notification is still pending', async (context) => {
+  let flow = setup(context);
+  let commit = Promise.withResolvers();
+  context.after(() => commit.resolve(true));
+  flow.connection.grpcTransport.command = async () => ({
+    status: 0,
+    data: [
+      {
+        traitOperations: [
+          {
+            progress: 'COMPLETE',
+            event: { event: { status: 'STATUS_SUCCESSFUL' } },
+          },
+        ],
+      },
+    ],
+  });
+  flow.options.rawData.DEVICE_TEST = {
+    source: DATA_SOURCE.GOOGLE,
+    value: {
+      device_info: { typeName: 'google.resource.SpencerResource' },
+    },
+  };
+  runtime.fetch = async () => ({ arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer });
+  await flow.api.connect();
+  flow.options.onData = () => commit.promise;
+  let snapshot = flow.api.get('DEVICE_TEST', 'camera_snapshot');
+  await setImmediate();
+  let update = flow.observations[0][4]({
+    traitStates: [
+      {
+        traitId: { resourceId: 'DEVICE_TEST', traitLabel: 'upload_live_image' },
+        stateTypes: ['ACCEPTED'],
+        patch: { values: { liveImageUrl: 'https://image.invalid/fresh' } },
+      },
+    ],
+  });
+  assert.deepEqual(await snapshot, Buffer.from([1, 2, 3]));
+  commit.resolve(true);
+  await update;
+});
+
+for (let kind of ['nest', 'google']) {
+  test(kind + ' retries a rejected removal notification after its own cache already removed the resource', async (context) => {
+    let flow = setup(context, kind);
+    await flow.api.connect();
+    let id = kind === 'nest' ? 'topaz.TEST' : 'DEVICE_TEST';
+    if (kind === 'nest') {
+      flow.pending[0].resolve(
+        reply({
+          objects: [
+            { object_key: 'buckets.home', value: { buckets: [id] } },
+            { object_key: id, value: { serial_number: 'TEST' } },
+          ],
+        }),
+      );
+      await setImmediate();
+    } else {
+      await flow.observations[0][4]({
+        traitStates: [
+          {
+            traitId: { resourceId: id, traitLabel: 'fixture' },
+            stateTypes: ['ACCEPTED'],
+            patch: { values: { active: true } },
+          },
+        ],
+      });
+    }
+    assert.equal(flow.api.resources.has(id), true);
+    let attempts = 0;
+    flow.options.onData = async (batch) => {
+      if (batch.changes.some((change) => change.resourceId === id && change.remove === true) === true) {
+        attempts++;
+        if (attempts === 1) {
+          throw new Error('Fixture consumer failed to remove the device');
+        }
+      }
+      return true;
+    };
+    if (kind === 'nest') {
+      context.mock.timers.tick(1000);
+      flow.pending[1].resolve(reply({ objects: [{ object_key: 'buckets.home', value: { buckets: [] } }] }));
+      await setImmediate();
+      assert.equal(flow.api.resources.has(id), false);
+      context.mock.timers.tick(5000);
+      flow.pending[2].resolve(reply({ objects: [{ object_key: 'buckets.home', value: { buckets: [] } }] }));
+      await setImmediate();
+    } else {
+      await assert.rejects(flow.observations[0][4]({ resourceMetas: [{ resourceId: id, status: 'REMOVED' }] }), /consumer failed/);
+      assert.equal(flow.api.resources.has(id), false);
+      await flow.observations[0][4]({ observeResponse: [] });
+    }
+    assert.equal(attempts, 2, 'the consumer must receive the removal again instead of losing it with the cached resource');
+    assert.equal(flow.api.resources.has(id), false);
+  });
+}
+
+for (let kind of ['nest', 'google']) {
+  test(kind + ' accepts authentication only through its session', async (context) => {
+    let flow = setup(context, kind);
+    let client = new classes[kind]({ account: flow.connection });
+    context.after(() => client.disconnect());
+    await assert.rejects(client.connect(), /Unable to authenticate/);
+    await assert.rejects(client.get('DEVICE_TEST', 'fixture'), /authorised account/);
+    assert.equal(flow.pending.length, 0);
+  });
+
+  test(kind + ' reads the current session account instead of retaining a parallel credential record', async (context) => {
+    let flow = setup(context, kind);
+    let session = { account: { authorised: false }, on() {} };
+    let client = new classes[kind]({ session });
+    context.after(() => client.disconnect());
+    client.resources.set('DEVICE_TEST', { value: { fixture: { enabled: true } } });
+    await assert.rejects(client.get('DEVICE_TEST', 'fixture'), /authorised account/);
+    session.account = { ...flow.connection, authorised: true };
+    assert.deepEqual(await client.get('DEVICE_TEST', 'fixture'), { enabled: true });
+    assert.equal(flow.pending.length, 0);
+  });
+
+  test(kind + ' does not silently accept a HomeKit routing field as an API setting', async (context) => {
+    let flow = setup(context, kind);
+    let id = kind === 'nest' ? 'topaz.TEST' : 'DEVICE_TEST';
+    flow.options.rawData[id] = { source: kind === 'nest' ? DATA_SOURCE.NEST : DATA_SOURCE.GOOGLE, value: {} };
+    await assert.rejects(flow.api.set(id, { uuid: id }), AggregateError);
+    assert.equal(flow.requests.length, 0);
   });
 }

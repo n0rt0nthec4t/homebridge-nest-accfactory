@@ -1007,12 +1007,74 @@ for (let [humidifier, dehumidifier, expected] of [
   });
 }
 
-test('REST thermostat hides unsupported Eco control and protobuf upgrade retains the thermostat service', async (context) => {
-  let flow = await setup(context, 'thermostat', { supports_eco_mode: false });
+test('thermostat Eco control retains its handlers and service across source mode changes', async (context) => {
+  let flow = await setup(context, 'thermostat', { eco_mode: 'off' });
   let service = flow.device.thermostatService;
-  assert.equal(service.testCharacteristic(C.EcoMode), false);
-  await flow.device.update({ ...flow.device.deviceData, supports_eco_mode: true, eco_mode: 'auto' });
+  let control = service.getCharacteristic(C.EcoMode);
+  assert.equal(await control.handleGetRequest(), false);
+  await flow.device.update({ ...flow.device.deviceData, eco_mode: 'auto' });
   assert.equal(flow.device.thermostatService, service);
   assert.equal(service.testCharacteristic(C.EcoMode), true);
   assert.equal(service.getCharacteristic(C.EcoMode).value, true);
+  assert.equal(service.getCharacteristic(C.EcoMode), control);
+  assert.equal(await control.handleGetRequest(), true);
+  await control.handleSetRequest(false);
+  assert.deepEqual(flow.writes, [{ uuid: 'DEVICE_TEST', eco_mode: 'off' }]);
+  await flow.device.update({ eco_mode: 'off' });
+  assert.equal(flow.device.thermostatService, service);
+  assert.equal(service.getCharacteristic(C.EcoMode), control);
+  assert.equal(await control.handleGetRequest(), false);
+  assert.deepEqual(flow.warnings, []);
 });
+
+test('Protect cleans cached battery percentage and false low warning without recreating services', async (context) => {
+  let flow = await setup(context, 'protect', {
+    wired_or_battery: false,
+    battery_level: undefined,
+    battery_low: false,
+  });
+  let service = flow.device.batteryService;
+  service.updateCharacteristic(C.BatteryLevel, 0);
+  service.updateCharacteristic(C.StatusLowBattery, C.StatusLowBattery.BATTERY_LEVEL_LOW);
+  let warning = service.getCharacteristic(C.StatusLowBattery);
+  let serviceCount = flow.device.accessory.services.length;
+  // Re-run setup against the existing services, as restored Homebridge accessories do.
+  await flow.device.onAdd();
+  assert.equal(flow.device.batteryService, service);
+  assert.equal(flow.device.accessory.services.length, serviceCount);
+  assert.equal(service.testCharacteristic(C.BatteryLevel), false);
+  await flow.device.onUpdate(flow.device.deviceData);
+  assert.equal(service.getCharacteristic(C.StatusLowBattery), warning);
+  assert.equal(warning.value, C.StatusLowBattery.BATTERY_LEVEL_NORMAL);
+  assert.deepEqual(flow.warnings, []);
+});
+
+test('Protect reconciles battery percentage availability and independent health during live updates', async (context) => {
+  let flow = await setup(context, 'protect', { battery_level: 26, battery_low: false });
+  let service = flow.device.batteryService;
+  await flow.device.onUpdate(flow.device.deviceData);
+  assert.equal(value(service, C.BatteryLevel), 26);
+  await flow.device.update({ battery_level: null, battery_low: true });
+  assert.equal(service.testCharacteristic(C.BatteryLevel), false);
+  assert.equal(value(service, C.StatusLowBattery), C.StatusLowBattery.BATTERY_LEVEL_LOW);
+  await flow.device.update({ battery_level: 5, battery_low: false });
+  assert.equal(value(service, C.BatteryLevel), 5);
+  assert.equal(value(service, C.StatusLowBattery), C.StatusLowBattery.BATTERY_LEVEL_NORMAL);
+  assert.equal(flow.device.batteryService, service);
+  assert.deepEqual(flow.warnings, []);
+});
+
+for (let [level, expected] of [
+  [5, 1],
+  [10, 1],
+  [80, 0],
+  [undefined, 0],
+]) {
+  test('Protect retains percentage fallback when explicit battery health is unavailable: ' + level, async (context) => {
+    let flow = await setup(context, 'protect', { battery_level: level });
+    await flow.device.onUpdate(flow.device.deviceData);
+    assert.equal(value(flow.device.batteryService, C.StatusLowBattery), expected);
+    assert.equal(flow.device.batteryService.testCharacteristic(C.BatteryLevel), level !== undefined);
+    assert.deepEqual(flow.warnings, []);
+  });
+}

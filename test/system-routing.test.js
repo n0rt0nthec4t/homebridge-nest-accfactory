@@ -94,8 +94,10 @@ for (let [values, label, resource, expected] of [
 }
 for (let enabled of [true, false]) {
   test('platform sensor selection routes to parent, selected=' + enabled, async (context) => {
-    let flow = await platformHarness(context, { value: { associated_thermostat: 'DEVICE_PARENT' } });
-    await flow.send('DEVICE_PARENT', { remote_comfort_sensing_settings: { retained: true } });
+    let flow = await platformHarness(context, { value: { device_identity: { serialNumber: 'SENSOR' } } });
+    await flow.send('DEVICE_PARENT', {
+      remote_comfort_sensing_settings: { retained: true, associatedRcsSensors: [{ deviceId: { resourceId: 'DEVICE_TEST' } }] },
+    });
     await flow.device.set({ uuid: 'DEVICE_TEST', active_sensor: enabled });
     let request = flow.commands[0][3].batchUpdateStateRequest[0];
     assert.equal(request.traitRequest.resourceId, 'DEVICE_PARENT');
@@ -196,7 +198,7 @@ for (let unavailable of ['account', 'authorisation', 'transport', 'resource']) {
       flow.connection.authorised = false;
     }
     if (unavailable === 'transport') {
-      flow.connection.grpcTransport = undefined;
+      flow.connection.googleAPI.disconnect();
     }
     if (unavailable === 'resource') {
       delete flow.raw.DEVICE_TEST;

@@ -339,6 +339,22 @@ function nestData() {
   };
 }
 
+for (let [mode, expected] of [
+  ['schedule', 'off'],
+  ['manual-eco', 'manual'],
+  ['auto-eco', 'auto'],
+  ['MANUAL-ECO', 'manual'],
+  ['unexpected', 'unknown'],
+  [undefined, 'unknown'],
+]) {
+  test('Nest thermostat translates reported Eco mode ' + String(mode), () => {
+    let raw = nestData();
+    raw['device.LEGACY'].value.eco = mode === undefined ? undefined : { mode };
+    let result = thermostat(undefined, raw, { options: {} });
+    assert.equal(result.LEGACY.data.eco_mode, expected);
+  });
+}
+
 test('REST-only thermostat, sensor and Heat Link produce complete candidates using committed related buckets', () => {
   let raw = nestData();
   let before = structuredClone(raw);
@@ -353,7 +369,7 @@ test('REST-only thermostat, sensor and Heat Link produce complete candidates usi
     assert.equal(result[serial].data.nest_google_device_uuid, serial === 'SENSOR_SERIAL' ? 'kryptonite.SENSOR_SERIAL' : 'device.LEGACY');
   }
   assert.equal(thermostat(undefined, raw, { options: {} }).LEGACY.data.current_temperature, 19);
-  assert.equal(thermostat(undefined, raw, { options: {} }).LEGACY.data.supports_eco_mode, false);
+  assert.equal(thermostat(undefined, raw, { options: {} }).LEGACY.data.eco_mode, 'off');
   assert.equal(tempsensor(undefined, raw, { options: {} }).SENSOR_SERIAL.data.active_sensor, true);
   assert.deepEqual(raw, before, 'translation must not inject parent links or alter source data');
 });
@@ -446,7 +462,7 @@ for (let [values, bucket, expected] of [
 }
 
 for (let mode of ['heat', 'cool']) {
-  test('REST ' + mode + ' setpoints retain beta.7 shared-bucket routing during Eco', async () => {
+  test('REST ' + mode + ' setpoints use the shared bucket during Eco', async () => {
     let raw = nestData();
     raw['device.LEGACY'].value.eco.mode = 'manual-eco';
     raw['shared.LEGACY'].value.target_temperature_type = mode;

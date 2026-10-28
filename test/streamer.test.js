@@ -1573,3 +1573,164 @@ for (let codec of ['aac', 'opus']) {
     assert.equal(parse.mock.callCount(), 2);
   });
 }
+
+for (let fps of [15, 30]) {
+  for (let stallRecording of [false, true]) {
+    test(
+      'two existing live views retain video cadence when AAC recording starts at ' + fps + 'fps; stalled=' + stallRecording,
+      async (context) => {
+        context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+        let { adts } = await import('./helpers/aac-fixtures.js');
+        let { streamer, transport } = setup(context, {}, { bufferDuration: 8000 });
+        Object.assign(transport.audio, { codec: 'aac', sampleRate: 16000, channels: 1 });
+        await streamer.onMessage(Streamer.MESSAGE_TYPE.START_BUFFER, { options: {} });
+        await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'wifi', options: { includeAudio: true } });
+        await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'cellular', options: { includeAudio: true } });
+        let live = hooks.instances.slice();
+        let recording = undefined;
+        let blocked = false;
+        let work = 0;
+        // Charge recording packetization against the real per-output work budget.
+        // The fake wall clock measures scheduling only, not CPU/encoder throughput.
+        context.mock.method(performance, 'now', () => work);
+        let deliveries = new Map(live.map((muxer) => [muxer, []]));
+        hooks.send = (muxer, data, metadata) => {
+          if (muxer === recording) {
+            work += 0.1;
+          }
+          if (metadata.kind === 'rtp' && metadata.track === 'video' && (data[1] & 0x80) !== 0) {
+            deliveries.get(muxer)?.push({ time: Date.now(), timestamp: data.readUInt32BE(4) });
+          }
+          return true;
+        };
+        let audio = adts(Buffer.alloc(100, 0x21), { frequency: 8 });
+        let videoIndex = 0;
+        let nextVideo = 100000;
+        let nextAudio = 100000;
+        for (let elapsed = 0; elapsed < 16000; elapsed += 10) {
+          if (elapsed === 8000) {
+            await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, {
+              sessionID: 'hksv',
+              options: { includeAudio: true, recordTime: 100000 },
+            });
+            recording = hooks.instances[2];
+            blocked = stallRecording;
+            let original = recording.blocked.bind(recording);
+            context.mock.method(recording, 'blocked', (track) => blocked === true || original(track));
+          }
+          if (elapsed === 10000 && blocked === true) {
+            blocked = false;
+            recording.settings.onReady();
+          }
+          if (elapsed === 13000) {
+            await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_RECORD, { sessionID: 'hksv' });
+          }
+          let now = 100000 + elapsed;
+          while (nextVideo <= now) {
+            let key = videoIndex++ % fps === 0;
+            let nal = Buffer.alloc(key === true ? 100000 : 8000, 0x55);
+            nal[0] = key === true ? 0x65 : 0x61;
+            transport.emitMedia({
+              type: 'video',
+              codec: 'h264',
+              timestamp: nextVideo,
+              keyFrame: key,
+              data: Buffer.concat([Buffer.from([0, 0, 0, 1]), nal]),
+              codecConfig: key === true ? { sps: Buffer.from([0x67, 0x42]), pps: Buffer.from([0x68, 1]) } : undefined,
+            });
+            nextVideo += 1000 / fps;
+          }
+          while (nextAudio <= now) {
+            transport.emitMedia({ type: 'audio', codec: 'aac', timestamp: nextAudio, data: audio });
+            nextAudio += 64;
+          }
+          advance(context, 10);
+        }
+        advance(context, 1000);
+        let summaries = [];
+        for (let muxer of live) {
+          let frames = deliveries.get(muxer);
+          assert.equal(frames.length, videoIndex, 'recording must not drop live video frames');
+          let gaps = frames.slice(1).map((frame, index) => frame.time - frames[index].time);
+          let maxGapMs = Math.max(...gaps);
+          assert.ok(maxGapMs <= Math.ceil(1000 / fps) + 20, 'live cadence changed: ' + maxGapMs);
+          assert.equal(new Set(frames.map((frame) => frame.timestamp)).size, frames.length);
+          assert.ok(media(muxer, 'audio').length > 0);
+          summaries.push({ frames: frames.length, maxGapMs });
+        }
+        assert.ok(media(recording).length > 0, 'recording must also make progress');
+        assert.equal(transport.calls.filter(([type]) => type === 'open').length, 1, 'recording must reuse the source');
+        context.diagnostic(JSON.stringify({ fps, stallRecording, live: summaries, recordingPackets: media(recording).length }));
+      },
+    );
+  }
+}
+
+test('delivered frames do not request a redundant 1 ms scheduler wakeup', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+  let { streamer, transport } = setup(context);
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'live' });
+  addVideo(transport, 100000);
+  addVideo(transport, 100100, false);
+  let muxer = hooks.instances[0];
+  let ticks = context.mock.method(muxer, 'tick');
+  advance(context, 210);
+  assert.equal(media(muxer).length, 3);
+  let count = ticks.mock.callCount();
+  advance(context, 1);
+  assert.equal(ticks.mock.callCount(), count, 'next frame is due in 100 ms, not 1 ms');
+  advance(context, 99);
+  assert.equal(media(muxer).length, 4);
+});
+
+test('later camera delivery work does not postpone an earlier camera absolute deadline', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+  let first = setup(context);
+  let second = setup(context);
+  let clock = Date.now;
+  let work = 0;
+  context.mock.method(Date, 'now', () => clock() + work);
+  await first.streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'first' });
+  let firstMuxer = hooks.instances[0];
+  addVideo(first.transport, 100000);
+  context.mock.timers.tick(0);
+  addVideo(first.transport, 100100, false);
+  advance(context, 50);
+  await second.streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'second' });
+  let secondMuxer = hooks.instances[1];
+  let firstFrames = [];
+  hooks.send = (muxer, data, metadata) => {
+    if (metadata.kind === 'rtp' && metadata.track === 'video') {
+      if (muxer === secondMuxer) {
+        work += 5;
+      } else if (muxer === firstMuxer && (data[1] & 0x80) !== 0) {
+        firstFrames.push(Date.now());
+      }
+    }
+    return true;
+  };
+  addVideo(second.transport, 100050);
+  for (let elapsed = 0; elapsed < 450; elapsed++) {
+    context.mock.timers.tick(1);
+  }
+  assert.equal(work, 15, 'later camera packetization should consume the simulated processing time');
+  assert.deepEqual(firstFrames, [100300, 100400]);
+});
+
+test('stale explicit recording STOP preserves the replacement and an omitted ID still stops it', async (context) => {
+  let { streamer, transport } = setup(context);
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, { sessionID: 'old' });
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_RECORD, { sessionID: 'old' });
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, { sessionID: 'replacement' });
+  let current = hooks.instances.at(-1);
+  let closes = transport.calls.filter(([type]) => type === 'close').length;
+  for (let sessionID of ['old', 'unknown', '', null]) {
+    await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_RECORD, { sessionID });
+    assert.equal(current.closed, false);
+    assert.equal(streamer.isStreaming(), true);
+    assert.equal(transport.calls.filter(([type]) => type === 'close').length, closes);
+  }
+  await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_RECORD);
+  assert.equal(current.closed, true);
+  assert.equal(streamer.isStreaming(), false);
+});

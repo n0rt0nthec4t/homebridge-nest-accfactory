@@ -8,16 +8,16 @@
 // Responsibilities:
 // - Assign runtime account identities and create their sessions and API clients
 // - Start both API clients and shut down their shared account sessions
-// - Serialize both clients' resource batches through one queue per account
-// - Supply System's read-only resource lookups and awaited commit callback
+// - Serialize both clients' notifications to System through one queue per account
+// - Forward optional consumer notifications without owning either source cache
 //
 // Ownership:
 // - AccountSession owns authentication, token refresh and auth retry scheduling
 // - API clients own source subscriptions, request retries and transport cleanup
-// - System owns the shared resource cache, source selection and HomeKit devices
-// - Batch acknowledgement confirms cache storage, independently of HomeKit delivery
+// - Each client owns its source cache; System owns the combined view and HomeKit devices
+// - Notification acknowledgement confirms System received a batch, independently of HomeKit delivery
 //
-// Code version 2026.10.28
+// Code version 2026.10.29
 // Mark Hulskamp
 'use strict';
 
@@ -82,7 +82,6 @@ export default class Accounts {
       // camera credential updates must see the newly installed session details.
       let entry = session.account;
       entry.session = session;
-      entry.dataQueue = Promise.resolve();
 
       manager.#accounts.set(uuid, entry);
       manager.#createAPIClients(uuid, entry, options ?? {});
@@ -91,24 +90,19 @@ export default class Accounts {
     return manager;
   }
 
-  #createAPIClients(uuid, account, { onData, getResource }) {
+  #createAPIClients(uuid, account, { onData }) {
+    let dataQueue = Promise.resolve(); // Serialize notifications to System across both sources.
     let options = {
       uuid,
       session: account.session,
-      account,
       log: this.#log,
-      // A token refresh keeps this identity. Removing or replacing the account
-      // retires queued batches and callbacks that still hold its old object.
-      isCurrent: () => this.#accounts.get(uuid) === account,
-      getResource,
-      onUnauthorised: (reason) => account.session.markUnauthorised(reason),
       onData:
         typeof onData !== 'function'
           ? undefined
           : (batch) => {
               // Nest and Google share one account queue. Await System's cache commit,
               // not HomeKit delivery, so ingestion can satisfy pending snapshot queries.
-              let run = account.dataQueue.then(() => {
+              let run = dataQueue.then(() => {
                 if (this.#accounts.get(uuid) === account && batch.isCurrent() === true) {
                   return onData(uuid, batch);
                 }
@@ -119,7 +113,7 @@ export default class Accounts {
 
               // A rejected commit must reach the producing API so it can retry.
               // Recover the queue tail separately so later batches can still commit.
-              account.dataQueue = run.catch(() => {});
+              dataQueue = run.catch(() => {});
 
               return run;
             },
@@ -140,7 +134,6 @@ export default class Accounts {
       return false;
     }
 
-    account.session.start();
     if (account.allowRetry !== false) {
       for (let api of [account.nestAPI, account.googleAPI]) {
         api.connect().catch((error) => {

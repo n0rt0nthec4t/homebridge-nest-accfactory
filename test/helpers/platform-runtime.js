@@ -86,3 +86,11 @@ export function clearTimers() {
   }
   runtime.timers.clear();
 }
+
+// The protobuf client owns this transport; fixtures replace only its network boundary.
+export default class Transport {
+  static STATUS = { UNAUTHENTICATED: 16 };
+  constructor() {
+    return runtime.transport;
+  }
+}

@@ -21,9 +21,9 @@
 // - AccountSession owns authentication, token refresh and auth retry scheduling
 // - API clients own protocol requests, subscription retries and transport cleanup
 // - Device modules interpret source data, apply source preference and configure HomeKit
-// - System owns cache storage, tracked device lifecycle and delivery ordering
+// - API clients own source caches; System owns the combined cache and HomeKit delivery
 //
-// Code version 2026.10.28
+// Code version 2026.10.29
 // Mark Hulskamp
 'use strict';
 
@@ -41,8 +41,8 @@ import { createSupportDump } from './supportdump.js';
 // Define constants
 import { MIN_NODE_VERSION, DATA_SOURCE, DEVICE_TYPE } from './consts.js';
 
-// We manage accounts authenticated through Nest or Google
-// Perform device management (additions/removals/updates)
+// Data flows from account callbacks through cache commits to accessory reconciliation.
+// HomeKit GET/SET handlers route back to the API owning the selected resource.
 export default class NestAccfactory {
   cachedAccessories = []; // Track restored cached accessories
 
@@ -55,6 +55,7 @@ export default class NestAccfactory {
   #deviceModules = undefined; // No loaded device support modules to start
   #supportDumpWriter = undefined; // Diagnostic writer and aliases, created only when enabled
 
+  // Platform lifecycle: prepare dependencies, restore accessories, then start accounts.
   constructor(log, config, api) {
     this.log = log;
     this.api = api;
@@ -154,11 +155,12 @@ export default class NestAccfactory {
   }
 
   #createAccounts() {
-    // Give API clients read-only cache access; all resource writes return through onData.
+    // API clients own their source caches. These callbacks commit their changes
+    // to System's combined view and refresh credentials on existing camera accessories.
     return Accounts.fromConfig(this.config, {
       log: this.log,
-      getResource: (resourceId) => this.#rawData[resourceId],
       onData: (uuid, batch) => this.#applyData(uuid, batch),
+
       onAuthorised: async (uuid, account) => {
         // Notify any camera related devices (camera/doorbell/floodlight) of updated auth details.
         for (let [, trackedDevice] of this.#trackedDevices) {
@@ -197,6 +199,8 @@ export default class NestAccfactory {
     });
   }
 
+  // Ingestion: commit source changes before acknowledging the API batch.
+  // HomeKit delivery runs separately so a slow accessory cannot block later commits.
   async #applyData(uuid, batch) {
     let changedData = new Map();
 
@@ -205,21 +209,27 @@ export default class NestAccfactory {
       if (batch.isCurrent() !== true) {
         return false;
       }
+
       let resourceId = change.resourceId;
+
       if (change.remove === true) {
         // Topology removals retire the accessory first; raw-only removals just evict the resource.
         if (change.notify === true) {
           await this.#removeDevice(resourceId);
+
           if (batch.isCurrent() !== true) {
             return false;
           }
         }
+
         delete this.#rawData[resourceId];
         continue;
       }
+
       let incomingValue = change.value;
       let fields = change.fields;
       let location = incomingValue?.structure_location;
+
       if (
         batch.source === DATA_SOURCE.GOOGLE &&
         resourceId.startsWith('STRUCTURE_') === true &&
@@ -230,6 +240,7 @@ export default class NestAccfactory {
         // Supply the incoming location because the structure may not be cached yet.
         // A weather failure leaves the source update and any cached forecast usable.
         let weather = undefined;
+
         try {
           weather = await this.#accounts?.get(uuid)?.nestAPI?.get(resourceId, 'location_weather', {
             location: { postal_code: location.postalCode.value, country_code: location.countryCode.value },
@@ -237,22 +248,26 @@ export default class NestAccfactory {
         } catch (error) {
           this.log?.debug?.('Unable to enrich weather for resource "%s": %s', resourceId, String(error));
         }
+
         // Account shutdown or a replaced Observe run can retire this batch during
         // the REST request. Never commit its location or forecast after that point.
         if (batch.isCurrent() !== true) {
           return false;
         }
+
         if (weather !== undefined) {
           incomingValue = { ...incomingValue, weather: { ...weather } };
           fields = new Set([...fields, 'weather']);
         }
       }
+
       // Merge partial traits/buckets without discarding fields absent from this update.
       this.#rawData[resourceId] = {
         connection: uuid,
         source: batch.source,
         value: { ...this.#rawData[resourceId]?.value, ...incomingValue },
       };
+
       // Resolve configured home names to the source IDs discovered by this account.
       if (change.home !== undefined) {
         Object.assign(
@@ -260,18 +275,23 @@ export default class NestAccfactory {
           change.home.values,
         );
       }
+
       // Combine field names when the same resource appears more than once in a batch.
       let changed = changedData.get(resourceId) ?? { fields: new Set() };
+
       for (let field of fields) {
         changed.fields.add(field);
       }
+
       if (changed.fields.size > 0) {
         changedData.set(resourceId, changed);
       }
     }
+
     // Queue accessory notifications only after this batch has finished updating the cache.
     if (batch.isCurrent() === true) {
       let pending = this.#pendingData.get(uuid);
+
       if (pending === undefined) {
         this.#pendingData.set(uuid, changedData);
       } else {
@@ -284,39 +304,51 @@ export default class NestAccfactory {
           pending.set(id, entry);
         }
       }
-      if (this.#processingData === true) {
-        // The existing worker will read these changes; the source can acknowledge its commit now.
-        return true;
-      }
-      this.#processingData = true;
-      // Commits cannot await HomeKit: a GET may be waiting for a later image.
-      // One worker also prevents two accounts creating the same accessory at once.
-      (async () => {
-        try {
-          while (this.#pendingData.size > 0 && this.#accounts !== undefined) {
-            // Remove this notification before awaiting delivery so new updates can accumulate.
-            let [accountId, changed] = this.#pendingData.entries().next().value;
-            this.#pendingData.delete(accountId);
-            let account = this.#accounts.get(accountId);
-            if (account === undefined) {
-              continue;
-            }
-            try {
-              await this.#processData(accountId, changed);
-            } catch (error) {
-              this.log?.error?.('Device reconciliation failed for account "%s": %s', account.name, String(error));
-            }
-          }
-        } finally {
-          this.#processingData = false;
-        }
-      })();
+
+      // Do not await delivery: a HomeKit GET may need a later API image commit.
+      void this.#deliverPendingData();
+
       // Success acknowledges the cache commit, without waiting for HomeKit delivery.
       return true;
     }
+
     return false;
   }
 
+  // Delivery: one worker drains coalesced field changes across every account.
+  // Serialising reconciliation prevents concurrent ADDs for the same accessory.
+  async #deliverPendingData() {
+    if (this.#processingData === true) {
+      return;
+    }
+
+    this.#processingData = true;
+
+    try {
+      while (this.#pendingData.size > 0 && this.#accounts !== undefined) {
+        // Remove this notification before awaiting delivery so new updates can accumulate.
+        let [accountId, changed] = this.#pendingData.entries().next().value;
+        this.#pendingData.delete(accountId);
+
+        let account = this.#accounts.get(accountId);
+
+        if (account === undefined) {
+          continue;
+        }
+
+        try {
+          await this.#processData(accountId, changed);
+        } catch (error) {
+          this.log?.error?.('Device reconciliation failed for account "%s": %s', account.name, String(error));
+        }
+      }
+    } finally {
+      this.#processingData = false;
+    }
+  }
+
+  // Accessory reconciliation: topology removals retire every accessory selecting
+  // that resource; mapped updates below retain identity across source changes.
   async #removeDevice(resourceId) {
     // One thermostat resource can own both thermostat and Heat Link accessories.
     // Match selected resources rather than serials so an unused fallback source
@@ -325,7 +357,9 @@ export default class NestAccfactory {
       if (trackedDevice.nest_google_device_uuid !== resourceId) {
         continue;
       }
+
       await HomeKitDevice.message(trackedDevice.uuid, HomeKitDevice.REMOVE, {});
+
       // An awaited removal must not delete a replacement registered under the same serial number.
       if (this.#trackedDevices.get(serialNumber) === trackedDevice) {
         this.#trackedDevices.delete(serialNumber);
@@ -341,7 +375,8 @@ export default class NestAccfactory {
       this.#supportDumpWriter(this.#rawData, uuid, changedData);
     }
 
-    // Process the raw data through each of the device modules to get the latest device details and states
+    // Mapping phase: device modules interpret the combined cache and changed fields.
+    // Each result is keyed by physical serial number, independent of its source API.
     for (let [deviceType, deviceModule] of this.#deviceModules) {
       if (typeof deviceModule?.processRawData === 'function') {
         let devices = {};
@@ -362,8 +397,9 @@ export default class NestAccfactory {
               continue;
             }
 
+            // Discovery phase: only full mappings can establish a tracked device.
+            // Excluded devices still need tracking so repeated updates do not rediscover them.
             if (trackedDevice === undefined && isFull === true && deviceData?.excluded === true) {
-              // We haven't tracked this device before (ie: should be a new one) and but its excluded
               let homeName =
                 this.#rawData?.[deviceData.nest_google_home_uuid]?.value?.name ||
                 this.#rawData?.[deviceData.nest_google_home_uuid]?.value?.structure_info?.name;
@@ -471,7 +507,8 @@ export default class NestAccfactory {
               continue;
             }
 
-            // Finally, if device is not excluded, send updated data to device for it to process
+            // Delivery phase: accept the selected source before changing accessory
+            // state or its resource ID, which also determines subsequent GET/SET routing.
             if (trackedDevice?.exclude === false) {
               let resourceId = deviceData?.nest_google_device_uuid;
               let resourceData = this.#rawData?.[resourceId];
@@ -514,36 +551,53 @@ export default class NestAccfactory {
     }
   }
 
+  // HomeKit routing: adapt device requests to the selected account/API without
+  // interpreting cloud settings here; protocol validation belongs to each client.
   async #set(uuid, resourceId, values) {
     let account = this.#accounts?.get(uuid);
     let resource = this.#rawData[resourceId];
+
     if (typeof values !== 'object' || values === null || resource === undefined || account?.authorised !== true) {
       throw new Error('SET requires an available authorised device account');
     }
-    if (resource.source === DATA_SOURCE.GOOGLE && account.grpcTransport === undefined) {
-      throw new Error('Google command transport is unavailable');
-    }
+
     // Use the selected resource source; the API client validates and sends each setting.
     let api = resource.source === DATA_SOURCE.GOOGLE ? account.googleAPI : account.nestAPI;
-    return await api.set(resourceId, values);
+
+    // HomeKit's routing identifier belongs to this adapter, not the cloud API.
+    let settings = { ...values };
+    delete settings.uuid;
+    return await api.set(resourceId, settings);
   }
 
   async #get(uuid, resourceId, values) {
     let account = this.#accounts?.get(uuid);
     let resource = this.#rawData[resourceId];
+
     if (typeof values !== 'object' || values === null || resource === undefined) {
       return;
     }
+
     // Device queries follow the selected source, while weather always uses Nest REST.
     for (let key of Object.keys(values)) {
       if (key === 'uuid') {
         continue;
       }
+
       let api = key === 'location_weather' || resource.source !== DATA_SOURCE.GOOGLE ? account?.nestAPI : account?.googleAPI;
+
       // Object-valued queries supply API parameters; legacy true flags use defaults.
       let parameters = typeof values[key] === 'object' && values[key] !== null ? values[key] : undefined;
+
+      // Weather combines sources here. Nest must receive the location explicitly
+      // when the selected resource belongs to Google's independent cache.
+      if (key === 'location_weather' && parameters?.location === undefined && resource.value?.weather !== undefined) {
+        parameters = { ...parameters, location: resource.value.weather };
+      }
+
       // Failed queries return no value for this field and leave the other queries available.
       values[key] = undefined;
+
       try {
         values[key] = await api?.get(resourceId, key, parameters);
       } catch (error) {
@@ -556,6 +610,7 @@ export default class NestAccfactory {
         );
       }
     }
+
     return values;
   }
 }
