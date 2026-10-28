@@ -17,8 +17,12 @@ let { network } = await import(networkModule);
 let grpcModule =
   'data:text/javascript,' +
   encodeURIComponent(
-    'export default class Transport { constructor(options) { this.options = options; } release() { this.released = true; } }',
+    'export const grpcRuntime = { observations: [] };' +
+      'export default class Transport { static STATUS = { UNAUTHENTICATED: 16 }; constructor(options) { this.options = options; }' +
+      'observe(...args) { grpcRuntime.observations.push(args); return new Promise(() => {}); }' +
+      'release() { this.released = true; } }',
   );
+let { grpcRuntime } = await import(grpcModule);
 // Forward named timer imports to the per-test Node timer mocks.
 let timerModule =
   'data:text/javascript,' +
@@ -27,7 +31,7 @@ let timerModule =
       'export function setTimeout(...args) { return timers.setTimeout(...args); } ' +
       'export function clearTimeout(...args) { return timers.clearTimeout(...args); }',
   );
-let location = new URL('../src/connections.js', import.meta.url);
+let location = new URL('../src/accounts.js', import.meta.url);
 let source = await readFile(location, 'utf8');
 source = source.replace(/from '([^']+)'/g, (match, specifier) => {
   let target =
@@ -42,20 +46,41 @@ source = source.replace(/from '([^']+)'/g, (match, specifier) => {
             : specifier;
   return 'from ' + JSON.stringify(target);
 });
-let { default: Connections } = await importSource(location, source);
+let sessionLocation = new URL('../src/accountsession.js', import.meta.url);
+let sessionSource = (await readFile(sessionLocation, 'utf8'))
+  .replace('from \'./fetchWrapper.js\'', 'from ' + JSON.stringify(networkModule))
+  .replace('from \'node:timers\'', 'from ' + JSON.stringify(timerModule));
+await importSource(sessionLocation, sessionSource);
+// Authentication and protocol classes share the same isolated HTTP/timer boundary.
+for (let name of ['nest', 'google']) {
+  let apiLocation = new URL('../src/api/' + name + '.js', import.meta.url);
+  let apiSource = (await readFile(apiLocation, 'utf8'))
+    .replace('from \'../fetchWrapper.js\'', 'from ' + JSON.stringify(networkModule))
+    .replace('from \'node:timers\'', 'from ' + JSON.stringify(timerModule))
+    .replace('from \'../grpctransport.js\'', 'from ' + JSON.stringify(grpcModule));
+  await importSource(apiLocation, apiSource);
+}
+let { default: Accounts } = await importSource(location, source);
 let account = { name: 'Test', type: 'nest', access_token: 'access-token' };
 let session = { access_token: 'session-token', userid: 'user', urls: { transport_url: 'https://transport.example' } };
 let response = (value) => ({ json: async () => value });
 
 function setup(t, accounts = [account], options = {}, runtimeOptions = {}) {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  let manager = Connections.fromConfig({ accounts, options: runtimeOptions }, options);
+  let manager = Accounts.fromConfig({ accounts, options: runtimeOptions }, options);
   t.after(() => manager.shutdown());
   let [uuid, connection] = manager.entries().next().value ?? [];
   return { manager, uuid, connection };
 }
 
-test('Connections builds isolated runtime entries and skips excluded/invalid accounts', (t) => {
+// Startup is the registry's only connection entry point. Tests explicitly await
+// the shared session, requesting a refresh when exercising a second login.
+async function startAndAuthenticate(manager, uuid) {
+  manager.start(uuid);
+  return await manager.get(uuid)?.session.connect(true);
+}
+
+test('Accounts builds isolated runtime entries and skips excluded/invalid accounts', (t) => {
   let { manager } = setup(t, [
     account,
     { ...account, name: 'Field', fieldTest: true },
@@ -70,10 +95,9 @@ test('Connections builds isolated runtime entries and skips excluded/invalid acc
   assert.equal(entries[1][1].cameraAPIHost, 'camera.home.ft.nest.com');
   assert.notEqual(entries[0][1].snapshotWaiters, entries[1][1].snapshotWaiters);
   assert.equal(manager.start('missing'), false);
-  assert.equal(manager.markUnauthorised('missing'), false);
 });
 
-test('Connections authenticates Nest and refreshes the same entry while releasing old runtime state', async (t) => {
+test('Accounts authenticates Nest and refreshes the same entry while releasing old runtime state', async (t) => {
   let notices = [];
   let { manager, uuid, connection } = setup(t, [account], {
     onAuthorised: (...args) => notices.push(args),
@@ -81,7 +105,7 @@ test('Connections authenticates Nest and refreshes the same entry while releasin
   let requests = t.mock.method(network, 'request', async (method, url) =>
     response(url.endsWith('/session') === true ? session : { items: [{ session_token: 'camera-cookie' }] }),
   );
-  await manager.connect(uuid);
+  await startAndAuthenticate(manager, uuid);
   assert.equal(connection.authorised, true);
   assert.equal(connection.token, 'session-token');
   assert.equal(connection.cameraAuth.token, 'camera-cookie');
@@ -91,7 +115,7 @@ test('Connections authenticates Nest and refreshes the same entry while releasin
   let resolved = 0;
   connection.grpcTransport = { release: () => released++ };
   connection.snapshotWaiters.set(() => resolved++, 'camera');
-  await manager.connect(uuid);
+  await startAndAuthenticate(manager, uuid);
   assert.equal(manager.get(uuid), connection);
   assert.equal(released, 1);
   assert.equal(resolved, 1);
@@ -99,7 +123,7 @@ test('Connections authenticates Nest and refreshes the same entry while releasin
   assert.equal(notices[1][2].wasAuthorised, true);
 });
 
-test('Connections Google auth exchanges OAuth and JWT then applies expiry safety margin', async (t) => {
+test('Accounts Google auth exchanges OAuth and JWT then applies expiry safety margin', async (t) => {
   let { manager, uuid, connection } = setup(t, [
     {
       name: 'Google',
@@ -110,7 +134,7 @@ test('Connections Google auth exchanges OAuth and JWT then applies expiry safety
   ]);
   let results = [{ access_token: 'oauth-token', token_type: 'Bearer', expires_in: 3600 }, { jwt: 'jwt-token' }, session];
   let requests = t.mock.method(network, 'request', async () => response(results.shift()));
-  await manager.connect(uuid);
+  await startAndAuthenticate(manager, uuid);
   assert.equal(connection.authorised, true);
   assert.equal(connection.cameraAuth.oauth2, 'oauth-token');
   assert.equal(connection.refreshDelay, 3300000);
@@ -118,7 +142,7 @@ test('Connections Google auth exchanges OAuth and JWT then applies expiry safety
   assert.equal(requests.mock.calls[2].arguments[2].headers.Authorization, 'Basic jwt-token');
 });
 
-test('Connections scheduler retries transient failures at 15, 30, then 60 seconds', async (t) => {
+test('Accounts scheduler retries transient failures at 15, 30, then 60 seconds', async (t) => {
   let { manager, uuid, connection } = setup(t);
   let requests = t.mock.method(network, 'request', async () => {
     throw new Error('offline');
@@ -138,7 +162,7 @@ test('Connections scheduler retries transient failures at 15, 30, then 60 second
   assert.equal(connection.retryDelay, 60000);
 });
 
-test('Connections does not retry terminal authentication failures', async (t) => {
+test('Accounts does not retry terminal authentication failures', async (t) => {
   let { manager, uuid, connection } = setup(t);
   let requests = t.mock.method(network, 'request', async () => {
     throw Object.assign(new Error('forbidden'), { code: 403 });
@@ -152,7 +176,7 @@ test('Connections does not retry terminal authentication failures', async (t) =>
   assert.equal(requests.mock.callCount(), 1);
 });
 
-test('Connections schedules refresh after successful auth and tolerates callback failure', async (t) => {
+test('Accounts schedules refresh after successful auth and tolerates callback failure', async (t) => {
   let { manager, uuid, connection } = setup(t, [account], {
     onAuthorised: () => {
       throw new Error('consumer failed');
@@ -173,7 +197,7 @@ test('Connections schedules refresh after successful auth and tolerates callback
   assert.equal(requests.mock.callCount(), 4);
 });
 
-test('Connections prevents duplicate auth attempts and cannot resurrect after shutdown', async (t) => {
+test('Accounts prevents duplicate auth attempts and cannot resurrect after shutdown', async (t) => {
   let { manager, uuid } = setup(t);
   let pending = Promise.withResolvers();
   let requests = t.mock.method(network, 'request', () => pending.promise);
@@ -189,8 +213,8 @@ test('Connections prevents duplicate auth attempts and cannot resurrect after sh
   assert.equal(requests.mock.callCount(), 1);
 });
 
-test('Connections invalidation resolves all snapshot waiters and shutdown cancels scheduled retries', async (t) => {
-  let { manager, uuid, connection } = setup(t);
+test('Accounts invalidation resolves all snapshot waiters and shutdown cancels scheduled retries', async (t) => {
+  let { manager, connection } = setup(t);
   let requests = t.mock.method(network, 'request', async () => {
     throw new Error('unexpected request');
   });
@@ -200,7 +224,7 @@ test('Connections invalidation resolves all snapshot waiters and shutdown cancel
   connection.grpcTransport = { release: () => released++ };
   connection.snapshotWaiters.set(() => resolved++, 'same-camera');
   connection.snapshotWaiters.set(() => resolved++, 'same-camera');
-  assert.equal(manager.markUnauthorised(uuid), true);
+  assert.equal(connection.session.markUnauthorised(), true);
   assert.equal(connection.authorised, false);
   assert.equal(released, 1);
   assert.equal(resolved, 2);
@@ -225,7 +249,7 @@ for (let [label, replies, retry] of [
       { name: 'Google', type: 'google', issueToken: 'https://accounts.example/token', cookie: 'fixture' },
     ]);
     context.mock.method(network, 'request', async () => response(replies.shift()));
-    await manager.connect(uuid);
+    await startAndAuthenticate(manager, uuid);
     assert.equal(connection.authorised, false);
     assert.equal(connection.allowRetry, retry);
     assert.equal(connection.grpcTransport, undefined);
@@ -242,7 +266,7 @@ for (let [expires, delay] of [
     ]);
     let replies = [{ access_token: 'oauth', token_type: 'Bearer', expires_in: expires }, { jwt: 'jwt' }, session];
     context.mock.method(network, 'request', async () => response(replies.shift()));
-    await manager.connect(uuid);
+    await startAndAuthenticate(manager, uuid);
     assert.equal(connection.authorised, true);
     assert.equal(connection.refreshDelay, delay);
   });
@@ -255,7 +279,7 @@ for (let login of [
   test('Nest login rejects invalid camera session: ' + JSON.stringify(login), async (context) => {
     let { manager, uuid, connection } = setup(context);
     let requests = context.mock.method(network, 'request', async () => response(login));
-    await manager.connect(uuid);
+    await startAndAuthenticate(manager, uuid);
     assert.equal(connection.authorised, false);
     assert.equal(connection.allowRetry, login.status !== 403);
     assert.equal(requests.mock.callCount(), 1);
@@ -267,7 +291,7 @@ for (let failure of [undefined, {}, { access_token: ' ' }]) {
     context.mock.method(network, 'request', async (method, url) =>
       response(url.endsWith('/session') === true ? failure : { items: [{ session_token: 'cookie' }] }),
     );
-    await manager.connect(uuid);
+    await startAndAuthenticate(manager, uuid);
     assert.equal(connection.authorised, false);
     assert.equal(connection.allowRetry, true);
   });
@@ -279,7 +303,7 @@ test('successful authorisation completing after shutdown cannot recreate an acco
   context.mock.method(network, 'request', async (method, url) =>
     url.endsWith('/session') === true ? pending.promise : response({ items: [{ session_token: 'cookie' }] }),
   );
-  let connecting = manager.connect(uuid);
+  let connecting = startAndAuthenticate(manager, uuid);
   await setImmediate();
   manager.shutdown();
   pending.resolve(response(session));
@@ -288,11 +312,11 @@ test('successful authorisation completing after shutdown cannot recreate an acco
   assert.deepEqual(notices, []);
 });
 test('unexpected scheduler errors are contained and retried without duplicate connection work', async (context) => {
-  let { manager, uuid, connection } = setup(context);
-  let attempts = context.mock.method(manager, 'connect', async () => {
+  let { connection } = setup(context);
+  let attempts = context.mock.method(connection.session, 'connect', async () => {
     throw new Error('Fixture unexpected lifecycle failure');
   });
-  manager.start(uuid);
+  connection.session.start();
   await setImmediate();
   assert.equal(connection.connecting, false);
   assert.equal(connection.allowRetry, true);
@@ -303,13 +327,13 @@ test('unexpected scheduler errors are contained and retried without duplicate co
 });
 
 for (let fieldTest of [false, true]) {
-  test('Google-enabled connections create and replace transports with current auth; fieldTest=' + fieldTest, async (context) => {
-    let { manager, uuid, connection } = setup(context, [{ ...account, fieldTest }], {}, { useGoogleAPI: true });
+  test('Authorised accounts create and replace transports with current auth; fieldTest=' + fieldTest, async (context) => {
+    let { manager, uuid, connection } = setup(context, [{ ...account, fieldTest }]);
     let token = 'first-session';
     context.mock.method(network, 'request', async (method, url) =>
       response(url.endsWith('/session') === true ? { ...session, access_token: token } : { items: [{ session_token: 'camera-cookie' }] }),
     );
-    await manager.connect(uuid);
+    await startAndAuthenticate(manager, uuid);
     let transport = connection.grpcTransport;
     assert.equal(transport.options.uuid, uuid);
     assert.equal(transport.options.endpointHost, fieldTest === true ? 'https://apigw.ft.nest.com' : 'https://apigw.production.nest.com');
@@ -324,7 +348,7 @@ for (let fieldTest of [false, true]) {
     connection.token = 'new-live-token';
     assert.equal(transport.options.getAuthHeader(), 'Basic new-live-token');
     token = 'refreshed-session';
-    await manager.connect(uuid);
+    await startAndAuthenticate(manager, uuid);
     assert.equal(transport.released, true);
     assert.notEqual(connection.grpcTransport, transport);
     let replacement = connection.grpcTransport;
@@ -335,7 +359,7 @@ for (let fieldTest of [false, true]) {
   });
 }
 
-test('Connections validates partial account records and logs only explicitly excluded accounts', (context) => {
+test('Accounts validates partial account records and logs only explicitly excluded accounts', (context) => {
   let warnings = [];
   let { manager } = setup(
     context,
@@ -360,10 +384,9 @@ test('Connections validates partial account records and logs only explicitly exc
 });
 
 for (let options of [undefined, null, 'invalid']) {
-  test('Connections tolerates absent constructor options: ' + options, async () => {
-    let manager = new Connections(options);
+  test('Accounts tolerates absent constructor options: ' + options, async () => {
+    let manager = new Accounts(options);
     assert.equal(manager.size, 0);
-    assert.equal(await manager.connect('missing'), undefined);
     manager.shutdown();
   });
 }
@@ -415,12 +438,12 @@ for (let failure of [new Error('Fixture callback failure'), 'Fixture non-error c
     context.mock.method(network, 'request', async (method, url) =>
       response(url.endsWith('/session') === true ? session : { items: [{ session_token: 'camera-cookie' }] }),
     );
-    await manager.connect(uuid);
+    await startAndAuthenticate(manager, uuid);
     assert.equal(connection.authorised, true);
     assert.equal(connection.token, session.access_token);
     assert.equal(logs.at(-1)[2], failure.message ?? String(failure));
-    assert.equal(logs.at(-1)[0].startsWith('Authorised connection callback failed'), true);
-    await manager.connect(uuid);
+    assert.equal(logs.at(-1)[0].startsWith('Authorised account callback failed'), true);
+    await startAndAuthenticate(manager, uuid);
     assert.equal(
       logs.some((entry) => entry[0].startsWith('Performing periodic token refresh')),
       true,
@@ -444,8 +467,8 @@ test('Google refresh retains field-test endpoints and reports retry success at d
           : { access_token: 'fixture-oauth', token_type: 'Bearer', expires_in: 3600 },
     ),
   );
-  await manager.connect(uuid);
-  await manager.connect(uuid);
+  await startAndAuthenticate(manager, uuid);
+  await startAndAuthenticate(manager, uuid);
   assert.equal(connection.cameraAuth.fieldTest, true);
   assert.equal(requests.mock.calls[2].arguments[1], 'https://home.ft.nest.com/session');
   assert.equal(requests.mock.calls[1].arguments[2].headers.Origin, 'https://home.ft.nest.com');
@@ -459,12 +482,12 @@ test('Google refresh retains field-test endpoints and reports retry success at d
 for (let failure of [new Error('Fixture scheduler failure'), 'Fixture non-error scheduler failure']) {
   test('scheduler logs unexpected failures and falls back from invalid retry delays: ' + failure, async (context) => {
     let logs = [];
-    let { manager, uuid, connection } = setup(context, [account], { log: { debug: (...args) => logs.push(args) } });
+    let { connection } = setup(context, [account], { log: { debug: (...args) => logs.push(args) } });
     connection.retryDelay = NaN;
-    let attempts = context.mock.method(manager, 'connect', async () => {
+    let attempts = context.mock.method(connection.session, 'connect', async () => {
       throw failure;
     });
-    manager.start(uuid);
+    connection.session.start();
     await setImmediate();
     assert.equal(logs[0][2], failure.message ?? String(failure));
     assert.equal(connection.retryDelay, 30000);
@@ -487,10 +510,17 @@ test('invalidation logs its reason, replaces the refresh timer and releases pend
   await setImmediate();
   let oldTimer = connection.timer;
   let scheduled = 0;
-  connection.subscribeTimer = setTimeout(() => scheduled++, 20000);
-  connection.observeTimer = setTimeout(() => scheduled++, 20000);
-  assert.equal(manager.markUnauthorised(uuid, 'fixture-expired'), true);
+  let stopped = [];
+  let timer = setTimeout(() => scheduled++, 20000);
+  connection.session.on('disconnect', (refreshing) => {
+    if (refreshing !== true) {
+      stopped.push('nestAPI', 'googleAPI');
+      clearTimeout(timer);
+    }
+  });
+  assert.equal(connection.session.markUnauthorised('fixture-expired'), true);
   assert.notEqual(connection.timer, oldTimer);
+  assert.deepEqual(stopped, ['nestAPI', 'googleAPI']);
   assert.equal(logs.at(-1)[2], 'fixture-expired');
   context.mock.timers.tick(14999);
   await setImmediate();
@@ -507,11 +537,10 @@ test('invalidation logs its reason, replaces the refresh timer and releases pend
   assert.equal(requests.mock.callCount(), 4);
 });
 
-test('Connections.fromConfig accepts an empty configuration without scheduling network work', async () => {
-  let manager = Connections.fromConfig();
+test('Accounts.fromConfig accepts an empty configuration without scheduling network work', async () => {
+  let manager = Accounts.fromConfig();
   assert.equal(manager.size, 0);
   assert.equal(manager.start('missing'), false);
-  assert.equal(await manager.connect('missing'), undefined);
   manager.shutdown();
 });
 
@@ -524,7 +553,7 @@ for (let reply of [{ error: 'TEMPORARY' }, { error: '' }]) {
       { log: { debug: (...args) => logs.push(args) } },
     );
     let requests = context.mock.method(network, 'request', async () => response(reply));
-    await manager.connect(uuid);
+    await startAndAuthenticate(manager, uuid);
     assert.equal(connection.authorised, false);
     assert.equal(connection.allowRetry, true);
     assert.equal(requests.mock.callCount(), 1);
@@ -532,13 +561,9 @@ for (let reply of [{ error: 'TEMPORARY' }, { error: '' }]) {
   });
 }
 
-for (let [label, replies, diagnostic] of [
-  ['JWT', [{ access_token: 'fixture-oauth', token_type: 'Bearer', expires_in: 3600 }, {}], 'JWT response object'],
-  [
-    'session',
-    [{ access_token: 'fixture-oauth', token_type: 'Bearer', expires_in: 3600 }, { jwt: 'fixture-jwt' }, {}],
-    'Nest session response object',
-  ],
+for (let [label, replies] of [
+  ['JWT', [{ access_token: 'fixture-oauth', token_type: 'Bearer', expires_in: 3600 }, {}]],
+  ['session', [{ access_token: 'fixture-oauth', token_type: 'Bearer', expires_in: 3600 }, { jwt: 'fixture-jwt' }, {}]],
 ]) {
   test('Google missing ' + label + ' diagnostic retains failure and retry state', async (context) => {
     let logs = [];
@@ -548,10 +573,280 @@ for (let [label, replies, diagnostic] of [
       { log: { debug: (...args) => logs.push(args) } },
     );
     context.mock.method(network, 'request', async () => response(replies.shift()));
-    await manager.connect(uuid);
+    await startAndAuthenticate(manager, uuid);
     assert.equal(connection.authorised, false);
     assert.equal(connection.allowRetry, true);
-    assert.deepEqual(logs[0], [diagnostic, {}]);
-    assert.equal(logs[1][4], 'Missing ' + (label === 'JWT' ? 'jwt in JWT' : 'access_token in session') + ' response');
+    assert.equal(logs[0][0].includes('response object'), false);
+    assert.equal(logs[0][4], 'Missing ' + (label === 'JWT' ? 'jwt in JWT' : 'access_token in session') + ' response');
+  });
+}
+
+test('successful refresh retires only Google ingestion; failed refresh retires both APIs before transport cleanup', async (context) => {
+  let events = [];
+  let fail = false;
+  let { manager, uuid, connection } = setup(context, [account], {
+    onAuthorised: async () => events.push('authorised'),
+  });
+  context.mock.method(network, 'request', async (method, url) => {
+    if (fail === true) {
+      throw Object.assign(new Error('refresh unavailable'), { status: 503 });
+    }
+    return response(url.endsWith('/session') === true ? session : { items: [{ session_token: 'cookie' }] });
+  });
+  await startAndAuthenticate(manager, uuid);
+  connection.session.on('disconnect', (refreshing) => {
+    events.push(refreshing === true ? 'refresh' : 'invalidate');
+  });
+  connection.grpcTransport = { release: () => events.push('transport-release') };
+  events.length = 0;
+  await startAndAuthenticate(manager, uuid);
+  assert.deepEqual(events, ['transport-release', 'refresh', 'authorised']);
+  assert.equal(connection.authorised, true);
+
+  connection.grpcTransport = { release: () => events.push('transport-release') };
+  events.length = 0;
+  fail = true;
+  await startAndAuthenticate(manager, uuid);
+  assert.deepEqual(events, ['transport-release', 'invalidate']);
+  assert.equal(connection.authorised, false);
+});
+
+for (let outcome of ['success', 'failure', 'retired']) {
+  test('Accounts owns API clients and orders resource batches: ' + outcome, async (context) => {
+    grpcRuntime.observations = [];
+    let entered = Promise.withResolvers();
+    let release = Promise.withResolvers();
+    let batches = [];
+    let { manager, uuid, connection } = setup(context, [account], {
+      getResource: () => undefined,
+      onData: async (owner, batch) => {
+        assert.equal(owner, uuid);
+        if (batch.source !== 'Google') {
+          return true;
+        }
+        batches.push(batch);
+        if (batches.length === 1) {
+          entered.resolve();
+          await release.promise;
+          if (outcome === 'failure') {
+            throw new Error('fixture consumer failure');
+          }
+        }
+      },
+    });
+    context.mock.method(network, 'request', async (method, url) =>
+      response(url.endsWith('/session') === true ? session : { items: [{ session_token: 'cookie' }] }),
+    );
+    await startAndAuthenticate(manager, uuid);
+    assert.equal(typeof connection.nestAPI.get, 'function');
+    assert.equal(typeof connection.googleAPI.set, 'function');
+    assert.equal(grpcRuntime.observations.length, 1);
+    let consume = grpcRuntime.observations[0][4];
+    let first = consume({ observeResponse: [] });
+    // Install a rejection handler before releasing the first failed consumer.
+    let firstOutcome = first.then(
+      () => undefined,
+      (error) => error,
+    );
+    await entered.promise;
+    let second = consume({ observeResponse: [] });
+    await setImmediate();
+    assert.equal(batches.length, 1);
+    if (outcome === 'retired') {
+      connection.googleAPI.disconnect();
+    }
+    release.resolve();
+    let error = await firstOutcome;
+    await second;
+    assert.equal(error instanceof Error, outcome === 'failure');
+    assert.equal(batches.length, outcome === 'retired' ? 1 : 2);
+    assert.equal(batches[0].source, 'Google');
+  });
+}
+
+test('account clients survive refresh without restarting Nest polling or retaining the old Google transport', async (context) => {
+  grpcRuntime.observations = [];
+  let { manager, uuid, connection } = setup(context, [account], {
+    getResource: () => undefined,
+    onData: async () => true,
+  });
+  let nestAPI = connection.nestAPI;
+  let googleAPI = connection.googleAPI;
+  let requests = context.mock.method(network, 'request', async (method, url) =>
+    response(
+      url.endsWith('/session') === true
+        ? session
+        : url.includes('/app_launch') === true
+          ? { objects: [{ object_key: 'topaz.TEST', object_revision: 7, object_timestamp: 70, value: {} }] }
+          : { items: [{ session_token: 'cookie' }] },
+    ),
+  );
+  assert.equal(connection.authorised, false);
+  assert.equal(requests.mock.callCount(), 0);
+  await startAndAuthenticate(manager, uuid);
+  let transport = connection.grpcTransport;
+  await startAndAuthenticate(manager, uuid);
+  assert.equal(connection.nestAPI, nestAPI);
+  assert.equal(connection.googleAPI, googleAPI);
+  assert.equal(transport.released, true);
+  assert.notEqual(connection.grpcTransport, transport);
+  assert.equal(grpcRuntime.observations.length, 2);
+  assert.equal(requests.mock.calls.filter((call) => call.arguments[1].includes('/app_launch')).length, 1);
+  context.mock.timers.tick(1000);
+  await setImmediate();
+  let subscription = requests.mock.calls.find((call) => call.arguments[1].includes('/v5/subscribe'));
+  assert.deepEqual(subscription.arguments[3].objects, [{ object_key: 'topaz.TEST', object_revision: 7, object_timestamp: 70 }]);
+});
+
+test('both API clients ignore removed flags and share authentication, REST queries and invalidation', async (context) => {
+  let batches = [];
+  let reject = false;
+  let { manager, uuid, connection } = setup(
+    context,
+    [account],
+    {
+      getResource: () => undefined,
+      onData: async (owner, batch) => {
+        batches.push(batch);
+        return true;
+      },
+    },
+    { useNestAPI: false, useGoogleAPI: false },
+  );
+  context.mock.method(network, 'request', async (method, url) => {
+    if (url.includes('/app_launch') === true || url.includes('/v5/subscribe') === true) {
+      if (reject === true) {
+        throw Object.assign(new Error('expired'), { status: 401 });
+      }
+      return response({ objects: [] });
+    }
+    return response(url.endsWith('/session') === true ? session : { items: [{ session_token: 'cookie' }] });
+  });
+  await startAndAuthenticate(manager, uuid);
+  await setImmediate();
+  assert.equal(batches[0].source, 'Nest');
+  assert.notEqual(connection.grpcTransport, undefined);
+  assert.equal(typeof connection.googleAPI.get, 'function');
+  assert.equal(
+    await connection.nestAPI.get('STRUCTURE_HOME', 'location_weather', { location: { postal_code: '2000', country_code: 'AU' } }),
+    undefined,
+  );
+  context.mock.timers.tick(1000);
+  await setImmediate();
+  assert.equal(batches.length, 2);
+  reject = true;
+  context.mock.timers.tick(1000);
+  await setImmediate();
+  assert.equal(connection.authorised, false);
+});
+
+for (let source of ['nest', 'google']) {
+  test('API startup failures remain visible without invalidating account auth: ' + source, async (context) => {
+    let logs = [];
+    let { manager, uuid, connection } = setup(context, [account], {
+      log: { debug: (...args) => logs.push(args) },
+      getResource: () => undefined,
+      onData: async () => true,
+      onAuthorised: async (owner, account) => {
+        if (source === 'google') {
+          account.grpcTransport = {
+            observe: () => {
+              throw new Error('fixture Observe startup failure');
+            },
+          };
+        }
+      },
+    });
+    context.mock.method(network, 'request', (method, url) => {
+      if (url.includes('/app_launch') === true && source === 'nest') {
+        throw new Error('fixture subscribe startup failure');
+      }
+      return Promise.resolve(response(url.endsWith('/session') === true ? session : { items: [{ session_token: 'cookie' }] }));
+    });
+    await startAndAuthenticate(manager, uuid);
+    await setImmediate();
+    assert.equal(connection.authorised, true);
+    assert.equal(
+      logs.some((entry) => entry[0].startsWith('Unable to connect ')),
+      true,
+    );
+  });
+}
+
+for (let configured of [account, { name: 'Google', type: 'google', issueToken: 'https://oauth.invalid/token', cookie: 'cookie' }]) {
+  test('both API entry points share login and scheduled refresh for ' + configured.type + ' accounts', async (context) => {
+    let { manager, connection } = setup(context, [configured], {
+      getResource: () => undefined,
+      onData: async () => true,
+    });
+    let login = Promise.withResolvers();
+    let authCalls = 0;
+    let subscriptions = 0;
+    context.mock.method(network, 'request', async (method, url) => {
+      if (url.includes('/app_launch') === true) {
+        subscriptions++;
+        return response({ objects: [{ object_key: 'topaz.TEST', object_revision: 1, object_timestamp: 10, value: {} }] });
+      }
+      if (url.endsWith('/subscribe') === true) {
+        return new Promise(() => {});
+      }
+      authCalls++;
+      await login.promise;
+      return response(
+        url === configured.issueToken
+          ? { access_token: 'oauth', token_type: 'Bearer', expires_in: 3600 }
+          : url.includes('issue_jwt') === true
+            ? { jwt: 'jwt' }
+            : url.endsWith('/session') === true
+              ? session
+              : { items: [{ session_token: 'cookie' }] },
+      );
+    });
+    let nest = connection.nestAPI.connect();
+    let google = connection.googleAPI.connect();
+    assert.equal(authCalls, 1, 'concurrent API clients share the pending account login');
+    login.resolve();
+    await Promise.all([nest, google]);
+    await setImmediate();
+    let callsPerLogin = configured.type === 'nest' ? 2 : 3;
+    assert.equal(authCalls, callsPerLogin);
+    assert.equal(subscriptions, 1);
+    assert.notEqual(connection.grpcTransport, undefined);
+    context.mock.timers.tick(connection.refreshDelay);
+    await setImmediate();
+    assert.equal(authCalls, callsPerLogin * 2, 'direct API connect also schedules account refresh');
+    assert.equal(subscriptions, 1, 'Nest subscription survives refresh');
+    connection.googleAPI.disconnect();
+    assert.equal(connection.grpcTransport, undefined);
+    await connection.session.connect(true);
+    await setImmediate();
+    assert.equal(connection.grpcTransport, undefined, 'account refresh does not reconnect an explicitly disconnected API');
+    assert.equal(subscriptions, 1, 'disconnecting protobuf does not stop REST polling');
+    let beforeReconnect = authCalls;
+    await connection.googleAPI.connect();
+    assert.equal(authCalls, beforeReconnect, 'reconnecting one API reuses valid account credentials');
+    assert.notEqual(connection.grpcTransport, undefined);
+    manager.shutdown();
+    await assert.rejects(connection.nestAPI.connect(), /disconnected/);
+  });
+}
+
+for (let client of ['nestAPI', 'googleAPI']) {
+  test(client + ' disconnect during account login prevents late API startup', async (context) => {
+    let { connection } = setup(context);
+    let login = Promise.withResolvers();
+    context.mock.method(network, 'request', async (method, url) => {
+      await login.promise;
+      return response(url.endsWith('/session') === true ? session : { items: [{ session_token: 'cookie' }] });
+    });
+    let connecting = connection[client].connect();
+    connection[client].disconnect();
+    login.resolve();
+    await connecting;
+    await setImmediate();
+    assert.equal(connection.authorised, true);
+    if (client === 'googleAPI') {
+      assert.equal(connection.grpcTransport, undefined);
+    }
   });
 }

@@ -1,18 +1,17 @@
 // Exercise selected private system API methods without booting Homebridge or contacting upstream services.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import path from 'node:path';
 import { URL } from 'node:url';
 import test from 'node:test';
 import { DATA_SOURCE, DEVICE_TYPE } from '../src/consts.js';
 import { createSupportDump } from '../src/supportdump.js';
-import GrpcTransport from '../src/grpctransport.js';
+import { attachAPIClients } from './helpers/api-clients.js';
 
 let source = await readFile(new URL('../src/system.js', import.meta.url), 'utf8');
 
-let connectionsBegin = source.indexOf('  #createConnections() {');
-let connectionsEnd = source.indexOf('  async #subscribeNestAPI(', connectionsBegin);
-assert.ok(connectionsBegin !== -1 && connectionsEnd > connectionsBegin, 'Connection callback boundaries must exist');
+let accountsBegin = source.indexOf('  #createAccounts() {');
+let accountsEnd = source.indexOf('  async #applyData(', accountsBegin);
+assert.ok(accountsBegin !== -1 && accountsEnd > accountsBegin, 'Connection callback boundaries must exist');
 
 // Capture the production authorisation callback while isolating cloud ingestion and device delivery.
 let createAuthHost = new Function(
@@ -20,13 +19,12 @@ let createAuthHost = new Function(
   'rawData',
   'HomeKitDevice',
   'DEVICE_TYPE',
-  'const Connections = { fromConfig: (config, options) => options };' +
+  'const Accounts = { fromConfig: (config, options) => options };' +
     'return new class {' +
-    '#trackedDevices = trackedDevices; #rawData = rawData; config = {}; starts = [];' +
-    'async #subscribeNestAPI(uuid) { this.starts.push(["nest", uuid]); }' +
-    'async #observeGoogleAPI(uuid) { this.starts.push(["google", uuid]); }' +
-    'callback() { return this.#createConnections().onAuthorised; }' +
-    source.slice(connectionsBegin, connectionsEnd) +
+    '#trackedDevices = trackedDevices; #rawData = rawData; config = { options: {} };' +
+    '#accounts; async #applyData() {}' +
+    'callback() { return this.#createAccounts().onAuthorised; }' +
+    source.slice(accountsBegin, accountsEnd) +
     '};',
 );
 
@@ -58,14 +56,6 @@ test('account authorisation and refresh update only owned camera-family credenti
       );
     }
   }
-  assert.deepEqual(host.starts, [
-    ['nest', 'account-A'],
-    ['google', 'account-A'],
-    ['nest', 'account-B'],
-    ['google', 'account-B'],
-    ['google', 'account-A'],
-    ['google', 'account-B'],
-  ]);
 });
 
 test('camera credential refresh follows the selected resource after Nest/Google source switches', async () => {
@@ -104,7 +94,7 @@ let createDataHost = new Function(
   'getDeviceHKCategory',
   'createSupportDump',
   'return new class {' +
-    '#connections = new Map([["nest-account", { name: "Nest" }], ["google-account", { name: "Google" }]]);' +
+    '#accounts = new Map([["nest-account", { name: "Nest" }], ["google-account", { name: "Google" }]]);' +
     '#deviceModules = deviceModules; #rawData = rawData; #trackedDevices = new Map(); #supportDumpWriter;' +
     'config = { options: {} }; api = {}; cachedAccessories = []; writes = [];' +
     'async #set(...args) { this.writes.push(args); } async #get() {}' +
@@ -244,138 +234,6 @@ for (let type of [DEVICE_TYPE.CAMERA, DEVICE_TYPE.DOORBELL, DEVICE_TYPE.FLOODLIG
   });
 }
 
-let begin = source.indexOf('  async #observeGoogleAPI(uuid) {');
-let end = source.indexOf('  async #processData(', begin);
-assert.ok(begin !== -1 && end > begin, 'Observe method boundaries must exist');
-let constants = source.match(/^const API_STREAM_.*$/gm);
-assert.equal(constants?.length, 3);
-
-// Expose only this method in a test host. Returning its existing promise chain
-// lets tests await completion without sleeps or changes to production visibility.
-let createHost = new Function(
-  'connection',
-  'getProtoTypes',
-  'setTimeout',
-  'clearTimeout',
-  'path',
-  'GrpcTransport',
-  constants.join('\n') +
-    '\n' +
-    'const __dirname = "."; const ACCOUNT_TYPE = { GOOGLE: "google", NEST: "nest" };\n' +
-    'return new class {\n' +
-    '  #connections = new Map([["account", connection]]);\n' +
-    '  #rawData = {}; #trackedDevices = new Map();\n' +
-    '  config = { options: { useGoogleAPI: true } };\n' +
-    '  async #processData() {}\n' +
-    '  async #getLocationWeather() {}\n' +
-    '  run() { return this.#observeGoogleAPI("account"); }\n' +
-    '  replace(value) { this.#connections.set("account", value); }\n' +
-    source.slice(begin, end).replace(/^    grpcTransport\r?$/m, '    return grpcTransport') +
-    '};',
-);
-
-function setup() {
-  let pending = Promise.withResolvers();
-  let timers = [];
-  let cleared = [];
-  let calls = [];
-  let connection = {
-    authorised: true,
-    type: 'google',
-    grpcTransport: {
-      observe: (...args) => {
-        calls.push(args);
-        return pending.promise;
-      },
-    },
-  };
-  let host = createHost(
-    connection,
-    () => [{ fullName: '.nest.trait.device.Identity' }],
-    (callback, delay) => {
-      let timer = { callback, delay };
-      timers.push(timer);
-      return timer;
-    },
-    (timer) => cleared.push(timer),
-    path,
-    GrpcTransport,
-  );
-  return { host, connection, pending, timers, cleared, calls };
-}
-
-test('Observe resolved failures increase retry delay up to 60 seconds', async () => {
-  let { host, pending, timers, cleared } = setup();
-  pending.resolve({ status: 14 });
-  for (let index = 0; index < 6; index++) {
-    await host.run();
-  }
-  assert.deepEqual(
-    timers.map((timer) => timer.delay),
-    [5000, 10000, 20000, 40000, 60000, 60000],
-  );
-  assert.equal(cleared[1], timers[0]);
-});
-
-test('Observe normal completion uses the one-second restart and schedules the same account', async () => {
-  let { host, connection, pending, timers, calls } = setup();
-  connection.observeRetryDelay = 40000;
-  pending.resolve({ status: 0 });
-  await host.run();
-  assert.equal(timers[0].delay, 1000);
-  await timers[0].callback();
-  assert.equal(calls.length, 2);
-});
-
-test('Observe rejected promises also use failure backoff', async () => {
-  let { host, pending, timers } = setup();
-  let running = host.run();
-  pending.reject(new Error('transport failed'));
-  await running;
-  assert.equal(timers[0].delay, 5000);
-});
-
-test('a processed Observe update resets accumulated retry backoff', async () => {
-  let { host, connection, pending, timers, calls } = setup();
-  connection.observeRetryDelay = 40000;
-  let running = host.run();
-  await calls[0][4]({ observeResponse: [] });
-  assert.equal(connection.observeRetryDelay, undefined);
-  pending.resolve({ status: 14 });
-  await running;
-  assert.equal(timers[0].delay, 5000);
-});
-
-for (let change of ['unauthorised', 'replaced', 'removed']) {
-  test('Observe completion does not restart a connection that was ' + change, async () => {
-    let { host, connection, pending, timers, cleared } = setup();
-    let running = host.run();
-    if (change === 'unauthorised') {
-      connection.authorised = false;
-    } else {
-      host.replace(change === 'replaced' ? { authorised: true } : undefined);
-    }
-    pending.resolve({ status: 14 });
-    await running;
-    assert.deepEqual(timers, []);
-    assert.deepEqual(cleared, []);
-  });
-}
-
-test('Observe does not start for an unauthorised connection or disabled Google API', async () => {
-  let { host, connection, calls } = setup();
-  connection.authorised = false;
-  await host.run();
-  connection.authorised = true;
-  host.config.options.useGoogleAPI = false;
-  await host.run();
-  assert.deepEqual(calls, []);
-});
-
-let cameraEventsBegin = source.indexOf('  async #getCameraEvents(');
-let cameraEventsEnd = source.lastIndexOf('\n}');
-assert.ok(cameraEventsBegin !== -1 && cameraEventsEnd > cameraEventsBegin, 'Camera events method boundaries must exist');
-
 function setupCameraEvents(fetchImplementation) {
   let logs = [];
   let requests = [];
@@ -396,26 +254,10 @@ function setupCameraEvents(fetchImplementation) {
     },
   };
 
-  let createCameraEventsHost = new Function(
-    'connection',
-    'fetchWrapper',
-    'logs',
-    'crypto',
-    'USER_AGENT',
-    'return new class {\n' +
-      '  #connections = new Map([["account", connection]]);\n' +
-      '  config = { options: { useNestAPI: true, useGoogleAPI: false } };\n' +
-      '  log = { debug: (...args) => logs.push(args) };\n' +
-      '  run() { return this.#getCameraEvents("account", "quartz.device-id", "https://nexus.test"); }\n' +
-      source.slice(cameraEventsBegin, cameraEventsEnd) +
-      '\n};',
-  );
-
-  return {
-    host: createCameraEventsHost(connection, fetchWrapper, logs, globalThis.crypto, 'test-agent'),
-    logs,
-    requests,
-  };
+  attachAPIClients(connection, { 'quartz.device-id': { value: { nexus_api_http_server_url: 'https://nexus.test' } } }, fetchWrapper, {
+    debug: (...args) => logs.push(args),
+  });
+  return { host: { run: () => connection.nestAPI.get('quartz.device-id', 'camera_events') }, logs, requests };
 }
 
 function setupGoogleCameraEvents(eventTypes) {
@@ -453,20 +295,8 @@ function setupGoogleCameraEvents(eventTypes) {
   let fetchWrapper = () => {};
   fetchWrapper.GET = 'get';
 
-  let createGoogleCameraEventsHost = new Function(
-    'connection',
-    'fetchWrapper',
-    'crypto',
-    'USER_AGENT',
-    'return new class {\n' +
-      '  #connections = new Map([["account", connection]]);\n' +
-      '  config = { options: { useNestAPI: false, useGoogleAPI: true } };\n' +
-      '  run() { return this.#getCameraEvents("account", "DEVICE_device-id"); }\n' +
-      source.slice(cameraEventsBegin, cameraEventsEnd) +
-      '\n};',
-  );
-
-  return createGoogleCameraEventsHost(connection, fetchWrapper, globalThis.crypto, 'test-agent');
+  attachAPIClients(connection, { 'DEVICE_device-id': { source: DATA_SOURCE.GOOGLE, value: {} } }, fetchWrapper);
+  return { run: () => connection.googleAPI.get('DEVICE_device-id', 'camera_events') };
 }
 
 test('Nest camera event timeouts are silent and use one request attempt', async () => {

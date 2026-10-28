@@ -94,7 +94,7 @@ test('platform restores valid cached identity, removes stale cache and shuts dow
   assert.deepEqual(platform.cachedAccessories, [accessory]);
   await callbacks.get('didFinishLaunching')();
   assert.equal(
-    errors.some((entry) => entry[0].includes('No active connections')),
+    errors.some((entry) => entry[0].includes('No active accounts')),
     true,
   );
   await callbacks.get('shutdown')();

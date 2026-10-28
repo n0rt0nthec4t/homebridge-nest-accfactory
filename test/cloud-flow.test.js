@@ -6,9 +6,11 @@ import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
 import { importSource } from './helpers/import-source.js';
 import HomeKitDevice from '../src/HomeKitDevice/HomeKitDevice.js';
+let { default: NestAPI } = await importSource(new URL('../src/api/nest.js', import.meta.url));
+let { default: GoogleAPI } = await importSource(new URL('../src/api/google.js', import.meta.url));
 
 let { default: Platform } = await importSource(new URL('../src/system.js', import.meta.url));
-let { default: Connections } = await importSource(new URL('../src/connections.js', import.meta.url));
+let { default: Accounts } = await importSource(new URL('../src/accounts.js', import.meta.url));
 let { default: Thermostat } = await importSource(new URL('../src/plugins/thermostat.js', import.meta.url));
 HomeKitDevice.PLUGIN_NAME = 'cloud-flow-test';
 HomeKitDevice.PLATFORM_NAME = 'CloudFlow';
@@ -18,6 +20,10 @@ function trait(resourceId, traitLabel, values, state = 'ACCEPTED') {
   return { traitId: { resourceId, traitLabel }, stateTypes: [state], patch: { values: structuredClone(values) } };
 }
 async function setup(context, options = {}) {
+  // Both API clients run; isolate REST polling unless this test supplies its own cloud fixture.
+  if (globalThis.fetch.mock === undefined) {
+    context.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ objects: [] })));
+  }
   let callbacks = new Map();
   let registered = [];
   let removed = [];
@@ -47,15 +53,41 @@ async function setup(context, options = {}) {
       },
     },
   };
-  let connections = new Map([['account', connection]]);
-  connections.start = () => {};
-  connections.shutdown = () => {
+  let accounts = new Map([['account', connection]]);
+  accounts.start = () => {};
+  accounts.shutdown = () => {
+    connection.nestAPI?.disconnect();
+    connection.googleAPI?.disconnect();
     connection.authorised = false;
     pending.resolve({ status: 0 });
   };
-  context.mock.method(Connections, 'fromConfig', (config, supplied) => {
-    auth = supplied.onAuthorised;
-    return connections;
+  context.mock.method(Accounts, 'fromConfig', (config, supplied) => {
+    connection.dataQueue = Promise.resolve();
+    auth = async (uuid, account) => {
+      let options = {
+        uuid,
+        account,
+        log: supplied.log,
+        getResource: supplied.getResource,
+        isCurrent: () => accounts.get(uuid) === account,
+        onUnauthorised: () => {
+          account.authorised = false;
+          account.nestAPI.disconnect();
+          account.googleAPI.disconnect();
+        },
+        onData: (batch) => {
+          let run = account.dataQueue.then(() => (batch.isCurrent() === true ? supplied.onData(uuid, batch) : undefined));
+          account.dataQueue = run.catch(() => {});
+          return run;
+        },
+      };
+      account.nestAPI = new NestAPI(options);
+      account.googleAPI = new GoogleAPI(options);
+      await supplied.onAuthorised(uuid, account);
+      await account.nestAPI.connect();
+      await account.googleAPI.connect();
+    };
+    return accounts;
   });
   let original = Thermostat.prototype.onUpdate;
   context.mock.method(Thermostat.prototype, 'onUpdate', function (data) {
@@ -77,7 +109,7 @@ async function setup(context, options = {}) {
   };
   let diagnostics = [];
   let log = Object.fromEntries(['debug', 'info', 'warn', 'error', 'success'].map((level) => [level, (...args) => diagnostics.push(args)]));
-  let platform = new Platform(log, { options: { useNestAPI: false, eveHistory: false }, ...options }, api);
+  let platform = new Platform(log, { options: { eveHistory: false }, ...options }, api);
   context.after(async () => {
     if (device !== undefined) {
       await device.remove();
@@ -117,7 +149,10 @@ async function setup(context, options = {}) {
     registered,
     removed,
     commands,
-    send: (traits) => consume({ traitStates: traits }),
+    send: async (traits) => {
+      await consume({ traitStates: traits });
+      await setImmediate();
+    },
     consume,
     get device() {
       return device;
@@ -183,7 +218,7 @@ test('HomeKit SET completes the real command route and rejects failed cloud writ
   assert.equal(flow.registered.length, 1);
 });
 
-test('retained Nest REST ingestion creates Protect and ignores retired thermostat/sensor buckets', { timeout: 2000 }, async (context) => {
+test('Nest REST ingestion creates Protect and withholds incomplete thermostat/sensor buckets', { timeout: 2000 }, async (context) => {
   let { default: Protect } = await importSource(new URL('../src/plugins/protect.js', import.meta.url));
   let protect;
   let ready = Promise.withResolvers();
@@ -223,7 +258,7 @@ test('retained Nest REST ingestion creates Protect and ignores retired thermosta
     return new Response(JSON.stringify({ updated_buckets: buckets.map(([object_key, value]) => ({ object_key, value })) }));
   });
   // The test account supplies only fixture credentials and never opens a real remote connection.
-  let flow = await setup(context, { options: { useNestAPI: true, eveHistory: false } });
+  let flow = await setup(context, { options: { eveHistory: false } });
   context.after(() => protect?.remove());
   await ready.promise;
   assert.equal(requests.length, 1);

@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { DATA_SOURCE } from '../src/consts.js';
 import HomeKitDevice from '../src/HomeKitDevice/HomeKitDevice.js';
+import { attachAPIClients } from './helpers/api-clients.js';
 
 let source = await readFile(new URL('../src/system.js', import.meta.url), 'utf8');
 let begin = source.indexOf('  async #set(');
@@ -19,7 +20,7 @@ let createHost = new Function(
   'crypto',
   'USER_AGENT',
   'return new class {' +
-    '#connections = new Map([["account", connection]]); #rawData = rawData;' +
+    '#accounts = new Map([["account", connection]]); #rawData = rawData;' +
     'run(id, values) { return this.#set("account", id, values); }' +
     source.slice(begin, end) +
     '};',
@@ -52,6 +53,7 @@ function setup(source, response, options = {}) {
     },
     { POST: 'post' },
   );
+  attachAPIClients(connection, raw, fetcher);
   let host = createHost(
     options.missingConnection === true ? undefined : connection,
     raw,
@@ -138,6 +140,41 @@ for (let command of [false, true]) {
     );
   }
 }
+
+for (let kind of ['humidifier', 'dehumidifier']) {
+  for (let reversed of [false, true]) {
+    test('paired Google ' + kind + ' settings preserve both changes; reversed=' + reversed, async () => {
+      let flow = setup(DATA_SOURCE.GOOGLE, { status: 0, data: [{ traitOperations: [{ progress: 'COMPLETE' }] }] });
+      let trait = kind + 'TargetHumidity';
+      flow.raw[flow.id].value = {
+        hvac_equipment_capabilities: { [kind === 'humidifier' ? 'hasHumidifier' : 'hasDehumidifier']: true },
+        humidity_control_settings: { [trait]: { enabled: false, value: 40 } },
+      };
+      let fields = [
+        [kind + '_state', true],
+        ['target_humidity_' + kind, 45],
+      ];
+      await flow.run(Object.fromEntries(reversed === true ? fields.reverse() : fields));
+      let sent = flow.requests.at(-1)[3].batchUpdateStateRequest[0].state.value;
+      assert.deepEqual(sent[trait], { enabled: true, value: 45 });
+      assert.deepEqual(flow.raw[flow.id].value.humidity_control_settings[trait], { enabled: false, value: 40 });
+    });
+  }
+}
+
+test('rejected Google trait changes do not leak into a later setting in the same request', async () => {
+  let attempts = 0;
+  let flow = setup(DATA_SOURCE.GOOGLE, () => ({
+    status: attempts++ === 0 ? 14 : 0,
+    data: [{ traitOperations: [{ progress: 'COMPLETE' }] }],
+  }));
+  flow.raw[flow.id].value = {
+    hvac_equipment_capabilities: { hasHumidifier: true },
+    humidity_control_settings: { humidifierTargetHumidity: { enabled: false, value: 40 } },
+  };
+  await assert.rejects(flow.run({ humidifier_state: true, target_humidity_humidifier: 45 }), AggregateError);
+  assert.deepEqual(flow.requests.at(-1)[3].batchUpdateStateRequest[0].state.value.humidifierTargetHumidity, { enabled: false, value: 45 });
+});
 
 test('mixed Google outcomes attempt remaining fields and reject the whole local commit', async (context) => {
   let attempts = 0;

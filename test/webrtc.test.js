@@ -599,6 +599,23 @@ for (let mode of ['success', 'sync failure', 'async failure']) {
     await setImmediate();
     assert.deepEqual(plis, [10]);
     assert.equal(feedback[0].length, 2);
+    // Validate actual wire boundaries: a short FIR length also misaligns the following REMB.
+    let fir = feedback[0][0].serialize();
+    let remb = feedback[0][1].serialize();
+    assert.equal(fir.length, 20);
+    assert.equal(fir[0], 0x84);
+    assert.equal(fir[1], 206);
+    assert.equal((fir.readUInt16BE(2) + 1) * 4, fir.length);
+    assert.equal(fir.readUInt32BE(4), 99);
+    assert.equal(fir.readUInt32BE(8), 0);
+    assert.equal(fir.readUInt32BE(12), 10);
+    assert.equal(fir[16], flow.transport.stats.media.keyframeRequests & 0xff);
+    assert.deepEqual(fir.subarray(17), Buffer.alloc(3));
+    let compound = Buffer.concat([fir, remb]);
+    let nextPacketOffset = (compound.readUInt16BE(2) + 1) * 4;
+    assert.equal(compound[nextPacketOffset], 0x8f);
+    assert.equal(compound[nextPacketOffset + 1], 206);
+    assert.equal(nextPacketOffset + (compound.readUInt16BE(nextPacketOffset + 2) + 1) * 4, compound.length);
     context.mock.timers.tick(1500);
     await setImmediate();
     assert.equal(plis.length, 2);

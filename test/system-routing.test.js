@@ -190,7 +190,7 @@ for (let unavailable of ['account', 'authorisation', 'transport', 'resource']) {
   test('public SET fails without ' + unavailable, async (context) => {
     let flow = await platformHarness(context, { value: traits });
     if (unavailable === 'account') {
-      flow.connections.delete('account');
+      flow.accounts.delete('account');
     }
     if (unavailable === 'authorisation') {
       flow.connection.authorised = false;

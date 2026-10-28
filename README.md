@@ -30,9 +30,13 @@ The following Nest devices are known to be supported by this Homebridge plugin:
 
 The accessory supports connections using a Nest account AND/OR a Google (migrated Nest account) account.
 
-**Note: Thermostats, temperature sensors and Heat Links continue to be supported through Google's newer API. Support for these devices through the legacy Nest API was removed in v0.4.4.**
-
 **Note: Google ended online support for 1st and 2nd generation Nest Learning Thermostats on October 25, 2025. These models are no longer supported by this plugin, but can still be controlled directly on the thermostat.** [Learn more](https://support.google.com/googlehome/answer/16233096).
+
+## Custom HomeKit Characteristics
+
+Some device-specific features are exposed through custom HomeKit characteristics that are not displayed in Apple's Home app. Compatible third-party HomeKit apps, such as [Eve](https://www.evehome.com/en-us/eve-app), may expose these additional values and controls. Support varies by app and characteristic.
+
+For example, Nest Protect exposes a read-only **Replace By Date** characteristic. Whether a custom characteristic can be viewed, changed, or used in scenes and automations depends on its permissions and the app's support.
 
 ## Configuration
 

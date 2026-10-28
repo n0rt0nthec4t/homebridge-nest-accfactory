@@ -79,7 +79,7 @@ for (let type of [DEVICE_TYPE.CAMERA, DEVICE_TYPE.DOORBELL, DEVICE_TYPE.FLOODLIG
     let flow = await platformHarness(context, { type });
     let before = structuredClone(flow.device.deviceData.apiAccess);
     let other = { ...flow.connection, cameraAuth: { token: 'other-account-token' } };
-    flow.connections.set('other', other);
+    flow.accounts.set('other', other);
     await flow.authorise('other', other, { wasAuthorised: true });
     assert.deepEqual(flow.device.deviceData.apiAccess, before);
     flow.connection.cameraAuth = { token: 'refreshed-owner-token' };

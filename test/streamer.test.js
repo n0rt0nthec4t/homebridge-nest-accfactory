@@ -617,7 +617,7 @@ for (let exit of ['ready', 'closed', 'reconnecting', 'timeout']) {
 }
 
 for (let diagnostics of [false, true]) {
-  test('source/output audio gap diagnostics are bounded and require opt-in: ' + diagnostics, async (context) => {
+  test('output audio gap diagnostics are bounded and require opt-in: ' + diagnostics, async (context) => {
     context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
     let logs = [];
     let { streamer, transport } = setup(
@@ -641,9 +641,8 @@ for (let diagnostics of [false, true]) {
       transport.emitMedia({ type: 'audio', timestamp: 100000 + index * 200, data: Buffer.from([0xf8, 0xff, 0xfe]) });
       advance(context, 200);
     }
-    for (let kind of ['source audio gap', 'output audio write gap']) {
-      assert.equal(logs.filter((entry) => entry[0].includes(kind)).length, diagnostics === true ? 1 : 0);
-    }
+    assert.equal(logs.filter((entry) => entry[0].includes('source audio gap')).length, 0);
+    assert.equal(logs.filter((entry) => entry[0].includes('output audio write gap')).length, diagnostics === true ? 1 : 0);
   });
 }
 
@@ -1151,42 +1150,29 @@ test('a video timestamp fault keeps both track clocks intact and waits for a key
   assert.equal(transport.stats.media.videoDrops['timestamp-recovery'], 1);
 });
 
-for (let restart of ['reopen', 'reconnect']) {
-  test('source audio gap diagnostics reset on ' + restart + ' without hiding new-session gaps', async (context) => {
+for (let mode of ['buffer', 'live']) {
+  test('source arrival pauses do not produce recurring logs during ' + mode, async (context) => {
     context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
     let logs = [];
     let { streamer, transport } = setup(
       context,
       {},
       {
+        bufferDuration: 8000,
         ffmpegDebug: true,
         log: { debug: (...args) => logs.push(args), info() {}, warn() {}, error() {}, success() {} },
       },
     );
-    await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'old', options: { includeAudio: true } });
+    await streamer.onMessage(mode === 'buffer' ? Streamer.MESSAGE_TYPE.START_BUFFER : Streamer.MESSAGE_TYPE.START_LIVE, {
+      sessionID: 'arrival-gap',
+      options: { includeAudio: true },
+    });
     addVideo(transport);
     transport.emitMedia({ type: 'audio', timestamp: Date.now(), data: Buffer.from([0xf8, 0xff, 0xfe]) });
     advance(context, 200);
     transport.emitMedia({ type: 'audio', timestamp: Date.now(), data: Buffer.from([0xf8, 0xff, 0xfe]) });
-    assert.equal(logs.filter((entry) => entry[0].includes('source audio gap')).length, 1);
-
-    if (restart === 'reopen') {
-      await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_LIVE, { sessionID: 'old' });
-      context.mock.timers.tick(697910);
-      await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'new', options: { includeAudio: true } });
-    } else {
-      transport.setState(StreamTransport.STATE.RECONNECTING);
-      advance(context, 1000);
-      transport.setState(StreamTransport.STATE.READY);
-    }
-    logs = [];
-    transport.emitMedia({ type: 'audio', timestamp: Date.now(), data: Buffer.from([0xf8, 0xff, 0xfe]) });
+    assert.equal(transport.stats.media.audioFrames, 2);
     assert.equal(logs.filter((entry) => entry[0].includes('source audio gap')).length, 0);
-    advance(context, 200);
-    transport.emitMedia({ type: 'audio', timestamp: Date.now(), data: Buffer.from([0xf8, 0xff, 0xfe]) });
-    let gaps = logs.filter((entry) => entry[0].includes('source audio gap'));
-    assert.equal(gaps.length, 1);
-    assert.deepEqual(gaps[0].slice(2), [200, '-', '-']);
   });
 }
 

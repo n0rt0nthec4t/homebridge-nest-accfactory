@@ -25,6 +25,10 @@ export async function loadDeviceModules() {
       runtime.devices.push(this);
     }
 
+    async onAdd() {
+      await runtime.onAdd?.(this);
+    }
+
     onUpdate(data) {
       runtime.messages.push(structuredClone(data));
     }

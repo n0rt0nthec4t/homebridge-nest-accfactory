@@ -26,7 +26,7 @@
 // - FFmpeg validation determines availability of camera streaming and HKSV recording
 // - Used during plugin startup before any device initialisation
 //
-// Code version 2026.10.20
+// Code version 2026.10.26
 // Mark Hulskamp
 'use strict';
 
@@ -95,10 +95,6 @@ function processConfig(config, log, api) {
   options.eveHistory = config.options?.eveHistory !== false; // Default to true if not explicitly set to false
   options.exclude = config.options?.exclude === true; // Default to false if not explicitly set to true
   options.logMotionEvents = config.options?.logMotionEvents !== false; // Default to true if not explicitly set to false
-
-  // Controls what APIs we use, default is to use both Nest and Google APIs
-  options.useNestAPI = config.options?.useNestAPI === true || config.options?.useNestAPI === undefined;
-  options.useGoogleAPI = config.options?.useGoogleAPI === true || config.options?.useGoogleAPI === undefined;
 
   // Verbose Logging. Independent of Homebridge debug mode.
   options.debug = config.options?.debug === true;

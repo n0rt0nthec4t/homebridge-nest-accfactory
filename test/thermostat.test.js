@@ -42,7 +42,7 @@ test('thermostat callbacks propagate asynchronous failures through the HAP write
 });
 
 for (let firstSource of [DATA_SOURCE.NEST, DATA_SOURCE.GOOGLE]) {
-  test('thermostat mapper ignores REST with raw data arriving first from ' + firstSource, () => {
+  test('thermostat mapper prefers protobuf over incomplete REST arriving first from ' + firstSource, () => {
     let nest = ['device.nest', { source: DATA_SOURCE.NEST, value: { serial_number: 'SERIAL', backplate_temperature: 19 } }];
     let google = [
       'DEVICE_GOOGLE',

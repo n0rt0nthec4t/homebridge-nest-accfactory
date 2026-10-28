@@ -33,7 +33,7 @@
 //
 // Data Translation:
 // - Protobuf thermostat data is mapped using HEATLINK_FIELD_MAP
-// - Uses protobuf API data only
+// - Prefer usable protobuf data; retain Nest REST fallback for legacy-only devices
 // - processRawData() builds device objects and applies configuration overrides
 //
 // Mark Hulskamp
@@ -56,7 +56,7 @@ import {
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.HEATLINK;
-  static VERSION = '2026.10.26'; // Code version
+  static VERSION = '2026.10.28'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
@@ -357,11 +357,20 @@ const HEATLINK_FIELD_MAP = {
           ? raw.value.heat_link.heatLinkSerialNumber.value.trim().toUpperCase()
           : undefined,
     },
+    nest: {
+      fields: [],
+      translate: ({ raw }) =>
+        (raw?.value?.heat_link_serial_number?.trim?.() ?? '') !== '' ? raw.value.heat_link_serial_number.trim().toUpperCase() : undefined,
+    },
   },
 
   nest_google_device_uuid: {
     required: true,
     google: {
+      fields: [],
+      translate: ({ objectKey }) => objectKey,
+    },
+    nest: {
       fields: [],
       translate: ({ objectKey }) => objectKey,
     },
@@ -372,6 +381,11 @@ const HEATLINK_FIELD_MAP = {
       fields: ['device_info'],
       translate: ({ raw }) => raw?.value?.device_info?.pairerId?.resourceId,
     },
+    nest: {
+      fields: ['serial_number'],
+      related: ['structure'],
+      translate: ({ rawData, raw }) => rawData?.['link.' + raw?.value?.serial_number]?.value?.structure,
+    },
   },
 
   // Model identification
@@ -381,6 +395,24 @@ const HEATLINK_FIELD_MAP = {
       fields: ['heat_link'],
       translate: ({ raw }) => {
         let model = raw?.value?.heat_link?.heatLinkModel?.value ?? '';
+
+        if (model.startsWith('Amber-2') === true) {
+          return 'Heat Link for Learning Thermostat (3rd gen, EU)';
+        }
+        if (model.startsWith('Amber-1') === true) {
+          return 'Heat Link for Learning Thermostat (2nd gen, EU)';
+        }
+        if (model.includes('Agate') === true) {
+          return 'Heat Link for Thermostat E (1st gen, EU)';
+        }
+
+        return model !== '' ? 'Heat Link (unknown - ' + model + ')' : undefined;
+      },
+    },
+    nest: {
+      fields: ['heat_link_model'],
+      translate: ({ raw }) => {
+        let model = raw?.value?.heat_link_model ?? '';
 
         if (model.startsWith('Amber-2') === true) {
           return 'Heat Link for Learning Thermostat (3rd gen, EU)';
@@ -406,12 +438,23 @@ const HEATLINK_FIELD_MAP = {
           ? processSoftwareVersion(raw.value.heat_link.heatLinkSwVersion.value)
           : undefined,
     },
+    nest: {
+      fields: ['heat_link_sw_version'],
+      translate: ({ raw }) =>
+        typeof raw?.value?.heat_link_sw_version === 'string' && raw.value.heat_link_sw_version.trim() !== ''
+          ? processSoftwareVersion(raw.value.heat_link_sw_version)
+          : undefined,
+    },
   },
 
   // Thermostat association
   associated_thermostat: {
     required: true,
     google: {
+      fields: [],
+      translate: ({ objectKey }) => objectKey,
+    },
+    nest: {
       fields: [],
       translate: ({ objectKey }) => objectKey,
     },
@@ -423,6 +466,10 @@ const HEATLINK_FIELD_MAP = {
       fields: ['display_settings'],
       translate: ({ raw }) => (raw?.value?.display_settings?.temperatureScale === 'TEMPERATURE_SCALE_F' ? 'F' : 'C'),
     },
+    nest: {
+      fields: ['temperature_scale'],
+      translate: ({ raw }) => (raw?.value?.temperature_scale?.toUpperCase?.() === 'F' ? 'F' : 'C'),
+    },
   },
 
   online: {
@@ -430,6 +477,11 @@ const HEATLINK_FIELD_MAP = {
     google: {
       fields: ['liveness'],
       translate: ({ raw }) => raw?.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
+    },
+    nest: {
+      fields: ['serial_number'],
+      related: ['online'],
+      translate: ({ rawData, raw }) => rawData?.['track.' + raw?.value?.serial_number]?.value?.online === true,
     },
   },
 
@@ -439,12 +491,20 @@ const HEATLINK_FIELD_MAP = {
       fields: ['hvac_equipment_capabilities'],
       translate: ({ raw }) => raw?.value?.hvac_equipment_capabilities?.hasHotWaterControl === true,
     },
+    nest: {
+      fields: ['has_hot_water_control'],
+      translate: ({ raw }) => raw?.value?.has_hot_water_control === true,
+    },
   },
 
   hot_water_active: {
     google: {
       fields: ['hot_water_trait'],
       translate: ({ raw }) => raw?.value?.hot_water_trait?.boilerActive === true,
+    },
+    nest: {
+      fields: ['hot_water_active'],
+      translate: ({ raw }) => raw?.value?.hot_water_active === true,
     },
   },
 
@@ -456,6 +516,11 @@ const HEATLINK_FIELD_MAP = {
         Number.isFinite(Number(raw?.value?.hot_water_settings?.boostTimerEnd?.seconds)) === true &&
         Number(raw.value.hot_water_settings.boostTimerEnd.seconds) > 0,
     },
+    nest: {
+      fields: ['hot_water_boost_time_to_end'],
+      translate: ({ raw }) =>
+        Number.isFinite(Number(raw?.value?.hot_water_boost_time_to_end)) === true && Number(raw.value.hot_water_boost_time_to_end) > 0,
+    },
   },
 
   has_hot_water_temperature: {
@@ -463,6 +528,10 @@ const HEATLINK_FIELD_MAP = {
     google: {
       fields: ['hvac_equipment_capabilities'],
       translate: ({ raw }) => raw?.value?.hvac_equipment_capabilities?.hasHotWaterTemperature === true,
+    },
+    nest: {
+      fields: ['has_hot_water_temperature'],
+      translate: ({ raw }) => raw?.value?.has_hot_water_temperature === true,
     },
   },
 
@@ -472,6 +541,13 @@ const HEATLINK_FIELD_MAP = {
       translate: ({ raw }) =>
         Number.isFinite(Number(raw?.value?.hot_water_trait?.temperature?.value)) === true
           ? adjustTemperature(Number(raw.value.hot_water_trait.temperature.value), 'C', 'C', true)
+          : undefined,
+    },
+    nest: {
+      fields: ['current_water_temperature'],
+      translate: ({ raw }) =>
+        Number.isFinite(Number(raw?.value?.current_water_temperature)) === true
+          ? adjustTemperature(Number(raw.value.current_water_temperature), 'C', 'C', true)
           : undefined,
     },
   },
@@ -484,6 +560,13 @@ const HEATLINK_FIELD_MAP = {
           ? adjustTemperature(Number(raw.value.hot_water_settings.temperature.value), 'C', 'C', true)
           : undefined,
     },
+    nest: {
+      fields: ['hot_water_temperature'],
+      translate: ({ raw }) =>
+        Number.isFinite(Number(raw?.value?.hot_water_temperature)) === true
+          ? adjustTemperature(Number(raw.value.hot_water_temperature), 'C', 'C', true)
+          : undefined,
+    },
   },
 
   description: {
@@ -493,10 +576,15 @@ const HEATLINK_FIELD_MAP = {
       related: ['located_annotations'],
       translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
     },
+    nest: {
+      fields: ['serial_number', 'where_id'],
+      related: ['name', 'wheres', 'structure'],
+      translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
+    },
   },
 };
 
-// Process protobuf data for heat link devices
+// Process linked Heat Link state with complete Google data preferred over Nest REST.
 export function processRawData(log, rawData, config, deviceType = undefined, changedData = undefined) {
   if (
     rawData === null ||
@@ -514,20 +602,58 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
   Object.entries(rawData)
     .filter(
       ([key, value]) =>
-        key.startsWith('DEVICE_') === true &&
-        value?.source === DATA_SOURCE.GOOGLE &&
-        PROTOBUF_RESOURCES.THERMOSTAT.includes(value?.value?.device_info?.typeName) === true,
+        (key.startsWith('device.') === true && value?.source === DATA_SOURCE.NEST) ||
+        (key.startsWith('DEVICE_') === true &&
+          value?.source === DATA_SOURCE.GOOGLE &&
+          PROTOBUF_RESOURCES.THERMOSTAT.includes(value?.value?.device_info?.typeName) === true),
     )
     .forEach(([object_key, value]) => {
       try {
-        // Revisit cached thermostat traits when the device or its home changes, including late parent discovery.
-        let resourceKeys = [object_key, value?.value?.device_info?.pairerId?.resourceId];
-        if (changedData instanceof Map && resourceKeys.some((key) => changedData.has(key)) === false) {
+        let isNest = value.source === DATA_SOURCE.NEST;
+        let serial = value.value?.serial_number ?? value.value?.device_identity?.serialNumber;
+        let homeId = isNest === true ? rawData['link.' + serial]?.value?.structure : value.value?.device_info?.pairerId?.resourceId;
+        let relatedIds =
+          isNest === true
+            ? [
+                'shared.' + serial,
+                'track.' + serial,
+                'link.' + serial,
+                'rcs_settings.' + serial,
+                'schedule.' + serial,
+                homeId,
+                'where.' + homeId?.split?.('.')[1],
+                ...(rawData['rcs_settings.' + serial]?.value?.associated_rcs_sensors ?? []),
+              ]
+            : [
+                homeId,
+                'device.' + serial,
+                'shared.' + serial,
+                'track.' + serial,
+                'link.' + serial,
+                'rcs_settings.' + serial,
+                'schedule.' + serial,
+                rawData['link.' + serial]?.value?.structure,
+                'where.' + rawData['link.' + serial]?.value?.structure?.split?.('.')[1],
+                ...(rawData['rcs_settings.' + serial]?.value?.associated_rcs_sensors ?? []),
+                ...(value.value?.remote_comfort_sensing_settings?.associatedRcsSensors ?? []).map((sensor) => sensor?.deviceId?.resourceId),
+              ];
+
+        // Nest state is split across buckets. Rebuild from committed values when
+        // any dependency changes, including a parent or sensor discovered later.
+        if (changedData instanceof Map && [object_key, ...relatedIds].some((id) => changedData.has(id)) === false) {
           return;
         }
 
-        // Heat Link state and controls are supplied by the associated protobuf thermostat.
-        if (
+        if (isNest === true) {
+          if (
+            typeof rawData['shared.' + serial]?.value !== 'object' ||
+            typeof rawData['track.' + serial]?.value !== 'object' ||
+            typeof rawData[homeId]?.value !== 'object' ||
+            typeof rawData['where.' + homeId?.split?.('.')[1]]?.value !== 'object'
+          ) {
+            return;
+          }
+        } else if (
           value?.value?.configuration_done?.deviceReady !== true ||
           typeof rawData?.[value?.value?.device_info?.pairerId?.resourceId] !== 'object' ||
           ['HEAT_LINK_CONNECTION_TYPE_ON_OFF', 'HEAT_LINK_CONNECTION_TYPE_OPENTHERM'].some(
@@ -539,13 +665,20 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
           return;
         }
 
-        // Required Heat Link traits need not arrive in the same Observe message.
+        let fields = new Set(Object.keys(value.value ?? {}));
+        for (let id of relatedIds) {
+          if (typeof id === 'string') {
+            fields.add(id.split('.')[0]);
+          }
+          for (let field of Object.keys(rawData[id]?.value ?? {})) {
+            fields.add(field);
+          }
+        }
+
         let mappedResult = buildMappedObject(
           HEATLINK_FIELD_MAP,
-          createMappingContext(rawData, object_key, {
-            google: value,
-          }),
-          new Set(Object.keys(value?.value ?? {})),
+          createMappingContext(rawData, object_key, isNest === true ? { nest: value } : { google: value }),
+          fields,
         );
 
         let serialNumber = mappedResult?.data?.serialNumber;
@@ -609,7 +742,10 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
 
           // Store full device
           // Full always overrides partial if present
-          if (existingDevice?.full !== true) {
+          if (
+            existingDevice?.full !== true ||
+            (value.source === DATA_SOURCE.GOOGLE && rawData[existingDevice.data.nest_google_device_uuid]?.source !== DATA_SOURCE.GOOGLE)
+          ) {
             devices[tempDevice.serialNumber] = {
               full: true,
               data: tempDevice,

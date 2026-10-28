@@ -1,4 +1,4 @@
-// Copy the distributable, including nested camera modules, preserving resource paths
+// Copy the distributable, including API classes and nested camera modules, preserving resource paths
 // and flattening the shared HomeKit modules.
 import { copyFileSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { dirname, extname, join } from 'node:path';
@@ -9,6 +9,7 @@ for (let [source, target, extensions, recursive] of [
   ['src', 'dist', ['.js'], false],
   ['src/res', 'dist/res', ['.h264', '.jpg'], false],
   ['src/protobuf', 'dist/protobuf', ['.proto'], true],
+  ['src/api', 'dist/api', ['.js'], true],
   ['src/plugins', 'dist/plugins', ['.js', '.mjs'], true],
 ]) {
   for (let name of readdirSync(join(root, source), { recursive })) {

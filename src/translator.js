@@ -20,14 +20,14 @@
 //       - translate: value resolver
 //       - fields: raw fields on the current object this mapping depends on
 //       - related: raw fields on related objects (via rawData) this mapping depends on
-//       - required: marks fields needed for a minimum viable (full) object
+//   - required: marks fields needed for a minimum viable (full) object
 // - Generic source handling (not tied to Nest / Google)
 // - Automatic fallback and default value support
 // - Custom merge functions per field
 // - Safe value resolution with error handling
 //
 // Delta / inclusion behaviour:
-// - buildMappedObject() can accept a Set of changed raw field names
+// - buildMappedObject() requires a Set of raw field names to include
 // - A mapped field is included if any of its declared dependencies match:
 //     fields ∪ related
 // - fields and related are treated equally for inclusion decisions
@@ -82,7 +82,7 @@
 // - Use result.data for device updates and result.hasRequired to determine
 //   whether the mapped result is complete enough to create a new device.
 //
-// Code version 2026.05.06
+// Code version 2026.10.26
 // Mark Hulskamp
 
 // Safely read a dot-separated path from an object
@@ -121,9 +121,7 @@ function hasRequiredFields(mappedData, fieldMap) {
   }
 
   // Check that every required field exists in the mapped data
-  return Object.entries(fieldMap)
-    .filter(([, mapEntry]) => mapEntry?.required === true)
-    .every(([fieldName]) => mappedData[fieldName] !== undefined);
+  return Object.entries(fieldMap).every(([fieldName, mapEntry]) => mapEntry?.required !== true || mappedData[fieldName] !== undefined);
 }
 
 // Resolve one mapping entry for a single source
@@ -136,35 +134,20 @@ function getMappedValue(mapping, context) {
     return undefined;
   }
 
-  if (typeof mapping === 'function') {
+  // Unwrap source metadata once, retaining the receiver for translate methods.
+  let owner = mapping !== null && typeof mapping === 'object' && mapping?.constructor === Object ? mapping : undefined;
+  let resolver = owner === undefined ? mapping : mapping.translate;
+
+  if (typeof resolver === 'function') {
     try {
-      return mapping(context);
-      // eslint-disable-next-line no-unused-vars
-    } catch (error) {
+      return resolver.call(owner, context);
+    } catch {
+      // An unusable source must still allow another source or declared default.
       return undefined;
     }
   }
 
-  if (typeof mapping === 'string' && mapping.trim() !== '') {
-    return getPath(context.raw, mapping);
-  }
-
-  if (mapping !== null && typeof mapping === 'object' && mapping?.constructor === Object) {
-    if (typeof mapping.translate === 'function') {
-      try {
-        return mapping.translate(context);
-        // eslint-disable-next-line no-unused-vars
-      } catch (error) {
-        return undefined;
-      }
-    }
-
-    if (typeof mapping.translate === 'string' && mapping.translate.trim() !== '') {
-      return getPath(context.raw, mapping.translate);
-    }
-  }
-
-  return undefined;
+  return typeof resolver === 'string' ? getPath(context.raw, resolver) : undefined;
 }
 
 // Helper to normalise a source object for translation
@@ -176,9 +159,7 @@ function normaliseSourceContext(source, objectKey, raw, extraContext = undefined
   };
 
   if (extraContext !== null && typeof extraContext === 'object' && extraContext?.constructor === Object) {
-    Object.entries(extraContext).forEach(([key, value]) => {
-      context[key] = value;
-    });
+    Object.assign(context, extraContext);
   }
 
   return context;
@@ -267,34 +248,40 @@ function buildMappedObject(fieldMap, context, includeFields = undefined) {
     return { data: mappedObject, hasRequired: false };
   }
 
-  Object.entries(fieldMap).forEach(([fieldName, mapEntry]) => {
-    let sourceKeys = Object.keys(context?.sources ?? {}).filter((sourceKey) => Object.hasOwn(mapEntry, sourceKey) === true);
-    let shouldInclude = sourceKeys.some((sourceKey) => {
-      let sourceMap = mapEntry?.[sourceKey];
-      let dependencies = [
-        ...(Array.isArray(sourceMap?.fields) === true ? sourceMap.fields : []),
-        ...(Array.isArray(sourceMap?.related) === true ? sourceMap.related : []),
-      ];
+  // Source membership is stable for this build, including entries with no raw value.
+  let sourceKeys = Object.keys(context?.sources ?? {});
+  let hasRequired = true;
 
-      // No declared dependencies for this source, so always include it
-      if (dependencies.length === 0) {
-        return true;
+  for (let [fieldName, mapEntry] of Object.entries(fieldMap)) {
+    let shouldInclude = sourceKeys.some((sourceKey) => {
+      if (Object.hasOwn(mapEntry, sourceKey) !== true) {
+        return false;
       }
 
-      return dependencies.some((field) => includeFields.has(field) === true);
+      let sourceMap = mapEntry[sourceKey];
+      let fields = Array.isArray(sourceMap?.fields) === true ? sourceMap.fields : [];
+      let related = Array.isArray(sourceMap?.related) === true ? sourceMap.related : [];
+
+      // Empty dependency lists include identity and other unconditional fields.
+      return (
+        (fields.length === 0 && related.length === 0) ||
+        fields.some((field) => includeFields.has(field) === true) ||
+        related.some((field) => includeFields.has(field) === true)
+      );
     });
 
-    if (shouldInclude !== true) {
-      return;
+    if (shouldInclude === true) {
+      mappedObject[fieldName] = resolveMappedField(fieldName, mapEntry, context);
     }
 
-    mappedObject[fieldName] = resolveMappedField(fieldName, mapEntry, context);
-  });
+    // Completeness concerns this result, including required fields excluded above.
+    // Keep mapping later fields even when this result can only be a partial update.
+    if (mapEntry?.required === true && mappedObject[fieldName] === undefined) {
+      hasRequired = false;
+    }
+  }
 
-  return {
-    data: mappedObject,
-    hasRequired: hasRequiredFields(mappedObject, fieldMap),
-  };
+  return { data: mappedObject, hasRequired };
 }
 
 // Merge two already-mapped objects together using a preferred source ordering
@@ -302,9 +289,7 @@ function mergeMappedObjects(primaryObject, secondaryObject) {
   let mergedObject = {};
 
   if (secondaryObject !== null && typeof secondaryObject === 'object' && secondaryObject?.constructor === Object) {
-    Object.entries(secondaryObject).forEach(([key, value]) => {
-      mergedObject[key] = value;
-    });
+    Object.assign(mergedObject, secondaryObject);
   }
 
   if (primaryObject !== null && typeof primaryObject === 'object' && primaryObject?.constructor === Object) {
@@ -333,9 +318,7 @@ function createMappingContext(rawData, objectKey, sources = {}, extraContext = u
   }
 
   if (extraContext !== null && typeof extraContext === 'object' && extraContext?.constructor === Object) {
-    Object.entries(extraContext).forEach(([key, value]) => {
-      context[key] = value;
-    });
+    Object.assign(context, extraContext);
   }
 
   return context;

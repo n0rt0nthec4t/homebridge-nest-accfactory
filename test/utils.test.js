@@ -6,6 +6,7 @@ import { EventEmitter } from 'node:events';
 
 import {
   UDPPorts,
+  isNumeric,
   adjustTemperature,
   buildDeviceDescription,
   crc24,
@@ -153,3 +154,16 @@ for (let failure of ['bind-event', 'bind-throw', 'close']) {
     assert.equal(socket.close.mock.callCount(), 1);
   });
 }
+
+// Numeric-string compatibility must not admit other JavaScript coercions.
+test('isNumeric preserves command validation for types, bounds and coercion traps', () => {
+  for (let value of [null, undefined, true, false, '', '  ', [], {}, NaN, Infinity, 'NaN']) {
+    assert.equal(isNumeric(value), false);
+  }
+  assert.equal(isNumeric('2.5'), true);
+  assert.equal(isNumeric('2.5', { type: 'integer' }), false);
+  assert.equal(isNumeric('2', { type: 'integer', min: 2, max: 2 }), true);
+  assert.equal(isNumeric(1, { min: 2 }), false);
+  assert.equal(isNumeric(3, { max: 2 }), false);
+  assert.equal(isNumeric(2, { type: 'unknown' }), false);
+});

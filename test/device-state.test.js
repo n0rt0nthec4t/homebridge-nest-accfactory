@@ -1006,3 +1006,13 @@ for (let [humidifier, dehumidifier, expected] of [
     assert.deepEqual(flow.writes, []);
   });
 }
+
+test('REST thermostat hides unsupported Eco control and protobuf upgrade retains the thermostat service', async (context) => {
+  let flow = await setup(context, 'thermostat', { supports_eco_mode: false });
+  let service = flow.device.thermostatService;
+  assert.equal(service.testCharacteristic(C.EcoMode), false);
+  await flow.device.update({ ...flow.device.deviceData, supports_eco_mode: true, eco_mode: 'auto' });
+  assert.equal(flow.device.thermostatService, service);
+  assert.equal(service.testCharacteristic(C.EcoMode), true);
+  assert.equal(service.getCharacteristic(C.EcoMode).value, true);
+});

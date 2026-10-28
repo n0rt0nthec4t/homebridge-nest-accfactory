@@ -15,8 +15,17 @@ let source = (await readFile(location, 'utf8'))
   .replace('from \'./devices.js\'', 'from ' + JSON.stringify(boundary))
   .replace('from \'./fetchWrapper.js\'', 'from ' + JSON.stringify(boundary))
   .replace('from \'node:timers\'', 'from ' + JSON.stringify(boundary));
+// Ingestion classes retain their real code; redirect only HTTP and timer boundaries.
+let apiClasses = {};
+for (let name of ['nest', 'google']) {
+  let apiLocation = new URL('../../src/api/' + name + '.js', import.meta.url);
+  let apiSource = (await readFile(apiLocation, 'utf8'))
+    .replace('from \'../fetchWrapper.js\'', 'from ' + JSON.stringify(boundary))
+    .replace('from \'node:timers\'', 'from ' + JSON.stringify(boundary));
+  apiClasses[name] = (await importSource(apiLocation, apiSource)).default;
+}
 let { default: Platform } = await importSource(location, source);
-let { default: Connections } = await importSource(new URL('../../src/connections.js', import.meta.url));
+let { default: Accounts } = await importSource(new URL('../../src/accounts.js', import.meta.url));
 HomeKitDevice.PLUGIN_NAME = 'platform-harness';
 HomeKitDevice.PLATFORM_NAME = 'Fixture';
 let complete = () => ({ status: 0, data: [{ traitOperations: [{ progress: 'COMPLETE', status: { code: 0 } }] }] });
@@ -57,19 +66,51 @@ export async function platformHarness(context, options = {}) {
       },
     },
   };
-  let connections = new Map([['account', connection]]);
-  connections.start = () => {};
-  connections.shutdown = () => {
+  let accounts = new Map([['account', connection]]);
+  accounts.start = () => {};
+  accounts.shutdown = () => {
+    connection.nestAPI?.disconnect();
+    connection.googleAPI?.disconnect();
     connection.authorised = false;
     pending.resolve({ status: 0 });
   };
-  connections.markUnauthorised = (...args) => {
+  let markUnauthorised = (...args) => {
+    connection.nestAPI?.disconnect();
+    connection.googleAPI?.disconnect();
     connection.authorised = false;
     logs.push(['unauthorised', ...args]);
   };
-  context.mock.method(Connections, 'fromConfig', (config, supplied) => {
-    authorise = supplied.onAuthorised;
-    return connections;
+  context.mock.method(Accounts, 'fromConfig', (config, supplied) => {
+    // Emulate the authenticated manager boundary; protocol clients and System's
+    // commit/reconciliation code remain real in this platform integration harness.
+    connection.dataQueue = Promise.resolve();
+    authorise = async (uuid, account, details = {}) => {
+      // Tests install the replacement transport before announcing refreshed auth.
+      let transport = account.grpcTransport;
+      account.googleAPI?.disconnect();
+      account.grpcTransport = transport;
+      let options = {
+        uuid,
+        account,
+        log: supplied.log,
+        getResource: supplied.getResource,
+        isCurrent: () => accounts.get(uuid) === account,
+        onUnauthorised: (reason) => markUnauthorised(uuid, reason),
+        onData: (batch) => {
+          let run = account.dataQueue.then(() => (batch.isCurrent() === true ? supplied.onData(uuid, batch) : undefined));
+          account.dataQueue = run.catch(() => {});
+          return run;
+        },
+      };
+      account.nestAPI ??= new apiClasses.nest(options);
+      account.googleAPI ??= new apiClasses.google(options);
+      await supplied.onAuthorised(uuid, account, details);
+      if (details.wasAuthorised !== true) {
+        account.nestAPI.connect();
+      }
+      account.googleAPI.connect();
+    };
+    return accounts;
   });
   let subscription = Promise.withResolvers();
   runtime.fetch = async (...args) => {
@@ -104,7 +145,7 @@ export async function platformHarness(context, options = {}) {
   let log = Object.fromEntries(
     ['debug', 'info', 'warn', 'error', 'success'].map((level) => [level, (...args) => logs.push([level, ...args])]),
   );
-  let platform = new Platform(log, { options: { useNestAPI: true, eveHistory: false, debug: true, ...options.config } }, api);
+  let platform = new Platform(log, { options: { eveHistory: false, debug: true, ...options.config } }, api);
   for (let accessory of options.cachedAccessories ?? []) {
     platform.configureAccessory(accessory);
   }
@@ -124,14 +165,16 @@ export async function platformHarness(context, options = {}) {
   }
   await authorise('account', connection);
   assert.equal(typeof consume, 'function');
-  let send = async (id, values) =>
-    consume({
+  let send = async (id, values) => {
+    await consume({
       traitStates: Object.entries(values).map(([traitLabel, values]) => ({
         traitId: { resourceId: id, traitLabel },
         stateTypes: ['ACCEPTED'],
         patch: { values: structuredClone(values) },
       })),
     });
+    await setImmediate();
+  };
   let id = options.id ?? 'DEVICE_TEST';
   if (options.source === DATA_SOURCE.NEST) {
     subscription.resolve({ json: async () => ({ updated_buckets: [{ object_key: id, value: options.value ?? {} }] }) });
@@ -142,7 +185,7 @@ export async function platformHarness(context, options = {}) {
   return {
     platform,
     connection,
-    connections,
+    accounts,
     registered,
     removed,
     requests,

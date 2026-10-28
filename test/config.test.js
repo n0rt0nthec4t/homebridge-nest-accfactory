@@ -114,21 +114,22 @@ test('missing, null and malformed options receive defaults while valid settings 
     assert.equal(Array.isArray(config.options), false);
     assert.equal(config.options.eveHistory, true);
     assert.equal(config.options.maxStreams, 2);
-    assert.equal(config.options.useNestAPI, true);
-    assert.equal(config.options.useGoogleAPI, true);
+    assert.equal(Object.hasOwn(config.options, 'useNestAPI'), false);
+    assert.equal(Object.hasOwn(config.options, 'useGoogleAPI'), false);
   }
-  let options = { eveHistory: false, maxStreams: 3, useNestAPI: false, ffmpegDebug: true };
+  let options = { eveHistory: false, maxStreams: 3, ffmpegDebug: true };
   let config = processConfig({ options }, log, {});
   assert.equal(config.options, options);
   assert.equal(config.options.eveHistory, false);
   assert.equal(config.options.maxStreams, 3);
-  assert.equal(config.options.useNestAPI, false);
   assert.equal(config.options.ffmpeg.debug, true);
 });
 
 test('maxStreams preserves integer counts from one to four and defaults invalid counts', async (t) => {
   t.mock.method(child_process, 'spawnSync', () => ({ error: new Error('No test FFmpeg') }));
   let schema = JSON.parse(await readFile(new URL('../config.schema.json', import.meta.url), 'utf8'));
+  assert.equal(Object.hasOwn(schema.schema.properties.options.properties, 'useNestAPI'), false);
+  assert.equal(Object.hasOwn(schema.schema.properties.options.properties, 'useGoogleAPI'), false);
   assert.deepEqual(schema.schema.properties.options.properties.maxStreams, { type: 'integer', default: 2, minimum: 1, maximum: 4 });
   for (let [value, expected] of [
     [1, 1],
@@ -317,7 +318,7 @@ for (let devices of [{ SERIAL: null }, { SERIAL: [] }, { SERIAL: false }]) {
   });
 }
 
-test('explicit configuration flags preserve disabled APIs and route debug parameters to the logger', (context) => {
+test('explicit configuration flags preserve disabled features and route debug parameters to the logger', (context) => {
   context.mock.method(child_process, 'spawnSync', () => ({ error: new Error('Fixture probe unavailable') }));
   let messages = [];
   let log = { warn() {}, info: (...args) => messages.push(args) };
@@ -327,8 +328,6 @@ test('explicit configuration flags preserve disabled APIs and route debug parame
         debug: true,
         supportDump: true,
         exclude: true,
-        useGoogleAPI: false,
-        useNestAPI: false,
         eveHistory: false,
         logMotionEvents: false,
       },
@@ -339,7 +338,7 @@ test('explicit configuration flags preserve disabled APIs and route debug parame
   for (let key of ['debug', 'supportDump', 'exclude']) {
     assert.equal(config.options[key], true);
   }
-  for (let key of ['useGoogleAPI', 'useNestAPI', 'eveHistory', 'logMotionEvents']) {
+  for (let key of ['eveHistory', 'logMotionEvents']) {
     assert.equal(config.options[key], false);
   }
   log.debug('Fixture %s', 'parameter');

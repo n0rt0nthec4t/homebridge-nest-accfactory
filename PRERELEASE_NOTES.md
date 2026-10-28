@@ -4,11 +4,43 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.4.5-alpha.8 (2026/10/26)
+## v0.4.5-alpha.9 (2026/10/28)
 
 ### Added
 
-- Expose thermostat Eco Mode On/Off through a custom characteristic for compatible HomeKit apps, scenes and automations
+- Expose thermostat Eco Mode On/Off through a custom characteristic for compatible HomeKit apps, scenes and automations; Manual and Automatic Eco report On, with On selecting Manual Eco and Off disabling Eco [#353](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/pull/353) [@jakemike1](https://github.com/jakemike1)
+
+### Fixed
+
+- Restore Nest REST fallback for thermostats, temperature sensors and Heat Links not available through protobuf, while preferring complete Google data when both sources represent the device
+- Correct WebRTC FIR packet length and media-source SSRC so keyframe recovery feedback and its following REMB packet have valid wire boundaries
+- Preserve earlier accepted Google trait changes when one request updates multiple settings on the same trait
+- Remove all accessories using a deleted resource, including linked Heat Links, while preserving accessories using the other API; handle swarm updates that evict Nest identity before bucket removal
+- Retire timed-out Google snapshot waiters, discard late refresh replies and abort image fetches at the overall request deadline
+
+### Changed
+
+- Create self-contained Nest REST and Google protobuf API modules with consistent connect/disconnect/get/set interfaces, shared account authentication, and API-owned subscriptions, queries, commands and snapshot handling
+- Simplify shared device translation, removing repeated resolver logic, dependency-array copying and the separate completeness scan while retaining source fallback and partial-update behavior
+- Simplify Streamer by inlining five small private helpers for buffering, timeline setup, drop counters and scheduler registration, preserving lifecycle ownership and media timing
+
+### Removed
+
+- Remove recurring source audio-gap debug messages during background buffering and streaming; per-stream timing and delivery summaries remain available with `ffmpegDebug`
+
+### Testing
+
+- Check startup and device discovery with Google accounts and, where available, legacy Nest accounts; existing accessories should retain their identity without duplicates
+- Leave Homebridge running through an account token refresh and check that device updates, controls and camera snapshots continue working; with multiple accounts, check devices from each account
+- Change a device setting in HomeKit and confirm it reaches the device, then change it in the Nest/Google app and confirm HomeKit updates; include thermostat mode/setpoints and supported camera, Protect, lock or floodlight controls
+- For REST-only thermostats, sensors and Heat Links, check discovery, online status, room names, remote sensor selection, setpoints and supported fan, humidity and hot water controls; devices also available through protobuf should keep using Google data without duplicate accessories
+- Where supported, change related settings together, such as humidifier enable/target humidity or fan state/duration/speed, and check that one change does not undo another
+- Check that weather accessories receive readings after startup and continue refreshing for homes discovered through either API
+- Request camera snapshots repeatedly, including while live view or HKSV recording is active; check that images update and an unavailable camera does not leave snapshot requests hanging
+- Test repeated live-view start/stop, longer viewing sessions, two-way audio and playable HKSV recordings on WebRTC and NexusTalk cameras; listen for audio gaps and check recording audio/video sync and WebRTC startup or freezes
+- When reporting an issue, include the plugin version, account login type, affected device model, Node.js/FFmpeg versions and host hardware; for streaming issues, enable `ffmpegDebug` and include the per-stream summary and timing lines logged when the session closes
+
+## v0.4.5-alpha.8 (2026/10/26)
 
 ### Changed
 

@@ -14,7 +14,7 @@
 // - Bootstrap video from an IDR and its matching SPS/PPS configuration
 // - Own output FFmpeg processes, RTP endpoints and optional talkback forwarding
 // - Supply fallback video while offline, disabled or migrating
-// - Collect output diagnostics only when support dumps are enabled
+// - Collect output diagnostics only when FFmpeg debugging is enabled
 //
 // Retention and timing:
 // - MediaTimeline holds independent bounded video/audio rings with stable indexes
@@ -121,8 +121,6 @@ export default class Streamer {
   #lastFallbackFrameTime = 0; // Timer for pacing fallback frames
   #rotation = 0; // Rotate the first receiver serviced on each scheduling turn
   #lastMediaTime = {}; // Track last buffered media time per type for fallback ordering guards
-  #lastSourceAudioAt = undefined; // Last time Streamer received transport audio
-  #lastSourceAudioGapLogTime = undefined; // Throttle source-audio gap diagnostics
   #lastKeyframeAt = undefined; // Last accepted keyframe arrival at Streamer
   #fallbackAudio = undefined; // Shared normalized silence, keyed by source buffer and codec
   #lastKeyframeBytes = undefined; // Size of last accepted keyframe
@@ -315,16 +313,32 @@ export default class Streamer {
     let options = typeof message?.options === 'object' && message.options !== null ? message.options : undefined;
 
     if (type === Streamer.MESSAGE_TYPE.START_BUFFER) {
-      // Enable retained buffer and ensure source is connected.
-      // This does not create an output stream, only prepares buffering for future use.
-      await this.#startBuffering(options);
+      // Buffering owns source demand without creating a receiver output.
+      this.#timeline ??= new MediaTimeline(0, STREAMER_INITIAL_BUFFER_CAPACITY, STREAMER_MAX_BUFFER_CAPACITY);
+      this.#bufferEnabled = true;
+      this.log?.debug?.('Started buffering from device uuid "%s"', this.nest_google_device_uuid);
+      this.#syncSchedulerState();
+      await this.#doConnect(options ?? {});
       return;
     }
 
     if (type === Streamer.MESSAGE_TYPE.STOP_BUFFER) {
-      // Disable retained buffer.
-      // If no outputs are active, this may also allow the source to close.
-      await this.#stopBuffering();
+      if (this.#bufferEnabled !== true) {
+        return;
+      }
+
+      this.#bufferEnabled = false;
+      this.log?.debug?.('Stopped buffering from device uuid "%s"', this.nest_google_device_uuid);
+
+      // Live and preparing outputs retain source ownership after buffering stops.
+      if (this.#outputs.size === 0) {
+        this.#resetRetainedState();
+        this.#syncSchedulerState();
+        await this.#doClose();
+        return;
+      }
+
+      this.#syncSchedulerState();
       return;
     }
 
@@ -424,8 +438,6 @@ export default class Streamer {
     let now = Date.now();
     let data = undefined;
     let keyFrame = false;
-    let sourceAudioGapMs = 0;
-    let keyframeAgeMs = undefined;
 
     // StreamTransport has validated and normalized this complete frame. This
     // private consumer only owns retention and per-output playout protection.
@@ -440,37 +452,8 @@ export default class Streamer {
 
     data = media.data;
 
-    if (mediaType === Streamer.MEDIA_TYPE.AUDIO) {
-      if (typeof this.#lastSourceAudioAt === 'number') {
-        sourceAudioGapMs = now - this.#lastSourceAudioAt;
-
-        if (
-          this.ffmpegDebug === true &&
-          sourceAudioGapMs >= STREAMER_AUDIO_GAP_LOG_MS &&
-          (typeof this.#lastSourceAudioGapLogTime !== 'number' ||
-            now - this.#lastSourceAudioGapLogTime >= STREAMER_AUDIO_GAP_LOG_INTERVAL_MS)
-        ) {
-          keyframeAgeMs = typeof this.#lastKeyframeAt === 'number' ? now - this.#lastKeyframeAt : undefined;
-          this.#lastSourceAudioGapLogTime = now;
-
-          this?.log?.debug?.(
-            'Streamer source audio gap for device uuid "%s": gapMs=%s keyframeAgeMs=%s keyframeBytes=%s',
-            this.nest_google_device_uuid,
-            Math.round(sourceAudioGapMs),
-            Number.isFinite(keyframeAgeMs) === true && keyframeAgeMs <= STREAMER_AV_CORRELATION_WINDOW_MS ? Math.round(keyframeAgeMs) : '-',
-            Number.isFinite(this.#lastKeyframeBytes) === true ? this.#lastKeyframeBytes : '-',
-          );
-        }
-      }
-
-      this.#lastSourceAudioAt = now;
-    }
-
     // Ensure shared media timeline exists before proceeding.
-    this.#ensureMediaTimeline();
-    if (this.#timeline === undefined) {
-      return;
-    }
+    this.#timeline ??= new MediaTimeline(0, STREAMER_INITIAL_BUFFER_CAPACITY, STREAMER_MAX_BUFFER_CAPACITY);
 
     if (mediaType === Streamer.MEDIA_TYPE.VIDEO && keyFrame === true) {
       this.#lastKeyframeAt = now;
@@ -539,37 +522,6 @@ export default class Streamer {
     if (this.isStreaming() === true) {
       Streamer.#wake();
     }
-  }
-
-  async #startBuffering(options = {}) {
-    this.#ensureMediaTimeline();
-    if (this.#timeline === undefined) {
-      return;
-    }
-
-    this.#bufferEnabled = true;
-    this.log?.debug?.('Started buffering from device uuid "%s"', this.nest_google_device_uuid);
-    this.#syncSchedulerState();
-
-    await this.#doConnect(options);
-  }
-
-  async #stopBuffering() {
-    if (this.#bufferEnabled !== true) {
-      return;
-    }
-
-    this.#bufferEnabled = false;
-    this.log?.debug?.('Stopped buffering from device uuid "%s"', this.nest_google_device_uuid);
-
-    if (this.#outputs.size === 0) {
-      this.#resetRetainedState();
-      this.#syncSchedulerState();
-      await this.#doClose();
-      return;
-    }
-
-    this.#syncSchedulerState();
   }
 
   async #createOutput(sessionID, type, options) {
@@ -651,7 +603,7 @@ export default class Streamer {
     let startTime = Date.now();
 
     // Ensure retained timeline exists and start/connect source if needed.
-    this.#ensureMediaTimeline();
+    this.#timeline ??= new MediaTimeline(0, STREAMER_INITIAL_BUFFER_CAPACITY, STREAMER_MAX_BUFFER_CAPACITY);
     await this.#doConnect(options);
     timeline = this.#timeline;
 
@@ -1011,22 +963,13 @@ export default class Streamer {
     this.#generation++;
   }
 
-  #ensureMediaTimeline() {
-    if (this.#timeline === undefined) {
-      this.#timeline = new MediaTimeline(0, STREAMER_INITIAL_BUFFER_CAPACITY, STREAMER_MAX_BUFFER_CAPACITY);
-    }
-  }
-
   #resetSourceState() {
     this.#waitingForKeyframe = false;
     this.#lastMediaTime = {};
     this.#generation++;
     this.#timeline?.clear();
 
-    // Arrival-gap diagnostics belong to one source session. Idle time and the
-    // previous session's keyframe must not be reported against its replacement.
-    this.#lastSourceAudioAt = undefined;
-    this.#lastSourceAudioGapLogTime = undefined;
+    // Reset fallback data and output-gap context for the new source session.
     this.#fallbackAudio = undefined;
     this.#lastKeyframeAt = undefined;
     this.#lastKeyframeBytes = undefined;
@@ -1116,19 +1059,6 @@ export default class Streamer {
         }
       }
       diagnostics.lastAudioWriteAt = dateNow;
-    }
-  }
-
-  #statsDrop(output, type) {
-    if (output.stats === undefined) {
-      return;
-    }
-
-    if (type === Streamer.MEDIA_TYPE.VIDEO) {
-      output.stats.drops.videoBeforeKeyframe++;
-    }
-    if (type === Streamer.MEDIA_TYPE.AUDIO) {
-      output.stats.drops.audioBeforeKeyframe++;
     }
   }
 
@@ -1261,8 +1191,8 @@ export default class Streamer {
           output.seenKeyFrame = true;
           output.config = item.config;
           this.#statsWrite(output, type, now);
-        } else {
-          this.#statsDrop(output, type);
+        } else if (output.stats !== undefined) {
+          output.stats.drops.videoBeforeKeyframe++;
         }
 
         output.videoCursor++;
@@ -1271,8 +1201,8 @@ export default class Streamer {
         if (output.type !== Streamer.STREAM_TYPE.RECORD || output.seenKeyFrame === true) {
           muxer.writeAudio(item.data, item.time);
           this.#statsWrite(output, type, now);
-        } else {
-          this.#statsDrop(output, type);
+        } else if (output.stats !== undefined) {
+          output.stats.drops.audioBeforeKeyframe++;
         }
 
         output.audioCursor++;
@@ -1391,11 +1321,6 @@ export default class Streamer {
     );
   }
 
-  static #addStreamer(streamer) {
-    this.#streamers.set(streamer.#HomeKitDeviceUUID, streamer);
-    this.#wake();
-  }
-
   static #removeStreamer(streamer) {
     this.#streamers.delete(streamer.#HomeKitDeviceUUID);
     if (this.#streamers.size === 0) {
@@ -1407,7 +1332,8 @@ export default class Streamer {
 
   #syncSchedulerState() {
     if (this.isStreaming() === true) {
-      Streamer.#addStreamer(this);
+      Streamer.#streamers.set(this.#HomeKitDeviceUUID, this);
+      Streamer.#wake();
     } else {
       Streamer.#removeStreamer(this);
     }

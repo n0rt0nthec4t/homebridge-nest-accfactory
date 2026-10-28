@@ -39,8 +39,8 @@
 // - Local vs remote stream path detection based on SDP candidates
 //
 // Notes:
-// - WebRTC signaling and stream control are performed via the shared
-//   Google Home Foyer gRPC transport/client
+// - This transport owns its Google Home Foyer gRPC client and stream signalling
+// - GoogleAPI owns the separate account Observe/query/command transport
 // - ICE "connected" indicates transport readiness, not media availability
 // - Stream readiness is determined by successful video frame delivery
 //   (first decodable keyframe), not connection state
@@ -51,7 +51,7 @@
 // - Streamer owns retention and delivery pacing; source timestamps are not playout deadlines
 // - Incomplete keyframes and pathological access units are dropped/recovered locally rather than blocking the plugin process
 //
-// Code version 2026.10.26
+// Code version 2026.10.27
 // Mark Hulskamp
 'use strict';
 
@@ -1886,7 +1886,8 @@ export default class WebRTC extends StreamTransport {
       let rembMantissa = VIDEO_REMB_BITRATE;
 
       firBuffer.writeUInt32BE(receiver.rtcpSsrc >>> 0, 0);
-      firBuffer.writeUInt32BE(video.ssrc >>> 0, 4);
+      // FIR identifies the camera in its FCI; the common media-source SSRC is zero.
+      firBuffer.writeUInt32BE(0, 4);
       firBuffer.writeUInt32BE(video.ssrc >>> 0, 8);
       firBuffer[12] = this.stats.media.keyframeRequests & 0xff;
 
@@ -1900,7 +1901,8 @@ export default class WebRTC extends StreamTransport {
           new werift.RtcpPayloadSpecificFeedback({
             feedback: {
               count: 4,
-              length: firBuffer.length / 4 - 1,
+              // Include the RTCP header before subtracting one 32-bit word.
+              length: firBuffer.length / 4,
               serialize: () => firBuffer,
             },
           }),

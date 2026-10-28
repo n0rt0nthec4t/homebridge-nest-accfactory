@@ -14,7 +14,7 @@
 // - Adapt bounded FFmpeg recording fragments to the HomeKit async generator
 // - Retain HomeKit session identity, port reservations and the live RTCP watchdog
 // - Handle motion events, cooldown timing, and Eve history integration
-// - Provide snapshot handling with fallback images
+// - Request snapshot buffers through the selected API and provide HomeKit fallback images
 // - Translate Nest / Google camera data into HomeKit-facing state
 //
 // Services:
@@ -41,7 +41,8 @@
 // - FFmpeg owns command construction, process lifecycle and MP4 fragment reading
 // - Recording keeps isLast false for the existing HAP-NodeJS workaround
 // - Motion events trigger HKSV recording and HomeKit automations
-// - Snapshot fallback images are used for offline, disabled, or migration states
+// - API clients own snapshot refresh, URL construction, authentication and image download
+// - This module selects fallback images for offline, disabled, migration or failed snapshots
 //
 // Mark Hulskamp
 'use strict';
@@ -90,7 +91,7 @@ const PREBUFFER_LENGTH = 4000;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.10.26'; // Code version
+  static VERSION = '2026.10.27'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -822,8 +823,8 @@ export default class NestCamera extends HomeKitDevice {
 
     if (this.deviceData.migrating !== true && this.deviceData.streaming_enabled === true && this.deviceData.online === true) {
       // Request a snapshot image from upstream.
-      // Snapshot freshness, caching, and fallback handling are managed centrally in system.js
-      let response = await this.get({ uuid: this.deviceData.nest_google_device_uuid, camera_snapshot: Buffer.alloc(0) });
+      // The selected account API owns snapshot refresh and fallback handling.
+      let response = await this.get({ uuid: this.deviceData.nest_google_device_uuid, camera_snapshot: true });
 
       if (
         Buffer.isBuffer(response?.camera_snapshot) === true &&

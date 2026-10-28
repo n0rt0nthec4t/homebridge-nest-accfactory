@@ -145,3 +145,64 @@ test('translator rejects invalid mapping contracts and missing required fields w
   assert.deepEqual(buildMappedObject(FIELD_MAP, {}, undefined), { data: {}, hasRequired: false });
   assert.deepEqual(createMappingContext({}, 'device', null, []), { rawData: {}, objectKey: 'device', sources: {} });
 });
+
+test('translator preserves translate method receivers and unbound direct functions', () => {
+  let context = { raw: { value: 7 } };
+  let mapping = {
+    translate(input) {
+      assert.equal(this, mapping);
+      assert.equal(input, context);
+      return input.raw.value;
+    },
+  };
+  assert.equal(getMappedValue(mapping, context), 7);
+  assert.equal(
+    getMappedValue(function (input) {
+      assert.equal(this, undefined);
+      return input.raw.value;
+    }, context),
+    7,
+  );
+  assert.equal(getMappedValue('value', context), 7);
+  assert.equal(getMappedValue({ translate: 'value' }, context), 7);
+});
+
+for (let value of [false, 0, null, '', undefined]) {
+  test('translator completeness retains defined-value semantics: ' + JSON.stringify(value), () => {
+    let map = { required: { required: true, google: { fields: [] }, merge: () => value } };
+    let result = buildMappedObject(map, createMappingContext({}, 'device', { google: {} }), new Set());
+    assert.deepEqual(result, { data: { required: value }, hasRequired: value !== undefined });
+    assert.equal(result.hasRequired, hasRequiredFields(result.data, map));
+  });
+}
+
+test('translator maps later partial fields even when an earlier required dependency is excluded', () => {
+  let map = {
+    identity: { required: true, google: { fields: ['identity'], translate: 'id' } },
+    enabled: { google: { fields: ['state'], translate: 'enabled' } },
+  };
+  let result = buildMappedObject(map, createMappingContext({}, 'device', { google: { id: 'DEVICE', enabled: false } }), new Set(['state']));
+  assert.deepEqual(result, { data: { enabled: false }, hasRequired: false });
+});
+
+test('translator retains undefined source membership and the complete merge context', () => {
+  let rawData = { parent: { enabled: false } };
+  let context = createMappingContext(rawData, 'device', { google: undefined, nest: { enabled: false } }, { parentUUID: 'parent' });
+  let result = buildMappedObject(
+    {
+      identity: { required: true, google: { fields: [], translate: 'id' } },
+      enabled: {
+        google: { fields: ['other'], translate: 'enabled' },
+        nest: { related: ['parent_state'], translate: ({ rawData, parentUUID }) => rawData[parentUUID].enabled },
+        merge: ({ values, context: received }) => {
+          assert.equal(received, context);
+          assert.deepEqual(values, { google: undefined, nest: false });
+          return values.nest;
+        },
+      },
+    },
+    context,
+    new Set(['parent_state']),
+  );
+  assert.deepEqual(result, { data: { identity: undefined, enabled: false }, hasRequired: false });
+});

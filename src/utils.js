@@ -7,16 +7,15 @@
 // Responsibilities:
 // - Perform temperature conversion and normalisation
 // - Provide hashing utilities for device identity (CRC24)
-// - Scale and transform numeric values between ranges
+// - Validate numeric command values and scale between ranges
 // - Parse duration strings into normalised seconds
 // - Select and track UDP ports shared by camera endpoints and FFmpeg
 // - Build normalised device descriptions from Google and Nest metadata
-// - Apply common device data processing and configuration overrides
 //
 // Features:
 // - Temperature conversion with optional rounding (Celsius / Fahrenheit)
 // - CRC24 hashing for stable device identifiers
-// - Value scaling with bounds checking
+// - Numeric validation with type/range checks and value scaling
 // - Shared Google Home/Nest device description normalisation helper
 // - Flexible duration parsing (e.g. "1w3d2h15m30s")
 //
@@ -26,7 +25,7 @@
 // - Data helpers return undefined for invalid inputs where appropriate
 // - UDP allocation rejects socket failures; owners release reservations on teardown
 //
-// Code version 2026.10.24
+// Code version 2026.10.26
 // Mark Hulskamp
 'use strict';
 
@@ -383,5 +382,32 @@ const UDPPorts = {
   },
 };
 
+// Validate numbers/numeric strings without coercing booleans, null or blank input.
+// Optional type and inclusive bounds are shared by Nest and Google command validation.
+function isNumeric(input, { type = 'number', min = -Infinity, max = Infinity } = {}) {
+  if (typeof input !== 'number' && (typeof input !== 'string' || input.trim() === '')) {
+    return false;
+  }
+
+  // Validation leaves the caller's value unchanged; payloads still convert
+  // accepted numeric strings to the number required by the API.
+  let number = Number(input);
+  return (
+    Number.isFinite(number) === true &&
+    (type === 'number' || (type === 'integer' && Number.isInteger(number) === true)) &&
+    number >= min &&
+    number <= max
+  );
+}
+
 // Define exports
-export { UDPPorts, processSoftwareVersion, adjustTemperature, crc24, scaleValue, buildDeviceDescription, parseDurationToSeconds };
+export {
+  isNumeric,
+  UDPPorts,
+  processSoftwareVersion,
+  adjustTemperature,
+  crc24,
+  scaleValue,
+  buildDeviceDescription,
+  parseDurationToSeconds,
+};

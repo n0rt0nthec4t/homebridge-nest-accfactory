@@ -126,12 +126,6 @@
           "supportDump": {
             "type": "boolean",
             "default": false
-          },
-          "useNestAPI": {
-            "type": "boolean"
-          },
-          "useGoogleAPI": {
-            "type": "boolean"
           }
         }
       },
