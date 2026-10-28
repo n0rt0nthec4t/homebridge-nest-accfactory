@@ -12,6 +12,7 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
 ### Fixed
 
+- Log successful thermostat Eco Mode On/Off commands in the normal Homebridge log
 - Restore Nest REST fallback for thermostats, temperature sensors and Heat Links not available through protobuf, while preferring complete Google data when both sources represent the device
 - Correct WebRTC FIR packet length and media-source SSRC so keyframe recovery feedback and its following REMB packet have valid wire boundaries
 - Preserve earlier accepted Google trait changes when one request updates multiple settings on the same trait
