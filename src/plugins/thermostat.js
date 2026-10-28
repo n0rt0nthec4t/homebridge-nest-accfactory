@@ -319,6 +319,7 @@ export default class NestThermostat extends HomeKitDevice {
           },
           onSet: async (value) => {
             await this.set({ uuid: this.deviceData.nest_google_device_uuid, eco_mode: value === true ? 'manual' : 'off' });
+            this?.log?.info?.('Set Eco Mode on thermostat "%s" to "%s"', this.deviceData.description, value === true ? 'On' : 'Off');
           },
         },
       );

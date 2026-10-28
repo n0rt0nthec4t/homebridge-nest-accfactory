@@ -297,6 +297,7 @@ test('Eco characteristic writes use the existing command path and publish accept
   let flow = await setup(context);
   await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
   let control = flow.device.thermostatService.getCharacteristic(hap.Characteristic.EcoMode);
+  let info = context.mock.method(flow.device.log, 'info');
   let notifications = [];
   control.on('change', (change) => notifications.push(change.newValue));
   assert.equal(await control.handleGetRequest(), false);
@@ -328,12 +329,17 @@ test('Eco characteristic writes use the existing command path and publish accept
   assert.equal(flow.commands.length, 4);
   assert.equal(flow.device.deviceData.target_temperature_low, 20);
   assert.equal(flow.device.deviceData.target_temperature_high, 24);
+  assert.deepEqual(
+    info.mock.calls.map((call) => call.arguments),
+    ['On', 'Off', 'Off', 'On'].map((state) => ['Set Eco Mode on thermostat "%s" to "%s"', flow.device.deviceData.description, state]),
+  );
 });
 
 test('Eco characteristic waits for command acceptance and reports failures without changing state', async (context) => {
   let flow = await setup(context);
   await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
   let control = flow.device.thermostatService.getCharacteristic(hap.Characteristic.EcoMode);
+  let info = context.mock.method(flow.device.log, 'info');
   let command = flow.connection.grpcTransport.command;
   let started = Promise.withResolvers();
   let response = Promise.withResolvers();
@@ -345,14 +351,17 @@ test('Eco characteristic waits for command acceptance and reports failures witho
   await started.promise;
   assert.equal(flow.device.deviceData.eco_mode, 'off');
   assert.equal(control.value, false);
+  assert.equal(info.mock.callCount(), 0, 'Pending commands must not log success');
   response.resolve({ status: 4 });
   await rejected;
   assert.equal(flow.device.deviceData.eco_mode, 'off');
   assert.equal(control.value, false);
   assert.equal(await control.handleGetRequest(), false, 'A failed write must not hide known device state');
+  assert.equal(info.mock.callCount(), 0, 'Failed On commands must not log success');
   flow.connection.grpcTransport.command = command;
   await control.handleSetRequest(true);
   assert.equal(await control.handleGetRequest(), true);
+  assert.equal(info.mock.callCount(), 1);
   flow.connection.grpcTransport.command = async () => ({
     status: 0,
     data: [{ traitOperations: [{ progress: 'COMPLETE', status: { code: 7 } }] }],
@@ -361,6 +370,7 @@ test('Eco characteristic waits for command acceptance and reports failures witho
   assert.equal(flow.device.deviceData.eco_mode, 'manual');
   assert.equal(control.value, true);
   assert.equal(await control.handleGetRequest(), true, 'A rejected command must not poison subsequent reads');
+  assert.equal(info.mock.callCount(), 1, 'Rejected Off commands must not log success');
   await flow.send([trait('DEVICE_THERMOSTAT', 'eco_mode_state', { ecoMode: 'ECO_MODE_INACTIVE' })]);
   assert.equal(await control.handleGetRequest(), false);
 });
