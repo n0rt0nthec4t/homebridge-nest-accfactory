@@ -23,6 +23,26 @@ for (let name of ['thermostat', 'heatlink']) {
 
 HomeKitDevice.PLUGIN_NAME = 'characteristic-initialisation-test';
 let nextSerial = 0;
+
+for (let method of ['onGet', 'onSet']) {
+  test('shared ' + method + ' reports communication failure through real HAP without unhandled callback warnings', async () => {
+    let service = new hap.Service.Switch('Failure boundary');
+    let warnings = [];
+    let characteristic = HomeKitDevice.prototype.addCharacteristic.call({ hap }, service, hap.Characteristic.On, {
+      [method]: async () => {
+        throw new Error('Fixture device communication failure');
+      },
+    });
+    characteristic.on('characteristic-warning', (...args) => warnings.push(args));
+    let before = characteristic.value;
+    let request = method === 'onGet' ? characteristic.handleGetRequest() : characteristic.handleSetRequest(true);
+    await assert.rejects(request, (error) => error === hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+    assert.equal(characteristic.statusCode, hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+    assert.equal(characteristic.value, before);
+    assert.deepEqual(warnings, []);
+  });
+}
+
 function setup(context, name, data = {}, cached = undefined) {
   let serialNumber = 'CHARACTERISTIC-' + nextSerial++;
   let device = new classes[name](

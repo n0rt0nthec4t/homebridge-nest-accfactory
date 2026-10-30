@@ -69,9 +69,11 @@ export async function platformHarness(context, options = {}) {
   let accounts = new Map([['account', connection]]);
   accounts.start = () => {};
   accounts.shutdown = () => {
-    connection.nestAPI?.disconnect();
-    connection.googleAPI?.disconnect();
-    connection.authorised = false;
+    for (let account of accounts.values()) {
+      account.nestAPI?.disconnect();
+      account.googleAPI?.disconnect();
+      account.authorised = false;
+    }
     pending.resolve({ status: 0 });
   };
   let markUnauthorised = (...args) => {
@@ -116,6 +118,14 @@ export async function platformHarness(context, options = {}) {
     return accounts;
   });
   let subscription = Promise.withResolvers();
+  // Resolve the live REST request rather than injecting data into either cache.
+  // Each reply prepares the next poll; tests can advance its timer explicitly.
+  let sendNest = async (objects) => {
+    let request = subscription;
+    subscription = Promise.withResolvers();
+    request.resolve({ json: async () => ({ updated_buckets: objects }) });
+    await setImmediate();
+  };
   runtime.fetch = async (...args) => {
     requests.push(args);
     if (String(args[1]).includes('/app_launch') === true || String(args[1]).includes('/v5/subscribe') === true) {
@@ -180,8 +190,7 @@ export async function platformHarness(context, options = {}) {
   };
   let id = options.id ?? 'DEVICE_TEST';
   if (options.source === DATA_SOURCE.NEST) {
-    subscription.resolve({ json: async () => ({ updated_buckets: [{ object_key: id, value: options.value ?? {} }] }) });
-    await setImmediate();
+    await sendNest([{ object_key: id, value: options.value ?? {} }]);
   } else {
     await send(id, options.value ?? { fixture: {} });
   }
@@ -196,6 +205,7 @@ export async function platformHarness(context, options = {}) {
     observations,
     logs,
     send,
+    sendNest,
     consume,
     pending,
     authorise,

@@ -115,7 +115,8 @@ for (let [id, values, expected] of [
   ['quartz.TEST', { audio_enabled: false }, 'audio.enabled=false'],
   ['quartz.TEST', { streaming_enabled: true }, 'streaming.enabled=true'],
   ['quartz.TEST', { statusled_brightness: 1 }, 'statusled.brightness=1'],
-  ['quartz.TEST', { irled_enabled: 'auto_on' }, 'irled.state=auto_on'],
+  ['quartz.TEST', { irled_enabled: true }, 'irled.state=auto_on'],
+  ['quartz.TEST', { irled_enabled: false }, 'irled.state=always_off'],
 ]) {
   test('retained REST SET ' + JSON.stringify(values) + ' on ' + id, async (context) => {
     let flow = await platformHarness(context, { source: DATA_SOURCE.NEST, id, value: {} });
@@ -267,7 +268,7 @@ for (let key of [
 for (let [values, raw] of [
   [{ softwareVersion: 'changed' }, traits],
   [{ statusled_brightness: 1 }, traits],
-  [{ irled_enabled: 'auto_on' }, traits],
+  [{ irled_enabled: true }, traits],
   [{ active_sensor: true }, traits],
   [{ light_enabled: true }, { ...traits, related_resources: {} }],
   [{ vacation_mode: true }, { ...traits, device_info: {} }],

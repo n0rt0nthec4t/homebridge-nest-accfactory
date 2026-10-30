@@ -4,6 +4,24 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.5-alpha.11 (2026/10/30)
+
+### Fixed
+
+- Wait for cloud acceptance before acknowledging HomeKit writes or reporting success across locks, floodlights, Heat Links, cameras and thermostats
+- Centralise HAP and Matter callback error handling in HomeKitDevice, preserving explicit protocol errors and internal GET/SET behaviour
+- Correct Google snapshot freshness checks for decoded timestamps and reused URLs; clear Nest snapshot deadline timers when queries finish
+- Quietly skip queries during account reauthorisation and resume after recovery, retaining diagnostics for unexpected failures
+- Keep night-vision state boolean after accepted writes so consecutive HomeKit toggles reach the camera without waiting for cloud updates
+
+### Changed
+
+- Update HomeKitDevice from `v2026.10.26` to `v2026.10.29`
+- Update development dependencies: `@types/node` to `26.6.6` and `@typescript-eslint/parser` to `8.72.1`
+- Simplify Nest and Google setting dispatch while preserving validation, compound writes and source-specific targets
+- Inline thermostat display-unit and child-lock handlers; remove unused PIN and camera black-image detection scaffolding
+- Replace extracted-method and rewritten-source tests with file-backed platform and HAP flows, preserving regression coverage and coverage floors
+
 ## v0.4.5-alpha.10 (2026/10/29)
 
 ### Fixed

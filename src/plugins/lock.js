@@ -54,7 +54,7 @@ import { DATA_SOURCE, DEVICE_TYPE, PROTOBUF_RESOURCES, LOW_BATTERY_LEVEL } from 
 
 export default class NestLock extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.LOCK;
-  static VERSION = '2026.10.26'; // Code version
+  static VERSION = '2026.10.29'; // Code version
 
   // Define lock bolt states
   static STATE = {
@@ -89,16 +89,15 @@ export default class NestLock extends HomeKitDevice {
     });
 
     this.addCharacteristic(this.lockService, this.hap.Characteristic.LockTargetState, {
-      onSet: (value) => {
+      onSet: async (value) => {
         if (value !== this.lockService.getCharacteristic(this.hap.Characteristic.LockTargetState).value) {
           let locked = value === this.hap.Characteristic.LockTargetState.SECURED;
 
-          this.set({
+          // Wait for cloud acceptance before HAP commits the target value.
+          await this.set({
             uuid: this.deviceData.nest_google_device_uuid,
             bolt_lock: locked,
           });
-
-          this.lockService.updateCharacteristic(this.hap.Characteristic.LockTargetState, value);
 
           // Log lock state change with source and actor details if available
           this.#logLockChange('HomeKit', locked === true ? NestLock.STATE.LOCKED : NestLock.STATE.UNLOCKED);
@@ -114,11 +113,12 @@ export default class NestLock extends HomeKitDevice {
         minValue: 0,
         maxValue: this.deviceData.max_auto_relock_duration,
       },
-      onSet: (value) => {
+      onSet: async (value) => {
         value = Math.floor(value); // Make a round number
 
         if (value !== this.deviceData.auto_relock_duration) {
-          this.set({
+          // A timeout change follows the same cloud acceptance boundary as bolt control.
+          await this.set({
             uuid: this.deviceData.nest_google_device_uuid,
             auto_relock_duration: value,
           });

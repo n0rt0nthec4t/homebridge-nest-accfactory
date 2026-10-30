@@ -91,7 +91,7 @@ const PREBUFFER_LENGTH = 4000;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.10.27'; // Code version
+  static VERSION = '2026.10.30'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -198,23 +198,20 @@ export default class NestCamera extends HomeKitDevice {
         this.controller.recordingManagement.operatingModeService,
         this.hap.Characteristic.CameraOperatingModeIndicator,
         {
-          onSet: (value) => {
+          onSet: async (value) => {
             // 0 = auto, 1 = low, 2 = high
             // We'll use auto mode for led on and low for led off
             if (
               (value === true && this.deviceData.statusled_brightness !== 0) ||
               (value === false && this.deviceData.statusled_brightness !== 1)
             ) {
-              this.set({
+              // Let the shared characteristic boundary report rejected writes.
+              await this.set({
                 uuid: this.deviceData.nest_google_device_uuid,
                 statusled_brightness: value === true ? 0 : 1,
               });
               this?.log?.info?.('Recording status LED on "%s" was turned %s', this.deviceData.description, value === true ? 'on' : 'off');
             }
-            this.controller.recordingManagement.operatingModeService.updateCharacteristic(
-              this.hap.Characteristic.CameraOperatingModeIndicator,
-              value,
-            );
           },
           onGet: () => {
             return this.deviceData.statusled_brightness !== 1;
@@ -225,17 +222,16 @@ export default class NestCamera extends HomeKitDevice {
 
     if (this.controller?.recordingManagement?.operatingModeService !== undefined && this.deviceData?.has_irled === true) {
       this.addCharacteristic(this.controller.recordingManagement.operatingModeService, this.hap.Characteristic.NightVision, {
-        onSet: (value) => {
+        onSet: async (value) => {
           // only change IRLed status value if different than on-device
           if ((value === false && this.deviceData.irled_enabled === true) || (value === true && this.deviceData.irled_enabled === false)) {
-            this.set({
+            await this.set({
               uuid: this.deviceData.nest_google_device_uuid,
-              irled_enabled: value === true ? 'auto_on' : 'always_off',
+              irled_enabled: value,
             });
 
             this?.log?.info?.('Night vision on "%s" was turned %s', this.deviceData.description, value === true ? 'on' : 'off');
           }
-          this.controller.recordingManagement.operatingModeService.updateCharacteristic(this.hap.Characteristic.NightVision, value);
         },
         onGet: () => {
           return this.deviceData.irled_enabled;
@@ -245,13 +241,13 @@ export default class NestCamera extends HomeKitDevice {
 
     if (this.controller?.recordingManagement?.operatingModeService !== undefined) {
       this.addCharacteristic(this.controller.recordingManagement.operatingModeService, this.hap.Characteristic.HomeKitCameraActive, {
-        onSet: (value) => {
+        onSet: async (value) => {
           if (
             (this.deviceData.streaming_enabled === false && value === this.hap.Characteristic.HomeKitCameraActive.ON) ||
             (this.deviceData.streaming_enabled === true && value === this.hap.Characteristic.HomeKitCameraActive.OFF)
           ) {
             // Camera state does not reflect requested state, so fix
-            this.set({
+            await this.set({
               uuid: this.deviceData.nest_google_device_uuid,
               streaming_enabled: value === this.hap.Characteristic.HomeKitCameraActive.ON ? true : false,
             });
@@ -261,7 +257,6 @@ export default class NestCamera extends HomeKitDevice {
               value === this.hap.Characteristic.HomeKitCameraActive.ON ? 'on' : 'off',
             );
           }
-          this.controller.recordingManagement.operatingModeService.updateCharacteristic(this.hap.Characteristic.HomeKitCameraActive, value);
         },
       });
     }
@@ -276,12 +271,12 @@ export default class NestCamera extends HomeKitDevice {
 
     if (this.controller?.recordingManagement?.recordingManagementService !== undefined && this.deviceData.has_microphone === true) {
       this.addCharacteristic(this.controller.recordingManagement.recordingManagementService, this.hap.Characteristic.RecordingAudioActive, {
-        onSet: (value) => {
+        onSet: async (value) => {
           if (
             (this.deviceData.audio_enabled === true && value === this.hap.Characteristic.RecordingAudioActive.DISABLE) ||
             (this.deviceData.audio_enabled === false && value === this.hap.Characteristic.RecordingAudioActive.ENABLE)
           ) {
-            this.set({
+            await this.set({
               uuid: this.deviceData.nest_google_device_uuid,
               audio_enabled: value === this.hap.Characteristic.RecordingAudioActive.ENABLE ? true : false,
             });
@@ -291,10 +286,6 @@ export default class NestCamera extends HomeKitDevice {
               value === this.hap.Characteristic.RecordingAudioActive.ENABLE ? 'on' : 'off',
             );
           }
-          this.controller.recordingManagement.recordingManagementService.updateCharacteristic(
-            this.hap.Characteristic.RecordingAudioActive,
-            value,
-          );
         },
         onGet: () => {
           return this.deviceData.audio_enabled === true
@@ -812,12 +803,6 @@ export default class NestCamera extends HomeKitDevice {
     // snapshotRequestDetails.reason === ResourceRequestReason.PERIODIC
     // snapshotRequestDetails.reason === ResourceRequestReason.EVENT
 
-    // eslint-disable-next-line no-unused-vars
-    const isLikelyBlackImage = (buffer) => {
-      // TODO <- Placeholder for actual black image detection logic
-      return false;
-    };
-
     // Get current image from camera/doorbell
     let imageBuffer = undefined;
 
@@ -826,11 +811,7 @@ export default class NestCamera extends HomeKitDevice {
       // The selected account API owns snapshot refresh and fallback handling.
       let response = await this.get({ uuid: this.deviceData.nest_google_device_uuid, camera_snapshot: true });
 
-      if (
-        Buffer.isBuffer(response?.camera_snapshot) === true &&
-        response.camera_snapshot.length > 0 &&
-        isLikelyBlackImage(response.camera_snapshot) === false
-      ) {
+      if (Buffer.isBuffer(response?.camera_snapshot) === true && response.camera_snapshot.length > 0) {
         imageBuffer = response.camera_snapshot;
       }
     }

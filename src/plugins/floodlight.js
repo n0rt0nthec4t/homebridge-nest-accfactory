@@ -44,7 +44,7 @@ import { DEVICE_TYPE } from '../consts.js';
 
 export default class NestFloodlight extends NestCamera {
   static TYPE = DEVICE_TYPE.FLOODLIGHT;
-  static VERSION = '2026.05.10'; // Code version
+  static VERSION = '2026.10.29'; // Code version
 
   lightService = undefined; // HomeKit light
 
@@ -55,9 +55,10 @@ export default class NestFloodlight extends NestCamera {
       this.lightService = this.addService(this.hap.Service.Lightbulb, '', 1);
       this.addCharacteristic(this.lightService, this.hap.Characteristic.Brightness, {
         props: { minStep: 10 }, // Light only goes in 10% increments
-        onSet: (value) => {
+        onSet: async (value) => {
           if (value !== this.deviceData.light_brightness) {
-            this.set({ uuid: this.deviceData.nest_google_device_uuid, light_brightness: value });
+            // Wait for cloud acceptance before HAP commits brightness or logs success.
+            await this.set({ uuid: this.deviceData.nest_google_device_uuid, light_brightness: value });
 
             this?.log?.info?.('Floodlight brightness on "%s" was set to "%s %"', this.deviceData.description, value);
           }
@@ -68,9 +69,10 @@ export default class NestFloodlight extends NestCamera {
       });
 
       this.addCharacteristic(this.lightService, this.hap.Characteristic.On, {
-        onSet: (value) => {
+        onSet: async (value) => {
           if (value !== this.deviceData.light_enabled) {
-            this.set({ uuid: this.deviceData.nest_google_device_uuid, light_enabled: value });
+            // Power changes use the same acceptance boundary as brightness.
+            await this.set({ uuid: this.deviceData.nest_google_device_uuid, light_enabled: value });
 
             this?.log?.info?.('Floodlight on "%s" was turned %s', this.deviceData.description, value === true ? 'on' : 'off');
           }

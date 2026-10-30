@@ -23,7 +23,7 @@
 // - Device modules interpret source data, apply source preference and configure HomeKit
 // - API clients own source caches; System owns the combined cache and HomeKit delivery
 //
-// Code version 2026.10.29
+// Code version 2026.10.30
 // Mark Hulskamp
 'use strict';
 
@@ -597,6 +597,12 @@ export default class NestAccfactory {
 
       // Failed queries return no value for this field and leave the other queries available.
       values[key] = undefined;
+
+      // Background polls continue while AccountSession restores authentication.
+      // Leave queries unanswered until recovery instead of logging each poll as a failure.
+      if (account?.authorised !== true) {
+        continue;
+      }
 
       try {
         values[key] = await api?.get(resourceId, key, parameters);

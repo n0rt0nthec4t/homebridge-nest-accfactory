@@ -7,6 +7,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import { importSource } from './helpers/import-source.js';
 import HomeKitDevice from '../src/HomeKitDevice/HomeKitDevice.js';
 import { LOW_BATTERY_LEVEL, CUSTOM_CHARACTERISTIC_UUID } from '../src/consts.js';
@@ -488,6 +489,78 @@ for (let [mode, characteristic, expectedKey] of [
     assert.deepEqual(flow.warnings, []);
   });
 }
+for (let [operation, type, key, initial, requested, setting] of [
+  ['Celsius', C.TemperatureDisplayUnits, 'temperature_scale', 'F', C.TemperatureDisplayUnits.CELSIUS, 'C'],
+  ['Fahrenheit', C.TemperatureDisplayUnits, 'temperature_scale', 'C', C.TemperatureDisplayUnits.FAHRENHEIT, 'F'],
+  ['water temperature', C.TargetTemperature, 'hot_water_temperature', 55, 60, 60],
+  ['boost on', C.On, 'hot_water_boost_active', false, true, { state: true, time: 1800 }],
+  ['boost off', C.On, 'hot_water_boost_active', true, false, { state: false, time: 1800 }],
+]) {
+  for (let accepted of [false, true]) {
+    test('Heat Link HAP waits for ' + operation + ' cloud outcome, accepted=' + accepted, async (context) => {
+      let flow = await setup(context, 'heatlink', { [key]: initial });
+      let info = context.mock.fn();
+      flow.device.log = { info, warn() {}, debug() {} };
+      // Exercise the accessory SET lifecycle while delaying the parent thermostat request.
+      flow.device.set = HomeKitDevice.prototype.set;
+      let pending = Promise.withResolvers();
+      let started = Promise.withResolvers();
+      HomeKitDevice.message(flow.device.uuid, HomeKitDevice.SET, async (values) => {
+        flow.writes.push(values);
+        started.resolve();
+        await pending.promise;
+      });
+      let service = type === C.On ? flow.device.switchService : flow.device.thermostatService;
+      let characteristic = service.getCharacteristic(type);
+      let before = characteristic.value;
+      let settled = false;
+      let result = characteristic.handleSetRequest(requested).then(
+        () => {
+          settled = true;
+        },
+        (error) => {
+          settled = true;
+          return error;
+        },
+      );
+      await started.promise;
+      await nextTurn();
+      let observed = { settled, value: characteristic.value, logs: info.mock.calls.length };
+      // Unblock teardown before checking behaviour so a failing regression cannot hang cleanup.
+      if (accepted === true) {
+        pending.resolve();
+      } else {
+        pending.reject(new Error('Fixture cloud rejection'));
+      }
+      assert.equal(observed.settled, false, 'HAP must wait for the cloud response');
+      assert.equal(observed.value, before);
+      assert.equal(observed.logs, 0);
+      assert.deepEqual(flow.writes, [{ uuid: 'DEVICE_PARENT', [key]: setting }]);
+
+      if (accepted === true) {
+        assert.equal(await result, undefined);
+      } else {
+        assert.equal(await result, hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+        assert.equal(characteristic.statusCode, hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+        assert.equal(characteristic.value, before);
+        assert.equal(flow.device.deviceData[key], initial);
+        assert.equal(info.mock.calls.length, 0);
+        pending = Promise.withResolvers();
+        pending.resolve();
+        await characteristic.handleSetRequest(requested);
+      }
+
+      assert.equal(characteristic.value, requested);
+      assert.equal(characteristic.statusCode, hap.HAPStatus.SUCCESS);
+      assert.equal(info.mock.calls.length, 1);
+      // Observe supplies the normalised boost state; its command carries state and duration together.
+      await flow.device.update({ [key]: type === C.On ? requested : setting });
+      assert.equal(await characteristic.handleGetRequest(), requested);
+      assert.equal(service, type === C.On ? flow.device.switchService : flow.device.thermostatService);
+    });
+  }
+}
+
 for (let hasLight of [true, false]) {
   test('floodlight exposes light controls only with the capability: ' + hasLight, async (context) => {
     // Exercise the light-specific subclass hook; camera/HKSV lifecycle is covered separately.
@@ -510,6 +583,77 @@ for (let hasLight of [true, false]) {
     assert.equal(flow.device.lightService, undefined);
     assert.deepEqual(flow.warnings, []);
   });
+}
+
+for (let operation of ['on', 'off', 'brightness']) {
+  for (let accepted of [false, true]) {
+    test('floodlight HAP waits for ' + operation + ' cloud outcome, accepted=' + accepted, async (context) => {
+      let flow = await setup(context, 'floodlight', { has_light: true, light_enabled: operation === 'off', light_brightness: 50 });
+      let info = context.mock.fn();
+      flow.device.log = { info, warn() {}, debug() {} };
+      // Use the real SET commit boundary with only cloud acceptance held pending.
+      flow.device.set = HomeKitDevice.prototype.set;
+      let pending = Promise.withResolvers();
+      let started = Promise.withResolvers();
+      HomeKitDevice.message(flow.device.uuid, HomeKitDevice.SET, async (values) => {
+        flow.writes.push(values);
+        started.resolve();
+        await pending.promise;
+      });
+      let brightness = operation === 'brightness';
+      let key = brightness === true ? 'light_brightness' : 'light_enabled';
+      let characteristic = flow.device.lightService.getCharacteristic(brightness === true ? C.Brightness : C.On);
+      let before = flow.device.deviceData[key];
+      characteristic.updateValue(before);
+      let requested = brightness === true ? 70 : operation === 'on';
+      let settled = false;
+      let result = characteristic.handleSetRequest(requested).then(
+        () => {
+          settled = true;
+        },
+        (error) => {
+          settled = true;
+          return error;
+        },
+      );
+      await started.promise;
+      await nextTurn();
+      let observed = { settled, value: characteristic.value, logs: info.mock.calls.length };
+      // Release the pending request even if a pre-acceptance assertion fails.
+      if (accepted === true) {
+        pending.resolve();
+      } else {
+        pending.reject(new Error('Fixture cloud rejection'));
+      }
+      assert.equal(observed.settled, false, 'HAP must wait for the cloud response');
+      assert.equal(observed.value, before);
+      assert.equal(observed.logs, 0);
+      assert.deepEqual(flow.writes, [{ uuid: 'DEVICE_TEST', [key]: requested }]);
+
+      if (accepted === true) {
+        assert.equal(await result, undefined);
+      } else {
+        assert.equal(await result, hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+        assert.equal(characteristic.statusCode, hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+        assert.equal(characteristic.value, before);
+        assert.equal(flow.device.deviceData[key], before);
+        assert.equal(info.mock.calls.length, 0);
+        pending = Promise.withResolvers();
+        pending.resolve();
+        await characteristic.handleSetRequest(requested);
+      }
+
+      assert.equal(characteristic.value, requested);
+      assert.equal(flow.device.deviceData[key], requested);
+      assert.equal(characteristic.statusCode, hap.HAPStatus.SUCCESS);
+      assert.equal(info.mock.calls.length, 1);
+      // Repeating an accepted setting must not send or log another command.
+      let writes = flow.writes.length;
+      await characteristic.handleSetRequest(requested);
+      assert.equal(flow.writes.length, writes);
+      assert.equal(info.mock.calls.length, 1);
+    });
+  }
 }
 
 for (let name of ['thermostat', 'heatlink', 'lock', 'protect', 'tempsensor', 'homeaway', 'weather']) {
@@ -595,14 +739,18 @@ test('thermostat humidity thresholds route independently and capability changes 
     { uuid: 'DEVICE_TEST', target_humidity_humidifier: 50 },
     { uuid: 'DEVICE_TEST', target_humidity_dehumidifier: 65 },
   ]);
-  for (let [humidifier, dehumidifier] of [
-    [true, false],
-    [true, true],
-    [false, true],
-    [true, true],
+  for (let [humidifier, dehumidifier, expected] of [
+    [true, false, [1]],
+    [true, true, [0, 1, 2]],
+    [false, true, [2]],
+    [true, true, [0, 1, 2]],
   ]) {
     await flow.device.update({ has_humidifier: humidifier, has_dehumidifier: dehumidifier, current_humidity: 55 });
     assert.equal(flow.device.humidifierDehumidifierService, service);
+    let target = service.getCharacteristic(C.TargetHumidifierDehumidifierState);
+    assert.deepEqual(target.props.validValues, expected);
+    assert.equal(expected.includes(target.value), true);
+    assert.equal(expected.includes(await target.handleGetRequest()), true);
     assert.equal(service.testCharacteristic(C.RelativeHumidityHumidifierThreshold), humidifier);
     assert.equal(service.testCharacteristic(C.RelativeHumidityDehumidifierThreshold), dehumidifier);
     assert.equal(value(flow.device.humidityService, C.CurrentRelativeHumidity), 55);
@@ -899,6 +1047,208 @@ for (let response of [
   );
 }
 
+for (let [operation, serviceName, type, requested, hvacMode = 'heat'] of [
+  ['child lock', 'thermostatService', C.LockPhysicalControls, C.LockPhysicalControls.CONTROL_LOCK_ENABLED],
+  ['display units', 'thermostatService', C.TemperatureDisplayUnits, C.TemperatureDisplayUnits.FAHRENHEIT],
+  ['HVAC mode', 'thermostatService', C.TargetHeatingCoolingState, C.TargetHeatingCoolingState.COOL],
+  ['temperature', 'thermostatService', C.TargetTemperature, 23],
+  ['heating threshold', 'thermostatService', C.HeatingThresholdTemperature, 21, 'range'],
+  ['cooling threshold', 'thermostatService', C.CoolingThresholdTemperature, 25, 'range'],
+  ['fan power', 'fanService', C.Active, C.Active.ACTIVE],
+  ['fan speed', 'fanService', C.RotationSpeed, 100],
+  ['humidity power', 'humidifierDehumidifierService', C.Active, C.Active.ACTIVE],
+  ['humidity mode', 'humidifierDehumidifierService', C.TargetHumidifierDehumidifierState, C.TargetHumidifierDehumidifierState.HUMIDIFIER],
+  ['humidifier threshold', 'humidifierDehumidifierService', C.RelativeHumidityHumidifierThreshold, 50],
+  ['dehumidifier threshold', 'humidifierDehumidifierService', C.RelativeHumidityDehumidifierThreshold, 65],
+  ['Eco', 'thermostatService', C.EcoMode, true],
+]) {
+  for (let accepted of [false, true]) {
+    test('thermostat HAP waits for ' + operation + ', accepted=' + accepted, async (context) => {
+      let flow = await setup(context, 'thermostat', { has_fan: true, has_humidifier: true, has_dehumidifier: true, hvac_mode: hvacMode });
+      await flow.device.onUpdate(flow.device.deviceData);
+      let service = flow.device[serviceName];
+      let characteristic = service.getCharacteristic(type ?? C.EcoMode);
+      let before = service.characteristics.map((item) => [item.UUID, item.value]);
+      let info = context.mock.fn();
+      flow.device.log = { info, warn() {}, debug() {} };
+      flow.device.set = HomeKitDevice.prototype.set;
+      let pending = Promise.withResolvers();
+      let started = Promise.withResolvers();
+      HomeKitDevice.message(flow.device.uuid, HomeKitDevice.SET, async (values) => {
+        flow.writes.push(values);
+        started.resolve();
+        await pending.promise;
+      });
+      let settled = false;
+      let result = characteristic.handleSetRequest(requested).then(
+        () => {
+          settled = true;
+        },
+        (error) => {
+          settled = true;
+          return error;
+        },
+      );
+      await started.promise;
+      await nextTurn();
+      let observed = { settled, values: service.characteristics.map((item) => [item.UUID, item.value]), logs: info.mock.calls.length };
+      if (accepted === true) {
+        pending.resolve();
+      } else {
+        pending.reject(new Error('Fixture cloud rejection'));
+      }
+      assert.equal(observed.settled, false);
+      assert.deepEqual(observed.values, before, 'No characteristic should change before cloud acceptance');
+      assert.equal(observed.logs, 0);
+      assert.equal(flow.writes[0].uuid, 'DEVICE_TEST');
+      if (accepted === true) {
+        assert.equal(await result, undefined);
+      } else {
+        assert.equal(await result, hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+        assert.deepEqual(
+          service.characteristics.map((item) => [item.UUID, item.value]),
+          before,
+        );
+        assert.equal(info.mock.calls.length, 0);
+        pending = Promise.withResolvers();
+        pending.resolve();
+        await characteristic.handleSetRequest(requested);
+      }
+      assert.equal(characteristic.value, requested);
+      assert.equal(characteristic.statusCode, hap.HAPStatus.SUCCESS);
+      assert.equal(info.mock.calls.length, 1);
+      assert.equal(flow.device[serviceName], service);
+    });
+  }
+}
+
+test('thermostat humidity does not publish combined success when the second equipment request fails', async (context) => {
+  let flow = await setup(context, 'thermostat', { has_humidifier: true, has_dehumidifier: true });
+  await flow.device.onUpdate(flow.device.deviceData);
+  let service = flow.device.humidifierDehumidifierService;
+  let before = service.characteristics.map((item) => [item.UUID, item.value]);
+  let info = context.mock.fn();
+  flow.device.log = { info, warn() {}, debug() {} };
+  flow.device.set = HomeKitDevice.prototype.set;
+  let pending = Promise.withResolvers();
+  let started = Promise.withResolvers();
+  HomeKitDevice.message(flow.device.uuid, HomeKitDevice.SET, async (values) => {
+    flow.writes.push(values);
+    if (flow.writes.length === 2) {
+      started.resolve();
+      await pending.promise;
+    }
+  });
+  let request = service.getCharacteristic(C.Active).handleSetRequest(C.Active.ACTIVE);
+  let rejected = assert.rejects(request, (error) => error === hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+  await started.promise;
+  let observed = service.characteristics.map((item) => [item.UUID, item.value]);
+  pending.reject(new Error('Fixture second equipment failure'));
+  await rejected;
+  assert.equal(flow.writes.length, 2);
+  assert.deepEqual(observed, before);
+  assert.deepEqual(
+    service.characteristics.map((item) => [item.UUID, item.value]),
+    before,
+  );
+  assert.equal(info.mock.calls.length, 0);
+});
+
+test('thermostat Eve vacation commands return their SET failure to the caller', async (context) => {
+  let previous = HomeKitDevice.EVEHOME;
+  HomeKitDevice.EVEHOME = { GET: 'fixture-eve-get', SET: 'fixture-eve-set' };
+  context.after(() => {
+    HomeKitDevice.EVEHOME = previous;
+  });
+  let flow = await setup(context, 'thermostat');
+  let failure = new Error('Fixture vacation failure');
+  flow.device.set = async () => {
+    throw failure;
+  };
+  await assert.rejects(flow.device.onMessage(HomeKitDevice.EVEHOME.SET, { vacation: { status: true } }), (error) => error === failure);
+});
+
+for (let operation of ['lock', 'unlock', 'auto-relock duration']) {
+  for (let accepted of [false, true]) {
+    test('lock HAP waits for ' + operation + ' cloud outcome, accepted=' + accepted, async (context) => {
+      let locked = operation === 'unlock';
+      let flow = await setup(context, 'lock', { bolt_state: locked === true ? 'locked' : 'unlocked' });
+      await flow.device.onUpdate(flow.device.deviceData);
+      let info = context.mock.fn();
+      flow.device.log = { info, warn() {}, debug() {} };
+      // Retain real SET dispatch and commit handling; delay only the cloud boundary.
+      flow.device.set = HomeKitDevice.prototype.set;
+      let pending = Promise.withResolvers();
+      let started = Promise.withResolvers();
+      HomeKitDevice.message(flow.device.uuid, HomeKitDevice.SET, async (values) => {
+        flow.writes.push(values);
+        started.resolve();
+        await pending.promise;
+      });
+      let duration = operation === 'auto-relock duration';
+      let characteristic = flow.device.lockService.getCharacteristic(
+        duration === true ? C.LockManagementAutoSecurityTimeout : C.LockTargetState,
+      );
+      let before = characteristic.value;
+      let requested = duration === true ? 60 : locked === true ? C.LockTargetState.UNSECURED : C.LockTargetState.SECURED;
+      let settled = false;
+      let result = characteristic.handleSetRequest(requested).then(
+        () => {
+          settled = true;
+        },
+        (error) => {
+          settled = true;
+          return error;
+        },
+      );
+      await started.promise;
+      await nextTurn();
+      let observed = { settled, value: characteristic.value, logs: info.mock.calls.length };
+      // Settle the cloud boundary before assertions so failed tests can still tear down.
+      if (accepted === true) {
+        pending.resolve();
+      } else {
+        pending.reject(new Error('Fixture cloud rejection'));
+      }
+      assert.equal(observed.settled, false, 'HAP must wait for the cloud response');
+      assert.equal(observed.value, before);
+      assert.equal(observed.logs, 0);
+      assert.deepEqual(flow.writes, [
+        { uuid: 'DEVICE_TEST', ...(duration === true ? { auto_relock_duration: 60 } : { bolt_lock: locked === false }) },
+      ]);
+
+      if (accepted === true) {
+        assert.equal(await result, undefined);
+      } else {
+        assert.equal(await result, hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+        assert.equal(characteristic.statusCode, hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+        assert.equal(characteristic.value, before);
+        assert.equal(info.mock.calls.length, 0);
+        assert.equal(flow.device.deviceData.auto_relock_duration, 0);
+        // A rejected write must not suppress a subsequent successful retry.
+        pending = Promise.withResolvers();
+        pending.resolve();
+        await characteristic.handleSetRequest(requested);
+      }
+
+      assert.equal(characteristic.value, requested);
+      assert.equal(characteristic.statusCode, hap.HAPStatus.SUCCESS);
+      assert.equal(info.mock.calls.length, 1);
+      if (duration === true) {
+        assert.equal(flow.device.deviceData.auto_relock_duration, 60);
+      } else {
+        assert.deepEqual(info.mock.calls[0].arguments, ['Set lock on "%s" to "%s"', 'lock', locked === true ? 'Unlocked' : 'Locked']);
+        assert.equal(
+          flow.device.lockService.getCharacteristic(C.LockCurrentState).value,
+          locked === true ? C.LockCurrentState.SECURED : C.LockCurrentState.UNSECURED,
+        );
+        await flow.device.update({ bolt_state: locked === true ? 'unlocked' : 'locked' });
+        assert.equal(flow.device.lockService.getCharacteristic(C.LockCurrentState).value, requested);
+      }
+    });
+  }
+}
+
 for (let locked of [false, true]) {
   test(
     'lock HomeKit commands address the selected resource and suppress duplicate target writes; initially locked=' + locked,
@@ -1076,5 +1426,69 @@ for (let [level, expected] of [
     assert.equal(value(flow.device.batteryService, C.StatusLowBattery), expected);
     assert.equal(flow.device.batteryService.testCharacteristic(C.BatteryLevel), level !== undefined);
     assert.deepEqual(flow.warnings, []);
+  });
+}
+
+// Keep enum zero valid when both equipment types are available, including first creation.
+for (let [humidifier, dehumidifier, expected] of [
+  [true, false, [1]],
+  [false, true, [2]],
+  [true, true, [0, 1, 2]],
+]) {
+  test('initial humidity mode constraints: humidifier=' + humidifier + ', dehumidifier=' + dehumidifier, async (context) => {
+    let flow = await setup(context, 'thermostat', { has_humidifier: humidifier, has_dehumidifier: dehumidifier });
+    let target = flow.device.humidifierDehumidifierService.getCharacteristic(C.TargetHumidifierDehumidifierState);
+    assert.deepEqual(target.props.validValues, expected);
+    assert.equal(expected.includes(target.value), true);
+    assert.equal(expected.includes(await target.handleGetRequest()), true);
+  });
+}
+
+for (let [previous, next, control, target] of [
+  ['cooling', 'heating', 'heat', 20],
+  ['heating', 'cooling', 'cool', 26],
+]) {
+  test('external ' + control + ' waits for off and completes before the thermostat update resolves', async (context) => {
+    let directory = await mkdtemp(path.join(tmpdir(), 'nest-external-order-'));
+    context.after(() => rm(directory, { recursive: true, force: true }));
+    let file = path.join(directory, 'control.mjs');
+    await writeFile(
+      file,
+      'export const state = { calls: [], stopping: Promise.withResolvers(), starting: Promise.withResolvers() };' +
+        'export default () => ({ off: () => { state.calls.push("off");' +
+        'if (state.failure !== undefined) throw state.failure; return state.stopping.promise; },' +
+        'heat: value => { state.calls.push(["heat", value]); return state.starting.promise; },' +
+        'cool: value => { state.calls.push(["cool", value]); return state.starting.promise; } });',
+    );
+    let { state } = await import(pathToFileURL(file).href);
+    let flow = await setup(context, 'thermostat', {
+      external: '"' + file + '"',
+      hvac_state: previous,
+      target_temperature_low: 20,
+      target_temperature_high: 26,
+    });
+    let finished = false;
+    let update = flow.device.update({ hvac_state: next }).then(() => {
+      finished = true;
+    });
+    try {
+      await nextTurn();
+      assert.deepEqual(state.calls, ['off']);
+      assert.equal(finished, false);
+      state.stopping.resolve();
+      await nextTurn();
+      assert.deepEqual(state.calls, ['off', [control, target]]);
+      assert.equal(finished, false);
+    } finally {
+      state.stopping.resolve();
+      state.starting.resolve();
+      await update;
+    }
+    assert.equal(finished, true);
+    let failure = new Error('External off failed');
+    state.failure = failure;
+    // A failed stop must never start its replacement.
+    await assert.rejects(flow.device.update({ hvac_state: previous }), (error) => error === failure);
+    assert.deepEqual(state.calls, ['off', [control, target], 'off']);
   });
 }

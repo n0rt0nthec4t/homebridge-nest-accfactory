@@ -26,7 +26,7 @@
 // - connect() starts ingestion without a consumer; onData optionally reports committed changes
 // - Camera media streaming belongs to the separate camera transport modules
 //
-// Code version 2026.10.29
+// Code version 2026.10.30
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -492,27 +492,9 @@ export default class NestAPI {
         // Recheck availability after earlier writes have yielded to subscription updates.
         // Cameras use their property endpoint; other devices use bucket MERGE operations.
         if (this.resources.get(resourceId)?.source === DATA_SOURCE.NEST) {
-          if (resourceId.startsWith('quartz.') === true) {
-            // Map supported camera and doorbell settings to Nest REST property names.
-            let mappedKey = {
-              indoor_chime_enabled: 'doorbell.indoor_chime.enabled',
-              statusled_brightness: 'statusled.brightness',
-              irled_enabled: 'irled.state',
-              streaming_enabled: 'streaming.enabled',
-              audio_enabled: 'audio.enabled',
-            }[key];
+          let operation = this.#buildSetting(resourceId, key, value, values, resource);
 
-            // Only expose the camera controls implemented by the plugin. Do not
-            // send unknown keys or malformed values through the REST endpoint.
-            if (
-              typeof mappedKey !== 'string' ||
-              (['indoor_chime_enabled', 'streaming_enabled', 'audio_enabled'].includes(key) === true && typeof value !== 'boolean') ||
-              (key === 'statusled_brightness' && isNumeric(value, { type: 'integer', min: 0, max: 1 }) !== true) ||
-              (key === 'irled_enabled' && ['auto_on', 'always_off'].includes(value) === false)
-            ) {
-              throw new Error('Invalid or unsupported setting "' + key + '" for this device');
-            }
-
+          if (operation?.cameraProperties !== undefined) {
             let response = await fetchWrapper(
               fetchWrapper.POST,
               new URL('/api/dropcams.set_properties', 'https://webapi.' + account.cameraAPIHost).href,
@@ -528,7 +510,7 @@ export default class NestAPI {
                 },
                 retry: 3,
               },
-              mappedKey + '=' + value + '&uuid=' + resourceId.trim().split('.')[1],
+              operation.cameraProperties,
             );
 
             let data = await response.json();
@@ -538,38 +520,33 @@ export default class NestAPI {
             }
 
             handled = true;
-          }
-
-          if (resourceId.startsWith('quartz.') === false) {
+          } else if (operation !== undefined) {
             // Send supported bucket updates through the Nest transport.
-            let operation = this.#buildSetting(resourceId, key, value, values, resource);
-            if (operation !== undefined) {
-              let response = await fetchWrapper(
-                fetchWrapper.POST,
-                new URL('/v5/put', account.transport_url).href,
-                {
-                  headers: {
-                    Referer: 'https://' + account.referer,
-                    Origin: 'https://' + account.referer,
-                    Authorization: 'Basic ' + account.token,
-                    'User-Agent': USER_AGENT,
-                    'Sec-Fetch-Mode': 'cors',
-                    'Sec-Fetch-Site': 'same-origin',
-                    'X-nl-protocol-version': 1,
-                    'Content-Type': 'application/json',
-                  },
-                  retry: 3,
+            let response = await fetchWrapper(
+              fetchWrapper.POST,
+              new URL('/v5/put', account.transport_url).href,
+              {
+                headers: {
+                  Referer: 'https://' + account.referer,
+                  Origin: 'https://' + account.referer,
+                  Authorization: 'Basic ' + account.token,
+                  'User-Agent': USER_AGENT,
+                  'Sec-Fetch-Mode': 'cors',
+                  'Sec-Fetch-Site': 'same-origin',
+                  'X-nl-protocol-version': 1,
+                  'Content-Type': 'application/json',
                 },
-                JSON.stringify({ objects: [operation] }),
-              );
-              let data = await response.json();
+                retry: 3,
+              },
+              JSON.stringify({ objects: [operation] }),
+            );
+            let data = await response.json();
 
-              if (Array.isArray(data?.objects) === false || data.objects.length === 0) {
-                throw new Error('Nest API property update failed');
-              }
-
-              handled = true;
+            if (Array.isArray(data?.objects) === false || data.objects.length === 0) {
+              throw new Error('Nest API property update failed');
             }
+
+            handled = true;
           }
         }
 
@@ -596,7 +573,8 @@ export default class NestAPI {
     }
   }
 
-  // Construct one REST MERGE operation without changing the committed resource.
+  // Construct camera form data ({ cameraProperties }) or a bucket MERGE operation
+  // ({ object_key, op, value }) without changing the committed resource.
   // Related settings are combined here; set() owns request execution and failures.
   // Thermostat branches select both the payload and its owning bucket:
   // device for Eco, fan, display, hot water and humidity; shared for HVAC mode
@@ -606,108 +584,187 @@ export default class NestAPI {
     let device = resource.value ?? {};
     let objectKey = resourceId;
     let setting = undefined;
-    let thermostat = resourceId.startsWith('device.') === true;
     let serial = resourceId.split('.')[1];
-    let shared = this.resources.get('shared.' + serial)?.value;
 
-    if (thermostat === true) {
-      if (key === 'eco_mode' && typeof value === 'string' && ['MANUAL', 'OFF'].includes(value.toUpperCase()) === true) {
-        // Eco belongs to the device bucket. Returning to schedule restores the
-        // thermostat's normal mode without overwriting its shared setpoints.
-        setting = { eco: { mode: value.toUpperCase() === 'MANUAL' ? 'manual-eco' : 'schedule' } };
-      } else if (
-        ['target_temperature', 'target_temperature_low', 'target_temperature_high'].includes(key) === true &&
-        isNumeric(value) === true
-      ) {
-        // REST setpoint writes use the shared bucket even while Eco mode is active.
-        let mode = shared?.target_temperature_type?.toLowerCase?.();
-        let heating = key === 'target_temperature_low' || (key === 'target_temperature' && mode === 'heat');
-        let cooling = key === 'target_temperature_high' || (key === 'target_temperature' && mode === 'cool');
-        if ((heating === true && shared?.can_heat === true) || (cooling === true && shared?.can_cool === true)) {
-          objectKey = 'shared.' + serial;
-          setting = { target_change_pending: true, [key]: Number(value) };
-        }
-      } else if (
-        key === 'hvac_mode' &&
-        typeof value === 'string' &&
-        ['OFF', 'HEAT', 'COOL', 'RANGE'].includes(value.toUpperCase()) === true
-      ) {
-        // Off needs no heating/cooling capability; every enabled mode must match
-        // the equipment flags before the shared mode is marked pending.
-        let mode = value.toLowerCase();
-        if (
-          mode === 'off' ||
-          (mode === 'heat' && shared?.can_heat === true) ||
-          (mode === 'cool' && shared?.can_cool === true) ||
-          (mode === 'range' && shared?.can_heat === true && shared?.can_cool === true)
-        ) {
-          objectKey = 'shared.' + serial;
-          setting = { target_change_pending: true, target_temperature_type: mode };
-        }
-      } else if (
-        key === 'fan_state' &&
-        typeof value === 'boolean' &&
-        device.has_fan === true &&
-        isNumeric(values.fan_duration, { min: 0 }) === true &&
-        (values.fan_timer_speed === undefined || isNumeric(values.fan_timer_speed, { type: 'integer', min: 0, max: 3 }) === true)
-      ) {
-        // fan_state owns the combined request. Nest expects an absolute expiry
-        // in seconds, with zero cancelling the timer; speed zero maps to stage1.
-        setting = { fan_state: value, fan_timer_timeout: value === true ? Math.floor(Date.now() / 1000) + Number(values.fan_duration) : 0 };
-        if (values.fan_timer_speed !== undefined) {
-          setting.fan_timer_speed = 'stage' + (Number(values.fan_timer_speed) || 1);
-        }
-      } else if (key === 'fan_timer_speed' && device.has_fan === true && isNumeric(value, { type: 'integer', min: 0, max: 3 }) === true) {
-        // A standalone speed change leaves the current fan timer untouched.
-        setting = { fan_timer_speed: 'stage' + (Number(value) || 1) };
-      } else if (key === 'temperature_lock' && typeof value === 'boolean') {
-        setting = { temperature_lock: value };
-      } else if (key === 'temperature_scale' && typeof value === 'string' && ['C', 'F'].includes(value.toUpperCase()) === true) {
-        setting = { temperature_scale: value.toUpperCase() };
-      } else if (
-        key === 'hot_water_boost_active' &&
-        typeof value === 'object' &&
-        value !== null &&
-        typeof value.state === 'boolean' &&
-        device.has_hot_water_control === true &&
-        (value.time === undefined || isNumeric(value.time, { min: 0 }) === true)
-      ) {
-        // Like the fan timer, boost uses an absolute expiry; omitted duration
-        // means 30 minutes and disabling boost clears the expiry.
-        let seconds = value.time === undefined ? 1800 : Number(value.time);
-        setting = { hot_water_boost_time_to_end: value.state === true ? Math.floor(Date.now() / 1000) + seconds : 0 };
-      } else if (key === 'hot_water_temperature' && isNumeric(value) === true && device.has_hot_water_temperature === true) {
-        setting = { hot_water_temperature: Number(value) };
-      } else if (
-        ['humidifier_state', 'dehumidifier_state', 'target_humidity_humidifier', 'target_humidity_dehumidifier'].includes(key) === true
-      ) {
-        // Both equipment types map to Nest's generic humidity fields. When state
-        // and target arrive together, the state branch owns one combined write.
-        let humidifier = ['humidifier_state', 'target_humidity_humidifier'].includes(key) === true;
-        let stateKey = humidifier === true ? 'humidifier_state' : 'dehumidifier_state';
-        let targetKey = humidifier === true ? 'target_humidity_humidifier' : 'target_humidity_dehumidifier';
-        if (device[humidifier === true ? 'has_humidifier' : 'has_dehumidifier'] === true) {
-          if (
-            key === stateKey &&
-            typeof value === 'boolean' &&
-            (values[targetKey] === undefined || isNumeric(values[targetKey], { min: 0, max: 100 }) === true)
-          ) {
-            setting = { target_humidity_enabled: value };
-            if (values[targetKey] !== undefined) {
-              setting.target_humidity = Number(values[targetKey]);
-            }
-          } else if (key === targetKey && isNumeric(value, { min: 0, max: 100 }) === true) {
-            setting = { target_humidity: Number(value) };
+    if (resourceId.startsWith('quartz.') === true) {
+      // Cameras use the property endpoint rather than the bucket MERGE schema.
+      let property = undefined;
+      switch (key) {
+        case 'indoor_chime_enabled':
+        case 'streaming_enabled':
+        case 'audio_enabled':
+          if (typeof value === 'boolean') {
+            property = {
+              indoor_chime_enabled: 'doorbell.indoor_chime.enabled',
+              streaming_enabled: 'streaming.enabled',
+              audio_enabled: 'audio.enabled',
+            }[key];
           }
+          break;
+
+        case 'statusled_brightness':
+          if (isNumeric(value, { type: 'integer', min: 0, max: 1 }) === true) {
+            property = 'statusled.brightness';
+          }
+          break;
+
+        case 'irled_enabled':
+          if (typeof value === 'boolean') {
+            // Keep device state boolean; Nest's property endpoint uses mode strings.
+            property = 'irled.state';
+            value = value === true ? 'auto_on' : 'always_off';
+          }
+          break;
+      }
+
+      if (property !== undefined) {
+        return { cameraProperties: property + '=' + value + '&uuid=' + resourceId.trim().split('.')[1] };
+      }
+    } else if (resourceId.startsWith('device.') === true) {
+      let shared = this.resources.get('shared.' + serial)?.value;
+      switch (key) {
+        case 'eco_mode':
+          if (typeof value === 'string' && ['MANUAL', 'OFF'].includes(value.toUpperCase()) === true) {
+            // Eco belongs to the device bucket. Returning to schedule restores the
+            // thermostat's normal mode without overwriting its shared setpoints.
+            setting = { eco: { mode: value.toUpperCase() === 'MANUAL' ? 'manual-eco' : 'schedule' } };
+          }
+          break;
+
+        case 'target_temperature':
+        case 'target_temperature_low':
+        case 'target_temperature_high': {
+          if (isNumeric(value) !== true) {
+            break;
+          }
+
+          // REST setpoint writes use the shared bucket even while Eco mode is active.
+          let mode = shared?.target_temperature_type?.toLowerCase?.();
+          let heating = key === 'target_temperature_low' || (key === 'target_temperature' && mode === 'heat');
+          let cooling = key === 'target_temperature_high' || (key === 'target_temperature' && mode === 'cool');
+          if ((heating === true && shared?.can_heat === true) || (cooling === true && shared?.can_cool === true)) {
+            objectKey = 'shared.' + serial;
+            setting = { target_change_pending: true, [key]: Number(value) };
+          }
+          break;
         }
-      } else if (key === 'vacation_mode' && typeof value === 'boolean') {
-        // The device link identifies the owning structure; never write this
-        // household-wide setting onto the thermostat's own bucket.
-        let structure = this.resources.get('link.' + serial)?.value?.structure;
-        if (typeof structure === 'string' && this.resources.get(structure)?.source === DATA_SOURCE.NEST) {
-          objectKey = structure;
-          setting = { vacation_mode: value };
+
+        case 'hvac_mode': {
+          if (typeof value !== 'string' || ['OFF', 'HEAT', 'COOL', 'RANGE'].includes(value.toUpperCase()) !== true) {
+            break;
+          }
+
+          // Off needs no heating/cooling capability; every enabled mode must match
+          // the equipment flags before the shared mode is marked pending.
+          let mode = value.toLowerCase();
+          if (
+            mode === 'off' ||
+            (mode === 'heat' && shared?.can_heat === true) ||
+            (mode === 'cool' && shared?.can_cool === true) ||
+            (mode === 'range' && shared?.can_heat === true && shared?.can_cool === true)
+          ) {
+            objectKey = 'shared.' + serial;
+            setting = { target_change_pending: true, target_temperature_type: mode };
+          }
+          break;
         }
+
+        case 'fan_state':
+          if (
+            typeof value === 'boolean' &&
+            device.has_fan === true &&
+            isNumeric(values.fan_duration, { min: 0 }) === true &&
+            (values.fan_timer_speed === undefined || isNumeric(values.fan_timer_speed, { type: 'integer', min: 0, max: 3 }) === true)
+          ) {
+            // fan_state owns the combined request. Nest expects an absolute expiry
+            // in seconds, with zero cancelling the timer; speed zero maps to stage1.
+            setting = {
+              fan_state: value,
+              fan_timer_timeout: value === true ? Math.floor(Date.now() / 1000) + Number(values.fan_duration) : 0,
+            };
+            if (values.fan_timer_speed !== undefined) {
+              setting.fan_timer_speed = 'stage' + (Number(values.fan_timer_speed) || 1);
+            }
+          }
+          break;
+
+        case 'fan_timer_speed':
+          if (device.has_fan === true && isNumeric(value, { type: 'integer', min: 0, max: 3 }) === true) {
+            // A standalone speed change leaves the current fan timer untouched.
+            setting = { fan_timer_speed: 'stage' + (Number(value) || 1) };
+          }
+          break;
+
+        case 'temperature_lock':
+          if (typeof value === 'boolean') {
+            setting = { temperature_lock: value };
+          }
+          break;
+
+        case 'temperature_scale':
+          if (typeof value === 'string' && ['C', 'F'].includes(value.toUpperCase()) === true) {
+            setting = { temperature_scale: value.toUpperCase() };
+          }
+          break;
+
+        case 'hot_water_boost_active':
+          if (
+            typeof value === 'object' &&
+            value !== null &&
+            typeof value.state === 'boolean' &&
+            device.has_hot_water_control === true &&
+            (value.time === undefined || isNumeric(value.time, { min: 0 }) === true)
+          ) {
+            // Like the fan timer, boost uses an absolute expiry; omitted duration
+            // means 30 minutes and disabling boost clears the expiry.
+            let seconds = value.time === undefined ? 1800 : Number(value.time);
+            setting = { hot_water_boost_time_to_end: value.state === true ? Math.floor(Date.now() / 1000) + seconds : 0 };
+          }
+          break;
+
+        case 'hot_water_temperature':
+          if (isNumeric(value) === true && device.has_hot_water_temperature === true) {
+            setting = { hot_water_temperature: Number(value) };
+          }
+          break;
+
+        case 'humidifier_state':
+        case 'dehumidifier_state':
+        case 'target_humidity_humidifier':
+        case 'target_humidity_dehumidifier': {
+          // Both equipment types map to Nest's generic humidity fields. When state
+          // and target arrive together, the state branch owns one combined write.
+          let humidifier = ['humidifier_state', 'target_humidity_humidifier'].includes(key) === true;
+          let stateKey = humidifier === true ? 'humidifier_state' : 'dehumidifier_state';
+          let targetKey = humidifier === true ? 'target_humidity_humidifier' : 'target_humidity_dehumidifier';
+          if (device[humidifier === true ? 'has_humidifier' : 'has_dehumidifier'] === true) {
+            if (
+              key === stateKey &&
+              typeof value === 'boolean' &&
+              (values[targetKey] === undefined || isNumeric(values[targetKey], { min: 0, max: 100 }) === true)
+            ) {
+              setting = { target_humidity_enabled: value };
+              if (values[targetKey] !== undefined) {
+                setting.target_humidity = Number(values[targetKey]);
+              }
+            } else if (key === targetKey && isNumeric(value, { min: 0, max: 100 }) === true) {
+              setting = { target_humidity: Number(value) };
+            }
+          }
+          break;
+        }
+
+        case 'vacation_mode':
+          if (typeof value === 'boolean') {
+            // The device link identifies the owning structure; never write this
+            // household-wide setting onto the thermostat's own bucket.
+            let structure = this.resources.get('link.' + serial)?.value?.structure;
+            if (typeof structure === 'string' && this.resources.get(structure)?.source === DATA_SOURCE.NEST) {
+              objectKey = structure;
+              setting = { vacation_mode: value };
+            }
+          }
+          break;
       }
     } else if (resourceId.startsWith('kryptonite.') === true && key === 'active_sensor' && typeof value === 'boolean') {
       // RCS selection is owned by the thermostat settings bucket. Use only this
@@ -782,10 +839,18 @@ export default class NestAPI {
     if (key === 'camera_snapshot') {
       if (cameraAvailable === true) {
         // Bound the whole query, including an image request that never completes.
-        result = await Promise.race([
-          this.#getCameraSnapshot(resourceId, endpoint),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('Snapshot request timeout')), SNAPSHOT_TIMEOUT)),
-        ]);
+        let timer = undefined;
+        try {
+          result = await Promise.race([
+            this.#getCameraSnapshot(resourceId, endpoint),
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error('Snapshot request timeout')), SNAPSHOT_TIMEOUT);
+            }),
+          ]);
+        } finally {
+          // A completed image request no longer needs its overall deadline.
+          clearTimeout(timer);
+        }
       }
     } else if (key === 'camera_events') {
       result = [];

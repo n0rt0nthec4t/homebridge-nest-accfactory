@@ -117,7 +117,7 @@ for (let name of ['camera', 'doorbell', 'floodlight']) {
 }
 for (let [label, type, value, expected] of [
   ['status LED off', C.CameraOperatingModeIndicator, false, { statusled_brightness: 1 }],
-  ['night vision off', C.NightVision, false, { irled_enabled: 'always_off' }],
+  ['night vision off', C.NightVision, false, { irled_enabled: false }],
   ['camera off', C.HomeKitCameraActive, 0, { streaming_enabled: false }],
 ]) {
   test('camera HomeKit control: ' + label, async (context) => {
@@ -134,6 +134,90 @@ test('camera recording audio control forwards enable/disable to the device', asy
   await service.getCharacteristic(C.RecordingAudioActive).handleSetRequest(C.RecordingAudioActive.DISABLE);
   assert.deepEqual(flow.writes, [{ uuid: 'DEVICE_CAMERA', audio_enabled: false }]);
 });
+for (let [type, requested, settings] of [
+  [C.CameraOperatingModeIndicator, false, { statusled_brightness: 1 }],
+  [C.NightVision, false, { irled_enabled: false }],
+  [C.HomeKitCameraActive, C.HomeKitCameraActive.OFF, { streaming_enabled: false }],
+  [C.RecordingAudioActive, C.RecordingAudioActive.DISABLE, { audio_enabled: false }],
+]) {
+  for (let accepted of [false, true]) {
+    test('camera HAP waits for ' + type.name + ', accepted=' + accepted, async (context) => {
+      let flow = await setup(context);
+      let service =
+        type === C.RecordingAudioActive
+          ? flow.device.controller.recordingManagement.recordingManagementService
+          : flow.device.controller.recordingManagement.operatingModeService;
+      let characteristic = service.getCharacteristic(type);
+      let before = characteristic.value;
+      let info = context.mock.fn();
+      flow.device.log = { info, warn() {}, debug() {} };
+      flow.device.set = HomeKitDevice.prototype.set;
+      let pending = Promise.withResolvers();
+      let started = Promise.withResolvers();
+      HomeKitDevice.message(flow.device.uuid, HomeKitDevice.SET, async (values) => {
+        flow.writes.push(values);
+        started.resolve();
+        await pending.promise;
+      });
+      let settled = false;
+      let result = characteristic.handleSetRequest(requested).then(
+        () => {
+          settled = true;
+        },
+        (error) => {
+          settled = true;
+          return error;
+        },
+      );
+      await started.promise;
+      await setImmediate();
+      let observed = { settled, value: characteristic.value, logs: info.mock.calls.length };
+      if (accepted === true) {
+        pending.resolve();
+      } else {
+        pending.reject(new Error('Fixture cloud rejection'));
+      }
+      assert.equal(observed.settled, false);
+      assert.equal(observed.value, before);
+      assert.equal(observed.logs, 0);
+      assert.deepEqual(flow.writes, [{ uuid: 'DEVICE_CAMERA', ...settings }]);
+      if (accepted === true) {
+        assert.equal(await result, undefined);
+      } else {
+        assert.equal(await result, hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+        assert.equal(characteristic.value, before);
+        assert.equal(info.mock.calls.length, 0);
+        pending = Promise.withResolvers();
+        pending.resolve();
+        await characteristic.handleSetRequest(requested);
+      }
+      assert.equal(characteristic.value, requested);
+      assert.equal(characteristic.statusCode, hap.HAPStatus.SUCCESS);
+      assert.equal(info.mock.calls.length, 1);
+      assert.equal(flow.device.accessory.services.includes(service), true);
+    });
+  }
+}
+
+test('consecutive night-vision writes retain boolean state before cloud reconciliation', async (context) => {
+  let flow = await setup(context);
+  let characteristic = flow.device.controller.recordingManagement.operatingModeService.getCharacteristic(C.NightVision);
+  flow.device.set = HomeKitDevice.prototype.set;
+  HomeKitDevice.message(flow.device.uuid, HomeKitDevice.SET, async (values) => {
+    flow.writes.push(values);
+  });
+
+  // No upstream UPDATE occurs between writes: successful SET commits must preserve
+  // the boolean used by the next toggle and by HomeKit reads.
+  for (let enabled of [false, true, false]) {
+    await characteristic.handleSetRequest(enabled);
+    assert.equal(flow.device.deviceData.irled_enabled, enabled);
+    assert.equal(await characteristic.handleGetRequest(), enabled);
+    await characteristic.handleSetRequest(enabled);
+  }
+  assert.deepEqual(flow.writes, [false, true, false].map((enabled) => ({ uuid: 'DEVICE_CAMERA', irled_enabled: enabled })));
+});
+
 test('motion, detection disable, offline and shutdown clear the same HomeKit service', async (context) => {
   let flow = await setup(context);
   let device = flow.device;

@@ -1,24 +1,12 @@
 // Verify preferred protobuf and fallback REST HVAC discovery, controls and related-state updates.
 import assert from 'node:assert/strict';
 import { importSource } from './helpers/import-source.js';
-import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { URL } from 'node:url';
-import crypto from 'node:crypto';
-import { attachAPIClients } from './helpers/api-clients.js';
-import { DATA_SOURCE, USER_AGENT } from '../src/consts.js';
+import { platformHarness } from './helpers/platform-harness.js';
+import { DATA_SOURCE } from '../src/consts.js';
 
-async function loadMapper(name) {
-  let location = new URL('../src/plugins/' + name + '.js', import.meta.url);
-  let parent = 'data:text/javascript,' + encodeURIComponent('export default class { static makeValidHKName(name) { return name; } }');
-  let source = (await readFile(location, 'utf8')).replace(/from '([^']+)'/g, (match, specifier) => {
-    return 'from ' + JSON.stringify(specifier === '../HomeKitDevice.js' ? parent : new URL(specifier, location).href);
-  });
-  return (await importSource(location, source)).processRawData;
-}
-
-let heatlink = await loadMapper('heatlink');
-let tempsensor = await loadMapper('tempsensor');
+let { processRawData: heatlink } = await importSource(new URL('../src/plugins/heatlink.js', import.meta.url));
+let { processRawData: tempsensor } = await importSource(new URL('../src/plugins/tempsensor.js', import.meta.url));
 
 function rawData() {
   return {
@@ -126,67 +114,41 @@ test('temperature sensors use protobuf identities and react to parent-only selec
   assert.deepEqual(tempsensor(undefined, raw, { options: {} }), {});
 });
 
-let systemSource = await readFile(new URL('../src/system.js', import.meta.url), 'utf8');
-let setBegin = systemSource.indexOf('  async #set(');
-let setEnd = systemSource.indexOf('  async #get(', setBegin);
-let createCommandHost = new Function(
-  'raw',
-  'connection',
-  'DATA_SOURCE',
-  'crypto',
-  'fetchWrapper',
-  'USER_AGENT',
-  'URL',
-  'return new class { #rawData = raw; #accounts = new Map([["account", connection]]);' +
-    'errors = []; log = { debug: (...args) => this.errors.push(args) };' +
-    'run(id, values) { return this.#set("account", id, values); }' +
-    systemSource.slice(setBegin, setEnd) +
-    '};',
-);
-
-test('protobuf commands retain their routing and incomplete REST devices reject unsupported controls', async () => {
+test('protobuf commands retain their routing and incomplete REST devices reject unsupported controls', async (context) => {
   let raw = rawData();
   raw.DEVICE_THERMOSTAT.value.eco_mode_state = { ecoMode: 'ECO_MODE_INACTIVE' };
   raw.DEVICE_THERMOSTAT.value.target_temperature_settings = {
     targetTemperature: { setpointType: 'SET_POINT_TYPE_HEAT', heatingTarget: { value: 20 } },
   };
+  // This sensor has no parent relationship, so selecting it cannot form a valid REST write.
+  delete raw['rcs_settings.LEGACY'];
   raw['topaz.PROTECT'] = { source: DATA_SOURCE.NEST, value: {} };
-  let grpc = [];
-  let rest = [];
-  let connection = {
-    authorised: true,
-    transport_url: 'https://example.invalid',
-    grpcTransport: {
-      command: async (...args) => {
-        grpc.push(args);
-        return { status: 0, data: [{ traitOperations: [{ progress: 'COMPLETE' }] }] };
-      },
-    },
-  };
-  let fetch = async (...args) => {
-    rest.push(args);
-    return { json: async () => ({ objects: [{}] }) };
-  };
-  let host = createCommandHost(raw, connection, DATA_SOURCE, crypto, fetch, USER_AGENT, URL);
-  attachAPIClients(connection, raw, fetch, host.log);
-  await host.run('DEVICE_THERMOSTAT', { target_temperature: 22, hot_water_boost_active: { state: true, time: 1800 } });
-  assert.equal(grpc.length, 2);
-  let temperature = grpc[0][3].batchUpdateStateRequest[0];
+  let flow = await platformHarness(context, { id: 'DEVICE_THERMOSTAT', value: raw.DEVICE_THERMOSTAT.value });
+  await flow.sendNest(
+    Object.entries(raw)
+      .filter(([id]) => id.startsWith('DEVICE_') === false && id.startsWith('STRUCTURE_') === false)
+      .map(([object_key, resource]) => ({ object_key, value: resource.value })),
+  );
+  await flow.device.set({ uuid: 'DEVICE_THERMOSTAT', target_temperature: 22, hot_water_boost_active: { state: true, time: 1800 } });
+  assert.equal(flow.commands.length, 2);
+  let temperature = flow.commands[0][3].batchUpdateStateRequest[0];
   assert.equal(temperature.traitRequest.resourceId, 'DEVICE_THERMOSTAT');
   assert.equal(temperature.state.value.targetTemperature.heatingTarget.value, 22);
-  assert.equal(grpc[1][3].batchUpdateStateRequest[0].traitRequest.traitLabel, 'hot_water_settings');
-  assert.deepEqual(host.errors, []);
+  assert.equal(flow.commands[1][3].batchUpdateStateRequest[0].traitRequest.traitLabel, 'hot_water_settings');
+  let failures = () => flow.logs.filter((entry) => String(entry[1]).includes('Failed processing set request'));
+  let writes = () => flow.requests.filter((request) => new URL(request[1]).pathname === '/v5/put');
+  assert.deepEqual(failures(), []);
   await assert.rejects(
-    host.run('device.LEGACY', { target_temperature: 22, hot_water_boost_active: { state: true, time: 1800 } }),
+    flow.device.set({ uuid: 'device.LEGACY', target_temperature: 22, hot_water_boost_active: { state: true, time: 1800 } }),
     AggregateError,
   );
-  await assert.rejects(host.run('kryptonite.LEGACY_SENSOR', { active_sensor: true }), AggregateError);
-  assert.equal(host.errors.length, 3, 'Each unsupported setting is rejected without sending an invalid REST request');
-  assert.equal(rest.length, 0);
-  assert.equal(grpc.length, 2);
-  await host.run('topaz.PROTECT', { ntp_green_led_enable: true });
-  assert.equal(rest.length, 1);
-  assert.equal(JSON.parse(rest[0][3]).objects[0].object_key, 'topaz.PROTECT');
+  await assert.rejects(flow.device.set({ uuid: 'kryptonite.LEGACY_SENSOR', active_sensor: true }), AggregateError);
+  assert.equal(failures().length, 3, 'Each unsupported setting is rejected without sending an invalid REST request');
+  assert.equal(writes().length, 0);
+  assert.equal(flow.commands.length, 2);
+  await flow.device.set({ uuid: 'topaz.PROTECT', ntp_green_led_enable: true });
+  assert.equal(writes().length, 1);
+  assert.equal(JSON.parse(writes()[0][3]).objects[0].object_key, 'topaz.PROTECT');
 });
 
 for (let [product, model] of [
@@ -262,7 +224,7 @@ for (let association of [null, {}, { deviceId: { resourceId: '' } }, { deviceId:
   });
 }
 
-let thermostat = await loadMapper('thermostat');
+let { processRawData: thermostat } = await importSource(new URL('../src/plugins/thermostat.js', import.meta.url));
 
 function nestData() {
   let source = DATA_SOURCE.NEST;
@@ -418,6 +380,19 @@ for (let reverse of [false, true]) {
   });
 }
 
+// Feed the complete REST discovery reply through the same platform path as protobuf commands.
+async function restPlatform(context, raw) {
+  return await platformHarness(context, {
+    source: DATA_SOURCE.NEST,
+    id: 'device.LEGACY',
+    subscribe: async () => ({
+      json: async () => ({
+        updated_buckets: Object.entries(raw).map(([object_key, resource]) => ({ object_key, value: resource.value })),
+      }),
+    }),
+  });
+}
+
 for (let [values, bucket, expected] of [
   [{ target_temperature: 22 }, 'shared.LEGACY', { target_change_pending: true, target_temperature: 22 }],
   [{ target_temperature_low: 18 }, 'shared.LEGACY', { target_change_pending: true, target_temperature_low: 18 }],
@@ -444,35 +419,27 @@ for (let [values, bucket, expected] of [
   [{ target_humidity_dehumidifier: 40 }, 'device.LEGACY', { target_humidity: 40 }],
   [{ vacation_mode: true }, 'structure.HOME', { vacation_mode: true }],
 ]) {
-  test('REST control ' + JSON.stringify(values) + ' uses the correct bucket without changing cached state', async () => {
-    let raw = nestData();
-    let before = structuredClone(raw);
-    let requests = [];
-    let connection = { authorised: true, transport_url: 'https://transport.invalid' };
-    attachAPIClients(connection, raw, async (...args) => {
-      requests.push(args);
-      return { json: async () => ({ objects: [{}] }) };
-    });
-    await connection.nestAPI.set('device.LEGACY', values);
+  test('REST control ' + JSON.stringify(values) + ' uses the correct bucket without changing cached state', async (context) => {
+    let flow = await restPlatform(context, nestData());
+    let before = structuredClone(flow.raw);
+    await flow.device.set({ uuid: 'device.LEGACY', ...values });
+    let requests = flow.requests.filter((request) => new URL(request[1]).pathname === '/v5/put');
     assert.equal(requests.length, 1);
     assert.equal(requests[0][1], 'https://transport.invalid/v5/put');
     assert.deepEqual(JSON.parse(requests[0][3]).objects, [{ object_key: bucket, op: 'MERGE', value: expected }]);
-    assert.deepEqual(raw, before);
+    assert.deepEqual(flow.raw, before);
   });
 }
 
 for (let mode of ['heat', 'cool']) {
-  test('REST ' + mode + ' setpoints use the shared bucket during Eco', async () => {
+  test('REST ' + mode + ' setpoints use the shared bucket during Eco', async (context) => {
     let raw = nestData();
     raw['device.LEGACY'].value.eco.mode = 'manual-eco';
     raw['shared.LEGACY'].value.target_temperature_type = mode;
-    let requests = [];
-    let connection = { authorised: true, transport_url: 'https://transport.invalid' };
-    attachAPIClients(connection, raw, async (...args) => {
-      requests.push(args);
-      return { json: async () => ({ objects: [{}] }) };
-    });
-    await connection.nestAPI.set('device.LEGACY', { target_temperature: 22 });
+    let flow = await restPlatform(context, raw);
+    await flow.device.set({ uuid: 'device.LEGACY', target_temperature: 22 });
+    let requests = flow.requests.filter((request) => new URL(request[1]).pathname === '/v5/put');
+    assert.equal(requests.length, 1);
     assert.deepEqual(JSON.parse(requests[0][3]).objects[0], {
       object_key: 'shared.LEGACY',
       op: 'MERGE',
@@ -492,10 +459,11 @@ for (let values of [
   { humidifier_state: true, target_humidity_humidifier: 'bad' },
   { eco_mode: true },
 ]) {
-  test('REST invalid setting rejects before network: ' + JSON.stringify(values), async () => {
-    let connection = { authorised: true, transport_url: 'https://transport.invalid' };
-    attachAPIClients(connection, nestData(), async () => assert.fail('Invalid request reached network'));
-    await assert.rejects(connection.nestAPI.set('device.LEGACY', values), AggregateError);
+  test('REST invalid setting rejects before network: ' + JSON.stringify(values), async (context) => {
+    let flow = await restPlatform(context, nestData());
+    let requests = flow.requests.length;
+    await assert.rejects(flow.device.set({ uuid: 'device.LEGACY', ...values }), AggregateError);
+    assert.equal(flow.requests.length, requests);
   });
 }
 

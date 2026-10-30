@@ -25,7 +25,7 @@
 // - connect() starts ingestion without a consumer; onData optionally reports committed changes
 // - Google Home Foyer media signalling belongs to the WebRTC camera transport
 //
-// Code version 2026.10.29
+// Code version 2026.10.30
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -552,332 +552,359 @@ export default class GoogleAPI {
       ];
     };
 
-    // Map the plugin's Eco state to the protobuf command enum. HomeKitDevice
-    // applies a successful SET locally; Observe supplies the actual device state.
-    if (key === 'eco_mode' && typeof value === 'string' && ['OFF', 'MANUAL', 'AUTO'].includes(value.toUpperCase()) === true) {
-      setCommandTrait('eco_mode_state', 'type.nestlabs.com/nest.trait.hvac.EcoModeStateTrait.EcoModeChangeRequest', {
-        ecoMode: {
-          OFF: 'ECO_MODE_INACTIVE',
-          MANUAL: 'ECO_MODE_MANUAL_ECO',
-          AUTO: 'ECO_MODE_AUTO_ECO',
-        }[value.toUpperCase()],
-        ecoModeActor: {
-          method: 'HVAC_ACTOR_METHOD_IOS',
-          originator: { resourceId },
-          timeOfAction: timestamp(Date.now()),
-        },
-        setAll: false,
-      });
-    }
+    // Select one setting, then validate its value and construct its protocol request.
+    switch (key) {
+      case 'eco_mode':
+        // Map the plugin's Eco state to the protobuf command enum. HomeKitDevice
+        // applies a successful SET locally; Observe supplies the actual device state.
+        if (typeof value === 'string' && ['OFF', 'MANUAL', 'AUTO'].includes(value.toUpperCase()) === true) {
+          setCommandTrait('eco_mode_state', 'type.nestlabs.com/nest.trait.hvac.EcoModeStateTrait.EcoModeChangeRequest', {
+            ecoMode: {
+              OFF: 'ECO_MODE_INACTIVE',
+              MANUAL: 'ECO_MODE_MANUAL_ECO',
+              AUTO: 'ECO_MODE_AUTO_ECO',
+            }[value.toUpperCase()],
+            ecoModeActor: {
+              method: 'HVAC_ACTOR_METHOD_IOS',
+              originator: { resourceId },
+              timeOfAction: timestamp(Date.now()),
+            },
+            setAll: false,
+          });
+        }
+        break;
 
-    if (
-      (key === 'hvac_mode' && typeof value === 'string' && ['OFF', 'COOL', 'HEAT', 'RANGE'].includes(value.toUpperCase()) === true) ||
-      (['target_temperature', 'target_temperature_low', 'target_temperature_high'].includes(key) === true &&
-        resource?.value?.eco_mode_state?.ecoMode === 'ECO_MODE_INACTIVE' &&
-        isNumeric(value) === true)
-    ) {
-      // HVAC mode always uses the normal target trait. Temperature writes use
-      // it only when Eco is explicitly inactive; the next branch handles Eco targets.
-      setUpdateTrait('target_temperature_settings', 'type.nestlabs.com/nest.trait.hvac.TargetTemperatureSettingsTrait');
+      case 'hvac_mode':
+      case 'target_temperature':
+      case 'target_temperature_low':
+      case 'target_temperature_high':
+        if (key === 'hvac_mode') {
+          if (typeof value !== 'string' || ['OFF', 'COOL', 'HEAT', 'RANGE'].includes(value.toUpperCase()) !== true) {
+            break;
+          }
+        } else if (isNumeric(value) !== true) {
+          break;
+        }
 
-      let setpointType = updateElement.state.value.targetTemperature?.setpointType;
-      let setHeatingTarget =
-        ['target_temperature_low', 'target_temperature'].includes(key) === true &&
-        ['SET_POINT_TYPE_HEAT', 'SET_POINT_TYPE_RANGE'].includes(setpointType) === true;
-      let setCoolingTarget =
-        ['target_temperature_high', 'target_temperature'].includes(key) === true &&
-        ['SET_POINT_TYPE_COOL', 'SET_POINT_TYPE_RANGE'].includes(setpointType) === true;
+        if (key === 'hvac_mode' || resource?.value?.eco_mode_state?.ecoMode === 'ECO_MODE_INACTIVE') {
+          // HVAC mode always uses the normal target trait. Temperature writes use
+          // it only when Eco is explicitly inactive; otherwise use the Eco limits below.
+          setUpdateTrait('target_temperature_settings', 'type.nestlabs.com/nest.trait.hvac.TargetTemperatureSettingsTrait');
 
-      // Do not report success for an actor-only update to the wrong target.
-      if (key !== 'hvac_mode' && setHeatingTarget !== true && setCoolingTarget !== true) {
-        throw new Error('Temperature setting "' + key + '" is unavailable in the current mode');
-      }
+          let setpointType = updateElement.state.value.targetTemperature?.setpointType;
+          let setHeatingTarget =
+            ['target_temperature_low', 'target_temperature'].includes(key) === true &&
+            ['SET_POINT_TYPE_HEAT', 'SET_POINT_TYPE_RANGE'].includes(setpointType) === true;
+          let setCoolingTarget =
+            ['target_temperature_high', 'target_temperature'].includes(key) === true &&
+            ['SET_POINT_TYPE_COOL', 'SET_POINT_TYPE_RANGE'].includes(setpointType) === true;
 
-      if (setHeatingTarget === true) {
-        updateElement.state.value.targetTemperature.heatingTarget = { value: Number(value) };
-      }
+          // Do not report success for an actor-only update to the wrong target.
+          if (key !== 'hvac_mode' && setHeatingTarget !== true && setCoolingTarget !== true) {
+            throw new Error('Temperature setting "' + key + '" is unavailable in the current mode');
+          }
 
-      if (setCoolingTarget === true) {
-        updateElement.state.value.targetTemperature.coolingTarget = { value: Number(value) };
-      }
+          if (setHeatingTarget === true) {
+            updateElement.state.value.targetTemperature.heatingTarget = { value: Number(value) };
+          }
 
-      if (key === 'hvac_mode' && value.toUpperCase() !== 'OFF') {
-        updateElement.state.value.targetTemperature.setpointType = 'SET_POINT_TYPE_' + value.toUpperCase();
-        updateElement.state.value.enabled = { value: true };
-      }
+          if (setCoolingTarget === true) {
+            updateElement.state.value.targetTemperature.coolingTarget = { value: Number(value) };
+          }
 
-      if (key === 'hvac_mode' && value.toUpperCase() === 'OFF') {
-        updateElement.state.value.enabled = { value: false };
-      }
+          if (key === 'hvac_mode' && value.toUpperCase() !== 'OFF') {
+            updateElement.state.value.targetTemperature.setpointType = 'SET_POINT_TYPE_' + value.toUpperCase();
+            updateElement.state.value.enabled = { value: true };
+          }
 
-      // Attribute the request using the Nest client actor fields expected by
-      // this trait, with the target resource as the originator.
-      updateElement.state.value.targetTemperature.currentActorInfo = {
-        method: 'HVAC_ACTOR_METHOD_IOS',
-        originator: { resourceId },
-        timeOfAction: timestamp(Date.now()),
-      };
-    }
+          if (key === 'hvac_mode' && value.toUpperCase() === 'OFF') {
+            updateElement.state.value.enabled = { value: false };
+          }
 
-    if (
-      ['target_temperature', 'target_temperature_low', 'target_temperature_high'].includes(key) === true &&
-      resource?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE' &&
-      isNumeric(value) === true
-    ) {
-      // Eco has separate limits and enable flags. A single target is unambiguous
-      // only when one side is enabled; with both enabled, require low or high.
-      setUpdateTrait('eco_mode_settings', 'type.nestlabs.com/nest.trait.hvac.EcoModeSettingsTrait');
+          // Attribute the request using the Nest client actor fields expected by
+          // this trait, with the target resource as the originator.
+          updateElement.state.value.targetTemperature.currentActorInfo = {
+            method: 'HVAC_ACTOR_METHOD_IOS',
+            originator: { resourceId },
+            timeOfAction: timestamp(Date.now()),
+          };
+        } else {
+          // Eco has separate limits and enable flags. A single target is unambiguous
+          // only when one side is enabled; with both enabled, require low or high.
+          setUpdateTrait('eco_mode_settings', 'type.nestlabs.com/nest.trait.hvac.EcoModeSettingsTrait');
 
-      let heatEnabled = updateElement.state.value.ecoTemperatureHeat?.enabled === true;
-      let coolEnabled = updateElement.state.value.ecoTemperatureCool?.enabled === true;
-      let setHeatingTarget =
-        heatEnabled === true &&
-        ['target_temperature', 'target_temperature_low'].includes(key) === true &&
-        (coolEnabled !== true || key === 'target_temperature_low');
-      let setCoolingTarget =
-        coolEnabled === true &&
-        ['target_temperature', 'target_temperature_high'].includes(key) === true &&
-        (heatEnabled !== true || key === 'target_temperature_high');
-      if (setHeatingTarget !== true && setCoolingTarget !== true) {
-        throw new Error('Temperature setting "' + key + '" is unavailable in the current Eco mode');
-      }
+          let heatEnabled = updateElement.state.value.ecoTemperatureHeat?.enabled === true;
+          let coolEnabled = updateElement.state.value.ecoTemperatureCool?.enabled === true;
+          let setHeatingTarget =
+            heatEnabled === true &&
+            ['target_temperature', 'target_temperature_low'].includes(key) === true &&
+            (coolEnabled !== true || key === 'target_temperature_low');
+          let setCoolingTarget =
+            coolEnabled === true &&
+            ['target_temperature', 'target_temperature_high'].includes(key) === true &&
+            (heatEnabled !== true || key === 'target_temperature_high');
+          if (setHeatingTarget !== true && setCoolingTarget !== true) {
+            throw new Error('Temperature setting "' + key + '" is unavailable in the current Eco mode');
+          }
 
-      if (setHeatingTarget === true) {
-        updateElement.state.value.ecoTemperatureHeat.value = { value: Number(value) };
-      }
+          if (setHeatingTarget === true) {
+            updateElement.state.value.ecoTemperatureHeat.value = { value: Number(value) };
+          }
 
-      if (setCoolingTarget === true) {
-        updateElement.state.value.ecoTemperatureCool.value = { value: Number(value) };
-      }
-    }
+          if (setCoolingTarget === true) {
+            updateElement.state.value.ecoTemperatureCool.value = { value: Number(value) };
+          }
+        }
+        break;
 
-    if (key === 'temperature_scale' && typeof value === 'string' && ['C', 'F'].includes(value.toUpperCase()) === true) {
-      // Set the temperature scale on the target thermostat
-      setUpdateTrait('display_settings', 'type.nestlabs.com/nest.trait.hvac.DisplaySettingsTrait', undefined, {
-        temperatureScale: value.toUpperCase() === 'F' ? 'TEMPERATURE_SCALE_F' : 'TEMPERATURE_SCALE_C',
-      });
-    }
+      case 'temperature_scale':
+        if (typeof value === 'string' && ['C', 'F'].includes(value.toUpperCase()) === true) {
+          // Set the temperature scale on the target thermostat
+          setUpdateTrait('display_settings', 'type.nestlabs.com/nest.trait.hvac.DisplaySettingsTrait', undefined, {
+            temperatureScale: value.toUpperCase() === 'F' ? 'TEMPERATURE_SCALE_F' : 'TEMPERATURE_SCALE_C',
+          });
+        }
+        break;
 
-    if (key === 'temperature_lock' && typeof value === 'boolean') {
-      // Set lock mode on the target thermostat
-      setUpdateTrait('temperature_lock_settings', 'type.nestlabs.com/nest.trait.hvac.TemperatureLockSettingsTrait', undefined, {
-        enabled: value,
-      });
-    }
+      case 'temperature_lock':
+        if (typeof value === 'boolean') {
+          // Set lock mode on the target thermostat
+          setUpdateTrait('temperature_lock_settings', 'type.nestlabs.com/nest.trait.hvac.TemperatureLockSettingsTrait', undefined, {
+            enabled: value,
+          });
+        }
+        break;
 
-    if (
-      key === 'fan_state' &&
-      typeof value === 'boolean' &&
-      isNumeric(values.fan_duration, { min: 0 }) === true &&
-      (values.fan_timer_speed === undefined || isNumeric(values.fan_timer_speed, { type: 'integer', min: 0, max: 3 }) === true)
-    ) {
-      // Set fan mode on the target thermostat, including runtime if turning on
-      setUpdateTrait('fan_control_settings', 'type.nestlabs.com/nest.trait.hvac.FanControlSettingsTrait');
-      updateElement.state.value.timerEnd = value === true ? timestamp(Date.now() + Number(values.fan_duration) * 1000) : timestamp(0);
-      if (values?.fan_timer_speed !== undefined) {
-        // A zero speed retains the current stage. fan_state owns the combined
-        // on/off, duration and optional speed update for this request.
-        updateElement.state.value.timerSpeed =
-          Number(values.fan_timer_speed) !== 0
-            ? 'FAN_SPEED_SETTING_STAGE' + Number(values.fan_timer_speed)
-            : resource.value.fan_control_settings.timerSpeed;
-      }
-    }
+      case 'fan_state':
+        if (
+          typeof value === 'boolean' &&
+          isNumeric(values.fan_duration, { min: 0 }) === true &&
+          (values.fan_timer_speed === undefined || isNumeric(values.fan_timer_speed, { type: 'integer', min: 0, max: 3 }) === true)
+        ) {
+          // Set fan mode on the target thermostat, including runtime if turning on
+          setUpdateTrait('fan_control_settings', 'type.nestlabs.com/nest.trait.hvac.FanControlSettingsTrait');
+          updateElement.state.value.timerEnd = value === true ? timestamp(Date.now() + Number(values.fan_duration) * 1000) : timestamp(0);
+          if (values?.fan_timer_speed !== undefined) {
+            // A zero speed retains the current stage. fan_state owns the combined
+            // on/off, duration and optional speed update for this request.
+            updateElement.state.value.timerSpeed =
+              Number(values.fan_timer_speed) !== 0
+                ? 'FAN_SPEED_SETTING_STAGE' + Number(values.fan_timer_speed)
+                : resource.value.fan_control_settings.timerSpeed;
+          }
+        }
+        break;
 
-    if (key === 'fan_timer_speed' && isNumeric(value, { type: 'integer', min: 0, max: 3 }) === true) {
-      // Set fan speed on the target thermostat only if we're not changing fan on/off state also
-      setUpdateTrait('fan_control_settings', 'type.nestlabs.com/nest.trait.hvac.FanControlSettingsTrait');
-      updateElement.state.value.timerSpeed =
-        Number(value) !== 0 ? 'FAN_SPEED_SETTING_STAGE' + Number(value) : resource.value.fan_control_settings.timerSpeed;
-    }
+      case 'fan_timer_speed':
+        if (isNumeric(value, { type: 'integer', min: 0, max: 3 }) === true) {
+          // Set fan speed on the target thermostat only if we're not changing fan on/off state also
+          setUpdateTrait('fan_control_settings', 'type.nestlabs.com/nest.trait.hvac.FanControlSettingsTrait');
+          updateElement.state.value.timerSpeed =
+            Number(value) !== 0 ? 'FAN_SPEED_SETTING_STAGE' + Number(value) : resource.value.fan_control_settings.timerSpeed;
+        }
+        break;
 
-    if (key === 'streaming_enabled' && typeof value === 'boolean') {
-      // Camera power uses the recording toggle trait, rather than a live-session
-      // command. Carry the change reason and timestamp with the requested state.
-      setUpdateTrait('recording_toggle_settings', 'type.nestlabs.com/nest.trait.product.camera.RecordingToggleSettingsTrait');
-      updateElement.state.value.targetCameraState = value === true ? 'CAMERA_ON' : 'CAMERA_OFF';
-      updateElement.state.value.changeModeReason = 2;
-      updateElement.state.value.settingsUpdated = timestamp(Date.now());
-    }
+      case 'streaming_enabled':
+        if (typeof value === 'boolean') {
+          // Camera power uses the recording toggle trait, rather than a live-session
+          // command. Carry the change reason and timestamp with the requested state.
+          setUpdateTrait('recording_toggle_settings', 'type.nestlabs.com/nest.trait.product.camera.RecordingToggleSettingsTrait');
+          updateElement.state.value.targetCameraState = value === true ? 'CAMERA_ON' : 'CAMERA_OFF';
+          updateElement.state.value.changeModeReason = 2;
+          updateElement.state.value.settingsUpdated = timestamp(Date.now());
+        }
+        break;
 
-    if (key === 'audio_enabled' && typeof value === 'boolean') {
-      // Enable/disable microphone on camera/doorbell
-      setUpdateTrait('microphone_settings', 'type.nestlabs.com/nest.trait.audio.MicrophoneSettingsTrait', undefined, {
-        enableMicrophone: value,
-      });
-    }
+      case 'audio_enabled':
+        if (typeof value === 'boolean') {
+          // Enable/disable microphone on camera/doorbell
+          setUpdateTrait('microphone_settings', 'type.nestlabs.com/nest.trait.audio.MicrophoneSettingsTrait', undefined, {
+            enableMicrophone: value,
+          });
+        }
+        break;
 
-    if (key === 'indoor_chime_enabled' && typeof value === 'boolean') {
-      // Enable/disable chime status on doorbell
-      setUpdateTrait(
-        'doorbell_indoor_chime_settings',
-        'type.nestlabs.com/nest.trait.product.doorbell.DoorbellIndoorChimeSettingsTrait',
-        undefined,
-        { chimeEnabled: value },
-      );
-    }
+      case 'indoor_chime_enabled':
+        if (typeof value === 'boolean') {
+          // Enable/disable chime status on doorbell
+          setUpdateTrait(
+            'doorbell_indoor_chime_settings',
+            'type.nestlabs.com/nest.trait.product.doorbell.DoorbellIndoorChimeSettingsTrait',
+            undefined,
+            { chimeEnabled: value },
+          );
+        }
+        break;
 
-    if (key === 'light_enabled' && typeof value === 'boolean' && typeof resource?.value?.related_resources?.relatedResources === 'object') {
-      // Floodlight power belongs to the related Aziz service, while brightness
-      // below belongs to the camera's floodlight settings trait.
-      let serviceUUID = Object.values(resource.value.related_resources.relatedResources).find(
-        (resource) =>
-          resource?.resourceTypeName?.resourceName === 'google.resource.AzizResource' &&
-          resource?.resourceId?.resourceId?.startsWith('SERVICE_') === true,
-      )?.resourceId?.resourceId;
+      case 'light_enabled':
+        if (typeof value === 'boolean' && typeof resource?.value?.related_resources?.relatedResources === 'object') {
+          // Floodlight power belongs to the related Aziz service, while brightness
+          // below belongs to the camera's floodlight settings trait.
+          let serviceUUID = Object.values(resource.value.related_resources.relatedResources).find(
+            (resource) =>
+              resource?.resourceTypeName?.resourceName === 'google.resource.AzizResource' &&
+              resource?.resourceId?.resourceId?.startsWith('SERVICE_') === true,
+          )?.resourceId?.resourceId;
 
-      if ((serviceUUID ?? '') !== '') {
-        setCommandTrait('on_off', 'type.nestlabs.com/weave.trait.actuator.OnOffTrait.SetStateRequest', { on: value }, serviceUUID);
-      }
-    }
+          if ((serviceUUID ?? '') !== '') {
+            setCommandTrait('on_off', 'type.nestlabs.com/weave.trait.actuator.OnOffTrait.SetStateRequest', { on: value }, serviceUUID);
+          }
+        }
+        break;
 
-    if (key === 'light_brightness' && isNumeric(value, { min: 0, max: 100 }) === true) {
-      // Set light brightness on supported camera devices. Needs to be scaled to 0-10 for the API
-      setUpdateTrait('floodlight_settings', 'type.nestlabs.com/google.trait.product.camera.FloodlightSettingsTrait', undefined, {
-        brightness: scaleValue(Number(value), 0, 100, 0, 10),
-      });
-    }
+      case 'light_brightness':
+        if (isNumeric(value, { min: 0, max: 100 }) === true) {
+          // Set light brightness on supported camera devices. Needs to be scaled to 0-10 for the API
+          setUpdateTrait('floodlight_settings', 'type.nestlabs.com/google.trait.product.camera.FloodlightSettingsTrait', undefined, {
+            brightness: scaleValue(Number(value), 0, 100, 0, 10),
+          });
+        }
+        break;
 
-    if (key === 'active_sensor' && typeof value === 'boolean') {
-      // Resolve the parent from this API's observed relationships; a standalone
-      // client must not rely on System injecting a thermostat ID into the sensor.
-      let parent = [...this.resources].find(
-        ([, candidate]) =>
-          candidate.value?.remote_comfort_sensing_settings?.associatedRcsSensors?.some(
-            (sensor) => sensor.deviceId?.resourceId === resourceId,
-          ) === true,
-      );
-      if (parent !== undefined) {
-        updateElement.traitRequest.resourceId = parent[0];
-        setUpdateTrait(
-          'remote_comfort_sensing_settings',
-          'type.nestlabs.com/nest.trait.hvac.RemoteComfortSensingSettingsTrait',
-          parent[1].value.remote_comfort_sensing_settings,
-        );
-        updateElement.state.value.activeRcsSelection =
-          value === true
-            ? { rcsSourceType: 'RCS_SOURCE_TYPE_SINGLE_SENSOR', activeRcsSensor: { resourceId } }
-            : { rcsSourceType: 'RCS_SOURCE_TYPE_BACKPLATE' };
-      }
-    }
+      case 'active_sensor':
+        if (typeof value === 'boolean') {
+          // Resolve the parent from this API's observed relationships; a standalone
+          // client must not rely on System injecting a thermostat ID into the sensor.
+          let parent = [...this.resources].find(
+            ([, candidate]) =>
+              candidate.value?.remote_comfort_sensing_settings?.associatedRcsSensors?.some(
+                (sensor) => sensor.deviceId?.resourceId === resourceId,
+              ) === true,
+          );
+          if (parent !== undefined) {
+            updateElement.traitRequest.resourceId = parent[0];
+            setUpdateTrait(
+              'remote_comfort_sensing_settings',
+              'type.nestlabs.com/nest.trait.hvac.RemoteComfortSensingSettingsTrait',
+              parent[1].value.remote_comfort_sensing_settings,
+            );
+            updateElement.state.value.activeRcsSelection =
+              value === true
+                ? { rcsSourceType: 'RCS_SOURCE_TYPE_SINGLE_SENSOR', activeRcsSensor: { resourceId } }
+                : { rcsSourceType: 'RCS_SOURCE_TYPE_BACKPLATE' };
+          }
+        }
+        break;
 
-    if (
-      key === 'hot_water_boost_active' &&
-      typeof value === 'object' &&
-      value !== null &&
-      typeof value.state === 'boolean' &&
-      (value.time === undefined || isNumeric(value.time, { min: 0 }) === true) &&
-      resource?.value?.hvac_equipment_capabilities?.hasHotWaterControl === true
-    ) {
-      // Boost and water temperature share one trait. Preserve its other fields
-      // and use an absolute expiry, or zero to cancel; default boost is 30 minutes.
-      setUpdateTrait('hot_water_settings', 'type.nestlabs.com/nest.trait.hvac.HotWaterSettingsTrait');
+      case 'hot_water_boost_active':
+        if (
+          typeof value === 'object' &&
+          value !== null &&
+          typeof value.state === 'boolean' &&
+          (value.time === undefined || isNumeric(value.time, { min: 0 }) === true) &&
+          resource?.value?.hvac_equipment_capabilities?.hasHotWaterControl === true
+        ) {
+          // Boost and water temperature share one trait. Preserve its other fields
+          // and use an absolute expiry, or zero to cancel; default boost is 30 minutes.
+          setUpdateTrait('hot_water_settings', 'type.nestlabs.com/nest.trait.hvac.HotWaterSettingsTrait');
 
-      let boostTime = value.time === undefined ? 30 * 60 : Number(value.time);
+          let boostTime = value.time === undefined ? 30 * 60 : Number(value.time);
 
-      updateElement.state.value.boostTimerEnd = value?.state === true ? timestamp(Date.now() + boostTime * 1000) : timestamp(0);
-    }
+          updateElement.state.value.boostTimerEnd = value?.state === true ? timestamp(Date.now() + boostTime * 1000) : timestamp(0);
+        }
+        break;
 
-    if (
-      key === 'hot_water_temperature' &&
-      isNumeric(value) === true &&
-      resource?.value?.hvac_equipment_capabilities?.hasHotWaterTemperature === true
-    ) {
-      // Set hotwater boiler temperature
-      setUpdateTrait('hot_water_settings', 'type.nestlabs.com/nest.trait.hvac.HotWaterSettingsTrait');
-      updateElement.state.value.temperature = {
-        ...(updateElement.state.value.temperature ?? {}),
-        value: Number(value),
-      };
-    }
+      case 'hot_water_temperature':
+        if (isNumeric(value) === true && resource?.value?.hvac_equipment_capabilities?.hasHotWaterTemperature === true) {
+          // Set hotwater boiler temperature
+          setUpdateTrait('hot_water_settings', 'type.nestlabs.com/nest.trait.hvac.HotWaterSettingsTrait');
+          updateElement.state.value.temperature = {
+            ...(updateElement.state.value.temperature ?? {}),
+            value: Number(value),
+          };
+        }
+        break;
 
-    if (key === 'bolt_lock' && typeof value === 'boolean') {
-      // Bolt motion is an explicit command with actor metadata; automatic relock
-      // below changes a persistent setting instead of moving the bolt now.
-      setCommandTrait('bolt_lock', 'type.nestlabs.com/weave.trait.security.BoltLockTrait.BoltLockChangeRequest', {
-        state: value === true ? 'BOLT_STATE_EXTENDED' : 'BOLT_STATE_RETRACTED',
-        boltLockActor: {
-          method: 'BOLT_LOCK_ACTOR_METHOD_REMOTE_USER_EXPLICIT',
-          originator: { resourceId },
-          agent: null,
-        },
-      });
-    }
+      case 'bolt_lock':
+        if (typeof value === 'boolean') {
+          // Bolt motion is an explicit command with actor metadata; automatic relock
+          // below changes a persistent setting instead of moving the bolt now.
+          setCommandTrait('bolt_lock', 'type.nestlabs.com/weave.trait.security.BoltLockTrait.BoltLockChangeRequest', {
+            state: value === true ? 'BOLT_STATE_EXTENDED' : 'BOLT_STATE_RETRACTED',
+            boltLockActor: {
+              method: 'BOLT_LOCK_ACTOR_METHOD_REMOTE_USER_EXPLICIT',
+              originator: { resourceId },
+              agent: null,
+            },
+          });
+        }
+        break;
 
-    if (key === 'auto_relock_duration' && isNumeric(value, { type: 'integer', min: 0 }) === true) {
-      // Set lock auto-relock duration
-      setUpdateTrait('bolt_lock_settings', 'type.nestlabs.com/weave.trait.security.BoltLockSettingsTrait');
-      updateElement.state.value.autoRelockDuration = {
-        ...(updateElement.state.value.autoRelockDuration ?? {}),
-        seconds: Number(value),
-      };
-    }
+      case 'auto_relock_duration':
+        if (isNumeric(value, { type: 'integer', min: 0 }) === true) {
+          // Set lock auto-relock duration
+          setUpdateTrait('bolt_lock_settings', 'type.nestlabs.com/weave.trait.security.BoltLockSettingsTrait');
+          updateElement.state.value.autoRelockDuration = {
+            ...(updateElement.state.value.autoRelockDuration ?? {}),
+            seconds: Number(value),
+          };
+        }
+        break;
 
-    if (key === 'vacation_mode' && typeof value === 'boolean' && (resource?.value?.device_info?.pairerId?.resourceId ?? '') !== '') {
-      // Vacation mode is a structure command. Target the device's paired
-      // structure while retaining the requesting device in the command payload.
-      setCommandTrait(
-        'structure_mode',
-        'type.nestlabs.com/nest.trait.occupancy.StructureModeTrait.StructureModeChangeRequest',
-        {
-          structureMode: value === true ? 'STRUCTURE_MODE_VACATION' : 'STRUCTURE_MODE_HOME',
-          reason: 'STRUCTURE_MODE_REASON_EXPLICIT_INTENT',
-          userId: {
-            resourceId,
-          },
-        },
-        resource.value.device_info.pairerId.resourceId,
-      );
-    }
+      case 'vacation_mode':
+        if (typeof value === 'boolean' && (resource?.value?.device_info?.pairerId?.resourceId ?? '') !== '') {
+          // Vacation mode is a structure command. Target the device's paired
+          // structure while retaining the requesting device in the command payload.
+          setCommandTrait(
+            'structure_mode',
+            'type.nestlabs.com/nest.trait.occupancy.StructureModeTrait.StructureModeChangeRequest',
+            {
+              structureMode: value === true ? 'STRUCTURE_MODE_VACATION' : 'STRUCTURE_MODE_HOME',
+              reason: 'STRUCTURE_MODE_REASON_EXPLICIT_INTENT',
+              userId: {
+                resourceId,
+              },
+            },
+            resource.value.device_info.pairerId.resourceId,
+          );
+        }
+        break;
 
-    if (
-      key === 'dehumidifier_state' &&
-      typeof value === 'boolean' &&
-      resource?.value?.hvac_equipment_capabilities?.hasDehumidifier === true
-    ) {
-      // Humidity controls below share one trait but keep separate equipment
-      // targets. Merge each nested object so enable and percentage writes retain
-      // one another, including earlier accepted writes from this same SET.
-      setUpdateTrait('humidity_control_settings', 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait');
-      updateElement.state.value.dehumidifierTargetHumidity = {
-        ...(updateElement.state.value.dehumidifierTargetHumidity ?? {}),
-        enabled: value,
-      };
-    }
+      case 'dehumidifier_state':
+        if (typeof value === 'boolean' && resource?.value?.hvac_equipment_capabilities?.hasDehumidifier === true) {
+          // Humidity controls below share one trait but keep separate equipment
+          // targets. Merge each nested object so enable and percentage writes retain
+          // one another, including earlier accepted writes from this same SET.
+          setUpdateTrait('humidity_control_settings', 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait');
+          updateElement.state.value.dehumidifierTargetHumidity = {
+            ...(updateElement.state.value.dehumidifierTargetHumidity ?? {}),
+            enabled: value,
+          };
+        }
+        break;
 
-    if (
-      key === 'target_humidity_dehumidifier' &&
-      isNumeric(value, { min: 0, max: 100 }) === true &&
-      resource?.value?.hvac_equipment_capabilities?.hasDehumidifier === true
-    ) {
-      // Set dehumidifier target humidity on the target thermostat
-      setUpdateTrait('humidity_control_settings', 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait');
-      updateElement.state.value.dehumidifierTargetHumidity = {
-        ...(updateElement.state.value.dehumidifierTargetHumidity ?? {}),
-        value: Number(value),
-      };
-    }
+      case 'target_humidity_dehumidifier':
+        if (isNumeric(value, { min: 0, max: 100 }) === true && resource?.value?.hvac_equipment_capabilities?.hasDehumidifier === true) {
+          // Set dehumidifier target humidity on the target thermostat
+          setUpdateTrait('humidity_control_settings', 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait');
+          updateElement.state.value.dehumidifierTargetHumidity = {
+            ...(updateElement.state.value.dehumidifierTargetHumidity ?? {}),
+            value: Number(value),
+          };
+        }
+        break;
 
-    if (key === 'humidifier_state' && typeof value === 'boolean' && resource?.value?.hvac_equipment_capabilities?.hasHumidifier === true) {
-      // Set humidifier on/off on the target thermostat
-      setUpdateTrait('humidity_control_settings', 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait');
-      updateElement.state.value.humidifierTargetHumidity = {
-        ...(updateElement.state.value.humidifierTargetHumidity ?? {}),
-        enabled: value,
-      };
-    }
+      case 'humidifier_state':
+        if (typeof value === 'boolean' && resource?.value?.hvac_equipment_capabilities?.hasHumidifier === true) {
+          // Set humidifier on/off on the target thermostat
+          setUpdateTrait('humidity_control_settings', 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait');
+          updateElement.state.value.humidifierTargetHumidity = {
+            ...(updateElement.state.value.humidifierTargetHumidity ?? {}),
+            enabled: value,
+          };
+        }
+        break;
 
-    if (
-      key === 'target_humidity_humidifier' &&
-      isNumeric(value, { min: 0, max: 100 }) === true &&
-      resource?.value?.hvac_equipment_capabilities?.hasHumidifier === true
-    ) {
-      // Set humidifier target humidity on the target thermostat
-      setUpdateTrait('humidity_control_settings', 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait');
-      updateElement.state.value.humidifierTargetHumidity = {
-        ...(updateElement.state.value.humidifierTargetHumidity ?? {}),
-        value: Number(value),
-      };
+      case 'target_humidity_humidifier':
+        if (isNumeric(value, { min: 0, max: 100 }) === true && resource?.value?.hvac_equipment_capabilities?.hasHumidifier === true) {
+          // Set humidifier target humidity on the target thermostat
+          setUpdateTrait('humidity_control_settings', 'type.nestlabs.com/nest.trait.hvac.HumidityControlSettingsTrait');
+          updateElement.state.value.humidifierTargetHumidity = {
+            ...(updateElement.state.value.humidifierTargetHumidity ?? {}),
+            value: Number(value),
+          };
+        }
+        break;
     }
 
     return {
@@ -985,9 +1012,17 @@ export default class GoogleAPI {
 
         // Prefer capture time, including nanoseconds, over URL changes: Google
         // can reuse a URL for a new image or replay a URL with an old timestamp.
+        // Protobuf JSON represents int64 seconds as strings. Validate both parts
+        // before numeric comparison; absent nanos means zero, as in Timestamp.
+        let hasCaptureTimes =
+          isNumeric(before?.seconds, { type: 'integer' }) === true &&
+          isNumeric(current?.seconds, { type: 'integer' }) === true &&
+          isNumeric(before?.nanos ?? 0, { type: 'integer', min: 0, max: 999999999 }) === true &&
+          isNumeric(current?.nanos ?? 0, { type: 'integer', min: 0, max: 999999999 }) === true;
         let newer =
-          Number.isFinite(before?.seconds) === true && Number.isFinite(current?.seconds) === true
-            ? current.seconds > before.seconds || (current.seconds === before.seconds && (current.nanos ?? 0) > (before.nanos ?? 0))
+          hasCaptureTimes === true
+            ? Number(current.seconds) > Number(before.seconds) ||
+              (Number(current.seconds) === Number(before.seconds) && Number(current.nanos ?? 0) > Number(before.nanos ?? 0))
             : image.liveImageUrl !== beforeRequestUrl;
         if ((image.liveImageUrl ?? '') === '' || newer !== true) {
           return false;
