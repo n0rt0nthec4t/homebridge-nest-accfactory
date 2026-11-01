@@ -25,7 +25,7 @@
 // - connect() starts ingestion without a consumer; onData optionally reports committed changes
 // - Google Home Foyer media signalling belongs to the WebRTC camera transport
 //
-// Code version 2026.10.30
+// Code version 2026.11.01
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -588,7 +588,7 @@ export default class GoogleAPI {
 
         if (key === 'hvac_mode' || resource?.value?.eco_mode_state?.ecoMode === 'ECO_MODE_INACTIVE') {
           // HVAC mode always uses the normal target trait. Temperature writes use
-          // it only when Eco is explicitly inactive; otherwise use the Eco limits below.
+          // it only when Eco is explicitly inactive; saved Eco limits are read-only.
           setUpdateTrait('target_temperature_settings', 'type.nestlabs.com/nest.trait.hvac.TargetTemperatureSettingsTrait');
 
           let setpointType = updateElement.state.value.targetTemperature?.setpointType;
@@ -629,31 +629,8 @@ export default class GoogleAPI {
             timeOfAction: timestamp(Date.now()),
           };
         } else {
-          // Eco has separate limits and enable flags. A single target is unambiguous
-          // only when one side is enabled; with both enabled, require low or high.
-          setUpdateTrait('eco_mode_settings', 'type.nestlabs.com/nest.trait.hvac.EcoModeSettingsTrait');
-
-          let heatEnabled = updateElement.state.value.ecoTemperatureHeat?.enabled === true;
-          let coolEnabled = updateElement.state.value.ecoTemperatureCool?.enabled === true;
-          let setHeatingTarget =
-            heatEnabled === true &&
-            ['target_temperature', 'target_temperature_low'].includes(key) === true &&
-            (coolEnabled !== true || key === 'target_temperature_low');
-          let setCoolingTarget =
-            coolEnabled === true &&
-            ['target_temperature', 'target_temperature_high'].includes(key) === true &&
-            (heatEnabled !== true || key === 'target_temperature_high');
-          if (setHeatingTarget !== true && setCoolingTarget !== true) {
-            throw new Error('Temperature setting "' + key + '" is unavailable in the current Eco mode');
-          }
-
-          if (setHeatingTarget === true) {
-            updateElement.state.value.ecoTemperatureHeat.value = { value: Number(value) };
-          }
-
-          if (setCoolingTarget === true) {
-            updateElement.state.value.ecoTemperatureCool.value = { value: Number(value) };
-          }
+          // HomeKit temperature requests must not overwrite the saved Eco settings.
+          throw new Error('Temperature settings are unavailable while Eco is active or its state is unknown');
         }
         break;
 

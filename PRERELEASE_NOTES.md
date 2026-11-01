@@ -8,6 +8,7 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
 ### Fixed
 
+- Keep saved Eco temperatures read-only and reject temperature writes while Eco is active, including while an Eco Off command awaits its Google state update
 - Wait for cloud acceptance before acknowledging HomeKit writes or reporting success across locks, floodlights, Heat Links, cameras and thermostats
 - Centralise HAP and Matter callback error handling in HomeKitDevice, preserving explicit protocol errors and internal GET/SET behaviour
 - Correct Google snapshot freshness checks for decoded timestamps and reused URLs; clear Nest snapshot deadline timers when queries finish

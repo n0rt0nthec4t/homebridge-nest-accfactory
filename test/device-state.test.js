@@ -129,6 +129,47 @@ test('thermostat Eco characteristic retains its type and cached service without 
   assert.deepEqual(flow.warnings, []);
 });
 
+for (let ecoMode of ['manual', 'AUTO']) {
+  for (let [mode, type, key] of [
+    ['heat', C.TargetTemperature, 'target_temperature_low'],
+    ['cool', C.TargetTemperature, 'target_temperature_high'],
+    ['range', C.HeatingThresholdTemperature, 'target_temperature_low'],
+    ['range', C.CoolingThresholdTemperature, 'target_temperature_high'],
+  ]) {
+    test('thermostat rejects ' + key + ' writes during ' + ecoMode + ' Eco in ' + mode, async (context) => {
+      let flow = await setup(context, 'thermostat', { hvac_mode: 'eco' + mode, eco_mode: ecoMode });
+      await flow.device.onUpdate(flow.device.deviceData);
+      let service = flow.device.thermostatService;
+      let characteristic = service.getCharacteristic(type);
+      let before = structuredClone(flow.device.deviceData);
+      let previous = await characteristic.handleGetRequest();
+      let info = context.mock.fn();
+      flow.device.log = { info, warn() {}, debug() {} };
+      for (let requested of [32, 9]) {
+        await assert.rejects(characteristic.handleSetRequest(requested), (error) => error === hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE);
+        assert.equal(characteristic.value, previous);
+        assert.equal(await characteristic.handleGetRequest(), previous, 'Rejected writes must not poison known temperature reads');
+        assert.equal(characteristic.statusCode, hap.HAPStatus.SUCCESS);
+      }
+      assert.deepEqual(flow.writes, [], 'No temperature or Eco command may reach either API');
+      assert.deepEqual(flow.device.deviceData, before);
+      assert.equal(info.mock.callCount(), 0, 'Rejected writes must not log success');
+      assert.equal(await service.getCharacteristic(C.EcoMode).handleGetRequest(), true);
+
+      let temperatureKey = type === C.TargetTemperature ? 'target_temperature' : key;
+      await flow.device.update({ [temperatureKey]: previous + 0.5 });
+      assert.equal(await characteristic.handleGetRequest(), previous + 0.5, 'Upstream Eco temperature changes remain readable');
+      await service.getCharacteristic(C.EcoMode).handleSetRequest(false);
+      await flow.device.update({ eco_mode: 'off', hvac_mode: mode });
+      assert.deepEqual(flow.writes, [{ uuid: 'DEVICE_TEST', eco_mode: 'off' }], 'Leaving Eco must not replay rejected temperatures');
+      await characteristic.handleSetRequest(23);
+      assert.deepEqual(flow.writes.at(-1), { uuid: 'DEVICE_TEST', [key]: 23 });
+      assert.equal(characteristic.value, 23);
+      assert.equal(flow.device.thermostatService, service);
+    });
+  }
+}
+
 for (let [capability, canHeat, canCool, modes] of [
   ['heat/cool', true, true, ['off', 'heat', 'cool', 'range', 'ecoheat', 'ecocool', 'ecorange']],
   ['heat only', true, false, ['off', 'heat', 'ecoheat']],

@@ -519,3 +519,40 @@ for (let value of ['unknown', true, 'ECO_MODE_AUTO_ECO']) {
     assert.deepEqual(flow.commands, []);
   });
 }
+
+for (let mode of ['ECO_MODE_MANUAL_ECO', 'ECO_MODE_AUTO_ECO']) {
+  test('Eco Off awaiting Observe cannot write saved temperatures: ' + mode, async (context) => {
+    let flow = await setup(context);
+    flow.values.eco_mode_state = { ecoMode: mode };
+    flow.values.eco_mode_settings = {
+      ecoTemperatureHeat: { enabled: true, value: { value: 9 } },
+      ecoTemperatureCool: { enabled: false, value: { value: 24.5 } },
+    };
+    await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
+    let service = flow.device.thermostatService;
+    let eco = service.getCharacteristic(hap.Characteristic.EcoMode);
+    let target = service.getCharacteristic(hap.Characteristic.TargetTemperature);
+    await eco.handleSetRequest(false);
+    assert.equal(flow.device.deviceData.eco_mode, 'off');
+    assert.equal(flow.connection.googleAPI.resources.get('DEVICE_THERMOSTAT').value.eco_mode_state.ecoMode, mode);
+    let before = structuredClone(flow.device.deviceData);
+    for (let temperature of [32, 9]) {
+      await assert.rejects(target.handleSetRequest(temperature));
+      assert.equal(await target.handleGetRequest(), 9, 'A rejected write must preserve readable state');
+      assert.equal(target.statusCode, hap.HAPStatus.SUCCESS);
+    }
+    assert.deepEqual(flow.device.deviceData, before);
+    assert.equal(flow.commands.length, 1, 'Only the Eco Off command may reach Google');
+    assert.deepEqual(flow.connection.googleAPI.resources.get('DEVICE_THERMOSTAT').value.eco_mode_settings, flow.values.eco_mode_settings);
+    await flow.send([trait('DEVICE_THERMOSTAT', 'eco_mode_state', { ecoMode: 'ECO_MODE_INACTIVE' })]);
+    assert.equal(flow.commands.length, 1, 'Rejected temperatures are not deferred');
+    await target.handleSetRequest(23);
+    assert.equal(flow.commands.length, 2);
+    let update = flow.commands.at(-1)[3].batchUpdateStateRequest[0];
+    assert.equal(update.traitRequest.traitLabel, 'target_temperature_settings');
+    assert.equal(update.state.value.targetTemperature.heatingTarget.value, 23);
+    await flow.send([trait('DEVICE_THERMOSTAT', 'target_temperature_settings', update.state.value)]);
+    assert.equal(await target.handleGetRequest(), 23);
+    assert.equal(flow.device.thermostatService, service);
+  });
+}

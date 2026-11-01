@@ -129,28 +129,39 @@ for (let [id, values, expected] of [
   });
 }
 
-for (let [heat, cool, key, expectedHeat, expectedCool] of [
-  [true, false, 'target_temperature', 22, 27],
-  [false, true, 'target_temperature', 17, 22],
-  [true, true, 'target_temperature_low', 22, 27],
-  [true, true, 'target_temperature_high', 17, 22],
-]) {
-  test('eco SET routes ' + key + ', heat=' + heat + ', cool=' + cool, async (context) => {
-    let flow = await platformHarness(context, {
-      value: {
-        ...traits,
-        eco_mode_state: { ecoMode: 'ECO_MODE_ACTIVE' },
-        eco_mode_settings: {
-          ecoTemperatureHeat: { enabled: heat, value: { value: 17 } },
-          ecoTemperatureCool: { enabled: cool, value: { value: 27 } },
+for (let mode of ['ECO_MODE_MANUAL_ECO', 'ECO_MODE_AUTO_ECO', undefined]) {
+  for (let [heat, cool, key] of [
+    [true, false, 'target_temperature'],
+    [false, true, 'target_temperature'],
+    [true, true, 'target_temperature_low'],
+    [true, true, 'target_temperature_high'],
+  ]) {
+    test('Eco temperatures stay read-only: ' + mode + '/' + key + '/' + heat, async (context) => {
+      let flow = await platformHarness(context, {
+        value: {
+          ...traits,
+          eco_mode_state: { ecoMode: mode },
+          eco_mode_settings: {
+            ecoTemperatureHeat: { enabled: heat, value: { value: 17 } },
+            ecoTemperatureCool: { enabled: cool, value: { value: 27 } },
+          },
         },
-      },
+      });
+      let before = structuredClone(flow.raw.DEVICE_TEST.value);
+      let local = structuredClone(flow.device.deviceData);
+      for (let temperature of [32, 9]) {
+        await assert.rejects(flow.device.set({ uuid: 'DEVICE_TEST', [key]: temperature }), AggregateError);
+      }
+      assert.deepEqual(flow.commands, [], 'Reject without writing Eco settings or cancelling Eco with a normal target');
+      assert.deepEqual(flow.raw.DEVICE_TEST.value, before);
+      assert.deepEqual(flow.device.deviceData, local);
+      await flow.send('DEVICE_TEST', { eco_mode_state: { ecoMode: 'ECO_MODE_INACTIVE' } });
+      assert.deepEqual(flow.commands, [], 'Observe must not replay rejected requests');
+      await flow.device.set({ uuid: 'DEVICE_TEST', [key]: 22 });
+      assert.equal(flow.commands.length, 1);
+      assert.equal(flow.commands[0][3].batchUpdateStateRequest[0].traitRequest.traitLabel, 'target_temperature_settings');
     });
-    await flow.device.set({ uuid: 'DEVICE_TEST', [key]: 22 });
-    let state = flow.commands[0][3].batchUpdateStateRequest[0].state.value;
-    assert.equal(state.ecoTemperatureHeat.value.value, expectedHeat);
-    assert.equal(state.ecoTemperatureCool.value.value, expectedCool);
-  });
+  }
 }
 for (let [values, label, seconds] of [
   [{ fan_state: true, fan_duration: 60, fan_timer_speed: 3 }, 'fan_control_settings', 60],

@@ -73,7 +73,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.THERMOSTAT;
-  static VERSION = '2026.10.29'; // Code version
+  static VERSION = '2026.11.01'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -1065,6 +1065,11 @@ export default class NestThermostat extends HomeKitDevice {
   async setTemperature(characteristic, temperature) {
     if (typeof characteristic !== 'function' || typeof characteristic?.UUID !== 'string') {
       return;
+    }
+
+    // Ordinary HomeKit temperature writes must not alter the saved Eco settings.
+    if (['MANUAL', 'AUTO'].includes(this.deviceData.eco_mode?.toUpperCase?.()) === true) {
+      throw new this.hap.HapStatusError(this.hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE);
     }
 
     let mode = this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).value;
