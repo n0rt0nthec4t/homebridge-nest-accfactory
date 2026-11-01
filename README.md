@@ -38,6 +38,12 @@ Some device-specific features are exposed through custom HomeKit characteristics
 
 For example, Nest Protect exposes a read-only **Replace By Date** characteristic. Whether a custom characteristic can be viewed, changed, or used in scenes and automations depends on its permissions and the app's support.
 
+## Temperature Control During Eco Mode
+
+While Eco Mode is active, HomeKit continues to report the active Eco temperature limits and actual heating or cooling state. Apple's Home app still displays an interactive temperature dial, but temperature writes are rejected with a state restriction; scenes or automations that attempt them may report an error. Saved Eco temperatures can be changed in Nest Settings. To change normal targets, turn Eco Mode off and wait for the Nest or Google state update confirming it is inactive.
+
+Heating/cooling mode controls retain their existing behaviour: selecting the already displayed mode is a no-op; selecting a different supported Off, Heat, Cool or Auto mode sends a normal mode request without a separate Eco Off command. The resulting Eco state is reconciled from Nest or Google updates. Use the Eco Mode control explicitly when you want to leave Eco.
+
 ## Configuration
 
 ### Obtaining an **access token** for Nest Accounts

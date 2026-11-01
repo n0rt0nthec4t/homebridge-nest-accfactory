@@ -1533,3 +1533,57 @@ for (let [previous, next, control, target] of [
     assert.deepEqual(state.calls, ['off', [control, target], 'off']);
   });
 }
+
+for (let [name, errors, expected] of [
+  [
+    'state restriction',
+    [Object.assign(new Error('Eco'), { code: 'ERR_ECO_TEMPERATURE_READ_ONLY' })],
+    hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE,
+  ],
+  ['connection failure', [new Error('Connection lost')], hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE],
+  [
+    'mixed failure',
+    [Object.assign(new Error('Eco'), { code: 'ERR_ECO_TEMPERATURE_READ_ONLY' }), new Error('Connection lost')],
+    hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,
+  ],
+  ['empty aggregate', [], hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE],
+]) {
+  test('thermostat temperature errors preserve ' + name, async (context) => {
+    let flow = await setup(context, 'thermostat', { hvac_mode: 'heat' });
+    await flow.device.onUpdate(flow.device.deviceData);
+    let target = flow.device.thermostatService.getCharacteristic(C.TargetTemperature);
+    let before = await target.handleGetRequest();
+    flow.device.set = async () => {
+      throw new AggregateError(errors);
+    };
+    await assert.rejects(target.handleSetRequest(23), (error) => error === expected);
+    assert.equal(await target.handleGetRequest(), before);
+    assert.equal(target.statusCode, hap.HAPStatus.SUCCESS);
+  });
+}
+
+for (let [mode, displayed] of [
+  ['ecoheat', C.TargetHeatingCoolingState.HEAT],
+  ['ecocool', C.TargetHeatingCoolingState.COOL],
+  ['ecorange', C.TargetHeatingCoolingState.AUTO],
+]) {
+  for (let requested of [
+    C.TargetHeatingCoolingState.OFF,
+    C.TargetHeatingCoolingState.HEAT,
+    C.TargetHeatingCoolingState.COOL,
+    C.TargetHeatingCoolingState.AUTO,
+  ]) {
+    test('existing Eco mode control: ' + mode + ' to ' + requested, async (context) => {
+      let flow = await setup(context, 'thermostat', { eco_mode: 'manual', hvac_mode: mode });
+      await flow.device.onUpdate(flow.device.deviceData);
+      let control = flow.device.thermostatService.getCharacteristic(C.TargetHeatingCoolingState);
+      assert.equal(await control.handleGetRequest(), displayed);
+      await control.handleSetRequest(requested);
+      assert.deepEqual(
+        flow.writes,
+        requested === displayed ? [] : [{ uuid: 'DEVICE_TEST', hvac_mode: ['off', 'heat', 'cool', 'range'][requested] }],
+      );
+      assert.equal(flow.device.deviceData.eco_mode, 'manual', 'A mode request does not explicitly send Eco Off');
+    });
+  }
+}

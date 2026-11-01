@@ -419,3 +419,25 @@ test('REST rejects prototype property names instead of treating them as mapped s
   }
   assert.equal(flow.requests.length, requests);
 });
+
+for (let eco of ['ECO_MODE_MANUAL_ECO', 'ECO_MODE_AUTO_ECO']) {
+  test('Google mode controls retain normal routing during ' + eco, async (context) => {
+    let value = structuredClone(traits);
+    value.eco_mode_state.ecoMode = eco;
+    let flow = await platformHarness(context, { value });
+    for (let mode of ['off', 'heat', 'cool', 'range']) {
+      await flow.device.set({ uuid: 'DEVICE_TEST', hvac_mode: mode });
+      let updates = flow.commands.at(-1)[3].batchUpdateStateRequest;
+      assert.equal(updates.length, 1);
+      assert.equal(updates[0].traitRequest.traitLabel, 'target_temperature_settings');
+      assert.deepEqual(updates[0].state.value.targetTemperature.heatingTarget, { value: 20 });
+      assert.deepEqual(updates[0].state.value.targetTemperature.coolingTarget, { value: 24 });
+      assert.equal(updates[0].state.value.enabled.value, mode !== 'off');
+      if (mode !== 'off') {
+        assert.equal(updates[0].state.value.targetTemperature.setpointType, 'SET_POINT_TYPE_' + mode.toUpperCase());
+      }
+    }
+    assert.equal(flow.commands.length, 4);
+    assert.equal(flow.connection.googleAPI.resources.get('DEVICE_TEST').value.eco_mode_state.ecoMode, eco);
+  });
+}

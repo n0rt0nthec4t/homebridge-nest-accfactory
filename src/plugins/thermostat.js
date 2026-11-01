@@ -1106,7 +1106,19 @@ export default class NestThermostat extends HomeKitDevice {
 
     if (targetKey !== undefined) {
       // Only set a target temperature if we've determined whicb Nest/Google data key to change
-      await this.set({ uuid: this.deviceData.nest_google_device_uuid, [targetKey]: temperature });
+      try {
+        await this.set({ uuid: this.deviceData.nest_google_device_uuid, [targetKey]: temperature });
+      } catch (error) {
+        // The source may still report Eco while an accepted Eco Off awaits confirmation.
+        if (
+          error instanceof AggregateError &&
+          error.errors.length > 0 &&
+          error.errors.every((failure) => failure?.code === 'ERR_ECO_TEMPERATURE_READ_ONLY') === true
+        ) {
+          throw new this.hap.HapStatusError(this.hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE);
+        }
+        throw error;
+      }
       this.#logTemperatureChange(
         'HomeKit',
         modeLabel,

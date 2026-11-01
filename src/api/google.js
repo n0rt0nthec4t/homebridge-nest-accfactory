@@ -630,7 +630,9 @@ export default class GoogleAPI {
           };
         } else {
           // HomeKit temperature requests must not overwrite the saved Eco settings.
-          throw new Error('Temperature settings are unavailable while Eco is active or its state is unknown');
+          throw Object.assign(new Error('Temperature settings are unavailable while Eco is active or its state is unknown'), {
+            code: 'ERR_ECO_TEMPERATURE_READ_ONLY',
+          });
         }
         break;
 

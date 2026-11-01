@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { importSource } from './helpers/import-source.js';
 import test from 'node:test';
+import { setImmediate } from 'node:timers/promises';
 import { platformHarness } from './helpers/platform-harness.js';
 import { DATA_SOURCE } from '../src/consts.js';
 
@@ -381,8 +382,9 @@ for (let reverse of [false, true]) {
 }
 
 // Feed the complete REST discovery reply through the same platform path as protobuf commands.
-async function restPlatform(context, raw) {
+async function restPlatform(context, raw, options = {}) {
   return await platformHarness(context, {
+    ...options,
     source: DATA_SOURCE.NEST,
     id: 'device.LEGACY',
     subscribe: async () => ({
@@ -431,21 +433,42 @@ for (let [values, bucket, expected] of [
   });
 }
 
-for (let mode of ['heat', 'cool']) {
-  test('REST ' + mode + ' setpoints use the shared bucket during Eco', async (context) => {
-    let raw = nestData();
-    raw['device.LEGACY'].value.eco.mode = 'manual-eco';
-    raw['shared.LEGACY'].value.target_temperature_type = mode;
-    let flow = await restPlatform(context, raw);
-    await flow.device.set({ uuid: 'device.LEGACY', target_temperature: 22 });
-    let requests = flow.requests.filter((request) => new URL(request[1]).pathname === '/v5/put');
-    assert.equal(requests.length, 1);
-    assert.deepEqual(JSON.parse(requests[0][3]).objects[0], {
-      object_key: 'shared.LEGACY',
-      op: 'MERGE',
-      value: { target_change_pending: true, target_temperature: 22 },
+for (let eco of ['manual-eco', 'auto-eco', undefined]) {
+  for (let [mode, key] of [
+    ['heat', 'target_temperature'],
+    ['cool', 'target_temperature'],
+    ['range', 'target_temperature_low'],
+    ['range', 'target_temperature_high'],
+  ]) {
+    test('REST Eco transition protects ' + eco + '/' + mode + '/' + key, async (context) => {
+      let raw = nestData();
+      raw['device.LEGACY'].value.eco.mode = eco;
+      raw['shared.LEGACY'].value.target_temperature_type = mode;
+      let flow = await restPlatform(context, raw);
+      let writes = () => flow.requests.filter((request) => new URL(request[1]).pathname === '/v5/put');
+      let rejected = (error) =>
+        error instanceof AggregateError && error.errors.length === 1 && error.errors[0].code === 'ERR_ECO_TEMPERATURE_READ_ONLY';
+      await assert.rejects(flow.device.set({ uuid: 'device.LEGACY', [key]: 32 }), rejected);
+      assert.equal(writes().length, 0);
+      await flow.device.set({ uuid: 'device.LEGACY', eco_mode: 'off' });
+      assert.equal(flow.connection.nestAPI.resources.get('device.LEGACY').value.eco.mode, eco);
+      await assert.rejects(flow.device.set({ uuid: 'device.LEGACY', [key]: 9 }), rejected);
+      assert.equal(writes().length, 1, 'Only Eco Off is sent before source confirmation');
+      assert.equal(flow.connection.nestAPI.resources.get('device.LEGACY').value.away_temperature_low, 12);
+      raw['device.LEGACY'].value.eco = { mode: 'schedule' };
+      flow.connection.nestAPI.disconnect();
+      await flow.connection.nestAPI.connect();
+      await setImmediate();
+      assert.equal(flow.connection.nestAPI.resources.get('device.LEGACY').value.eco.mode, 'schedule');
+      assert.equal(writes().length, 1, 'Source updates do not replay rejected writes');
+      await flow.device.set({ uuid: 'device.LEGACY', [key]: 22 });
+      assert.deepEqual(JSON.parse(writes().at(-1)[3]).objects[0], {
+        object_key: 'shared.LEGACY',
+        op: 'MERGE',
+        value: { target_change_pending: true, [key]: 22 },
+      });
     });
-  });
+  }
 }
 
 for (let values of [
@@ -479,4 +502,45 @@ test('incomplete protobuf leaves complete REST fallback available for thermostat
     assert.equal(result[serial]?.full, true);
     assert.match(result[serial].data.nest_google_device_uuid, /^(device|kryptonite)\./);
   }
+});
+
+for (let eco of ['manual-eco', 'auto-eco']) {
+  test('REST mode controls retain normal routing during ' + eco, async (context) => {
+    let raw = nestData();
+    raw['device.LEGACY'].value.eco.mode = eco;
+    let flow = await restPlatform(context, raw);
+    for (let mode of ['off', 'heat', 'cool', 'range']) {
+      await flow.device.set({ uuid: 'device.LEGACY', hvac_mode: mode });
+      assert.deepEqual(JSON.parse(flow.requests.at(-1)[3]).objects, [
+        {
+          object_key: 'shared.LEGACY',
+          op: 'MERGE',
+          value: { target_change_pending: true, target_temperature_type: mode },
+        },
+      ]);
+    }
+    assert.equal(flow.connection.nestAPI.resources.get('device.LEGACY').value.eco.mode, eco);
+    assert.equal(flow.requests.filter((request) => new URL(request[1]).pathname === '/v5/put').length, 4);
+  });
+}
+
+test('REST rechecks source Eco state between settings in one request', async (context) => {
+  let raw = nestData();
+  let flow = await restPlatform(context, raw, {
+    fetch: async () => {
+      raw['device.LEGACY'].value.eco = { mode: 'manual-eco' };
+      flow.connection.nestAPI.disconnect();
+      await flow.connection.nestAPI.connect();
+      await setImmediate();
+      assert.equal(flow.connection.nestAPI.resources.get('device.LEGACY').value.eco.mode, 'manual-eco');
+      return { json: async () => ({ objects: [{}] }) };
+    },
+  });
+  await assert.rejects(
+    flow.connection.nestAPI.set('device.LEGACY', { temperature_scale: 'f', target_temperature_low: 32 }),
+    (error) => error instanceof AggregateError && error.errors[0].code === 'ERR_ECO_TEMPERATURE_READ_ONLY',
+  );
+  let writes = flow.requests.filter((request) => new URL(request[1]).pathname === '/v5/put');
+  assert.equal(writes.length, 1);
+  assert.deepEqual(JSON.parse(writes[0][3]).objects[0].value, { temperature_scale: 'F' });
 });

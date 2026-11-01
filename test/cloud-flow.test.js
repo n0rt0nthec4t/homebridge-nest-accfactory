@@ -537,7 +537,7 @@ for (let mode of ['ECO_MODE_MANUAL_ECO', 'ECO_MODE_AUTO_ECO']) {
     assert.equal(flow.connection.googleAPI.resources.get('DEVICE_THERMOSTAT').value.eco_mode_state.ecoMode, mode);
     let before = structuredClone(flow.device.deviceData);
     for (let temperature of [32, 9]) {
-      await assert.rejects(target.handleSetRequest(temperature));
+      await assert.rejects(target.handleSetRequest(temperature), (error) => error === hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE);
       assert.equal(await target.handleGetRequest(), 9, 'A rejected write must preserve readable state');
       assert.equal(target.statusCode, hap.HAPStatus.SUCCESS);
     }

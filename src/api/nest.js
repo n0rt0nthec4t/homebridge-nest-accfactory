@@ -26,7 +26,7 @@
 // - connect() starts ingestion without a consumer; onData optionally reports committed changes
 // - Camera media streaming belongs to the separate camera transport modules
 //
-// Code version 2026.10.30
+// Code version 2026.11.01
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -491,8 +491,9 @@ export default class NestAPI {
 
         // Recheck availability after earlier writes have yielded to subscription updates.
         // Cameras use their property endpoint; other devices use bucket MERGE operations.
-        if (this.resources.get(resourceId)?.source === DATA_SOURCE.NEST) {
-          let operation = this.#buildSetting(resourceId, key, value, values, resource);
+        let currentResource = this.resources.get(resourceId);
+        if (currentResource?.source === DATA_SOURCE.NEST) {
+          let operation = this.#buildSetting(resourceId, key, value, values, currentResource);
 
           if (operation?.cameraProperties !== undefined) {
             let response = await fetchWrapper(
@@ -638,7 +639,12 @@ export default class NestAPI {
             break;
           }
 
-          // REST setpoint writes use the shared bucket even while Eco mode is active.
+          // Wait for the source to confirm Eco Off before accepting normal setpoints.
+          if (device.eco?.mode !== 'schedule') {
+            throw Object.assign(new Error('Temperature settings are unavailable while Eco is active or its state is unknown'), {
+              code: 'ERR_ECO_TEMPERATURE_READ_ONLY',
+            });
+          }
           let mode = shared?.target_temperature_type?.toLowerCase?.();
           let heating = key === 'target_temperature_low' || (key === 'target_temperature' && mode === 'heat');
           let cooling = key === 'target_temperature_high' || (key === 'target_temperature' && mode === 'cool');
