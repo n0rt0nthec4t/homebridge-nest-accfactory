@@ -91,7 +91,7 @@ const PREBUFFER_LENGTH = 4000;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.10.30'; // Code version
+  static VERSION = '2026.11.02'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -201,16 +201,18 @@ export default class NestCamera extends HomeKitDevice {
           onSet: async (value) => {
             // 0 = auto, 1 = low, 2 = high
             // We'll use auto mode for led on and low for led off
+            // Newer HAP runtimes expose this control as a 0/1 enum; older ones use a boolean.
+            let enabled = value === true || value === 1;
             if (
-              (value === true && this.deviceData.statusled_brightness !== 0) ||
-              (value === false && this.deviceData.statusled_brightness !== 1)
+              (enabled === true && this.deviceData.statusled_brightness !== 0) ||
+              (enabled === false && this.deviceData.statusled_brightness !== 1)
             ) {
               // Let the shared characteristic boundary report rejected writes.
               await this.set({
                 uuid: this.deviceData.nest_google_device_uuid,
-                statusled_brightness: value === true ? 0 : 1,
+                statusled_brightness: enabled === true ? 0 : 1,
               });
-              this?.log?.info?.('Recording status LED on "%s" was turned %s', this.deviceData.description, value === true ? 'on' : 'off');
+              this?.log?.info?.('Recording status LED on "%s" was turned %s', this.deviceData.description, enabled === true ? 'on' : 'off');
             }
           },
           onGet: () => {

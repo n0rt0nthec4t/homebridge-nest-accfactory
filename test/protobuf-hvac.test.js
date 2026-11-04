@@ -432,19 +432,20 @@ for (let [values, bucket, expected] of [
 }
 
 for (let mode of ['heat', 'cool']) {
-  test('REST ' + mode + ' setpoints use the shared bucket during Eco', async (context) => {
+  test('REST ' + mode + ' setpoints wait for source-confirmed Eco Off', async (context) => {
     let raw = nestData();
     raw['device.LEGACY'].value.eco.mode = 'manual-eco';
     raw['shared.LEGACY'].value.target_temperature_type = mode;
     let flow = await restPlatform(context, raw);
-    await flow.device.set({ uuid: 'device.LEGACY', target_temperature: 22 });
-    let requests = flow.requests.filter((request) => new URL(request[1]).pathname === '/v5/put');
-    assert.equal(requests.length, 1);
-    assert.deepEqual(JSON.parse(requests[0][3]).objects[0], {
-      object_key: 'shared.LEGACY',
-      op: 'MERGE',
-      value: { target_change_pending: true, target_temperature: 22 },
-    });
+    await assert.rejects(
+      flow.device.set({ uuid: 'device.LEGACY', target_temperature: 22 }),
+      (error) => error instanceof AggregateError && error.errors[0].code === 'ERR_ECO_TEMPERATURE_READ_ONLY',
+    );
+    assert.equal(flow.requests.filter((request) => new URL(request[1]).pathname === '/v5/put').length, 0);
+    await flow.device.set({ uuid: 'device.LEGACY', eco_mode: 'off' });
+    await assert.rejects(flow.device.set({ uuid: 'device.LEGACY', target_temperature: 22 }), AggregateError);
+    assert.equal(flow.requests.filter((request) => new URL(request[1]).pathname === '/v5/put').length, 1);
+    assert.equal(flow.connection.nestAPI.resources.get('device.LEGACY').value.eco.mode, 'manual-eco');
   });
 }
 

@@ -15,13 +15,13 @@ jobs:
           - node: 22
             homebridge: 1.11.4
           - node: 22
-            homebridge: 2.4.0
+            homebridge: 2.5.0
           - node: 24
             homebridge: 1.11.4
           - node: 24
-            homebridge: 2.4.0
+            homebridge: 2.5.0
           - node: 26
-            homebridge: 2.4.0
+            homebridge: 2.5.0
 
     steps:
       - uses: actions/checkout@v5

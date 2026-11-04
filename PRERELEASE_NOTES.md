@@ -4,6 +4,22 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.5-alpha.12 (2026/11/02)
+
+### Fixed
+
+- Keep complete HomeKit write callbacks ordered with source updates, preventing Eco mode transitions from leaving Home showing an older thermostat mode
+- Report local thermostat temperature/mode conflicts as disallowed requests rather than communication failures
+- Show HomeKit Off when Eco is active with both heating and cooling limits disabled, while preserving Eco state and the normal mode for both Nest and Google sources
+- Preserve normal target temperatures for disabled Eco heating/cooling limits instead of publishing inactive stored Eco values
+- Accept both boolean and numeric camera status-LED controls across supported Homebridge versions
+
+### Changed
+
+- HomeKit mode and unambiguous temperature requests leave Eco and apply normal settings; compound writes stop dependent mode/temperature changes if an earlier transition command fails
+- Update Homebridge development dependency and 2.x CI matrix to `2.5.0`, retaining the existing supported Homebridge ranges
+- Update werift to `0.26.0`, ESLint to `10.14.0`, and globals to `17.14.0`
+
 ## v0.4.5-alpha.11 (2026/10/30)
 
 ### Fixed

@@ -129,27 +129,33 @@ for (let [id, values, expected] of [
   });
 }
 
-for (let [heat, cool, key, expectedHeat, expectedCool] of [
+for (let [heat, cool, key] of [
   [true, false, 'target_temperature', 22, 27],
   [false, true, 'target_temperature', 17, 22],
   [true, true, 'target_temperature_low', 22, 27],
   [true, true, 'target_temperature_high', 17, 22],
 ]) {
-  test('eco SET routes ' + key + ', heat=' + heat + ', cool=' + cool, async (context) => {
+  test('direct Eco temperature SET rejects ' + key + ', heat=' + heat + ', cool=' + cool, async (context) => {
     let flow = await platformHarness(context, {
       value: {
         ...traits,
-        eco_mode_state: { ecoMode: 'ECO_MODE_ACTIVE' },
+        eco_mode_state: { ecoMode: 'ECO_MODE_MANUAL_ECO' },
         eco_mode_settings: {
           ecoTemperatureHeat: { enabled: heat, value: { value: 17 } },
           ecoTemperatureCool: { enabled: cool, value: { value: 27 } },
         },
       },
     });
+    let before = structuredClone(flow.raw.DEVICE_TEST.value);
+    await assert.rejects(
+      flow.device.set({ uuid: 'DEVICE_TEST', [key]: 22 }),
+      (error) => error instanceof AggregateError && error.errors[0].code === 'ERR_ECO_TEMPERATURE_READ_ONLY',
+    );
+    assert.deepEqual(flow.commands, []);
+    assert.deepEqual(flow.raw.DEVICE_TEST.value, before);
+    await flow.send('DEVICE_TEST', { eco_mode_state: { ecoMode: 'ECO_MODE_INACTIVE' } });
     await flow.device.set({ uuid: 'DEVICE_TEST', [key]: 22 });
-    let state = flow.commands[0][3].batchUpdateStateRequest[0].state.value;
-    assert.equal(state.ecoTemperatureHeat.value.value, expectedHeat);
-    assert.equal(state.ecoTemperatureCool.value.value, expectedCool);
+    assert.equal(flow.commands[0][3].batchUpdateStateRequest[0].traitRequest.traitLabel, 'target_temperature_settings');
   });
 }
 for (let [values, label, seconds] of [

@@ -73,7 +73,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.THERMOSTAT;
-  static VERSION = '2026.10.29'; // Code version
+  static VERSION = '2026.11.05'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -972,54 +972,42 @@ export default class NestThermostat extends HomeKitDevice {
   }
 
   async setMode(thermostatMode) {
-    if (thermostatMode !== this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).value) {
-      // Work out based on the HomeKit requested mode, what can the thermostat really switch too
-      // We may over-ride the requested HomeKit mode
-      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.HEAT && this.deviceData.can_heat === false) {
-        thermostatMode = this.hap.Characteristic.TargetHeatingCoolingState.OFF;
-      }
-      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.COOL && this.deviceData.can_cool === false) {
-        thermostatMode = this.hap.Characteristic.TargetHeatingCoolingState.OFF;
-      }
-      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.AUTO) {
-        // Workaround for 'Hey Siri, turn on my thermostat'
-        // Appears to automatically request mode as 'auto', but we need to see what Nest device supports
-        if (this.deviceData.can_cool === true && this.deviceData.can_heat === false) {
-          thermostatMode = this.hap.Characteristic.TargetHeatingCoolingState.COOL;
-        }
-        if (this.deviceData.can_cool === false && this.deviceData.can_heat === true) {
-          thermostatMode = this.hap.Characteristic.TargetHeatingCoolingState.HEAT;
-        }
-        if (this.deviceData.can_cool === false && this.deviceData.can_heat === false) {
-          thermostatMode = this.hap.Characteristic.TargetHeatingCoolingState.OFF;
-        }
-      }
-
-      let mode = '';
-      let targetTemperature = undefined;
-      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.OFF) {
-        targetTemperature = this.deviceData.target_temperature;
-        mode = 'off';
-      }
-      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.COOL) {
-        targetTemperature = this.deviceData.target_temperature_high;
-        mode = 'cool';
-      }
-      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.HEAT) {
-        targetTemperature = this.deviceData.target_temperature_low;
-        mode = 'heat';
-      }
-      if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.AUTO) {
-        targetTemperature = (this.deviceData.target_temperature_low + this.deviceData.target_temperature_high) * 0.5;
-        mode = 'range';
-      }
-
-      await this.set({ uuid: this.deviceData.nest_google_device_uuid, hvac_mode: mode });
-      // A rejected mode change must not publish its related target temperature.
-      this.thermostatService.updateCharacteristic(this.hap.Characteristic.TargetTemperature, targetTemperature);
-      this.thermostatService.updateCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState, thermostatMode);
-      this.#logModeChange('HomeKit', mode);
+    let ecoActive = ['MANUAL', 'AUTO'].includes(this.deviceData.eco_mode?.toUpperCase?.()) === true;
+    if (
+      ecoActive !== true &&
+      thermostatMode === this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).value
+    ) {
+      return;
     }
+    // Resolve Siri's Auto request to a supported mode on single-stage equipment.
+    if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.HEAT && this.deviceData.can_heat === false) {
+      thermostatMode = this.hap.Characteristic.TargetHeatingCoolingState.OFF;
+    }
+    if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.COOL && this.deviceData.can_cool === false) {
+      thermostatMode = this.hap.Characteristic.TargetHeatingCoolingState.OFF;
+    }
+    if (thermostatMode === this.hap.Characteristic.TargetHeatingCoolingState.AUTO) {
+      if (this.deviceData.can_cool === true && this.deviceData.can_heat === false) {
+        thermostatMode = this.hap.Characteristic.TargetHeatingCoolingState.COOL;
+      } else if (this.deviceData.can_cool === false && this.deviceData.can_heat === true) {
+        thermostatMode = this.hap.Characteristic.TargetHeatingCoolingState.HEAT;
+      } else if (this.deviceData.can_cool === false && this.deviceData.can_heat === false) {
+        thermostatMode = this.hap.Characteristic.TargetHeatingCoolingState.OFF;
+      }
+    }
+    let mode = ['off', 'heat', 'cool', 'range'][thermostatMode];
+    if (mode === undefined) {
+      throw new this.hap.HapStatusError(this.hap.HAPStatus.INVALID_VALUE_IN_REQUEST);
+    }
+    await this.set({
+      uuid: this.deviceData.nest_google_device_uuid,
+      ...(ecoActive === true ? { eco_mode: 'off' } : {}),
+      hvac_mode: mode,
+    });
+    // Source updates own companion targets; cached Eco values must not be
+    // published as normal targets after the mode command is acknowledged.
+    this.thermostatService.updateCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState, thermostatMode);
+    this.#logModeChange('HomeKit', mode);
   }
 
   getMode() {
@@ -1067,6 +1055,9 @@ export default class NestThermostat extends HomeKitDevice {
       return;
     }
 
+    if (Number.isFinite(temperature) !== true || temperature < THERMOSTAT_MIN_TEMPERATURE || temperature > THERMOSTAT_MAX_TEMPERATURE) {
+      throw new this.hap.HapStatusError(this.hap.HAPStatus.INVALID_VALUE_IN_REQUEST);
+    }
     let mode = this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetHeatingCoolingState).value;
     let targetKey = undefined;
     let modeLabel = '';
@@ -1099,9 +1090,31 @@ export default class NestThermostat extends HomeKitDevice {
       modeLabel = 'cooling';
     }
 
+    let ecoActive = ['MANUAL', 'AUTO'].includes(this.deviceData.eco_mode?.toUpperCase?.()) === true;
+    if (ecoActive === true && (mode === this.hap.Characteristic.TargetHeatingCoolingState.OFF || targetKey === undefined)) {
+      // No active side (or a single target in Auto) cannot identify a normal
+      // heating/cooling request. Leave Eco and its saved limits untouched.
+      throw new this.hap.HapStatusError(this.hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE);
+    }
     if (targetKey !== undefined) {
-      // Only set a target temperature if we've determined whicb Nest/Google data key to change
-      await this.set({ uuid: this.deviceData.nest_google_device_uuid, [targetKey]: temperature });
+      try {
+        await this.set({
+          uuid: this.deviceData.nest_google_device_uuid,
+          ...(ecoActive === true ? { eco_mode: 'off', hvac_mode: ['off', 'heat', 'cool', 'range'][mode] } : {}),
+          [targetKey]: temperature,
+        });
+      } catch (error) {
+        if (
+          error instanceof AggregateError &&
+          error.errors.length > 0 &&
+          error.errors.every(
+            (failure) => ['ERR_ECO_TEMPERATURE_READ_ONLY', 'ERR_THERMOSTAT_MODE_CONFLICT'].includes(failure?.code) === true,
+          ) === true
+        ) {
+          throw new this.hap.HapStatusError(this.hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE);
+        }
+        throw error;
+      }
       this.#logTemperatureChange(
         'HomeKit',
         modeLabel,
@@ -2104,7 +2117,7 @@ const THERMOSTAT_FIELD_MAP = {
             ? raw.value.target_temperature_settings.targetTemperature.setpointType.split('SET_POINT_TYPE_')[1].toLowerCase()
             : 'off';
 
-        if (raw?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE') {
+        if (['ECO_MODE_MANUAL_ECO', 'ECO_MODE_AUTO_ECO'].includes(raw?.value?.eco_mode_state?.ecoMode) === true) {
           if (
             raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled === true &&
             raw?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled !== true
@@ -2122,6 +2135,14 @@ const THERMOSTAT_FIELD_MAP = {
             raw?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled === true
           ) {
             return 'ecorange';
+          }
+          // Both disabled means no Eco heating/cooling demand; retain Eco state
+          // separately instead of displaying the suspended normal target mode.
+          if (
+            raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled === false &&
+            raw?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled === false
+          ) {
+            return 'off';
           }
         }
 
@@ -2147,6 +2168,10 @@ const THERMOSTAT_FIELD_MAP = {
           if (raw?.value?.away_temperature_high_enabled === true && raw?.value?.away_temperature_low_enabled === true) {
             return 'ecorange';
           }
+          // Nest REST has independent enable flags for its saved Eco limits too.
+          if (raw?.value?.away_temperature_low_enabled === false && raw?.value?.away_temperature_high_enabled === false) {
+            return 'off';
+          }
         }
 
         return mode;
@@ -2164,7 +2189,11 @@ const THERMOSTAT_FIELD_MAP = {
           value = Number(raw.value.target_temperature_settings.targetTemperature.heatingTarget.value);
         }
 
-        if (raw?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE') {
+        // Disabled Eco limits remain stored by Nest but are not active targets.
+        if (
+          ['ECO_MODE_MANUAL_ECO', 'ECO_MODE_AUTO_ECO'].includes(raw?.value?.eco_mode_state?.ecoMode) === true &&
+          raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled === true
+        ) {
           if (Number.isFinite(Number(raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.value?.value)) === true) {
             value = Number(raw.value.eco_mode_settings.ecoTemperatureHeat.value.value);
           }
@@ -2174,7 +2203,7 @@ const THERMOSTAT_FIELD_MAP = {
       },
     },
     nest: {
-      fields: ['serial_number', 'eco', 'away_temperature_low'],
+      fields: ['serial_number', 'eco', 'away_temperature_low', 'away_temperature_low_enabled'],
       related: ['target_temperature_low'],
       translate: ({ rawData, raw }) => {
         let value = undefined;
@@ -2183,7 +2212,10 @@ const THERMOSTAT_FIELD_MAP = {
           value = Number(rawData['shared.' + raw.value.serial_number].value.target_temperature_low);
         }
 
-        if (raw?.value?.eco?.mode?.toUpperCase?.() === 'AUTO-ECO' || raw?.value?.eco?.mode?.toUpperCase?.() === 'MANUAL-ECO') {
+        if (
+          ['AUTO-ECO', 'MANUAL-ECO'].includes(raw?.value?.eco?.mode?.toUpperCase?.()) === true &&
+          raw?.value?.away_temperature_low_enabled === true
+        ) {
           if (Number.isFinite(Number(raw?.value?.away_temperature_low)) === true) {
             value = Number(raw.value.away_temperature_low);
           }
@@ -2204,7 +2236,10 @@ const THERMOSTAT_FIELD_MAP = {
           value = Number(raw.value.target_temperature_settings.targetTemperature.coolingTarget.value);
         }
 
-        if (raw?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE') {
+        if (
+          ['ECO_MODE_MANUAL_ECO', 'ECO_MODE_AUTO_ECO'].includes(raw?.value?.eco_mode_state?.ecoMode) === true &&
+          raw?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled === true
+        ) {
           if (Number.isFinite(Number(raw?.value?.eco_mode_settings?.ecoTemperatureCool?.value?.value)) === true) {
             value = Number(raw.value.eco_mode_settings.ecoTemperatureCool.value.value);
           }
@@ -2214,7 +2249,7 @@ const THERMOSTAT_FIELD_MAP = {
       },
     },
     nest: {
-      fields: ['serial_number', 'eco', 'away_temperature_high'],
+      fields: ['serial_number', 'eco', 'away_temperature_high', 'away_temperature_high_enabled'],
       related: ['target_temperature_high'],
       translate: ({ rawData, raw }) => {
         let value = undefined;
@@ -2223,7 +2258,10 @@ const THERMOSTAT_FIELD_MAP = {
           value = Number(rawData['shared.' + raw.value.serial_number].value.target_temperature_high);
         }
 
-        if (raw?.value?.eco?.mode?.toUpperCase?.() === 'AUTO-ECO' || raw?.value?.eco?.mode?.toUpperCase?.() === 'MANUAL-ECO') {
+        if (
+          ['AUTO-ECO', 'MANUAL-ECO'].includes(raw?.value?.eco?.mode?.toUpperCase?.()) === true &&
+          raw?.value?.away_temperature_high_enabled === true
+        ) {
           if (Number.isFinite(Number(raw?.value?.away_temperature_high)) === true) {
             value = Number(raw.value.away_temperature_high);
           }
@@ -2266,7 +2304,7 @@ const THERMOSTAT_FIELD_MAP = {
             0.5;
         }
 
-        if (raw?.value?.eco_mode_state?.ecoMode !== 'ECO_MODE_INACTIVE') {
+        if (['ECO_MODE_MANUAL_ECO', 'ECO_MODE_AUTO_ECO'].includes(raw?.value?.eco_mode_state?.ecoMode) === true) {
           if (
             raw?.value?.eco_mode_settings?.ecoTemperatureHeat?.enabled === true &&
             raw?.value?.eco_mode_settings?.ecoTemperatureCool?.enabled !== true &&

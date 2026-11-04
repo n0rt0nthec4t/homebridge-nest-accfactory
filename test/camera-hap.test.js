@@ -13,6 +13,7 @@ import { TIMERS } from '../src/consts.js';
 import { importSource } from './helpers/import-source.js';
 
 let C = hap.Characteristic;
+let indicatorUsesEnum = new C.CameraOperatingModeIndicator().props.format === hap.Formats.UINT8;
 let transport =
   'data:text/javascript,' +
   encodeURIComponent(
@@ -116,7 +117,7 @@ for (let name of ['camera', 'doorbell', 'floodlight']) {
   });
 }
 for (let [label, type, value, expected] of [
-  ['status LED off', C.CameraOperatingModeIndicator, false, { statusled_brightness: 1 }],
+  ['status LED off', C.CameraOperatingModeIndicator, indicatorUsesEnum === true ? 0 : false, { statusled_brightness: 1 }],
   ['night vision off', C.NightVision, false, { irled_enabled: false }],
   ['camera off', C.HomeKitCameraActive, 0, { streaming_enabled: false }],
 ]) {
@@ -135,7 +136,7 @@ test('camera recording audio control forwards enable/disable to the device', asy
   assert.deepEqual(flow.writes, [{ uuid: 'DEVICE_CAMERA', audio_enabled: false }]);
 });
 for (let [type, requested, settings] of [
-  [C.CameraOperatingModeIndicator, false, { statusled_brightness: 1 }],
+  [C.CameraOperatingModeIndicator, indicatorUsesEnum === true ? 0 : false, { statusled_brightness: 1 }],
   [C.NightVision, false, { irled_enabled: false }],
   [C.HomeKitCameraActive, C.HomeKitCameraActive.OFF, { streaming_enabled: false }],
   [C.RecordingAudioActive, C.RecordingAudioActive.DISABLE, { audio_enabled: false }],
@@ -198,6 +199,20 @@ for (let [type, requested, settings] of [
     });
   }
 }
+
+test('camera status LED accepts boolean and numeric HAP controls', async (context) => {
+  let flow = await setup(context);
+  let characteristic = flow.device.controller.recordingManagement.operatingModeService.getCharacteristic(C.CameraOperatingModeIndicator);
+  flow.device.set = HomeKitDevice.prototype.set;
+  HomeKitDevice.message(flow.device.uuid, HomeKitDevice.SET, async (values) => {
+    flow.writes.push(values);
+  });
+  for (let [requested, brightness] of [[0, 1], [1, 0], [false, 1], [true, 0]]) {
+    await characteristic.handleSetRequest(requested);
+    assert.equal(flow.device.deviceData.statusled_brightness, brightness);
+  }
+  assert.deepEqual(flow.writes, [1, 0, 1, 0].map((brightness) => ({ uuid: 'DEVICE_CAMERA', statusled_brightness: brightness })));
+});
 
 test('consecutive night-vision writes retain boolean state before cloud reconciliation', async (context) => {
   let flow = await setup(context);
@@ -363,13 +378,15 @@ for (let enabled of [false, true]) {
     });
     let operating = flow.device.controller.recordingManagement.operatingModeService;
     for (let [type, expected] of [
-      [C.CameraOperatingModeIndicator, enabled],
+      [C.CameraOperatingModeIndicator, indicatorUsesEnum === true ? Number(enabled) : enabled],
       [C.NightVision, enabled],
       [C.ImageRotation, enabled === true ? 180 : 0],
     ]) {
       assert.equal(await operating.getCharacteristic(type).handleGetRequest(), expected);
     }
-    await operating.getCharacteristic(C.CameraOperatingModeIndicator).handleSetRequest(enabled);
+    await operating
+      .getCharacteristic(C.CameraOperatingModeIndicator)
+      .handleSetRequest(indicatorUsesEnum === true ? Number(enabled) : enabled);
     await operating.getCharacteristic(C.NightVision).handleSetRequest(enabled);
     await operating.getCharacteristic(C.HomeKitCameraActive).handleSetRequest(enabled === true ? 1 : 0);
     let recording = flow.device.controller.recordingManagement.recordingManagementService;

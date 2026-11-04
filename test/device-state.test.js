@@ -1492,3 +1492,103 @@ for (let [previous, next, control, target] of [
     assert.deepEqual(state.calls, ['off', [control, target], 'off']);
   });
 }
+
+for (let eco of ['manual', 'auto']) {
+  for (let [mode, requested] of [
+    ['ecoheat', C.TargetHeatingCoolingState.HEAT],
+    ['ecocool', C.TargetHeatingCoolingState.COOL],
+    ['ecorange', C.TargetHeatingCoolingState.AUTO],
+    ['off', C.TargetHeatingCoolingState.OFF],
+  ]) {
+    test('same displayed mode requests Eco Off and normal mode: ' + eco + '/' + mode, async (context) => {
+      let flow = await setup(context, 'thermostat', { eco_mode: eco, hvac_mode: mode });
+      await flow.device.update({}, { force: true });
+      flow.device.set = HomeKitDevice.prototype.set;
+      HomeKitDevice.message(flow.device.uuid, HomeKitDevice.SET, async (values) => flow.writes.push(values));
+      let control = flow.device.thermostatService.getCharacteristic(C.TargetHeatingCoolingState);
+      assert.equal(await control.handleGetRequest(), requested);
+      await control.handleSetRequest(requested);
+      assert.deepEqual(flow.writes, [{ uuid: 'DEVICE_TEST', eco_mode: 'off', hvac_mode: ['off', 'heat', 'cool', 'range'][requested] }]);
+      assert.equal(flow.device.deviceData.eco_mode, 'off');
+      await control.handleSetRequest(requested);
+      assert.equal(flow.writes.length, 1, 'Normal-mode no-op behavior remains intact once Eco is off');
+    });
+  }
+}
+
+for (let [mode, type, key, normal] of [
+  ['ecoheat', C.TargetTemperature, 'target_temperature_low', 'heat'],
+  ['ecocool', C.TargetTemperature, 'target_temperature_high', 'cool'],
+  ['ecorange', C.HeatingThresholdTemperature, 'target_temperature_low', 'range'],
+  ['ecorange', C.CoolingThresholdTemperature, 'target_temperature_high', 'range'],
+]) {
+  test('Eco temperature request includes exit, mode and normal target: ' + key + '/' + normal, async (context) => {
+    let flow = await setup(context, 'thermostat', { eco_mode: 'manual', hvac_mode: mode });
+    await flow.device.update({}, { force: true });
+    flow.device.set = HomeKitDevice.prototype.set;
+    HomeKitDevice.message(flow.device.uuid, HomeKitDevice.SET, async (values) => flow.writes.push(values));
+    let characteristic = flow.device.thermostatService.getCharacteristic(type);
+    await characteristic.handleSetRequest(23);
+    assert.deepEqual(flow.writes, [{ uuid: 'DEVICE_TEST', eco_mode: 'off', hvac_mode: normal, [key]: 23 }]);
+    assert.equal(flow.device.deviceData.eco_mode, 'off');
+    assert.equal(characteristic.value, 23);
+  });
+}
+
+for (let [mode, type, requested, expected] of [
+  ['off', C.TargetTemperature, 23, hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE],
+  ['ecorange', C.TargetTemperature, 23, hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE],
+  ['ecoheat', C.CoolingThresholdTemperature, 23, hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE],
+  ['ecoheat', C.TargetTemperature, 4.5, hap.HAPStatus.INVALID_VALUE_IN_REQUEST],
+  ['ecocool', C.TargetTemperature, 40, hap.HAPStatus.INVALID_VALUE_IN_REQUEST],
+]) {
+  test('invalid or ambiguous Eco target leaves settings untouched: ' + mode + '/' + type.name + '/' + requested, async (context) => {
+    let flow = await setup(context, 'thermostat', { eco_mode: 'manual', hvac_mode: mode });
+    await flow.device.update({}, { force: true });
+    let before = structuredClone(flow.device.deviceData);
+    let control = flow.device.thermostatService.getCharacteristic(type);
+    let previous = await control.handleGetRequest();
+    await assert.rejects(control.handleSetRequest(requested), (error) => error === expected);
+    assert.equal(control.statusCode, expected);
+    assert.equal(control.value, previous);
+    assert.deepEqual(flow.writes, []);
+    assert.deepEqual(flow.device.deviceData, before);
+    assert.equal(await control.handleGetRequest(), previous);
+    assert.equal(control.statusCode, hap.HAPStatus.SUCCESS);
+  });
+}
+
+for (let [codes, expected] of [
+  [['ERR_ECO_TEMPERATURE_READ_ONLY'], hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE],
+  [['ERR_THERMOSTAT_MODE_CONFLICT'], hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE],
+  [['ECONNRESET'], hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE],
+  [['ERR_THERMOSTAT_MODE_CONFLICT', 'ECONNRESET'], hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE],
+]) {
+  test('thermostat HAP write rejects and recovers after ' + codes.join('/'), async (context) => {
+    let flow = await setup(context, 'thermostat', { hvac_mode: 'cool' });
+    await flow.device.update({}, { force: true });
+    flow.device.set = HomeKitDevice.prototype.set;
+    let failure = new AggregateError(codes.map((code) => Object.assign(new Error('Fixture rejection'), { code })));
+    HomeKitDevice.message(flow.device.uuid, HomeKitDevice.SET, async (values) => {
+      flow.writes.push(values);
+      if (failure !== undefined) {
+        throw failure;
+      }
+    });
+    let control = flow.device.thermostatService.getCharacteristic(C.TargetTemperature);
+    let previous = await control.handleGetRequest();
+    let before = structuredClone(flow.device.deviceData);
+    await assert.rejects(control.handleSetRequest(23), (error) => error === expected);
+    assert.equal(control.statusCode, expected);
+    assert.equal(control.value, previous);
+    assert.deepEqual(flow.device.deviceData, before);
+    assert.equal(await control.handleGetRequest(), previous);
+    assert.equal(control.statusCode, hap.HAPStatus.SUCCESS);
+    failure = undefined;
+    await control.handleSetRequest(23);
+    assert.equal(control.value, 23);
+    assert.equal(control.statusCode, hap.HAPStatus.SUCCESS);
+    assert.equal(flow.device.deviceData.target_temperature_high, 23);
+    assert.equal(flow.writes.length, 2);
+  });
+}

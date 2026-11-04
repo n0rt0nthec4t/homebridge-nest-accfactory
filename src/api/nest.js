@@ -26,7 +26,7 @@
 // - connect() starts ingestion without a consumer; onData optionally reports committed changes
 // - Camera media streaming belongs to the separate camera transport modules
 //
-// Code version 2026.10.30
+// Code version 2026.11.05
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -474,9 +474,23 @@ export default class NestAPI {
     // Cloud writes are independent and cannot be rolled back as a group. Attempt
     // later settings after a failure, then report any partial success to the caller.
     let failures = [];
+    // Eco exit and a requested normal mode form an ordered, dependent write.
+    // Other fields retain the API's existing independent/partial-success behavior.
+    let modeChangeFailed = false;
+    let settings = {
+      ...(Object.hasOwn(values, 'eco_mode') === true ? { eco_mode: values.eco_mode } : {}),
+      ...(Object.hasOwn(values, 'hvac_mode') === true ? { hvac_mode: values.hvac_mode } : {}),
+      ...values,
+    };
 
-    for (let [key, value] of Object.entries(values)) {
+    for (let [key, value] of Object.entries(settings)) {
       try {
+        if (
+          modeChangeFailed === true &&
+          ['hvac_mode', 'target_temperature', 'target_temperature_low', 'target_temperature_high'].includes(key) === true
+        ) {
+          throw new Error('Thermostat mode change failed; dependent setting was not sent');
+        }
         // Commands consuming companion fields are built once, independent of
         // object property order. Their validation rejects invalid companions.
         if (
@@ -491,8 +505,9 @@ export default class NestAPI {
 
         // Recheck availability after earlier writes have yielded to subscription updates.
         // Cameras use their property endpoint; other devices use bucket MERGE operations.
-        if (this.resources.get(resourceId)?.source === DATA_SOURCE.NEST) {
-          let operation = this.#buildSetting(resourceId, key, value, values, resource);
+        let currentResource = this.resources.get(resourceId);
+        if (currentResource?.source === DATA_SOURCE.NEST) {
+          let operation = this.#buildSetting(resourceId, key, value, values, currentResource);
 
           if (operation?.cameraProperties !== undefined) {
             let response = await fetchWrapper(
@@ -556,6 +571,9 @@ export default class NestAPI {
           throw new Error('Invalid or unsupported setting "' + key + '" for this device');
         }
       } catch (error) {
+        if (key === 'hvac_mode' || (key === 'eco_mode' && value?.toUpperCase?.() === 'OFF')) {
+          modeChangeFailed = true;
+        }
         failures.push(error);
         this.#options.log?.debug?.(
           'Failed processing set request for key "%s" on device uuid "%s". Error was "%s"',
@@ -638,7 +656,13 @@ export default class NestAPI {
             break;
           }
 
-          // REST setpoint writes use the shared bucket even while Eco mode is active.
+          // A preceding, accepted Eco Off permits normal targets in this SET.
+          // Other writes cannot bypass Eco or alter saved limits.
+          if (device.eco !== undefined && device.eco?.mode !== 'schedule' && values.eco_mode?.toUpperCase?.() !== 'OFF') {
+            throw Object.assign(new Error('Normal temperatures require Eco Off'), {
+              code: 'ERR_ECO_TEMPERATURE_READ_ONLY',
+            });
+          }
           let mode = shared?.target_temperature_type?.toLowerCase?.();
           let heating = key === 'target_temperature_low' || (key === 'target_temperature' && mode === 'heat');
           let cooling = key === 'target_temperature_high' || (key === 'target_temperature' && mode === 'cool');
@@ -824,6 +848,7 @@ export default class NestAPI {
     }
 
     let result = Object.hasOwn(resource?.value ?? {}, key) === true ? structuredClone(resource.value[key]) : undefined;
+
     let endpoint = resource?.value?.nexus_api_http_server_url;
 
     // Both camera queries require the same Nest source endpoint and credentials.

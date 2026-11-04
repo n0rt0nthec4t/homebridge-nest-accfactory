@@ -25,7 +25,7 @@
 // - connect() starts ingestion without a consumer; onData optionally reports committed changes
 // - Google Home Foyer media signalling belongs to the WebRTC camera transport
 //
-// Code version 2026.10.30
+// Code version 2026.11.05
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -410,9 +410,23 @@ export default class GoogleAPI {
     // Cloud writes are independent and cannot be rolled back as a group. Attempt
     // later settings after a failure, then report any partial success to the caller.
     let failures = [];
+    // Eco exit and a requested normal mode form an ordered, dependent write.
+    // Other fields retain the API's existing independent/partial-success behavior.
+    let modeChangeFailed = false;
+    let settings = {
+      ...(Object.hasOwn(values, 'eco_mode') === true ? { eco_mode: values.eco_mode } : {}),
+      ...(Object.hasOwn(values, 'hvac_mode') === true ? { hvac_mode: values.hvac_mode } : {}),
+      ...values,
+    };
     let appliedTraits = new Map(); // Successful writes in this SET; Observe remains the authoritative cache writer.
-    for (let [key, value] of Object.entries(values)) {
+    for (let [key, value] of Object.entries(settings)) {
       try {
+        if (
+          modeChangeFailed === true &&
+          ['hvac_mode', 'target_temperature', 'target_temperature_low', 'target_temperature_high'].includes(key) === true
+        ) {
+          throw new Error('Thermostat mode change failed; dependent setting was not sent');
+        }
         let handled = false;
 
         // An awaited write can allow Observe to change the selected resource.
@@ -464,6 +478,9 @@ export default class GoogleAPI {
           throw new Error('Invalid or unsupported setting "' + key + '" for this device');
         }
       } catch (error) {
+        if (key === 'hvac_mode' || (key === 'eco_mode' && value?.toUpperCase?.() === 'OFF')) {
+          modeChangeFailed = true;
+        }
         failures.push(error);
         this.#options.log?.debug?.(
           'Failed processing set request for key "%s" on device uuid "%s". Error was "%s"',
@@ -586,9 +603,13 @@ export default class GoogleAPI {
           break;
         }
 
-        if (key === 'hvac_mode' || resource?.value?.eco_mode_state?.ecoMode === 'ECO_MODE_INACTIVE') {
-          // HVAC mode always uses the normal target trait. Temperature writes use
-          // it only when Eco is explicitly inactive; otherwise use the Eco limits below.
+        if (
+          key === 'hvac_mode' ||
+          resource?.value?.eco_mode_state?.ecoMode === 'ECO_MODE_INACTIVE' ||
+          values.eco_mode?.toUpperCase?.() === 'OFF'
+        ) {
+          // A compound Eco Off is sent first and must succeed. Its following
+          // targets use the normal trait even before Observe echoes the exit.
           setUpdateTrait('target_temperature_settings', 'type.nestlabs.com/nest.trait.hvac.TargetTemperatureSettingsTrait');
 
           let setpointType = updateElement.state.value.targetTemperature?.setpointType;
@@ -601,7 +622,9 @@ export default class GoogleAPI {
 
           // Do not report success for an actor-only update to the wrong target.
           if (key !== 'hvac_mode' && setHeatingTarget !== true && setCoolingTarget !== true) {
-            throw new Error('Temperature setting "' + key + '" is unavailable in the current mode');
+            throw Object.assign(new Error('Temperature setting "' + key + '" is unavailable in the current mode'), {
+              code: 'ERR_THERMOSTAT_MODE_CONFLICT',
+            });
           }
 
           if (setHeatingTarget === true) {
@@ -629,31 +652,10 @@ export default class GoogleAPI {
             timeOfAction: timestamp(Date.now()),
           };
         } else {
-          // Eco has separate limits and enable flags. A single target is unambiguous
-          // only when one side is enabled; with both enabled, require low or high.
-          setUpdateTrait('eco_mode_settings', 'type.nestlabs.com/nest.trait.hvac.EcoModeSettingsTrait');
-
-          let heatEnabled = updateElement.state.value.ecoTemperatureHeat?.enabled === true;
-          let coolEnabled = updateElement.state.value.ecoTemperatureCool?.enabled === true;
-          let setHeatingTarget =
-            heatEnabled === true &&
-            ['target_temperature', 'target_temperature_low'].includes(key) === true &&
-            (coolEnabled !== true || key === 'target_temperature_low');
-          let setCoolingTarget =
-            coolEnabled === true &&
-            ['target_temperature', 'target_temperature_high'].includes(key) === true &&
-            (heatEnabled !== true || key === 'target_temperature_high');
-          if (setHeatingTarget !== true && setCoolingTarget !== true) {
-            throw new Error('Temperature setting "' + key + '" is unavailable in the current Eco mode');
-          }
-
-          if (setHeatingTarget === true) {
-            updateElement.state.value.ecoTemperatureHeat.value = { value: Number(value) };
-          }
-
-          if (setCoolingTarget === true) {
-            updateElement.state.value.ecoTemperatureCool.value = { value: Number(value) };
-          }
+          // Saved Eco limits are configuration, never ordinary HomeKit targets.
+          throw Object.assign(new Error('Normal temperatures require Eco Off'), {
+            code: 'ERR_ECO_TEMPERATURE_READ_ONLY',
+          });
         }
         break;
 

@@ -88,7 +88,7 @@ for (let [mode, heat, cool, expectedMode, expectedTarget] of [
         hasDehumidifier: true,
         hasAirFilter: true,
       },
-      eco_mode_state: { ecoMode: heat === true || cool === true ? 'ECO_MODE_ACTIVE' : 'ECO_MODE_INACTIVE' },
+      eco_mode_state: { ecoMode: heat === true || cool === true ? 'ECO_MODE_MANUAL_ECO' : 'ECO_MODE_INACTIVE' },
       eco_mode_settings: {
         ecoTemperatureHeat: { enabled: heat, value: { value: 17 } },
         ecoTemperatureCool: { enabled: cool, value: { value: 28 } },

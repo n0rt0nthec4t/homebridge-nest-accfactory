@@ -284,6 +284,64 @@ test('Nest REST ingestion creates Protect and withholds incomplete thermostat/se
   assert.equal(protect.smokeService.getCharacteristic(hap.Characteristic.StatusActive).value, true);
 });
 
+for (let mode of ['ECO_MODE_MANUAL_ECO', 'ECO_MODE_AUTO_ECO']) {
+  test('Eco with disabled limits publishes Off and restores Cool after Observe: ' + mode, async (context) => {
+    let flow = await setup(context);
+    flow.values.target_temperature_settings.targetTemperature.setpointType = 'SET_POINT_TYPE_COOL';
+    flow.values.target_temperature_settings.targetTemperature.heatingTarget.value = 19;
+    flow.values.target_temperature_settings.targetTemperature.coolingTarget.value = 25;
+    flow.values.eco_mode_settings = {
+      ecoTemperatureHeat: { enabled: false, value: { value: 4.5 } },
+      ecoTemperatureCool: { enabled: false, value: { value: 24.5 } },
+    };
+    await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
+    let service = flow.device.thermostatService;
+    let target = service.getCharacteristic(hap.Characteristic.TargetHeatingCoolingState);
+    let eco = service.getCharacteristic(hap.Characteristic.EcoMode);
+    let warnings = [];
+    flow.device.accessory.on('characteristic-warning', (warning) => warnings.push(warning));
+    assert.equal(target.value, hap.Characteristic.TargetHeatingCoolingState.COOL);
+
+    // Eco state alone changes: normal mode stays cached and must not mask Eco Off.
+    await flow.send([trait('DEVICE_THERMOSTAT', 'eco_mode_state', { ecoMode: mode })]);
+    assert.equal(target.value, hap.Characteristic.TargetHeatingCoolingState.OFF);
+    assert.equal(await target.handleGetRequest(), hap.Characteristic.TargetHeatingCoolingState.OFF);
+    assert.equal(await eco.handleGetRequest(), true);
+    assert.equal(flow.device.deviceData.target_temperature_low, 19);
+    assert.equal(flow.device.deviceData.target_temperature_high, 25);
+    assert.equal(await service.getCharacteristic(hap.Characteristic.TargetTemperature).handleGetRequest(), 25);
+    assert.deepEqual(
+      flow.connection.googleAPI.resources.get('DEVICE_THERMOSTAT').value.target_temperature_settings,
+      flow.values.target_temperature_settings,
+    );
+
+    // Only the enabled cooling side may replace its normal target. Disabling it
+    // again must restore the normal target without a fresh normal-settings trait.
+    await flow.send([
+      trait('DEVICE_THERMOSTAT', 'eco_mode_settings', {
+        ...flow.values.eco_mode_settings,
+        ecoTemperatureCool: { enabled: true, value: { value: 24.5 } },
+      }),
+    ]);
+    assert.equal(target.value, hap.Characteristic.TargetHeatingCoolingState.COOL);
+    assert.equal(flow.device.deviceData.target_temperature_low, 19);
+    assert.equal(flow.device.deviceData.target_temperature_high, 24.5);
+    assert.equal(await service.getCharacteristic(hap.Characteristic.TargetTemperature).handleGetRequest(), 24.5);
+    await flow.send([trait('DEVICE_THERMOSTAT', 'eco_mode_settings', flow.values.eco_mode_settings)]);
+    assert.equal(target.value, hap.Characteristic.TargetHeatingCoolingState.OFF);
+    assert.equal(flow.device.deviceData.target_temperature_low, 19);
+    assert.equal(flow.device.deviceData.target_temperature_high, 25);
+
+    await flow.send([trait('DEVICE_THERMOSTAT', 'eco_mode_state', { ecoMode: 'ECO_MODE_INACTIVE' })]);
+    assert.equal(target.value, hap.Characteristic.TargetHeatingCoolingState.COOL);
+    assert.equal(await target.handleGetRequest(), hap.Characteristic.TargetHeatingCoolingState.COOL);
+    assert.equal(await eco.handleGetRequest(), false);
+    assert.equal(flow.device.thermostatService, service);
+    assert.deepEqual(warnings, [], 'Disabled Eco limits must not produce out-of-range HomeKit values');
+    assert.deepEqual(flow.commands, [], 'State mapping must not send commands to leave Eco or change settings');
+  });
+}
+
 test('Eco translation waits for its Observe trait and normalises reported states', async (context) => {
   let flow = await setup(context);
   delete flow.values.eco_mode_state;
@@ -517,5 +575,168 @@ for (let value of ['unknown', true, 'ECO_MODE_AUTO_ECO']) {
     await assert.rejects(flow.device.set({ uuid: 'DEVICE_THERMOSTAT', eco_mode: value }), AggregateError);
     assert.equal(flow.device.deviceData.eco_mode, 'off');
     assert.deepEqual(flow.commands, []);
+  });
+}
+
+for (let ecoMode of ['ECO_MODE_MANUAL_ECO', 'ECO_MODE_AUTO_ECO']) {
+  for (let [heat, cool, type, key, mode] of [
+    [true, false, hap.Characteristic.TargetTemperature, 'target_temperature_low', 'heat'],
+    [false, true, hap.Characteristic.TargetTemperature, 'target_temperature_high', 'cool'],
+    [true, true, hap.Characteristic.HeatingThresholdTemperature, 'target_temperature_low', 'range'],
+    [true, true, hap.Characteristic.CoolingThresholdTemperature, 'target_temperature_high', 'range'],
+  ]) {
+    test(
+      'Google Eco target requests normal settings without changing saved limits: ' + ecoMode + '/' + key + '/' + mode,
+      async (context) => {
+        let flow = await setup(context);
+        flow.values.eco_mode_state = { ecoMode };
+        flow.values.eco_mode_settings = {
+          ecoTemperatureHeat: { enabled: heat, value: { value: 17 } },
+          ecoTemperatureCool: { enabled: cool, value: { value: 28 } },
+        };
+        flow.values.target_temperature_settings.targetTemperature.setpointType =
+          mode === 'heat' ? 'SET_POINT_TYPE_COOL' : 'SET_POINT_TYPE_HEAT';
+        await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
+        let control = flow.device.thermostatService.getCharacteristic(type);
+        await control.handleSetRequest(23);
+        assert.equal(flow.commands.length, 3);
+        assert.equal(flow.commands[0][3].resourceCommands[0].traitLabel, 'eco_mode_state');
+        let normalSettings = flow.commands[1][3].batchUpdateStateRequest[0].state.value;
+        assert.equal(normalSettings.targetTemperature.setpointType, 'SET_POINT_TYPE_' + mode.toUpperCase());
+        let target = flow.commands[2][3].batchUpdateStateRequest[0];
+        assert.equal(target.traitRequest.traitLabel, 'target_temperature_settings');
+        assert.equal(target.state.value.targetTemperature.setpointType, 'SET_POINT_TYPE_' + mode.toUpperCase());
+        assert.equal(target.state.value.targetTemperature[key === 'target_temperature_low' ? 'heatingTarget' : 'coolingTarget'].value, 23);
+        assert.deepEqual(
+          flow.connection.googleAPI.resources.get('DEVICE_THERMOSTAT').value.eco_mode_settings,
+          flow.values.eco_mode_settings,
+        );
+        assert.equal(
+          flow.connection.googleAPI.resources.get('DEVICE_THERMOSTAT').value.eco_mode_state.ecoMode,
+          ecoMode,
+          'An accepted SET does not replace the authoritative source cache',
+        );
+        await flow.send([
+          trait('DEVICE_THERMOSTAT', 'eco_mode_state', { ecoMode: 'ECO_MODE_INACTIVE' }),
+          trait('DEVICE_THERMOSTAT', 'target_temperature_settings', target.state.value),
+        ]);
+        assert.equal(await control.handleGetRequest(), 23);
+      },
+    );
+  }
+}
+
+for (let ecoMode of ['ECO_MODE_MANUAL_ECO', 'ECO_MODE_AUTO_ECO']) {
+  for (let modeFirst of [false, true]) {
+    test('HomeKit Off exits Eco Cool with split source updates: ' + ecoMode + '/' + modeFirst, async (context) => {
+      let flow = await setup(context);
+      flow.values.eco_mode_state = { ecoMode };
+      flow.values.eco_mode_settings = {
+        ecoTemperatureHeat: { enabled: false, value: { value: 17 } },
+        ecoTemperatureCool: { enabled: true, value: { value: 28 } },
+      };
+      flow.values.target_temperature_settings.targetTemperature.setpointType = 'SET_POINT_TYPE_COOL';
+      await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
+      let control = flow.device.thermostatService.getCharacteristic(hap.Characteristic.TargetHeatingCoolingState);
+      assert.equal(await control.handleGetRequest(), hap.Characteristic.TargetHeatingCoolingState.COOL);
+      await control.handleSetRequest(hap.Characteristic.TargetHeatingCoolingState.OFF);
+      assert.equal(flow.commands.length, 2);
+      assert.equal(flow.commands[0][3].resourceCommands[0].command.value.ecoMode, 'ECO_MODE_INACTIVE');
+      let normal = flow.commands[1][3].batchUpdateStateRequest[0].state.value;
+      assert.equal(normal.enabled.value, false);
+      assert.equal(control.value, hap.Characteristic.TargetHeatingCoolingState.OFF);
+      assert.equal(await control.handleGetRequest(), hap.Characteristic.TargetHeatingCoolingState.OFF);
+      // Google reports Eco and normal mode independently; exercise both arrival orders.
+      let updates = [
+        trait('DEVICE_THERMOSTAT', 'eco_mode_state', { ecoMode: 'ECO_MODE_INACTIVE' }),
+        trait('DEVICE_THERMOSTAT', 'target_temperature_settings', { ...normal, enabled: {} }),
+      ];
+      if (modeFirst === true) {
+        updates.reverse();
+      }
+      for (let update of updates) {
+        await flow.send([update]);
+      }
+      assert.equal(flow.device.deviceData.eco_mode, 'off');
+      assert.equal(flow.device.deviceData.hvac_mode, 'off');
+      assert.equal(control.value, hap.Characteristic.TargetHeatingCoolingState.OFF);
+      assert.equal(await control.handleGetRequest(), hap.Characteristic.TargetHeatingCoolingState.OFF);
+    });
+  }
+}
+
+for (let [initial, requested] of [
+  ['HEAT', hap.Characteristic.TargetHeatingCoolingState.COOL],
+  ['COOL', hap.Characteristic.TargetHeatingCoolingState.HEAT],
+]) {
+  test('temperature after accepted mode change rejects stale source mode and recovers: ' + initial, async (context) => {
+    let flow = await setup(context);
+    flow.values.target_temperature_settings.targetTemperature.setpointType = 'SET_POINT_TYPE_' + initial;
+    await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
+    let mode = flow.device.thermostatService.getCharacteristic(hap.Characteristic.TargetHeatingCoolingState);
+    let target = flow.device.thermostatService.getCharacteristic(hap.Characteristic.TargetTemperature);
+    await mode.handleSetRequest(requested);
+    let previous = await target.handleGetRequest();
+    await assert.rejects(target.handleSetRequest(23), (error) => error === hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE);
+    assert.equal(target.statusCode, hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE);
+    assert.equal(target.value, previous);
+    assert.equal(flow.commands.length, 1, 'The conflicting temperature is rejected before any cloud command');
+    assert.equal(await target.handleGetRequest(), previous);
+    assert.equal(target.statusCode, hap.HAPStatus.SUCCESS);
+    await flow.send([
+      trait('DEVICE_THERMOSTAT', 'target_temperature_settings', flow.commands[0][3].batchUpdateStateRequest[0].state.value),
+    ]);
+    await target.handleSetRequest(23);
+    assert.equal(flow.commands.length, 2);
+    assert.equal(target.statusCode, hap.HAPStatus.SUCCESS);
+    assert.equal(target.value, 23);
+  });
+}
+
+for (let [initial, requested, heat, cool] of [
+  ['COOL', hap.Characteristic.TargetHeatingCoolingState.HEAT, false, true],
+  ['COOL', hap.Characteristic.TargetHeatingCoolingState.HEAT, false, false],
+  ['HEAT', hap.Characteristic.TargetHeatingCoolingState.COOL, true, false],
+  ['COOL', hap.Characteristic.TargetHeatingCoolingState.OFF, false, true],
+]) {
+  test('originating HomeKit controller receives final mode after Eco exit: ' + initial + '/' + requested + '/' + cool, async (context) => {
+    let flow = await setup(context);
+    flow.values.target_temperature_settings.targetTemperature.setpointType = 'SET_POINT_TYPE_' + initial;
+    flow.values.eco_mode_state = { ecoMode: 'ECO_MODE_MANUAL_ECO' };
+    flow.values.eco_mode_settings = {
+      ecoTemperatureHeat: { enabled: heat, value: { value: 17 } },
+      ecoTemperatureCool: { enabled: cool, value: { value: 28 } },
+    };
+    await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
+    let mode = flow.device.thermostatService.getCharacteristic(hap.Characteristic.TargetHeatingCoolingState);
+    let connection = {};
+    let notifications = [];
+    mode.on('change', (change) => {
+      if (change.originator !== connection && (change.reason === 'event' || change.oldValue !== change.newValue)) {
+        notifications.push(change.newValue);
+      }
+    });
+    let command = flow.connection.grpcTransport.command;
+    let started = Promise.withResolvers();
+    let released = Promise.withResolvers();
+    context.mock.method(flow.connection.grpcTransport, 'command', async (...args) => {
+      let result = await command(...args);
+      if (flow.commands.length === 1) {
+        started.resolve();
+        await released.promise;
+      }
+      return result;
+    });
+    let request = mode.handleSetRequest(requested, connection);
+    await started.promise;
+    await flow.send([trait('DEVICE_THERMOSTAT', 'eco_mode_state', { ecoMode: 'ECO_MODE_INACTIVE' })]);
+    released.resolve();
+    await request;
+    await flow.send([
+      trait('DEVICE_THERMOSTAT', 'target_temperature_settings', flow.commands[1][3].batchUpdateStateRequest[0].state.value),
+    ]);
+    assert.equal(mode.value, requested);
+    assert.equal(await mode.handleGetRequest(), requested);
+    assert.equal(notifications.at(-1), requested);
   });
 }
