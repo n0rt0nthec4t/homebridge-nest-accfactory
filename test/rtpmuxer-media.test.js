@@ -66,6 +66,67 @@ function videoFrames() {
   return frames;
 }
 
+let reorderedVideo;
+function bFrameVideo() {
+  if (reorderedVideo !== undefined) {
+    return reorderedVideo;
+  }
+  // Tee one encoder run to payload bytes and packet PTS, so fixtures have real
+  // reference/B/B dependencies and cannot accidentally assign decode time as PTS.
+  let encoded = spawnSync(
+    binary,
+    [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-f',
+      'lavfi',
+      '-i',
+      'testsrc2=size=160x90:rate=15',
+      '-frames:v',
+      '90',
+      '-map',
+      '0:v:0',
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+      '-x264-params',
+      'aud=1:repeat-headers=1:keyint=30:scenecut=0:bframes=2:b-adapt=0:b-pyramid=none',
+      '-f',
+      'tee',
+      '[f=h264]pipe:1|[f=framecrc]pipe:3',
+    ],
+    { stdio: ['ignore', 'pipe', 'pipe', 'pipe'], timeout: 10000, maxBuffer: 8 * 1024 * 1024 },
+  );
+  assert.equal(encoded.status, 0, encoded.stderr?.toString());
+  let times = encoded.output[3]
+    .toString()
+    .split('\n')
+    .filter((line) => /^0,/.test(line) === true)
+    .map((line) => (Number(line.split(',')[2]) * 1000) / 15);
+  let units = [];
+  let parts = [];
+  for (let nal of H264.getNALUnits(encoded.stdout)) {
+    if (nal.type === 9 && parts.length > 0) {
+      units.push(Buffer.concat(parts));
+      parts = [];
+    }
+    parts.push(H264.NALUS.START_CODE, nal.data);
+  }
+  if (parts.length > 0) {
+    units.push(Buffer.concat(parts));
+  }
+  assert.equal(units.length, 90);
+  assert.equal(times.length, units.length);
+  assert.equal(
+    times.some((time, index) => index > 0 && time < times[index - 1]),
+    true,
+  );
+  reorderedVideo = { units, times };
+  return reorderedVideo;
+}
+
 function aacFrames() {
   if (aac !== undefined) {
     return aac;
@@ -237,7 +298,10 @@ for (let sourceAudio of ['opus', 'aac']) {
   );
 }
 
-for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack] of [
+for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack, reordered = false] of [
+  [4, 'rawvideo', 'aac', 40, undefined, true],
+  [4, 'copy', 'aac', 40, undefined, true],
+  [4, 'hksv', 'aac', 40, undefined, true],
   [4, 'rawvideo', 'opus'],
   [1, 'rawvideo', 'opus'],
   [4, 'copy', 'opus'],
@@ -254,12 +318,22 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack] of [
   test(
     (codec === 'hksv'
       ? 'FFmpeg ' + audioCodec + ' RTP input produces decodable CFR H264/AAC fragmented MP4 at delivery rate ' + rate
-      : 'FFmpeg ' + codec + '/' + audioCodec + ' preserves VFR A/V with a ' + audioOffset + ' ms source offset at delivery rate ' + rate) +
+      : 'FFmpeg ' +
+        codec +
+        '/' +
+        audioCodec +
+        ' preserves ' +
+        (reordered === true ? 'reordered' : 'VFR') +
+        ' A/V with a ' +
+        audioOffset +
+        ' ms source offset at delivery rate ' +
+        rate) +
+      (reordered === true ? ' with B-frames in decode order' : '') +
       (lateTrack === undefined ? '' : ' with late first ' + lateTrack) +
       (audioOffset > 1000 ? ' with source audio offset ' + audioOffset + ' ms' : ''),
     { skip: binary === undefined ? 'Set FFMPEG_TEST_BINARY for real media checks' : false, timeout: 20000 },
     async (context) => {
-      const video = videoFrames();
+      const video = reordered === true ? bFrameVideo().units : videoFrames();
       let encodedAAC = audioCodec === 'aac' ? aacFrames() : undefined;
       const output = new RTPMuxer({ audio: { codec: audioCodec, sampleRate: 48000, channels: encodedAAC === undefined ? 2 : 1 } });
       if (encodedAAC !== undefined) {
@@ -356,7 +430,14 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack] of [
       const events = video.map((data, index) => ({
         type: 'video',
         data,
-        timestamp: index < 20 ? index * 100 : index < 60 ? 2000 + (index - 20) * 50 : 4000 + (index - 60) * 100,
+        timestamp:
+          reordered === true
+            ? bFrameVideo().times[index]
+            : index < 20
+              ? index * 100
+              : index < 60
+                ? 2000 + (index - 20) * 50
+                : 4000 + (index - 60) * 100,
       }));
       if (encodedAAC !== undefined) {
         for (let index = 0; index < encodedAAC.length; index++) {
@@ -369,10 +450,12 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack] of [
       }
       // Delay one track's delivery without changing its source clock. Its first
       // frame then arrives after the other track established a later RTP epoch.
+      let deliveryTime = {};
       for (let event of events) {
-        event.deliverAt = event.timestamp + (event.type === lateTrack ? 120 : 0);
+        deliveryTime[event.type] = Math.max(deliveryTime[event.type] ?? -Infinity, event.timestamp);
+        event.deliverAt = deliveryTime[event.type] + (event.type === lateTrack ? 120 : 0);
       }
-      events.sort((left, right) => left.deliverAt - right.deliverAt || (left.type === 'video' ? -1 : 1));
+      events.sort((left, right) => left.deliverAt - right.deliverAt || (left.type === right.type ? 0 : left.type === 'video' ? -1 : 1));
       const started = performance.now();
       for (const event of events) {
         const due = started + event.deliverAt / rate;
@@ -463,6 +546,13 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack] of [
           decoded[1].at(-1),
       );
       if (codec === 'hksv') {
+        if (reordered === true) {
+          assert.equal(decoded[0].length, 180);
+          assert.deepEqual(
+            decoded[0].map((time) => Math.round(time * 90000)),
+            Array.from({ length: 180 }, (_, index) => index * 3000),
+          );
+        }
         if (audioOffset > 1000) {
           assert.equal(typeof audioOnset, 'number');
           assert.ok(
@@ -481,12 +571,37 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack] of [
       // audio started first and video begins before the shared epoch. Check the
       // established offset from the next video frame as well as ongoing timing;
       // this receiver bootstrap behaviour is separate from rejecting the track.
-      let videoStart = lateTrack === 'video' ? decoded[0][1] - 0.1 : decoded[0][0];
+      // The RTP H264 parser may leave the first copied picture's PTS unset
+      // while learning B-frame delay. Decoded output must still start at zero;
+      // validate all established copy timestamps against the encoder's PTS.
+      let missingFirstPTS = reordered === true && codec === 'copy' && decoded[0][0] === -(2 ** 63) / 90000;
+      let videoStart =
+        missingFirstPTS === true
+          ? decoded[0][1] - bFrameVideo().times[1] / 1000
+          : lateTrack === 'video'
+            ? decoded[0][1] - 0.1
+            : decoded[0][0];
       assert.equal(
         Math.abs(decoded[1][0] - videoStart - audioOffset / 1000) < 0.003,
         true,
         'Lost A/V offset: video=' + videoStart + ' audio=' + decoded[1][0],
       );
+      if (reordered === true) {
+        assert.equal(decoded[0].length, 90, 'all B-frames and references must survive');
+        if (codec === 'copy') {
+          assert.deepEqual(
+            decoded[0].slice(missingFirstPTS === true ? 1 : 0).map((time) => Math.round((time - videoStart) * 90000)),
+            bFrameVideo()
+              .times.slice(missingFirstPTS === true ? 1 : 0)
+              .map((time) => Math.round(time * 90)),
+          );
+        } else {
+          assert.deepEqual(
+            decoded[0].map((time) => Math.round(time * 90000)),
+            Array.from({ length: 90 }, (_, index) => index * 6000),
+          );
+        }
+      }
       if (lateTrack !== undefined) {
         let sourceVideo = events.filter((event) => event.type === 'video');
         for (let index = 1; index < decoded[0].length; index++) {
@@ -494,7 +609,7 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack] of [
         }
       }
       const deltas = decoded[0].slice(1).map((time, index) => time - decoded[0][index]);
-      for (const duration of [0.05, 0.1]) {
+      for (const duration of reordered === true ? [1 / 15] : [0.05, 0.1]) {
         assert.equal(
           deltas.some((delta) => Math.abs(delta - duration) < 0.002),
           true,

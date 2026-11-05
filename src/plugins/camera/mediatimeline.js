@@ -6,7 +6,7 @@
 // Responsibilities:
 // - Keep stable track indexes through eviction and source resets
 // - Enforce shared item and payload-byte bounds without waiting for readers
-// - Trim expired source time and seek timestamps within an ordered track
+// - Trim expired source time and seek delivery watermarks within a decode-ordered track
 // - Retain frame payloads and their original decoder configuration references
 //
 // Notes:
@@ -14,7 +14,7 @@
 // - A stalled reader cannot pin this buffer or block current source media
 // - Default capacity is per ring; maximum items and bytes are shared across both
 //
-// Code version 2026.10.24
+// Code version 2026.11.06
 // Mark Hulskamp
 'use strict';
 
@@ -102,7 +102,7 @@ export default class MediaTimeline {
       return undefined;
     }
 
-    // Evict oldest presentation time until both limits admit this complete unit.
+    // Evict oldest delivery watermark until both limits admit this complete unit.
     // Readers detect their expired cursor and recover at the next decodable IDR.
     while (this.size >= this.#maxItems || this.#bytes + item.bytes > this.#maxBytes) {
       let video = this.#tracks.video.getByOffset(0);
@@ -147,8 +147,9 @@ export default class MediaTimeline {
     let left = 0;
     let right = track.size;
 
-    // Source timestamps increase within each track; mixed arrival order no longer
-    // requires a full-buffer search or auxiliary media-index arrays.
+    // Streamer supplies nondecreasing delivery watermarks, separate from video
+    // PTS. Equal watermarks preserve decode order for reference/B-frame groups.
+    // Binary seek returns the first unit in a group without sorting its payloads.
     while (left < right) {
       let middle = (left + right) >>> 1;
       if (track.getByOffset(middle).time < time) {

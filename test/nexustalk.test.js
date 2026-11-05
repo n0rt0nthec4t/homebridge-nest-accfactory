@@ -916,3 +916,29 @@ for (let [codec, sampleRate, timestampDelta, frequency] of [
     assert.equal(flow.media.at(-1).timestamp, epoch + 10000 + (timestampDelta * 1000) / sampleRate);
   });
 }
+
+test('NexusTalk signed timestamp deltas preserve reference/B/B decode order and fractional PTS', async (context) => {
+  let flow = setup(context);
+  let socket = await open(flow);
+  begin(socket);
+  // 90 kHz deltas reproduce +266.7 / -133.3 / +66.7 ms in the Indoor trace.
+  for (let [index, timestampDelta] of [24000, -12000, 6000, 24000, -12000, 6000, 24000].entries()) {
+    socket.emit(
+      'data',
+      packet(204, 'PlaybackPacket', {
+        channelId: 1,
+        timestampDelta,
+        payload: Buffer.from([index === 0 ? 0x65 : 0x41, index]),
+      }),
+    );
+  }
+  assert.equal(flow.media.length, 6, 'the final timestamp group stays pending until the next frame');
+  assert.deepEqual(
+    flow.media.map((frame) => Math.round((frame.timestamp - 100000) * 90)),
+    [24000, 12000, 18000, 42000, 30000, 36000],
+  );
+  assert.deepEqual(
+    flow.media.map((frame) => frame.nals[0][1]),
+    [0, 1, 2, 3, 4, 5],
+  );
+});

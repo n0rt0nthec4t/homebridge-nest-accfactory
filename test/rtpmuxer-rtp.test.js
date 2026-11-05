@@ -321,8 +321,12 @@ for (let firstTrack of ['video', 'audio']) {
     output.tick();
     write(lateTrack, 100000);
     write(lateTrack, 100020);
-    assert.throws(() => write(lateTrack, 100020), /increasing source/);
-    assert.throws(() => write(lateTrack, 99999), /increasing source/);
+    assert.throws(() => write(lateTrack, 100020), /source presentation times/);
+    if (lateTrack === 'audio') {
+      assert.throws(() => write(lateTrack, 99999), /increasing source/);
+    } else {
+      write(lateTrack, 99999);
+    }
     assert.throws(() => write(lateTrack, NaN), /source media time/);
     assert.throws(() => write(lateTrack, Infinity), /source media time/);
 
@@ -539,5 +543,33 @@ test('audio normalization rejects malformed or mixed-format AAC batches before f
     [Buffer.concat(Array(257).fill(first)), /Too many/],
   ]) {
     assert.throws(() => RTPMuxer.normalizeAudio(data, 'aac'), error);
+  }
+});
+
+// Decode-order delivery uses sequence numbers; RTP timestamps remain presentation times.
+test('H264 B-frame PTS moves backwards without reordering packets or losing reconnect continuity', async (context) => {
+  let packets = [];
+  let output = new RTPMuxer({ writePacket: (data, metadata) => packets.push({ data, ...metadata }) });
+  context.after(() => output.close());
+  let timestamps = [100000, 100200, 100066.6666667, 100133.3333333];
+  output.setSourceEpoch(timestamps[0], 0);
+  for (let [index, timestamp] of timestamps.entries()) {
+    output.writeVideo([Buffer.from([index === 0 ? 0x65 : 0x61, index])], timestamp);
+  }
+  output.setSourceEpoch(0, 1);
+  output.writeVideo([Buffer.from([0x65, 4])], 0);
+  let video = packets.filter((packet) => packet.kind === 'rtp').map((packet) => packet.data);
+  let origin = video[0].readUInt32BE(4);
+  assert.deepEqual(
+    video.slice(0, 4).map((packet) => (packet.readUInt32BE(4) - origin) | 0),
+    [0, 18000, 6000, 12000],
+  );
+  assert.equal((video[4].readUInt32BE(4) - origin) | 0, 18090, 'new epoch follows highest PTS, not the last B-frame');
+  assert.deepEqual(
+    video.map((packet) => packet[13]),
+    [0, 1, 2, 3, 4],
+  );
+  for (let index = 1; index < video.length; index++) {
+    assert.equal(video[index].readUInt16BE(2), (video[index - 1].readUInt16BE(2) + 1) & 0xffff);
   }
 });

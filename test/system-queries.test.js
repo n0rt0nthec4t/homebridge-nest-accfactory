@@ -240,6 +240,77 @@ test('Google snapshot observes a fresh image, clears its waiter and fetches the 
   await delivered;
   assert.equal(flow.requests.at(-1)[1], 'https://image.invalid/new.jpg');
 });
+for (let [label, status, recover, expectedUploads] of [
+  ['recovers after HTTP 400', 400, true, 2],
+  ['stops after a second HTTP 400', 400, false, 2],
+  ['does not refresh after HTTP 403', 403, false, 1],
+  ['does not refresh after HTTP 404', 404, false, 1],
+]) {
+  test('Google snapshot fresh-upload retry ' + label, async (context) => {
+    let uploads = 0;
+    let downloads = [];
+    let image = Buffer.from([9]);
+    let flow = await platformHarness(context, {
+      value: { device_info: { typeName: 'google.resource.SpencerResource' } },
+      fetch: async (method, url) => {
+        downloads.push(url);
+        if (recover === true && downloads.length === 2) {
+          return { arrayBuffer: async () => image };
+        }
+        throw Object.assign(new Error('Fixture image URL failure'), { status });
+      },
+    });
+    flow.connection.grpcTransport.command = async () => {
+      uploads++;
+      await flow.send('DEVICE_TEST', { upload_live_image: { liveImageUrl: 'https://image.invalid/' + uploads + '.jpg' } });
+      return { data: [{ traitOperations: [{ progress: 'COMPLETE', event: { event: { status: 'STATUS_SUCCESSFUL' } } }] }] };
+    };
+    assert.deepEqual(
+      (await flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true })).camera_snapshot,
+      recover === true ? image : undefined,
+    );
+    assert.equal(uploads, expectedUploads);
+    assert.deepEqual(
+      downloads,
+      Array.from({ length: expectedUploads }, (_, index) => 'https://image.invalid/' + (index + 1) + '.jpg'),
+    );
+  });
+}
+
+test('Google snapshot fresh-upload retry retains the original deadline', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 100000 });
+  let uploads = 0;
+  let secondUpload = Promise.withResolvers();
+  let lateReply = Promise.withResolvers();
+  let flow = await platformHarness(context, {
+    value: { device_info: { typeName: 'google.resource.SpencerResource' } },
+    fetch: async () => {
+      // The failed first download has already consumed most of the request budget.
+      context.mock.timers.tick(6000);
+      throw Object.assign(new Error('Fixture expired image URL'), { status: 400 });
+    },
+  });
+  let success = { data: [{ traitOperations: [{ progress: 'COMPLETE', event: { event: { status: 'STATUS_SUCCESSFUL' } } }] }] };
+  flow.connection.grpcTransport.command = async () => {
+    uploads++;
+    if (uploads === 2) {
+      secondUpload.resolve();
+      return await lateReply.promise;
+    }
+    await flow.send('DEVICE_TEST', { upload_live_image: { liveImageUrl: 'https://image.invalid/first.jpg' } });
+    return success;
+  };
+  let request = flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true });
+  await secondUpload.promise;
+  context.mock.timers.tick(1000);
+  assert.equal((await request).camera_snapshot, undefined);
+  let requests = flow.requests.length;
+  lateReply.resolve(success);
+  await setImmediate();
+  assert.equal(uploads, 2);
+  assert.equal(flow.requests.length, requests, 'A late retry reply must not start another image download');
+});
+
 test('snapshot command rejection cleans its waiter and GET degrades safely', async (context) => {
   let flow = await platformHarness(context, { value: { device_info: { typeName: 'google.resource.SpencerResource' } } });
   flow.connection.grpcTransport.command = async () => {

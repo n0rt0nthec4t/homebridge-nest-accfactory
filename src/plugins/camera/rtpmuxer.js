@@ -26,7 +26,7 @@
 // type. After prepare, ports exposes the internal audioControl and talkback ports
 // for FFmpeg arguments. FFmpeg retains SRTP and codec handling.
 //
-// Code version 2026.10.26
+// Code version 2026.11.06
 // Mark Hulskamp
 'use strict';
 
@@ -920,13 +920,20 @@ export default class RTPMuxer {
 
   #validateTime(output, track, timestamp) {
     // The shared epoch is a clock reference, not a lower bound. A track first
-    // observed later can carry earlier source time; only that track's own
-    // accepted timestamps determine whether presentation time went backwards.
+    // observed later can carry earlier source time. H264 access units are sent
+    // in decode order, with potentially backwards PTS (RFC 3550 section 5.1).
+    // Audio still requires increasing sample timestamps.
     if (output.closed === true) {
       throw new Error('Output is closed');
     }
-    if (Number.isFinite(timestamp) !== true || (track.lastTimestamp !== undefined && timestamp <= track.lastTimestamp)) {
-      throw new RangeError('Expected increasing source presentation times');
+    if (
+      Number.isFinite(timestamp) !== true ||
+      (track.lastTimestamp !== undefined &&
+        (timestamp === track.lastTimestamp || (track.name === 'audio' && timestamp < track.lastTimestamp)))
+    ) {
+      throw new RangeError(
+        track.name === 'video' ? 'Expected distinct source presentation times' : 'Expected increasing source presentation times',
+      );
     }
   }
 
@@ -1012,6 +1019,8 @@ export default class RTPMuxer {
     this.#validateTime(output, track, timestamp);
     let rtpTimestamp = this.#timestampFor(output, track, timestamp);
     track.lastTimestamp = timestamp;
+    // A reconnect must follow the highest PTS, even when the last unit was a B-frame.
+    track.endTimestamp = Math.max(track.endTimestamp ?? -Infinity, timestamp + 1);
     for (let index = 0; index < nalUnits.length; index += 1) {
       let nal = nalUnits[index];
       let lastNAL = index === nalUnits.length - 1;

@@ -36,6 +36,10 @@ concurrency:
   queue: max
 
 jobs:
+  validate-media:
+    if: github.event_name == 'push' || github.event.release.prerelease == false
+    uses: ./.github/workflows/media-tests.yml
+
   # Validate committed source without auto-formatting or changing dependencies.
   validate:
     # Prereleases created below must not trigger a second publish.
@@ -60,7 +64,7 @@ jobs:
       - run: npm run check
 
   publish-npm:
-    needs: validate
+    needs: [validate, validate-media]
     runs-on: ubuntu-latest
     permissions:
       contents: write # Create prerelease tags and GitHub releases.

@@ -4,7 +4,24 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v0.4.5-alpha.12 (2026/11/02)
+## v0.4.5-alpha.13 (2026/11/06)
+
+### Changed
+
+- Run real FFmpeg media regression tests in pull-request and release validation using a pinned Homebridge FFmpeg build
+- Require Homebridge 2.5.0 or later within Homebridge 2.x, retaining Homebridge 1.11.4 support
+- Require Node.js 22.12.0 or later within Node 22, matching Homebridge 2.5.0; retain Node 24 and 26 support
+
+### Fixed
+
+- Retry Google camera snapshots with one fresh upload after an image URL returns HTTP 400, retaining the original snapshot deadline
+- Preserve NexusTalk H264 B-frames through live view and HKSV prebuffer playback, keeping decode order and original presentation timestamps instead of dropping video until the next keyframe [#343](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issues/343#issuecomment-6667393488)
+
+### Testing
+
+- Retest Nest Cam Indoor live view and HKSV on the reported Raspberry Pi 4 configuration, including hardware encoding, recording prebuffer and A/V sync; synthetic FFmpeg decoding and software recording checks do not verify the physical camera or Pi encoder
+
+## v0.4.5-alpha.12 (2026/11/05)
 
 ### Fixed
 

@@ -25,7 +25,7 @@
 // - connect() starts ingestion without a consumer; onData optionally reports committed changes
 // - Google Home Foyer media signalling belongs to the WebRTC camera transport
 //
-// Code version 2026.11.05
+// Code version 2026.11.06
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -990,7 +990,8 @@ export default class GoogleAPI {
     return result;
   }
 
-  async #getCameraSnapshot(resourceId, signal) {
+  async #getCameraSnapshot(resourceId, signal, retryUpload = true) {
+    signal.throwIfAborted();
     let account = this.#options.session?.account;
 
     let snapshot = undefined;
@@ -1131,6 +1132,12 @@ export default class GoogleAPI {
           this.#options.log?.debug?.('Snapshot fetch returned empty image for device uuid "%s"', resourceId);
         }
       } catch (error) {
+        // A replaced live-image URL can answer HTTP 400. Request one new upload
+        // through the existing freshness flow, sharing the original deadline.
+        if (error?.status === 400 && retryUpload === true && signal.aborted === false) {
+          return await this.#getCameraSnapshot(resourceId, signal, false);
+        }
+
         // Preserve visibility of unexpected HTTP/body failures while suppressing timeouts.
         if (
           error?.cause === undefined ||

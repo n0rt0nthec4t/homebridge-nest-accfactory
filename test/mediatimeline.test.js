@@ -80,3 +80,25 @@ test('invalid retention limits fail before accepting media', () => {
     assert.throws(() => new MediaTimeline(0, 1, items, bytes), /retention/);
   }
 });
+
+test('equal delivery watermarks seek and trim whole decode-order groups while retaining their PTS', () => {
+  let timeline = new MediaTimeline();
+  for (let [time, presentationTime] of [
+    [100, 100],
+    [300, 300],
+    [300, 166],
+    [300, 233],
+    [500, 500],
+  ]) {
+    timeline.add({ ...item('video', time), presentationTime });
+  }
+  assert.equal(timeline.seek('video', 200), 1);
+  assert.equal(timeline.seek('video', 300), 1);
+  assert.equal(timeline.trim(300), 1);
+  assert.deepEqual(
+    [1, 2, 3].map((index) => timeline.get('video', index).presentationTime),
+    [300, 166, 233],
+  );
+  assert.equal(timeline.trim(301), 3);
+  assert.equal(timeline.start('video'), 4);
+});

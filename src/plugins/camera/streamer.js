@@ -32,7 +32,7 @@
 // - Protocol signalling, packet reordering and frame assembly remain in the source
 // - FFmpeg owns command construction and the bounded MP4 fragment reader
 //
-// Code version 2026.10.28
+// Code version 2026.11.06
 // Mark Hulskamp
 'use strict';
 
@@ -120,8 +120,9 @@ export default class Streamer {
   #waitingForKeyframe = false; // Decoder recovery after a rejected source timestamp
   #lastFallbackFrameTime = 0; // Timer for pacing fallback frames
   #rotation = 0; // Rotate the first receiver serviced on each scheduling turn
-  #lastMediaTime = {}; // Track last buffered media time per type for fallback ordering guards
-  #lastKeyframeAt = undefined; // Last accepted keyframe arrival at Streamer
+  #lastMediaTime = {}; // Monotonic per-track retention/playout watermark, separate from video PTS
+  #lastVideoTimestamp = undefined; // Previous access unit PTS in decode order
+  #lastKeyframeAt = undefined; // Last received keyframe arrival at Streamer
   #fallbackAudio = undefined; // Shared normalized silence, keyed by source buffer and codec
   #lastKeyframeBytes = undefined; // Size of last accepted keyframe
   #connectOptions = {}; // Store options from connect to use on reconnects
@@ -433,52 +434,44 @@ export default class Streamer {
   }
 
   #retainMedia(media) {
-    let mediaType = undefined;
-    let codec = undefined;
-    let now = Date.now();
-    let data = undefined;
-    let keyFrame = false;
-
     // StreamTransport has validated and normalized this complete frame. This
     // private consumer only owns retention and per-output playout protection.
-    mediaType = media.type;
-    keyFrame = media.keyFrame;
-    codec = media.codec;
-
-    // Do not process if no active outputs or retained buffer.
     if (this.hasActiveStreams() !== true) {
       return;
     }
 
-    data = media.data;
+    let { type: mediaType, codec, keyFrame, data } = media;
 
-    // Ensure shared media timeline exists before proceeding.
     this.#timeline ??= new MediaTimeline(0, STREAMER_INITIAL_BUFFER_CAPACITY, STREAMER_MAX_BUFFER_CAPACITY);
 
-    if (mediaType === Streamer.MEDIA_TYPE.VIDEO && keyFrame === true) {
-      this.#lastKeyframeAt = now;
-      this.#lastKeyframeBytes = media.bytes;
-    }
-    // Presentation time belongs to the transport. Never advance one track using
-    // an estimated frame duration: doing so changes its relationship to the other.
-    if (media.timestamp <= this.#lastMediaTime[mediaType]) {
-      if (mediaType === Streamer.MEDIA_TYPE.VIDEO) {
+    if (mediaType === Streamer.MEDIA_TYPE.VIDEO) {
+      if (keyFrame === true) {
+        this.#lastKeyframeAt = Date.now();
+        this.#lastKeyframeBytes = media.bytes;
+      }
+
+      // H264 arrives in decode order, so B-frame PTS can go backwards. Compare
+      // duplicates with the previous PTS, but IDRs with the highest source time.
+      if (media.timestamp === this.#lastVideoTimestamp || (keyFrame === true && media.timestamp <= this.#lastMediaTime.video)) {
         this.#waitingForKeyframe = true;
         this.#transport.recordVideoDrop('non-increasing-timestamp');
-      }
-      return;
-    }
-
-    // A discarded H264 frame may be referenced by later deltas. Retain only a
-    // new decoder-safe keyframe after a timestamp fault, without retiming it.
-    if (mediaType === Streamer.MEDIA_TYPE.VIDEO && this.#waitingForKeyframe === true) {
-      if (keyFrame !== true) {
-        this.#transport.recordVideoDrop('timestamp-recovery');
         return;
       }
-      this.#waitingForKeyframe = false;
-    }
-    if (mediaType === Streamer.MEDIA_TYPE.AUDIO) {
+
+      // A discarded H264 frame may be referenced by later deltas. Recover only
+      // at a new decoder-safe keyframe without retiming either media track.
+      if (this.#waitingForKeyframe === true) {
+        if (keyFrame !== true) {
+          this.#transport.recordVideoDrop('timestamp-recovery');
+          return;
+        }
+        this.#waitingForKeyframe = false;
+      }
+      this.#lastVideoTimestamp = media.timestamp;
+    } else if (mediaType === Streamer.MEDIA_TYPE.AUDIO) {
+      if (media.timestamp <= this.#lastMediaTime.audio) {
+        return;
+      }
       try {
         // Parse once for every retained batch, not once for each live/recording
         // receiver. Keep the batch together so its complete-unit bounds survive.
@@ -495,7 +488,9 @@ export default class Streamer {
         return;
       }
     }
-    this.#lastMediaTime[mediaType] = media.timestamp;
+    // A reference frame precedes the B-frames it predicts. Give those following
+    // units the same delivery deadline while retaining their original RTP PTS.
+    this.#lastMediaTime[mediaType] = Math.max(this.#lastMediaTime[mediaType] ?? -Infinity, media.timestamp);
 
     // Retention is bounded independently of consumers. A lagging output must
     // recover at the current window instead of protecting expired media forever.
@@ -503,7 +498,8 @@ export default class Streamer {
     this.#timeline.add({
       type: mediaType,
       codec,
-      time: media.timestamp,
+      time: this.#lastMediaTime[mediaType],
+      presentationTime: media.timestamp,
       keyFrame,
       nals: media.nals,
       data,
@@ -962,12 +958,14 @@ export default class Streamer {
 
     this.#waitingForKeyframe = false;
     this.#lastMediaTime = {};
+    this.#lastVideoTimestamp = undefined;
     this.#generation++;
   }
 
   #resetSourceState() {
     this.#waitingForKeyframe = false;
     this.#lastMediaTime = {};
+    this.#lastVideoTimestamp = undefined;
     this.#generation++;
     this.#timeline?.clear();
 
@@ -1146,8 +1144,8 @@ export default class Streamer {
       processed < MAX_BUFFERED_ITEMS_PER_OUTPUT_PER_TICK &&
       performance.now() < budget
     ) {
-      // Prebuffer frames share a send-now deadline. Merge by source time so
-      // video cannot drain first and admit audio from before its starting IDR.
+      // Prebuffer frames share a send-now deadline. Merge by delivery time,
+      // preserving video decode order and excluding audio before its starting IDR.
       let useVideo = audio === undefined || (video !== undefined && video.time <= audio.time);
       let item = useVideo === true ? video : audio;
       let type = useVideo === true ? 'video' : 'audio';
@@ -1171,7 +1169,7 @@ export default class Streamer {
                   sps: item.hasSPS === true ? undefined : item.config?.sps,
                   pps: item.hasPPS === true ? undefined : item.config?.pps,
                 };
-          let writable = muxer.writeVideo(item.nals, item.time, bootstrap);
+          let writable = muxer.writeVideo(item.nals, item.presentationTime, bootstrap);
           if (writable === false && this.ffmpegDebug === true) {
             output.stats.diagnostics.videoBackpressureStops++;
           }
@@ -1186,7 +1184,7 @@ export default class Streamer {
         video = timeline.get('video', output.videoCursor);
       } else {
         if (output.type !== Streamer.STREAM_TYPE.RECORD || output.seenKeyFrame === true) {
-          muxer.writeAudio(item.data, item.time);
+          muxer.writeAudio(item.data, item.presentationTime);
           this.#statsWrite(output, type, now);
         } else if (output.stats !== undefined) {
           output.stats.drops.audioBeforeKeyframe++;

@@ -1231,34 +1231,39 @@ test('only live audio outputs pass optional talkback routing to their muxer', as
   assert.equal(hooks.instances[2].settings.talkback, undefined);
 });
 
-test('each camera receives a fresh work budget despite earlier delivery cost', async (context) => {
-  context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
-  let first = setup(context);
-  let second = setup(context);
-  await first.streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'first' });
-  await second.streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'second' });
-  let firstMuxer = hooks.instances[0];
-  let secondMuxer = hooks.instances[1];
-  let clock = Date.now;
-  let simulatedWork = 0;
-  context.mock.method(Date, 'now', () => clock() + simulatedWork);
-  hooks.send = (muxer, data, metadata) => {
-    if (muxer === firstMuxer && metadata.kind === 'rtp') {
-      simulatedWork += 6;
+for (let sharedSource of [false, true]) {
+  test('each ' + (sharedSource === true ? 'output' : 'camera') + ' receives a fresh monotonic work budget', async (context) => {
+    context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+    let first = setup(context);
+    let second = sharedSource === true ? first : setup(context);
+    await first.streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'first' });
+    await second.streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'second' });
+    let firstMuxer = hooks.instances[0];
+    let secondMuxer = hooks.instances[1];
+    let work = 0;
+    // Packetization consumes the same monotonic clock as the production budget.
+    // One complete first access unit exhausts its turn; the next receiver must
+    // still get a fresh budget in this same scheduler callback.
+    context.mock.method(performance, 'now', () => work);
+    hooks.send = (muxer, data, metadata) => {
+      if (muxer === firstMuxer && metadata.kind === 'rtp') {
+        work += 6;
+      }
+      return true;
+    };
+    for (let index = 0; index < 100; index++) {
+      addVideo(first.transport, 100000 + index * 40);
+      if (sharedSource !== true) {
+        addVideo(second.transport, 100000 + index * 40);
+      }
     }
-    return true;
-  };
-  for (let index = 0; index < 100; index++) {
-    addVideo(first.transport, 100000 + index * 40);
-    addVideo(second.transport, 100000 + index * 40);
-  }
-  advance(context, 50);
-  let firstPackets = media(firstMuxer).length;
-  let secondPackets = media(secondMuxer).length;
-  context.diagnostic(JSON.stringify({ firstPackets, secondPackets, simulatedWorkMs: simulatedWork }));
-  assert.equal(firstPackets > 0, true);
-  assert.equal(secondPackets > 0, true);
-});
+    context.mock.timers.tick(0);
+    let firstFrames = media(firstMuxer).filter(({ data }) => (data[1] & 0x80) !== 0);
+    let secondFrames = media(secondMuxer).filter(({ data }) => (data[1] & 0x80) !== 0);
+    assert.equal(firstFrames.length, 1, 'an exhausted budget yields after the complete access unit');
+    assert.ok(secondFrames.length > 1, 'the next receiver must progress within the same callback');
+  });
+}
 
 test('a blocked output cannot pin retention or starve a healthy output', async (context) => {
   context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
@@ -1734,3 +1739,76 @@ test('stale explicit recording STOP preserves the replacement and an omitted ID 
   assert.equal(current.closed, true);
   assert.equal(streamer.isStreaming(), false);
 });
+
+for (let prebuffer of [false, true]) {
+  test('decode-order video with backwards PTS survives live and recording playback; prebuffer=' + prebuffer, async (context) => {
+    context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+    let { streamer, transport } = setup(context, {}, { bufferDuration: 8000 });
+    if (prebuffer === true) {
+      await streamer.onMessage(Streamer.MESSAGE_TYPE.START_BUFFER);
+    } else {
+      await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'b-live', options: { includeAudio: true } });
+      await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, { sessionID: 'b-record', options: { includeAudio: true } });
+    }
+    // Reproduce the reporter's first keyframe followed by two earlier B-frames,
+    // then repeating reference/B/B groups. Keep each access unit in decode order.
+    let timestamps = [];
+    for (let group = 0; group < 50; group++) {
+      let reference = 100000 + group * 200;
+      timestamps.push(reference, reference - 400 / 3, reference - 200 / 3);
+    }
+    for (let [index, timestamp] of timestamps.entries()) {
+      addVideo(transport, timestamp, index % 60 === 0);
+      transport.emitMedia({ type: 'audio', timestamp: 100000 + (index * 200) / 3, data: Buffer.from([0xf8, 0xff, 0xfe]) });
+      advance(context, 200 / 3);
+      if (prebuffer === true && index === 14) {
+        await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, {
+          sessionID: 'b-record',
+          options: { includeAudio: true, recordTime: 100000 },
+        });
+      }
+    }
+    advance(context, 1000);
+    for (let muxer of hooks.instances) {
+      let video = media(muxer)
+        .filter(({ data }) => (data[1] & 0x80) !== 0)
+        .map(({ data }) => data);
+      assert.equal(video.length, 150, 'every reference and B-frame must reach this receiver');
+      let origin = video[0].readUInt32BE(4);
+      assert.deepEqual(
+        video.map((packet) => (packet.readUInt32BE(4) - origin) | 0),
+        timestamps.map((timestamp) => Math.round((timestamp - timestamps[0]) * 90)),
+      );
+      assert.equal(media(muxer, 'audio').length, 150);
+      assert.equal(muxer.closed, false);
+    }
+    assert.deepEqual(transport.stats.media.videoDrops, {});
+  });
+}
+
+for (let evicted of [false, true]) {
+  test('B-frame recovery preserves previous PTS and highest source time after eviction=' + evicted, async (context) => {
+    context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+    let { streamer, transport } = setup(context, {}, { bufferDuration: 8000 });
+    await streamer.onMessage(Streamer.MESSAGE_TYPE.START_LIVE, { sessionID: 'recovery' });
+    addVideo(transport, 100200);
+    addVideo(transport, 100066, false);
+    addVideo(transport, 100133, false);
+    advance(context, 600);
+    if (evicted === true) {
+      // Expire the complete video track using newer audio. Timestamp validation
+      // must keep its history even when no previous video item remains retained.
+      transport.emitMedia({ type: 'audio', timestamp: 110000, data: Buffer.from([0xf8, 0xff, 0xfe]) });
+    }
+    addVideo(transport, 100133, false); // Duplicate B-frame, below the scheduling watermark.
+    addVideo(transport, 100166); // IDR newer than the last B-frame but older than the reference.
+    addVideo(transport, 110200, false); // Recovery still requires a valid IDR.
+    addVideo(transport, 110400);
+    advance(context, 11000);
+    assert.equal(transport.stats.media.videoDrops['non-increasing-timestamp'], 2);
+    assert.equal(transport.stats.media.videoDrops['timestamp-recovery'], 1);
+    let frames = media(hooks.instances[0]).filter(({ data }) => (data[1] & 0x80) !== 0);
+    assert.equal(frames.length, 4);
+    assert.equal(hooks.instances[0].closed, false);
+  });
+}

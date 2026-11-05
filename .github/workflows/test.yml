@@ -7,6 +7,9 @@ on:
       - main
 
 jobs:
+  media:
+    uses: ./.github/workflows/media-tests.yml
+
   test:
     runs-on: ubuntu-latest
     strategy:

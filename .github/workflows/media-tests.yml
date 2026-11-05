@@ -1,0 +1,30 @@
+name: Media regression tests
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  media:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.sha }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # Keep the media binary separate from the project's dependency installation.
+      - name: Install Homebridge FFmpeg
+        run: npm install --prefix "$RUNNER_TEMP/media-ffmpeg" --no-save --package-lock=false ffmpeg-for-homebridge@2.2.2
+      # A failed install must fail this job rather than turn its cases into skips.
+      - name: Verify media binary
+        run: '"$RUNNER_TEMP/media-ffmpeg/node_modules/ffmpeg-for-homebridge/ffmpeg" -version'
+      - name: Run real media regressions
+        run: FFMPEG_TEST_BINARY="$RUNNER_TEMP/media-ffmpeg/node_modules/ffmpeg-for-homebridge/ffmpeg" node --test test/rtpmuxer-media.test.js

@@ -432,3 +432,24 @@ test('camera battery transitions distinguish charging and preserve the same serv
     assert.equal(flow.device.batteryService, service);
   }
 });
+
+test('camera timer dispatch polls through GET and commits motion through the lifecycle queue', { timeout: 2000 }, async (context) => {
+  let { device } = await setup(context);
+  let polled = Promise.withResolvers();
+  let queries = [];
+  let events = [{ id: 'timer-motion', types: ['motion'] }];
+  await HomeKitDevice.message(device.uuid, HomeKitDevice.GET, async (query) => {
+    queries.push(query);
+    polled.resolve();
+    return { camera_events: events };
+  });
+  // Reset the timer registered by the actual Camera setup, retaining its real
+  // TIMER handler, GET routing, UPDATE queue and HAP motion service.
+  assert.equal(device.hasTimer(TIMERS.CAMERA_EVENTS.name), true);
+  device.addTimer(TIMERS.CAMERA_EVENTS.name, { delay: 1, reset: true });
+  await polled.promise;
+  await device.message('polling-complete');
+  assert.deepEqual(queries, [{ uuid: 'DEVICE_CAMERA', camera_events: true }]);
+  assert.deepEqual(device.deviceData.events, events);
+  assert.equal(device.motionService.getCharacteristic(C.MotionDetected).value, true);
+});

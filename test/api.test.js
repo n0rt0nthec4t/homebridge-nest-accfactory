@@ -68,8 +68,6 @@ function setup(context, kind = 'google', overrides = {}) {
   let options = {
     uuid: 'account',
     session: { account: connection, connect: () => connection.authorised, on() {} },
-    rawData: {},
-    homes: [],
     onData: async (batch) => {
       changed.push(batch);
       return true;
@@ -78,44 +76,6 @@ function setup(context, kind = 'google', overrides = {}) {
     ...overrides,
   };
   let api = new classes[kind]({ ...options, onData: (...args) => options.onData?.(...args) });
-  // Test fixtures seed the client's own resource collection, independently of System.
-  options.rawData = new Proxy(options.rawData, {
-    set(target, id, resource) {
-      target[id] = resource;
-      api.resources.set(id, resource);
-      return true;
-    },
-    deleteProperty(target, id) {
-      delete target[id];
-      api.resources.delete(id);
-      return true;
-    },
-  });
-  let connected = false;
-  let connect = api.connect.bind(api);
-  api.connect = async (...args) => {
-    connected = true;
-    return await connect(...args);
-  };
-  for (let method of ['get', 'set']) {
-    let request = api[method].bind(api);
-    api[method] = async (...args) => {
-      if (
-        kind === 'google' &&
-        connected === false &&
-        api.resources.size > 0 &&
-        connection.authorised === true &&
-        connection.grpcTransport !== undefined
-      ) {
-        let types = runtime.types;
-        runtime.types = [];
-        await connect();
-        runtime.types = types;
-        connected = true;
-      }
-      return await request(...args);
-    };
-  }
   context.after(() => api.disconnect());
   return {
     api,
@@ -279,8 +239,9 @@ test('Google Observe with no schemas does not open or schedule a subscription', 
 });
 
 test('Google Observe favours ACCEPTED patches and removes resources through the platform boundary', async (context) => {
-  let flow = setup(context);
-  flow.options.rawData.DEVICE_OLD = { source: DATA_SOURCE.GOOGLE, value: {} };
+  let callerCache = { DEVICE_OLD: { source: DATA_SOURCE.GOOGLE, value: {} } };
+  let flow = setup(context, 'google', { rawData: callerCache });
+  flow.api.resources.set('DEVICE_OLD', structuredClone(callerCache.DEVICE_OLD));
   await flow.api.connect();
   await flow.observations[0][4]({
     resourceMetas: [{ resourceId: 'DEVICE_OLD', status: 'REMOVED' }],
@@ -293,8 +254,8 @@ test('Google Observe favours ACCEPTED patches and removes resources through the 
       { traitId: { resourceId: 'DEVICE_NEW', traitLabel: 'fixture' }, stateTypes: ['CONFIRMED'], patch: { values: { enabled: false } } },
     ],
   });
-  assert.equal(flow.options.rawData.DEVICE_NEW, undefined, 'API publication must not mutate the caller cache');
-  assert.ok(flow.options.rawData.DEVICE_OLD, 'The caller cache is independent of API-owned resources');
+  assert.equal(callerCache.DEVICE_NEW, undefined, 'API publication must not mutate the caller cache');
+  assert.ok(callerCache.DEVICE_OLD, 'The caller cache is independent of API-owned resources');
   assert.equal(flow.api.resources.has('DEVICE_OLD'), false);
   assert.deepEqual(flow.api.resources.get('DEVICE_NEW').value.fixture, { enabled: true });
   assert.deepEqual(flow.changed[0].changes[0], { resourceId: 'DEVICE_OLD', remove: true, notify: true });
@@ -354,19 +315,19 @@ for (let kind of ['nest', 'google']) {
     }
     flow.api.disconnect();
     await flow.api.connect();
+    let resources = structuredClone([...flow.api.resources]);
     weather.resolve({ current_temperature: 99 });
     await callback;
     await setImmediate();
-    assert.equal(flow.options.rawData['structure.home'], undefined);
-    assert.equal(flow.options.rawData.STRUCTURE_HOME?.value.weather, undefined);
+    assert.deepEqual([...flow.api.resources], resources, 'retired ingestion cannot change the replacement cache');
     assert.deepEqual(flow.changed, []);
   });
 }
 
 test('Nest subscription keeps bucket allowlisting, account ownership and idempotent start', async (context) => {
   let flow = setup(context, 'nest');
-  flow.options.rawData['topaz.other'] = { source: DATA_SOURCE.NEST, connection: 'other', value: {} };
-  flow.options.rawData['topaz.injected'] = { source: DATA_SOURCE.NEST, connection: 'account', injected: true, value: {} };
+  flow.api.resources.set('topaz.other', { source: DATA_SOURCE.NEST, connection: 'other', value: {} });
+  flow.api.resources.set('topaz.injected', { source: DATA_SOURCE.NEST, connection: 'account', injected: true, value: {} });
   await flow.api.connect();
   await flow.api.connect();
   assert.deepEqual(flow.requests[0][3].known_bucket_types, NEST_API_BUCKETS);
@@ -382,7 +343,7 @@ test('Nest subscription keeps bucket allowlisting, account ownership and idempot
   await setImmediate();
   let patch = flow.changed[0].changes[0];
   assert.equal(patch.metadata, undefined);
-  flow.options.rawData[patch.resourceId] = { source: DATA_SOURCE.NEST, connection: 'account', value: patch.value };
+  assert.deepEqual(flow.api.resources.get(patch.resourceId).value, patch.value);
   context.mock.timers.tick(1000);
   assert.deepEqual(flow.requests[1][3].objects, [{ object_key: 'topaz.valid', object_revision: 1, object_timestamp: 2 }]);
   assert.equal(flow.api.resources.get('unsupported.ignored'), undefined);
@@ -422,7 +383,7 @@ for (let kind of ['nest', 'google']) {
 test('Nest API public SET rejects unavailable input without issuing an HTTP request', async (context) => {
   let flow = setup(context, 'nest');
   await assert.rejects(flow.api.set('topaz.missing', { ntp_green_led_enable: true }), /authorised device account/);
-  flow.options.rawData['topaz.valid'] = { source: DATA_SOURCE.NEST, value: {} };
+  flow.api.resources.set('topaz.valid', { source: DATA_SOURCE.NEST, value: {} });
   await assert.rejects(flow.api.set('topaz.valid', null), /authorised device account/);
   flow.connection.authorised = false;
   await assert.rejects(flow.api.set('topaz.valid', { ntp_green_led_enable: true }), /authorised device account/);
@@ -434,12 +395,12 @@ for (let missing of ['authorisation', 'resource', 'referer', 'camera host', 'cam
     let flow = setup(context, 'nest');
     flow.connection.cameraAPIHost = 'camera.invalid';
     flow.connection.cameraAuth = { key: 'Authorization', value: 'Basic ', token: 'fixture' };
-    flow.options.rawData['quartz.TEST'] = { value: { nexus_api_http_server_url: 'https://camera.invalid' } };
+    flow.api.resources.set('quartz.TEST', { value: { nexus_api_http_server_url: 'https://camera.invalid' } });
     if (missing === 'authorisation') {
       flow.connection.authorised = false;
     }
     if (missing === 'resource') {
-      delete flow.options.rawData['quartz.TEST'];
+      flow.api.resources.delete('quartz.TEST');
     }
     if (missing === 'referer') {
       delete flow.connection.referer;
@@ -477,7 +438,7 @@ for (let failure of ['transport', 'malformed']) {
     flow.connection.cameraAPIHost = 'camera.invalid';
     flow.connection.cameraAuth = { key: 'Authorization', value: 'Basic ', token: 'fixture' };
     let properties = { 'audio.enabled': true };
-    flow.options.rawData['quartz.TEST'] = { source: DATA_SOURCE.NEST, connection: 'account', value: { properties } };
+    flow.api.resources.set('quartz.TEST', { source: DATA_SOURCE.NEST, connection: 'account', value: { properties } });
     runtime.fetch = async (method, url) => {
       if (url.includes('/app_launch') === true) {
         return reply({ objects: [{ object_key: 'quartz.TEST', value: { online: true } }] });
@@ -487,10 +448,12 @@ for (let failure of ['transport', 'malformed']) {
       }
       return reply({});
     };
+    let original = flow.api.resources.get('quartz.TEST');
     await flow.api.connect();
     await setImmediate();
     assert.equal(flow.changed[0].changes[0].value.properties, properties);
-    assert.equal(flow.options.rawData['quartz.TEST'].value.online, undefined, 'Only the consumer may commit the patch');
+    assert.equal(original.value.online, undefined, 'Committed resource updates must not mutate earlier records');
+    assert.equal(flow.api.resources.get('quartz.TEST').value.online, true);
     assert.equal(
       flow.logs.some((entry) => entry[0].includes('error retrieving camera/doorbell properties')),
       true,
@@ -528,7 +491,7 @@ for (let cached of [false, true]) {
       let flow = setup(context, 'nest');
       let location = { postal_code: '2000', country_code: 'AU' };
       if (cached === true) {
-        flow.options.rawData.STRUCTURE_HOME = { value: { weather: location } };
+        flow.api.resources.set('STRUCTURE_HOME', { value: { weather: location } });
       }
       let request = flow.api.get('STRUCTURE_HOME', 'location_weather', cached === true ? undefined : { location });
       assert.equal(flow.requests.length, 1);
@@ -549,7 +512,7 @@ for (let cached of [false, true]) {
       );
       assert.partialDeepStrictEqual(await request, { current_temperature: 21, postal_code: '2000', country_code: 'AU' });
       if (cached === false) {
-        assert.equal(flow.options.rawData.STRUCTURE_HOME, undefined);
+        assert.equal(flow.api.resources.get('STRUCTURE_HOME'), undefined);
       }
       assert.equal(flow.api.getWeather, undefined);
     },
@@ -592,7 +555,7 @@ for (let kind of ['nest', 'google']) {
     });
   }
   for (let key of ['camera_snapshot', 'camera_events']) {
-    for (let missing of ['device type', 'credentials']) {
+    for (let missing of kind === 'nest' ? ['device type', 'credentials'] : ['device type', 'transport']) {
       test(kind + ' GET rejects unavailable ' + key + ' at entry: ' + missing, async (context) => {
         let flow = setup(context, kind);
         let id = kind === 'nest' ? 'quartz.TEST' : 'DEVICE_TEST';
@@ -602,16 +565,17 @@ for (let kind of ['nest', 'google']) {
         if (missing === 'device type') {
           id = 'structure.home';
         }
-        if (missing === 'credentials') {
-          if (kind === 'nest') {
-            flow.connection.cameraAuth = undefined;
-          } else {
-            flow.connection.grpcTransport = undefined;
+        if (kind === 'google') {
+          await flow.api.connect();
+          if (missing === 'transport') {
+            flow.api.disconnect();
           }
+        } else if (missing === 'credentials') {
+          flow.connection.cameraAuth = undefined;
         }
-        flow.options.rawData[id] = {
+        flow.api.resources.set(id, {
           value: { nexus_api_http_server_url: 'https://camera.invalid', device_info: { typeName: 'google.resource.SpencerResource' } },
-        };
+        });
         assert.deepEqual(await flow.api.get(id, key), key === 'camera_events' ? [] : undefined);
         assert.equal(flow.requests.length, 0);
       });
@@ -662,7 +626,6 @@ test('Google publishes structure location without fetching or adding REST weathe
   assert.deepEqual(flow.changed[0].changes[0].value, { structure_location: location });
   assert.deepEqual([...flow.changed[0].changes[0].fields], ['structure_location']);
   assert.equal(flow.requests.length, 0);
-  flow.options.rawData.STRUCTURE_HOME = { value: { structure_location: location } };
   assert.equal(await flow.api.get('STRUCTURE_HOME', 'location_weather'), undefined);
   await assert.rejects(
     flow.api.get('STRUCTURE_MISSING', 'location_weather', { location: { postal_code: '2000', country_code: 'AU' } }),
@@ -682,11 +645,11 @@ test('Nest waits for commit acknowledgement before subscribing with its own buck
   assert.equal(flow.requests.length, 1, 'the next poll waits for the consumer to store the response');
   commit.resolve(true);
   await setImmediate();
-  // Subscription state must not depend on a consumer retaining or changing raw metadata.
-  flow.options.rawData['topaz.UNRELATED'] = { source: DATA_SOURCE.NEST, connection: 'account', object_revision: 999 };
+  // Subscription revisions must not be rebuilt from unrelated cached resource metadata.
+  flow.api.resources.set('topaz.UNRELATED', { source: DATA_SOURCE.NEST, connection: 'account', object_revision: 999 });
   context.mock.timers.tick(1000);
   assert.deepEqual(flow.requests[1][3].objects, [{ object_key: 'topaz.TEST', object_revision: 1, object_timestamp: 10 }]);
-  assert.equal(flow.options.rawData['topaz.TEST'], undefined);
+  assert.equal(flow.api.resources.get('topaz.TEST').value.smoke_status, 0);
 });
 
 for (let outcome of ['false', 'reject']) {
@@ -852,11 +815,11 @@ for (let objects of [[], [{ object_key: 'unsupported.ignored', object_revision: 
 for (let active of [true, false]) {
   test('Nest sensor selection finds its parent in acknowledged API buckets: ' + active, async (context) => {
     let flow = setup(context, 'nest');
-    flow.options.rawData['kryptonite.SENSOR'] = { source: DATA_SOURCE.NEST, value: {} };
-    flow.options.rawData['rcs_settings.PARENT'] = {
+    flow.api.resources.set('kryptonite.SENSOR', { source: DATA_SOURCE.NEST, value: {} });
+    flow.api.resources.set('rcs_settings.PARENT', {
       source: DATA_SOURCE.NEST,
       value: { associated_rcs_sensors: ['kryptonite.SENSOR'] },
-    };
+    });
     await flow.api.connect();
     flow.pending[0].resolve(
       reply({
@@ -880,7 +843,7 @@ for (let active of [true, false]) {
     ]);
     flow.pending[1].resolve(reply({ objects: [{}] }));
     await write;
-    delete flow.options.rawData['rcs_settings.PARENT'];
+    flow.api.resources.delete('rcs_settings.PARENT');
     await assert.rejects(flow.api.set('kryptonite.SENSOR', { active_sensor: active }), AggregateError);
     assert.equal(flow.requests.length, 2);
   });
@@ -987,12 +950,12 @@ test('Google snapshots complete from the client cache while a consumer notificat
       },
     ],
   });
-  flow.options.rawData.DEVICE_TEST = {
+  flow.api.resources.set('DEVICE_TEST', {
     source: DATA_SOURCE.GOOGLE,
     value: {
       device_info: { typeName: 'google.resource.SpencerResource' },
     },
-  };
+  });
   runtime.fetch = async () => ({ arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer });
   await flow.api.connect();
   flow.options.onData = () => commit.promise;
@@ -1092,8 +1055,27 @@ for (let kind of ['nest', 'google']) {
   test(kind + ' does not silently accept a HomeKit routing field as an API setting', async (context) => {
     let flow = setup(context, kind);
     let id = kind === 'nest' ? 'topaz.TEST' : 'DEVICE_TEST';
-    flow.options.rawData[id] = { source: kind === 'nest' ? DATA_SOURCE.NEST : DATA_SOURCE.GOOGLE, value: {} };
+    flow.api.resources.set(id, { source: kind === 'nest' ? DATA_SOURCE.NEST : DATA_SOURCE.GOOGLE, value: {} });
+    if (kind === 'google') {
+      await flow.api.connect();
+    }
     await assert.rejects(flow.api.set(id, { uuid: id }), AggregateError);
     assert.equal(flow.requests.length, 0);
   });
 }
+
+test('Google settings require explicit connection startup before using the command transport', async (context) => {
+  let flow = setup(context);
+  let value = { display_settings: { temperatureScale: 'TEMPERATURE_SCALE_C' } };
+  flow.api.resources.set('DEVICE_TEST', { source: DATA_SOURCE.GOOGLE, value: structuredClone(value) });
+  let command = context.mock.fn(async () => ({ status: 0, data: [{ traitOperations: [{ progress: 'COMPLETE' }] }] }));
+  flow.connection.grpcTransport.command = command;
+  await assert.rejects(flow.api.set('DEVICE_TEST', { temperature_scale: 'F' }), /command transport is unavailable/);
+  assert.equal(command.mock.callCount(), 0);
+  assert.equal(flow.observations.length, 0);
+  await flow.api.connect();
+  await flow.api.set('DEVICE_TEST', { temperature_scale: 'F' });
+  assert.equal(command.mock.callCount(), 1);
+  assert.equal(flow.observations.length, 1);
+  assert.deepEqual(flow.api.resources.get('DEVICE_TEST').value, value);
+});
