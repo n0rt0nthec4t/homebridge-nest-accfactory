@@ -4,6 +4,22 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.5-alpha.14 (2026/11/07)
+
+### Changed
+
+- Update HomeKitDevice to `2026.11.06`
+- Include video presentation ranges and both tracks' offsets from their shared output clock in `ffmpegDebug` timing summaries, to distinguish A/V clock offsets from delivery pauses
+
+### Fixed
+
+- Remove the short live FFmpeg probing limit that could leave video parameters undetected while waiting for a keyframe, preventing Raspberry Pi hardware encoder startup; retain passthrough timing
+
+### Testing
+
+- Add real FFmpeg recording checks for one-second AAC/Opus audio gaps, repeated short AAC gaps and timed audio markers through shared prebuffer playback with and without H264 B-frames
+- These synthetic checks preserve the timed marker but do not reproduce or resolve the reported recording audio lead; physical camera and HomeKit recording verification remain required
+
 ## v0.4.5-alpha.13 (2026/11/06)
 
 ### Changed

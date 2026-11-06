@@ -17,6 +17,7 @@
 // - Wake output scheduling on PLAY/drain and report closure to the exact owner
 // - Report per-track backpressure and close all owned endpoints on output teardown
 // - Optionally summarise delivered audio timestamp gaps/overlaps against packet sample durations
+// - Include both tracks' presentation ranges on the common output epoch in debug summaries
 //
 // Streamer owns the shared buffer, output cursors, decoder bootstrap and pacing.
 // This muxer has no media timeline, output registry or independent packet queue.
@@ -26,7 +27,7 @@
 // type. After prepare, ports exposes the internal audioControl and talkback ports
 // for FFmpeg arguments. FFmpeg retains SRTP and codec handling.
 //
-// Code version 2026.11.06
+// Code version 2026.11.07
 // Mark Hulskamp
 'use strict';
 
@@ -72,6 +73,7 @@ export default class RTPMuxer {
   #adtsAudio = false;
   #audioPending = false;
   #audioTiming = undefined; // Opt-in counters only; no audio bytes or per-packet history retained.
+  #videoTiming = undefined; // Opt-in PTS range, including backwards presentation order.
   #nextAudioTimestamp = undefined; // Expected next RTP timestamp, including 32-bit rollover.
   #descriptionCSeq = undefined;
   #url = undefined;
@@ -112,6 +114,7 @@ export default class RTPMuxer {
     this.#audioControl = audioControl === true || talkback !== undefined;
     this.#talkback = talkback === undefined ? undefined : { ...talkback };
     if (audioDiagnostics === true) {
+      this.#videoTiming = { minTimestamp: Infinity, maxTimestamp: -Infinity, units: 0 };
       this.#audioTiming = {
         firstTimestamp: undefined,
         samples: 0,
@@ -662,8 +665,26 @@ export default class RTPMuxer {
     }
     let timing = { ...this.#audioTiming };
     delete timing.firstTimestamp;
+    timing.startOffsetMs =
+      this.#audioTiming.firstTimestamp === undefined ? undefined : this.#audioTiming.firstTimestamp - this.#output.epochMs;
+    timing.endOffsetMs = timing.startOffsetMs === undefined ? undefined : timing.startOffsetMs + timing.clockDurationMs;
     timing.encodedDurationMs = timing.samples === 0 ? 0 : (timing.samples * 1000) / this.#output.audio.sampleRate;
     return timing;
+  }
+
+  get videoTiming() {
+    if (this.#videoTiming === undefined) {
+      return undefined;
+    }
+    let timing = this.#videoTiming;
+    // Video has no encoded sample duration here. Report the PTS range without
+    // inventing a final frame duration from a variable-rate or reordered source.
+    return {
+      units: timing.units,
+      startOffsetMs: timing.units === 0 ? undefined : timing.minTimestamp - this.#output.epochMs,
+      endOffsetMs: timing.units === 0 ? undefined : timing.maxTimestamp - this.#output.epochMs,
+      clockDurationMs: timing.units === 0 ? 0 : timing.maxTimestamp - timing.minTimestamp,
+    };
   }
 
   get hasAudio() {
@@ -1021,6 +1042,11 @@ export default class RTPMuxer {
     track.lastTimestamp = timestamp;
     // A reconnect must follow the highest PTS, even when the last unit was a B-frame.
     track.endTimestamp = Math.max(track.endTimestamp ?? -Infinity, timestamp + 1);
+    if (this.#videoTiming !== undefined) {
+      this.#videoTiming.minTimestamp = Math.min(this.#videoTiming.minTimestamp, timestamp);
+      this.#videoTiming.maxTimestamp = Math.max(this.#videoTiming.maxTimestamp, timestamp);
+      this.#videoTiming.units++;
+    }
     for (let index = 0; index < nalUnits.length; index += 1) {
       let nal = nalUnits[index];
       let lastNAL = index === nalUnits.length - 1;

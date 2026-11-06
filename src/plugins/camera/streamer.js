@@ -32,7 +32,7 @@
 // - Protocol signalling, packet reordering and frame assembly remain in the source
 // - FFmpeg owns command construction and the bounded MP4 fragment reader
 //
-// Code version 2026.11.06
+// Code version 2026.11.07
 // Mark Hulskamp
 'use strict';
 
@@ -1275,6 +1275,7 @@ export default class Streamer {
     // Source-clock gaps and encoded sample duration are distinct from delivery
     // pauses. Comparing both helps locate A/V drift without a full support dump.
     this.log?.debug?.('Media timing for device uuid "%s": session="%s" %j', this.nest_google_device_uuid, output.sessionID, {
+      video: output.muxer.videoTiming,
       audio: output.muxer.audioTiming,
       maxVideoWriteGapMs: diagnostics.maxVideoWriteGapMs,
       maxAudioWriteGapMs: diagnostics.maxAudioWriteGapMs,

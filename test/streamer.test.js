@@ -1003,7 +1003,10 @@ for (let diagnostics of [false, true]) {
     await streamer.onMessage(Streamer.MESSAGE_TYPE.STOP_RECORD, { sessionID: 'record-timing' });
     assert.equal(summaries().length, diagnostics === true ? 2 : 0);
     for (let entry of summaries()) {
+      assert.deepEqual(entry[3].video, { units: 1, startOffsetMs: 0, endOffsetMs: 0, clockDurationMs: 0 });
       assert.equal(entry[3].audio.encodedDurationMs, 80);
+      assert.equal(entry[3].audio.startOffsetMs, 0);
+      assert.equal(entry[3].audio.endOffsetMs, 190);
       assert.equal(entry[3].audio.clockDurationMs, 190);
       assert.equal(entry[3].audio.gaps, 1);
       assert.equal(entry[3].audio.maxGapMs, 120);

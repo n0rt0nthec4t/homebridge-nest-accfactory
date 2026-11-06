@@ -1,5 +1,5 @@
 // Verify camera cleanup uses managed FFmpeg completion without Homebridge, media backends or network sockets.
-// Code version 2026.10.25
+// Code version 2026.11.07
 import assert from 'node:assert/strict';
 import { importSource } from './helpers/import-source.js';
 import { Buffer } from 'node:buffer';
@@ -743,8 +743,8 @@ for (let sourceCodec of ['opus', 'aac']) {
       const args = processes[0].args;
       assert.equal(args[args.indexOf('-fflags') + 1], sourceCodec === 'aac' ? '+discardcorrupt+genpts' : '+discardcorrupt+genpts+nofillin');
       assert.equal(args.includes('-copyts'), true);
-      assert.equal(args[args.indexOf('-analyzeduration') + 1], '500000');
-      assert.ok(args.indexOf('-analyzeduration') < args.indexOf('-i'));
+      // Default probing must remain available while the receiver waits for an IDR.
+      assert.equal(args.includes('-analyzeduration'), false);
       assert.equal(args[args.indexOf('-rtsp_transport') + 1], 'tcp');
       assert.equal(args[args.indexOf('-i') + 1], 'rtsp://127.0.0.1:12345/owned-session');
       assert.equal(args.includes('0:a:0'), true);

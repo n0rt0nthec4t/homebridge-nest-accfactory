@@ -28,7 +28,7 @@
 // - Drain complete output after exit; requested stop may discard an incomplete tail
 // - Camera retains the HomeKit generator adapter and isLast workaround
 //
-// Code version 2026.10.25
+// Code version 2026.11.07
 // Mark Hulskamp
 'use strict';
 
@@ -179,9 +179,10 @@ export default class FFmpeg extends EventEmitter {
     return { ...encoding, inputArguments: [...encoding.inputArguments], outputArguments };
   }
 
-  #mediaInput(input, audioCodec, encoding, live) {
+  #mediaInput(input, audioCodec, encoding) {
     // Keep the common RTP clock. AAC needs duration recovery for parser startup;
     // other encoded audio avoids video-rate inference while the input is probed.
+    // Keep default probing so live video can reach its first keyframe before analysis ends.
     return [
       '-hide_banner',
       '-nostats',
@@ -195,7 +196,6 @@ export default class FFmpeg extends EventEmitter {
       '500000',
       '-flags',
       'low_delay',
-      ...(live === true ? ['-analyzeduration', '500000'] : []),
       '-rtsp_transport',
       'tcp',
       '-i',
@@ -232,7 +232,7 @@ export default class FFmpeg extends EventEmitter {
   }) {
     let encoding = this.getH264EncoderOptions(hardware);
     let args = [
-      ...this.#mediaInput(input, sourceAudio, transcode === true ? encoding : { inputArguments: [] }, true),
+      ...this.#mediaInput(input, sourceAudio, transcode === true ? encoding : { inputArguments: [] }),
       '-map',
       '0:v:0',
       ...(transcode === true
@@ -375,7 +375,7 @@ export default class FFmpeg extends EventEmitter {
   startRecording({ id, input, video, includeAudio = true, sourceAudio, hardware = false, onStderr, onCommand }) {
     let encoding = this.getH264EncoderOptions(hardware);
     let args = [
-      ...this.#mediaInput(input, sourceAudio, encoding, false),
+      ...this.#mediaInput(input, sourceAudio, encoding),
       '-map',
       '0:v:0',
       ...this.#videoArguments(video, encoding),

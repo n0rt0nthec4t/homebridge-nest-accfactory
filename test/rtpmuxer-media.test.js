@@ -10,14 +10,150 @@ import test from 'node:test';
 import H264 from '../src/plugins/camera/h264.js';
 import RTPMuxer from '../src/plugins/camera/rtpmuxer.js';
 import FFmpeg from '../src/plugins/camera/ffmpeg.js';
+import StreamTransport from '../src/plugins/camera/streamtransport.js';
 import { UDPPorts } from '../src/utils.js';
+import { importSource } from './helpers/import-source.js';
+
+let { default: Streamer } = await importSource(new URL('../src/plugins/camera/streamer.js', import.meta.url));
 
 const binary = process.env.FFMPEG_TEST_BINARY;
 let frames;
 let aac;
+let markerAAC;
 // A complete 20 ms Opus silence packet lets FFmpeg verify native decoding/timing
 // without installing a separate JavaScript codec library to generate test media.
 let opusSilence = Buffer.from([0xf8, 0xff, 0xfe]);
+
+for (let reordered of [false, true]) {
+  test(
+    'Streamer HKSV prebuffer preserves a four-second audio marker; B-frames=' + reordered,
+    { skip: binary === undefined ? 'Set FFMPEG_TEST_BINARY for real media checks' : false, timeout: 15000 },
+    async (context) => {
+      let controller = new AbortController();
+      let reading;
+      let transport = new StreamTransport();
+      Object.assign(transport.audio, { codec: 'aac', sampleRate: 48000, channels: 1 });
+      transport.open = async () => transport.setState(StreamTransport.STATE.READY);
+      transport.close = async () => transport.setState(StreamTransport.STATE.CLOSED);
+      let streamer = new Streamer(
+        'prebuffer-marker-' + reordered,
+        { online: true, streaming_enabled: true, audio_enabled: true },
+        { transport, bufferDuration: 15000 },
+      );
+      context.after(async () => {
+        controller.abort();
+        await streamer.stopEverything();
+        await reading;
+      });
+      await streamer.onMessage(Streamer.MESSAGE_TYPE.START_BUFFER);
+      let source = reordered === true ? bFrameVideo().units : videoFrames();
+      // Supply enough trailing video to close the complete fragment containing
+      // the marker before normal HomeKit cancellation discards the partial tail.
+      let events = [...source, ...source.slice(0, 40)].map((data, index) => ({
+        type: 'video',
+        codec: 'h264',
+        data,
+        keyFrame: H264.getNALUnits(data).some((nal) => nal.type === 5),
+        timestamp:
+          reordered === true
+            ? index < source.length
+              ? bFrameVideo().times[index]
+              : 6000 + bFrameVideo().times[index - source.length]
+            : index * 75,
+      }));
+      let audio = aacFrames(true);
+      for (let [index, data] of [...audio, ...audio.slice(0, 140)].entries()) {
+        let timestamp = 40 + (index * 1024 * 1000) / 48000;
+        // Remove several short stretches before the marker. Both the shared
+        // prebuffer and the encoder must retain their time rather than shift it.
+        if (timestamp < 500 || timestamp >= 3500 || timestamp % 500 >= 40) {
+          events.push({ type: 'audio', codec: 'aac', timestamp, data });
+        }
+      }
+      let watermark = {};
+      for (let event of events) {
+        watermark[event.type] = Math.max(watermark[event.type] ?? -Infinity, event.timestamp);
+        event.deliverAt = watermark[event.type];
+      }
+      events.sort((left, right) => left.deliverAt - right.deliverAt);
+      for (let event of events) {
+        transport.emitMedia({ ...event, timestamp: 100000 + event.timestamp });
+      }
+
+      let output = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, {
+        sessionID: 'prebuffer-marker',
+        options: { includeAudio: true, recordTime: 100000, signal: controller.signal },
+      });
+      let manager = new FFmpeg(binary);
+      let handle;
+      let startRecording = manager.startRecording.bind(manager);
+      context.mock.method(manager, 'startRecording', (settings) => {
+        handle = startRecording(settings);
+        return handle;
+      });
+      output.start(manager, {
+        sourceAudio: 'aac',
+        video: { profile: 'baseline', level: '3.1', fps: 30, iFrameInterval: 2000, bitRate: 200 },
+      });
+      let chunks = [];
+      reading = (async () => {
+        for await (let fragment of output.fragments()) {
+          chunks.push(fragment);
+        }
+      })();
+      let deadline = performance.now() + 6000;
+      while (chunks.length < 4 && handle.active === true && performance.now() < deadline) {
+        await delay(10);
+      }
+      assert.ok(chunks.length >= 4, handle.diagnosticLines.join('\n'));
+      controller.abort();
+      await output.stop();
+      await reading;
+      let decoded = spawnSync(
+        binary,
+        [
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-i',
+          'pipe:0',
+          '-map',
+          '0:a:0',
+          '-ar',
+          '16000',
+          '-ac',
+          '1',
+          '-f',
+          's16le',
+          'pipe:1',
+          '-map',
+          '0:v:0',
+          '-f',
+          'framecrc',
+          'pipe:3',
+        ],
+        { input: Buffer.concat(chunks), stdio: ['pipe', 'pipe', 'pipe', 'pipe'], timeout: 5000, maxBuffer: 1024 * 1024 },
+      );
+      assert.equal(decoded.status, 0, decoded.stderr?.toString());
+      let videoCRC = decoded.output[3].toString();
+      let base = /^#tb 0: (\d+)\/(\d+)$/m.exec(videoCRC);
+      let videoPTS = videoCRC.split('\n').filter((line) => line.startsWith('0,') === true);
+      assert.ok(videoPTS.length >= 180, 'The marker must be compared with at least six seconds of decoded video');
+      let videoStart = (Number(videoPTS[0].split(',')[2]) * Number(base[1])) / Number(base[2]);
+      assert.ok(Math.abs(videoStart) < 1 / 30, 'The decoded video lost its source start: ' + videoStart);
+      context.diagnostic('PCM duration=' + decoded.stdout.length / 32000 + '; fragments=' + chunks.length);
+      let onset;
+      for (let offset = 0; offset + 2 <= decoded.stdout.length; offset += 2) {
+        if (Math.abs(decoded.stdout.readInt16LE(offset)) > 1000) {
+          onset = offset / 32000;
+          break;
+        }
+      }
+      context.diagnostic('Decoded prebuffer tone starts at ' + onset + ' seconds');
+      assert.ok(Math.abs(onset - videoStart - 4.04) < 0.05, 'Prebuffer shifted the source audio marker: ' + onset);
+    },
+  );
+}
 
 function videoFrames() {
   if (frames !== undefined) {
@@ -127,9 +263,10 @@ function bFrameVideo() {
   return reorderedVideo;
 }
 
-function aacFrames() {
-  if (aac !== undefined) {
-    return aac;
+function aacFrames(markers = false) {
+  let cached = markers === true ? markerAAC : aac;
+  if (cached !== undefined) {
+    return cached;
   }
   let encoded = spawnSync(
     binary,
@@ -140,7 +277,7 @@ function aacFrames() {
       '-f',
       'lavfi',
       '-i',
-      'sine=frequency=440:sample_rate=48000',
+      markers === true ? 'aevalsrc=0.125*sin(2*PI*440*t)*between(t\\,4\\,5):s=48000' : 'sine=frequency=440:sample_rate=48000',
       '-frames:a',
       '280',
       '-c:a',
@@ -156,18 +293,23 @@ function aacFrames() {
     { timeout: 10000, maxBuffer: 2 * 1024 * 1024 },
   );
   assert.equal(encoded.status, 0, encoded.stderr?.toString());
-  aac = [];
+  let packets = [];
   for (let offset = 0; offset < encoded.stdout.length;) {
     let data = encoded.stdout;
     let size = ((data[offset + 3] & 3) << 11) | (data[offset + 4] << 3) | (data[offset + 5] >> 5);
     assert.equal(size > 7 && offset + size <= data.length, true);
-    aac.push(data.subarray(offset, offset + size));
+    packets.push(data.subarray(offset, offset + size));
     offset += size;
   }
-  assert.equal(aac.length >= 280, true);
+  assert.equal(packets.length >= 280, true);
   // The AAC encoder can emit a priming packet in addition to the requested frames.
-  aac = aac.slice(0, 280);
-  return aac;
+  packets = packets.slice(0, 280);
+  if (markers === true) {
+    markerAAC = packets;
+  } else {
+    aac = packets;
+  }
+  return packets;
 }
 
 for (let sourceAudio of ['opus', 'aac']) {
@@ -298,7 +440,11 @@ for (let sourceAudio of ['opus', 'aac']) {
   );
 }
 
-for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack, reordered = false] of [
+for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack, reordered = false, audioGap = false] of [
+  [4, 'hksv', 'aac', 40, undefined, false, 'repeated'],
+  [1, 'hksv', 'aac', 40, undefined, false, 'repeated'],
+  [4, 'hksv', 'aac', 40, undefined, false, true],
+  [4, 'hksv', 'opus', 40, undefined, false, true],
   [4, 'rawvideo', 'aac', 40, undefined, true],
   [4, 'copy', 'aac', 40, undefined, true],
   [4, 'hksv', 'aac', 40, undefined, true],
@@ -330,11 +476,13 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack, reordered = fals
         rate) +
       (reordered === true ? ' with B-frames in decode order' : '') +
       (lateTrack === undefined ? '' : ' with late first ' + lateTrack) +
-      (audioOffset > 1000 ? ' with source audio offset ' + audioOffset + ' ms' : ''),
+      (audioOffset > 1000 ? ' with source audio offset ' + audioOffset + ' ms' : '') +
+      (audioGap === true ? ' with a one-second source audio gap' : '') +
+      (audioGap === 'repeated' ? ' with repeated short source audio gaps and a timed tone' : ''),
     { skip: binary === undefined ? 'Set FFMPEG_TEST_BINARY for real media checks' : false, timeout: 20000 },
     async (context) => {
       const video = reordered === true ? bFrameVideo().units : videoFrames();
-      let encodedAAC = audioCodec === 'aac' ? aacFrames() : undefined;
+      let encodedAAC = audioCodec === 'aac' ? aacFrames(audioGap === 'repeated') : undefined;
       const output = new RTPMuxer({ audio: { codec: audioCodec, sampleRate: 48000, channels: encodedAAC === undefined ? 2 : 1 } });
       if (encodedAAC !== undefined) {
         output.configureAudio(encodedAAC[0]);
@@ -448,6 +596,21 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack, reordered = fals
           events.push({ type: 'audio', data: opusSilence, timestamp });
         }
       }
+      // Missing audio must leave its source-time hole in the saved recording;
+      // concatenating the remaining samples makes all later sounds play early.
+      if (audioGap !== false) {
+        for (let index = events.length - 1; index >= 0; index--) {
+          let event = events[index];
+          if (
+            event.type === 'audio' &&
+            (audioGap === true
+              ? event.timestamp >= 2000 && event.timestamp < 3000
+              : event.timestamp >= 500 && event.timestamp < 3500 && event.timestamp % 500 < 40)
+          ) {
+            events.splice(index, 1);
+          }
+        }
+      }
       // Delay one track's delivery without changing its source clock. Its first
       // frame then arrives after the other track established a later RTP epoch.
       let deliveryTime = {};
@@ -504,7 +667,7 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack, reordered = fals
         );
         assert.equal(decoded.status, 0, decoded.stderr?.toString());
         stdout = decoded.stdout.toString();
-        if (audioOffset > 1000) {
+        if (audioOffset > 1000 || (audioGap !== false && audioCodec === 'aac')) {
           // Measure actual decoded tone placement, not just playable tracks or
           // equal start timestamps: fragmented MP4 can hide a lost audio offset.
           let pcm = spawnSync(
@@ -513,11 +676,29 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack, reordered = fals
             { input: file, timeout: 10000, maxBuffer: 4 * 1024 * 1024 },
           );
           assert.equal(pcm.status, 0, pcm.stderr?.toString());
+          if (audioGap === true) {
+            let peak = (start, end) => {
+              let value = 0;
+              for (let sample = Math.round(start * 16000); sample < Math.round(end * 16000); sample++) {
+                value = Math.max(value, Math.abs(pcm.stdout.readInt16LE(sample * 2)));
+              }
+              return value;
+            };
+            assert.ok(peak(1.3, 1.6) > 1000, 'Tone before the source gap is missing');
+            assert.ok(peak(2.3, 2.6) < 100, 'Source audio gap was collapsed instead of retained as silence');
+            assert.ok(peak(3.3, 3.6) > 1000, 'Tone after the source gap is missing');
+          }
           for (let offset = 0; offset + 2 <= pcm.stdout.length; offset += 2) {
             if (Math.abs(pcm.stdout.readInt16LE(offset)) > 1000) {
               audioOnset = offset / (2 * 16000);
               break;
             }
+          }
+          if (audioGap === 'repeated') {
+            assert.ok(
+              Math.abs(audioOnset - 4 - audioOffset / 1000) < 0.05,
+              'Repeated short gaps moved the four-second tone: ' + audioOnset,
+            );
           }
         }
       }

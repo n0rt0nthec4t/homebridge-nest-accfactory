@@ -379,6 +379,8 @@ for (let audioDiagnostics of [false, true]) {
     if (audioDiagnostics === true) {
       assert.deepEqual(muxer.audioTiming, {
         samples: 4800,
+        startOffsetMs: 0,
+        endOffsetMs: 210,
         clockDurationMs: 210,
         encodedDurationMs: 100,
         units: 5,
@@ -394,6 +396,42 @@ for (let audioDiagnostics of [false, true]) {
       snapshot.gaps = 99;
       assert.equal(muxer.audioTiming.gaps, 1);
     } else {
+      assert.equal(muxer.audioTiming, undefined);
+    }
+    await muxer.close();
+  });
+}
+
+for (let enabled of [false, true]) {
+  test('A/V timing ranges share one epoch and retain reordered PTS; enabled=' + enabled, async () => {
+    let muxer = new RTPMuxer({ audio: opus, audioDiagnostics: enabled, writePacket: () => {} });
+    let epoch = 1700000000000;
+    muxer.setSourceEpoch(epoch);
+    if (enabled === true) {
+      assert.deepEqual(muxer.videoTiming, { units: 0, startOffsetMs: undefined, endOffsetMs: undefined, clockDurationMs: 0 });
+      assert.equal(muxer.audioTiming.startOffsetMs, undefined);
+      assert.equal(muxer.audioTiming.endOffsetMs, undefined);
+    }
+    // Decode order can finish on an earlier PTS than the last reference frame.
+    for (let offset of [100, 300, 166, 233]) {
+      muxer.writeVideo([Buffer.from([0x61, 1])], epoch + offset);
+    }
+    muxer.writeAudio(Buffer.from([0xf8, 0xff, 0xfe]), epoch + 140);
+    if (enabled === true) {
+      assert.deepEqual(muxer.videoTiming, { units: 4, startOffsetMs: 100, endOffsetMs: 300, clockDurationMs: 200 });
+      assert.equal(muxer.audioTiming.startOffsetMs, 140);
+      assert.equal(muxer.audioTiming.endOffsetMs, 160);
+      let snapshot = muxer.videoTiming;
+      snapshot.units = 999;
+      assert.equal(muxer.videoTiming.units, 4);
+      // A source restart still reports both tracks on the joined output clock.
+      muxer.setSourceEpoch(epoch - 1000, 1);
+      muxer.writeVideo([Buffer.from([0x65, 1])], epoch - 1000);
+      muxer.writeAudio(Buffer.from([0xf8, 0xff, 0xfe]), epoch - 980);
+      assert.equal(muxer.videoTiming.endOffsetMs, 301);
+      assert.equal(muxer.audioTiming.endOffsetMs, 341);
+    } else {
+      assert.equal(muxer.videoTiming, undefined);
       assert.equal(muxer.audioTiming, undefined);
     }
     await muxer.close();
