@@ -4,6 +4,19 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.5-beta.1 (2026/11/07)
+
+### Changed
+
+- Promote the `0.4.5` prerelease from alpha to beta
+- Rework the README around setup and everyday use, with simpler language, consistent Apple Home naming and expandable advanced configuration and troubleshooting instructions
+- Clarify HomePod chimes, motion detection requirements for HKSV and camera debug logging; distinguish virtual Home/Away and weather accessories from physical devices
+- Update the README header with the new Nest Accfactory device-family icon and Apple Home tagline; include camera, doorbell and thermostat imagery
+
+### Testing
+
+- Recording A/V sync remains under investigation; reproduce with global `debug` and `ffmpegDebug` enabled and include the recording's `Media timing` and `Media delivery` summaries
+
 ## v0.4.5-alpha.14 (2026/11/07)
 
 ### Changed

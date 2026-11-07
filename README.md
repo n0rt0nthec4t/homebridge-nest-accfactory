@@ -1,46 +1,78 @@
 <p align="center">
-  <a href="https://github.com/n0rt0nthec4t/homebridge-nest-accfactory"><img src="branding/nest-accfactory-256.png" alt="Nest Accfactory" width="140" height="140"></a>
+  <a href="https://github.com/n0rt0nthec4t/homebridge-nest-accfactory"><img src="branding/homebridge-nest-accfactory-256.png" alt="Nest Accfactory" width="140" height="140"></a>
 </p>
-<span align="center">
 
-# Nest Accfactory
+<h1 align="center">Nest Accfactory</h1>
 
-![npm](https://img.shields.io/npm/v/homebridge-nest-accfactory/latest?label=npm%40latest&color=%234CAF50)
-![npm](https://img.shields.io/npm/v/homebridge-nest-accfactory/beta?label=npm%40beta&color=%23FF9800)
-![npm](https://img.shields.io/npm/v/homebridge-nest-accfactory/alpha?label=npm%40alpha&color=%239E9E9E)
-[![verified-by-homebridge](https://img.shields.io/badge/homebridge-verified-blueviolet?color=%23491F59&style=flat)](https://github.com/homebridge/homebridge/wiki/Verified-Plugins)
+<p align="center">
+  <b>Your Nest devices. At home in Apple Home.</b>
+</p>
 
-</span>
+<p align="center">
+  <img src="https://img.shields.io/npm/v/homebridge-nest-accfactory/latest?label=npm%40latest&color=%234CAF50" alt="npm latest">
+  <img src="https://img.shields.io/npm/v/homebridge-nest-accfactory/beta?label=npm%40beta&color=%23FF9800" alt="npm beta">
+  <img src="https://img.shields.io/npm/v/homebridge-nest-accfactory/alpha?label=npm%40alpha&color=%239E9E9E" alt="npm alpha">
+  <a href="https://github.com/homebridge/homebridge/wiki/Verified-Plugins"><img src="https://img.shields.io/badge/homebridge-verified-blueviolet?color=%23491F59&style=flat" alt="Verified by Homebridge"></a>
+</p>
 
-Formally known as [Nest_accfactory](https://github.com/n0rt0nthec4t/Nest_accfactory), this is a Homebridge plugin I have developed to allow Nest devices to be used with HomeKit including having support for HomeKit Secure Video on doorbells and camera devices
+<p align="center">
+  <a href="https://github.com/sponsors/n0rt0nthec4t"><img src="https://img.shields.io/badge/GitHub-Sponsors-EA4AAA?logo=githubsponsors&logoColor=white" alt="GitHub Sponsors"></a>
+  <a href="https://www.buymeacoffee.com/n0rt0nthec4t"><img src="https://img.shields.io/badge/Buy_Me_a_Coffee-FFDD00?logo=buymeacoffee&logoColor=black" alt="Buy Me a Coffee"></a>
+</p>
 
-Building and maintaining this project takes time, effort, and resources. If you find it valuable, please consider sponsoring to support its development and future improvements. Your support makes a difference—thank you!
+Connect your supported Nest and Google Home devices to Apple Home through Homebridge, with HomeKit Secure Video support for compatible cameras and doorbells.
+
+## Getting Started
+
+1. Install `homebridge-nest-accfactory` from the **Plugins** page in the Homebridge UI.
+2. Open the plugin settings and add your [Google or Nest account credentials](#configuration).
+3. For cameras and doorbells, check that [FFmpeg is installed](#ffmpeg).
+4. Save the configuration and restart Homebridge, or the plugin's child bridge if configured.
+5. Add the Homebridge bridge to Apple Home if it is not already paired. Follow the pairing instructions shown in the Homebridge UI.
+
+### Requirements
+
+- **Node.js 22 (22.12 or later) or 24.** Node.js 26 is also supported with Homebridge 2.5 or later.
+- **Homebridge 1 (1.11.4 or later) or Homebridge 2 (2.5.0 or later).**
+- A Nest or Google account with access to the supported devices.
+- **FFmpeg 7.1 or later** for cameras and doorbells. See [FFmpeg setup](#ffmpeg) for a compatible build.
+
+[Supported devices](#supported-devices) · [Configuration](#configuration) · [Configuration reference](#configuration-reference) · [HomeKit Secure Video](#homekit-secure-video-hksv) · [Support](#support-policy)
 
 ## Supported Devices
 
-The following Nest devices are known to be supported by this Homebridge plugin:
+Supported device families include:
 
 - Nest Thermostats
 - Nest Protects
 - Nest Temperature Sensors
-- Nest Cameras
+- Nest Cameras, including floodlight cameras
 - Nest Doorbells
 - Nest Heat Links
 - Nest × Yale Locks
 
-The accessory supports connections using a Nest account AND/OR a Google (migrated Nest account) account.
+The plugin also provides these **virtual accessories** in Apple Home:
+
+- Home/Away, based on your Nest/Google home's status
+- An optional weather accessory for each configured home
+
+The features you see in Apple Home depend on your device model and what your Nest or Google account allows you to control. This plugin supports the devices listed above; it does not add other brands of devices from Google Home.
+
+One or more Nest and Google accounts can be configured together.
 
 **Note: Google ended online support for 1st and 2nd generation Nest Learning Thermostats on October 25, 2025. These models are no longer supported by this plugin, but can still be controlled directly on the thermostat.** [Learn more](https://support.google.com/googlehome/answer/16233096).
 
-## Custom HomeKit Characteristics
-
-Some device-specific features are exposed through custom HomeKit characteristics that are not displayed in Apple's Home app. Compatible third-party HomeKit apps, such as [Eve](https://www.evehome.com/en-us/eve-app), may expose these additional values and controls. Support varies by app and characteristic.
-
-For example, Nest Protect exposes a read-only **Replace By Date** characteristic. Whether a custom characteristic can be viewed, changed, or used in scenes and automations depends on its permissions and the app's support.
-
 ## Configuration
 
-### Obtaining an **access token** for Nest Accounts
+Open the plugin settings in Homebridge to add your accounts and choose settings for your homes and devices. Follow the instructions below for the account you use to sign in to Nest.
+
+You can also edit advanced settings in `config.json`; see the [configuration reference](#configuration-reference).
+
+Google accounts use `issueToken` and `cookie`. Legacy Nest accounts use `access_token`. Treat these credentials as passwords: do not share them in issues, screenshots, logs or configuration examples.
+
+<a id="nest-account"></a>
+
+### Nest Account
 
 If you have a **Nest Account**, you’ll need to obtain an **access token** from the Nest web app.
 
@@ -48,16 +80,18 @@ If you have a **Nest Account**, you’ll need to obtain an **access token** from
 2. After logging in, open [home.nest.com/session](https://home.nest.com/session).  
 3. You’ll see a JSON string similar to:  
    ```json
-   {"2fa_state":"enrolled","access_token":"XXX", ...}
+   {"2fa_state":"enrolled","access_token":"XXX"}
    ```
-4. Copy the value of **access_token** near the start (a long string beginning with `b`) and paste it into your Homebridge configuration.  
+4. Copy the value of **access_token** near the start (a long string beginning with `b`) and paste it into the Nest account field in the plugin settings.
    - Ignore any other `access_token` entries further down the string.
 
 **Note:** Do **not** log out of [home.nest.com](https://home.nest.com), as this will invalidate your credentials.
 
-### Obtaining an **issueToken and cookie token** for Google Accounts (Safari method)
+<a id="google-account"></a>
 
-Google Accounts require an **"issueToken"** and **"cookie"**, which are unique to your account. You only need to do this once as long as you stay logged into your Google Account.
+### Google Account
+
+The plugin needs two sign-in details from your Google account: an `issueToken` URL and a `cookie`. Follow these Safari steps to copy them. If they expire or stop working, repeat these steps.
 
 1. Open Safari in a **Private Window**  
 2. Enable the **Develop Menu** (Safari ▸ Settings ▸ Advanced ▸ check *Show features for web developers*)  
@@ -69,47 +103,109 @@ Google Accounts require an **"issueToken"** and **"cookie"**, which are unique t
 8. In **Headers**, copy:  
    - **Summary ▸ URL** this is your **issueToken**  
    - **Request ▸ Cookie:** this is your **cookie**, which must include a key starting with **`SIDCC=`** (if `SIDCC` is missing, the cookie is incomplete and authentication will fail)
-9. Enter both into your Homebridge configuration  
+9. Paste both values into the Google account fields in the plugin settings.
 
-**Important:** Tokens **must** be obtained using **Safari**. Other browsers (Chrome, Edge, Firefox, etc.) do not reliably generate valid or non-expiring `issueToken` and `cookie` values and will often result in authentication failures or token expiry.  
-If you did not use Safari, re-capture the tokens using Safari.
+**Important:** Safari is the supported browser for this capture procedure. If credentials captured using another browser fail, capture them again using Safari.
 
 **Note:** Do **not** log out of [home.nest.com](https://home.nest.com), as this will invalidate your credentials.
 
-## Account Configuration
+### Multiple Accounts
 
-The plugin now supports **multiple Nest and Google accounts**.
+Add an account entry in the plugin settings for each Nest or Google account you want to use. You can use both account types together. Each account needs its own sign-in details.
 
-Accounts are configured using the `"accounts"` array in `config.json`.  
-Each entry defines the account name, account type, and authentication tokens.
+To temporarily skip an account, enable its `exclude` setting. Leave `fieldTest` off unless your account specifically uses Nest's test service.
 
-Supported account types:
+## Doorbell Rings and Quiet Time
 
-- **Nest** — requires an `access_token`
-- **Google** — requires both `issueToken` and `cookie`
+By default, doorbell alerts in Apple Home follow the indoor chime setting in Nest/Google Home: disabling the indoor
+chime also stops these alerts. Set `ignoreIndoorChime` to `true` for the doorbell to receive Apple Home
+notifications and Apple TV doorbell alerts while the physical chime is disabled, for example when using
+Google Home speakers as your chime. This option does not change the physical chime setting.
 
-Each account entry may also optionally enable `fieldTest` for testing Nest API endpoints.
+HomePod chimes must also be enabled separately in Apple Home. Open the doorbell accessory's settings,
+select **Chime on HomePod** and enable the speakers you want to use. `ignoreIndoorChime` does not enable
+this setting. See [Apple's HomePod settings guide](https://support.apple.com/guide/homepod/apde6dc8093d/homepod) for more information.
 
-## config.json configuration
+Quiet Time silences doorbell alerts in Apple Home regardless of `ignoreIndoorChime`. Configure the physical chime
+and Quiet Time in Nest/Google Home. The plugin no longer exposes a chime or Quiet Time switch; remove any
+old `chimeSwitch`, `quietTimeSwitch` and `quietTimeDuration` options from your device configuration.
 
-When using the plugin configuration with [homebridge-config-ui-x](https://github.com/homebridge/homebridge-config-ui-x), the config.json will be updated/generated with the configuration options available via the web-form. Additional options can be specified in the config.json directly.
+## FFmpeg
 
-Sample config.json entries below
+FFmpeg handles live camera video, recordings and two-way audio. You only need it if you use cameras or doorbells.
+
+The plugin looks for FFmpeg automatically and checks that it has the features needed. If it cannot find a suitable installation, the Homebridge log explains what is missing. The [ffmpeg-for-homebridge](https://github.com/homebridge/ffmpeg-for-homebridge) project provides ready-made downloads.
+
+If you install FFmpeg yourself, the requirements are:
+
+- FFmpeg version **7.1** or later.
+- Encoders: `libx264`, `libfdk_aac` and `libopus`.
+- Decoder: `libspeex`.
+
+If FFmpeg is installed but the plugin cannot find it, set `ffmpegPath` in the plugin settings. You can provide:
+
+- The full path to FFmpeg, such as `/usr/local/bin/ffmpeg`
+- The folder containing it, such as `/opt/homebrew/bin`
+- A command name your system can run, such as `ffmpeg`
+
+For manual configuration, add this option to your existing plugin entry:
+
+```json
+{
+    "options": {
+        "ffmpegPath": "/usr/local/bin/ffmpeg"
+    }
+}
 ```
+
+To use hardware acceleration, enable `ffmpegHWAccel`. This depends on your computer and FFmpeg installation. The plugin checks whether it can use the hardware and falls back to software encoding where supported.
+
+## HomeKit Secure Video (HKSV)
+
+**HomeKit Secure Video (HKSV)** support is enabled for compatible Nest cameras and doorbells. Camera streaming and recording require the [FFmpeg prerequisites](#ffmpeg).
+
+To record, configure a compatible Apple home hub and an eligible iCloud+ plan, then enable recording in the camera's Apple Home settings. See [Apple's HomeKit Secure Video setup guide](https://support.apple.com/guide/icloud/mm7c90d21583/icloud).
+
+### Recording Settings
+
+HKSV support does not enable continuous recording. Choose streaming and recording permissions in the Apple Home app for when people are home or away; enable recording there to use the HKSV timeline.
+
+### Motion Events and Recording
+
+**Turn on motion detection for your camera in the Nest or Google Home app, as well as enabling recording in Apple Home.** The plugin needs your camera to report motion before it can trigger a motion recording. Enabling recording in Apple Home alone is not enough.
+
+Choose which events to save, such as people, animals, vehicles or packages, in Apple Home. Apple Home uses its own video analysis; the plugin does not use Nest/Google's event labels to make those choices.
+
+<a id="custom-homekit-characteristics"></a>
+
+## Extra Features in Other Home Apps
+
+Some extra device information is available in compatible HomeKit apps such as [Eve](https://www.evehome.com/en-us/eve-app), even though Apple Home does not show it.
+
+For example, you can view a Nest Protect's **Replace By Date** in a compatible app. The extra information and controls available, including support for scenes and automations, depend on your device and the app. Read-only values, such as the replacement date, cannot be changed.
+
+## Configuration Reference
+
+Most users can manage settings through the Homebridge UI. This section explains the options available there and the additional settings you can enter in `config.json`.
+
+<details>
+<summary>Example config.json entry for manual setup</summary>
+
+The example below is **one plugin entry**, placed inside Homebridge's `platforms` list. Include only the accounts you use and replace the placeholder sign-in details.
+
+```json
 {
     "accounts": [
         {
             "name": "Nest",
             "type": "nest",
-            "access_token": "<nest access token>",
-            "fieldTest": false
+            "access_token": "<nest access token>"
         },
         {
             "name": "Google",
             "type": "google",
             "issueToken": "<google issue token>",
-            "cookie": "<google cookie>",
-            "fieldTest": false
+            "cookie": "<google cookie>"
         }
     ],
     "options": {
@@ -139,163 +235,74 @@ Sample config.json entries below
 }
 ```
 
-#### options
+</details>
 
-The following options are available in the `config.json` `"options"` object. These apply to all discovered devices and homes.
+### Global Options
 
-| Name               | Description                                                                                  | Default        |
-|--------------------|----------------------------------------------------------------------------------------------|----------------|
-| debug              | Enable plugin verbose logging (independent of Homebridge debug setting)                      | false          |
-| elevation          | Height above sea level for weather station(s)                                                | 0              |
-| eveHistory         | Provide history in EveHome application where applicable                                      | true           |
-| exclude            | Exclude all device(s)                                                                        | false          |
-| ffmpegDebug        | Enable media diagnostics and concise debug summaries when streams close                     | false          |
-| ffmpegHWaccel      | Enable video hardware acceleration for camera(s) and doorbell(s) where supported             | false          |
-| ffmpegPath         | Path to the ffmpeg binary, directory containing ffmpeg, or command name available in system PATH | ffmpeg |
-| ffmpegTranscode    | Enable video transcoding for camera(s) and doorbell(s) (higher CPU usage)                    | false          |
-| logMotionEvents    | Enable logging of motion events for camera(s), doorbell(s) and Nest Protect device(s)        | true           |
-| maxStreams         | Maximum simultaneous live view streams per camera (integer from 1 to 4)                       | 2              |
-| supportDump        | Enable redacted Nest/Google API support dumps                                                | false          |
+These settings apply to all devices unless you choose a different setting for an individual device. In `config.json`, place them under `"options"`.
 
-API support-dump blocks redact credentials, personal details, network addresses and camera URLs. Device and home identifiers use consistent aliases within a plugin run. Collection and output are bounded; empty delta updates produce no dump. Normal plugin logs and streaming debug messages can still contain device names and identifiers.
+| Name                 | Description                                                                                    | Default             |
+| -------------------- | ---------------------------------------------------------------------------------------------- | ------------------- |
+| debug                | Show detailed plugin logs for troubleshooting; separate from Homebridge's debug setting      | false               |
+| eveHistory           | Show supported device history in the Eve app                                                   | true                |
+| exclude              | Exclude all devices from Apple Home                                                            | false               |
+| ffmpegDebug          | Collect camera troubleshooting details; also enable `debug` to see the logs                   | false               |
+| ffmpegHWAccel        | Enable video hardware acceleration for camera(s) and doorbell(s) where supported               | false               |
+| ffmpegPath           | Where to find FFmpeg; leave unset to let the plugin find it automatically                     | Automatic detection |
+| ffmpegTranscode      | Re-encode live camera video for compatibility; uses more CPU                                   | false               |
+| logMotionEvents      | Enable logging of motion events for camera(s), doorbell(s) and Nest Protect device(s)          | true                |
+| maxStreams           | Maximum simultaneous live views per camera (1–4)                                              | 2                   |
+| supportDump          | Log Nest/Google device data to help investigate a problem                                      | false               |
 
-#### devices
+Use `supportDump` when requested for troubleshooting. These dumps hide sign-in details, personal information, network addresses and camera URLs. Other logs can still include device names and identifiers, so check them before sharing.
 
-Device-specific configuration can be applied using the `"devices"` array. Each entry represents **per-device settings** that are applied when a device with the matching `"serialNumber"` is discovered.
+### Device Overrides
 
-Some options (such as `exclude`, `eveHistory` and `logMotionEvents`) override the global defaults defined in the `"options"` section. Other settings are device-specific and enable or control features available for that particular device type.
+Use **Device Settings** in the Homebridge UI to change settings for one device. Some advanced options are only available by editing the `"devices"` list in `config.json`.
 
-The **Device Settings** section in the Homebridge GUI provides basic management of these entries. However, **not all device options are exposed in the GUI**, and some advanced options may need to be configured directly in `config.json`.
+For most settings, a device's setting takes priority over the global setting. The camera options `ffmpegDebug`, `ffmpegHWAccel` and `ffmpegTranscode` work differently: if enabled globally, they stay enabled for every camera. To use one of these options for selected cameras only, turn it off globally and enable it on those devices.
 
-Devices are identified using their **serial number**, which must match the value reported by the Nest or Google API. This value is **case-sensitive and must be in uppercase**.
+Identify each device using the `serialNumber` shown in Nest or Google Home. Copy it as shown; upper- and lower-case letters are treated the same.
 
-The `"name"` field is optional and is only used to help identify the entry in the configuration. It does **not** rename the device in HomeKit.
+The `"name"` field is optional and is only used to help identify the entry in the configuration. It does **not** rename the device in Apple Home.
 
-| Name               | Description                                                                                  | Default |
-|--------------------|----------------------------------------------------------------------------------------------|---------|
-| doorbellCooldown   | Time between doorbell press events                                                           | 60s     |
-| eveHistory         | Provide history in the EveHome application where applicable for this device                  | true    |
-| exclude            | Exclude this device                                                                          | false   |
-| fanDuration        | Fan runtime duration                                                                         |         |
-| ffmpegDebug        | Enable media diagnostics and concise debug summaries when streams close                     | false          |
-| ffmpegHWaccel      | Enable video hardware acceleration for camera(s) and doorbell(s) where supported             | false   |
-| ffmpegTranscode    | Enable video transcoding for camera(s) and doorbell(s) (higher CPU usage)                    | false   |
-| hotwaterBoostTime  | Duration for hot water boost heating (30, 60, 120 mins)                                      | 30mins  |
-| hotwaterMaxTemp    | Maximum supported temperature for hot water heating                                          | 70c     |
-| hotwaterMinTemp    | Minimum supported temperature for hot water heating                                          | 30c     |
-| humiditySensor     | Enable a separate humidity sensor for thermostat(s) where supported                          | false   |
-| ignoreIndoorChime  | Allow HomeKit doorbell rings when the indoor chime is disabled                               | false   |
-| logMotionEvents    | Enable logging of motion events for camera(s), doorbell(s) and Nest Protect device(s)        | true    |
-| motionCooldown     | Time between detected motion events                                                          | 60s     |
-| name               | Optional label to help identify this device entry                                            |         |
-| serialNumber       | Device serial number this configuration applies to                                           |         |
+| Name                 | Description                                                                                    | Default                      |
+| -------------------- | ---------------------------------------------------------------------------------------------- | ---------------------------- |
+| doorbellCooldown     | Time between doorbell press events                                                             | 60s                          |
+| eveHistory           | Provide Eve history where supported                                                            | Inherits global setting      |
+| exclude              | Exclude this device; explicit `false` can include it despite a home/global exclusion           | Inherits home/global setting |
+| fanDuration          | Thermostat fan runtime, rounded to a supported Nest preset                                     | Device-reported duration     |
+| ffmpegDebug          | Collect camera troubleshooting details; also enable global `debug` to see the logs            | false                        |
+| ffmpegHWAccel        | Enable video hardware acceleration for camera(s) and doorbell(s) where supported               | false                        |
+| ffmpegTranscode      | Re-encode live camera video for compatibility; uses more CPU                                   | false                        |
+| hotwaterBoostTime    | Heat Link hot-water boost duration, rounded to 30, 60 or 120 minutes                           | `30m`                        |
+| hotwaterMaxTemp      | Upper hot-water target limit in °C, where temperature control is supported                     | 70                           |
+| hotwaterMinTemp      | Lower hot-water target limit in °C, where temperature control is supported                     | 30                           |
+| humiditySensor       | Enable a separate humidity sensor for thermostat(s) where supported                            | false                        |
+| ignoreIndoorChime    | Allow doorbell alerts in Apple Home when the indoor chime is disabled                         | false                        |
+| logMotionEvents      | Log supported camera, doorbell and Nest Protect motion events                                  | Inherits global setting      |
+| motionCooldown       | Time between detected motion events                                                            | 60s                          |
+| name                 | Optional label to help identify this device entry                                              |                              |
+| serialNumber         | Device serial number this configuration applies to                                             |                              |
 
-By default, HomeKit doorbell rings respect the indoor chime setting in Nest/Google Home: disabling the indoor
-chime also suppresses HomeKit rings. Set `ignoreIndoorChime` to `true` for the doorbell to receive HomeKit
-notifications and Apple TV doorbell alerts while the physical chime is disabled, for example when using
-Google Home speakers as your chime. This option does not change the physical chime setting.
+Duration options accept strings such as `"60s"`, `"30m"` or `"1h"`. Plain numeric strings are interpreted as seconds. Camera motion and doorbell cooldowns are limited to 0–300 seconds. Hot-water temperature limits are numeric values in °C, without a unit suffix (for example `"70"`).
 
-Quiet Time suppresses HomeKit doorbell rings regardless of `ignoreIndoorChime`. Configure the physical chime
-and Quiet Time in Nest/Google Home. The plugin no longer exposes a chime or Quiet Time switch; remove any
-old `chimeSwitch`, `quietTimeSwitch` and `quietTimeDuration` options from your device configuration.
+### Home Settings
 
-#### homes
+Use **Home Settings** in the Homebridge UI to enable weather information or exclude devices in a particular home. If editing `config.json`, add an entry to `"homes"` using the home's name from Nest or Google Home. Upper- and lower-case letters and spaces at the start or end of the name are ignored.
 
-Home settings are configured using the `"homes"` array in `config.json` or via the GUI **Home Settings** section.
-
-Each entry in the `"homes"` array applies settings to a specific Nest or Google Home.
-
-Homes are identified using the `"name"` field, which must match the Home name shown in the Nest or Google Home app. This match is **case-sensitive**.
-
-| Name               | Description                                                                                  | Default        |
-|--------------------|----------------------------------------------------------------------------------------------|----------------|
-| elevation          | Height above sea level for the weather station                                               | 0              |
-| name               | Name of home (from Nest/Google App) to which these settings belong to                        |                |
-| weather            | Virtual weather station for this Home                                                        | false          |
-
-## ffmpeg
-
-To support camera live streaming, HomeKit Secure Video (HKSV), and two-way audio, an ffmpeg binary must be installed and accessible to the plugin.
-
-Minimum requirements:
-- FFmpeg version **7.1** or later
-- Compiled with support for:
-  - `libx264`
-  - `libfdk_aac`
-  - `libspeex`
-  - `libopus`
-
-The plugin automatically searches common ffmpeg install locations on supported platforms and will also fall back to `ffmpeg` available in the system PATH.
-
-The `ffmpegPath` configuration option may be used to specify:
-- A full path to the ffmpeg binary
-- A directory containing the ffmpeg binary
-- A command name available in the system PATH
-
-Examples:
-
-```json
-"ffmpegPath": "/usr/local/bin/ffmpeg"
-```
-
-```json
-"ffmpegPath": "/opt/homebrew/bin"
-```
-
-```json
-"ffmpegPath": "ffmpeg"
-```
-
-A precompiled ffmpeg binary that meets these requirements is available from the **ffmpeg-for-homebridge** project and may be used as an alternative to building ffmpeg yourself.
-
-## HomeKit Secure Video (HKSV)
-
-From version **0.4.0**, **HomeKit Secure Video (HKSV)** is always enabled for supported Nest cameras and doorbells.
-
-This plugin streams video directly to HomeKit and allows recordings to be stored in **iCloud** using Apple’s HKSV infrastructure.
-
-### Important Notes
-
-- HKSV being enabled **does not mean cameras record continuously by default**.
-- Recording behaviour is controlled **entirely within the Apple Home app**.
-- By default, cameras are typically configured as **Stream Only** until recording is enabled in HomeKit.
-
-### Motion Events and Recording
-
-Nest / Google cameras expose **general motion events** to this plugin for recording triggers.
-
-Because of this, the plugin can only trigger HKSV recordings using **general motion detection** from the Nest / Google API.
-
-HomeKit Secure Video may still analyse recorded footage using its own processing, but the plugin does **not** act on person, vehicle, animal, or package-specific trigger events from the Nest / Google API.
-
-This means recording is triggered by **general motion events only**, rather than by individual event types exposed directly by the camera API..
-
-### Camera Streaming
-
-Camera live streaming and HKSV recording require a compatible **ffmpeg** binary with the features described in the section above.
-
-## Development and Verification
-
-- `npm test` runs the source test suites explicitly, including the three shared submodules. Generated `dist` files do not affect test discovery.
-- `npm run lint` checks source and tests without rewriting files.
-- `npm run check` runs lint, source tests, and the build.
-- `npm run test:coverage` reports coverage for loaded production source files and lists production modules absent from the measurements.
-
-Coverage percentages describe the measured file-backed modules, not the entire project. Tests that load transformed code through data URLs or extract individual methods can exercise behaviour without measuring the original source file. An omitted module is unmeasured, which does not necessarily mean it has no behavioural tests. Review the module inventory alongside percentages when assessing coverage gaps.
-
-Hardware discovery validates a short H264 encode before selecting acceleration and reuses that result across camera managers. Unit tests mock these probes; successful unit tests do not establish real encoder, live streaming, or HKSV behaviour on a particular host.
+| Name                 | Description                                                                                    | Default                 |
+| -------------------- | ---------------------------------------------------------------------------------------------- | ----------------------- |
+| elevation            | Weather-station elevation in metres above sea level, from 0 to 8848                            | 0                       |
+| name                 | Home name from Nest/Google Home                                                                | Required                |
+| exclude              | Exclude devices in this home unless explicitly included by a device override                   | Inherits global setting |
+| weather              | Virtual weather station for this Home                                                          | false                   |
 
 ## Support Policy
 
-This plugin is developed and tested specifically for **HomeKit through Homebridge**. Support covers the plugin's integration with HomeKit through supported Homebridge installations. 
+Support covers the official **`homebridge-nest-accfactory`** package maintained by **n0rt0nthec4t**, used with **Apple Home through Homebridge**. Integration with other smart-home platforms is outside this project's scope.
 
-Integration with third-party platforms is outside the scope of this project. Changes requested solely to accommodate those platforms are not supported.
-
-Support is provided exclusively for the original **`homebridge-nest-accfactory`** package maintained by **n0rt0nthec4t** in [this repository](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory).
-
-Forks, renamed packages, and modified distributions are independently maintained and are **not endorsed or supported** by this project. Issues involving these versions should be reported to their respective maintainers.
-
-Issues that can be reproduced using the original, unmodified package in a supported Homebridge environment may still be reported here.
+For forks, renamed packages or modified versions, contact their maintainer. These versions are not endorsed or supported here. If the same problem occurs with the official package in a supported Homebridge installation, you can report it in [this repository](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory).
 
 ### Supported Environments
 
@@ -309,9 +316,34 @@ If you encounter a problem, please [raise an issue](https://github.com/n0rt0nthe
 
 Before submitting an issue, please confirm that you are using the official **`homebridge-nest-accfactory`** package in a supported Homebridge environment.
 
-When reporting an issue, providing relevant diagnostic information (logs, configuration snippets, device details, etc.) and being available to assist with follow-up testing is greatly appreciated. Issues reported without sufficient detail may be difficult to investigate.
+Include:
+
+- Your plugin and Homebridge versions, Node.js version and operating system.
+- The affected device model and what you expected to happen.
+- What happened instead and the steps needed to repeat the problem.
+- Relevant logs, with sign-in details and any personal information removed.
+
+For camera problems, also include your FFmpeg version and whether the problem affects live view, recordings or two-way audio.
+
+<details>
+<summary>Collecting extra logs for troubleshooting</summary>
+
+For camera timing problems:
+
+1. Turn on global `debug` in the plugin settings.
+2. Turn on `ffmpegDebug` globally or for the affected camera.
+3. Reproduce the problem, then close the live view or recording.
+4. Include the `Media timing` and `Media delivery` summaries from the log.
+
+Enable `supportDump` separately if requested for a Nest/Google account or device-data problem. Turn these troubleshooting options off when finished. Support dumps hide sensitive API data, but other logs can still contain device names and identifiers. Check all logs before sharing them.
+
+</details>
 
 Feature requests and enhancements are welcome, but please keep in mind that this is a personal open-source project maintained in spare time.
+
+## Development and Verification
+
+Want to contribute code? See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, test commands and contribution guidelines, including what automated checks can and cannot verify.
 
 ## Disclaimer
 
@@ -320,5 +352,3 @@ This is a personal hobby project provided **"as-is"**, with no warranty whatsoev
 Building and running this project is done entirely at your own risk.
 
 I am not affiliated with any companies such as Google, Apple, or other related entities. The author of this project shall not be held liable for any damages or issues arising from its use.
-
-If you find this project useful, sponsorship to support ongoing development is always appreciated.
