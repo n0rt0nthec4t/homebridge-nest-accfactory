@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import dgram from 'node:dgram';
+import tls from 'node:tls';
 import { once } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -13,30 +14,98 @@ import FFmpeg from '../src/plugins/camera/ffmpeg.js';
 import StreamTransport from '../src/plugins/camera/streamtransport.js';
 import { UDPPorts } from '../src/utils.js';
 import { importSource } from './helpers/import-source.js';
+import { nexusPacket, nexusSocket } from './helpers/nexustalk-fixtures.js';
 
 let { default: Streamer } = await importSource(new URL('../src/plugins/camera/streamer.js', import.meta.url));
+let { default: NexusTalk } = await importSource(new URL('../src/plugins/camera/nexustalk.js', import.meta.url));
 
 const binary = process.env.FFMPEG_TEST_BINARY;
 let frames;
+let markerVideo = new Map();
 let aac;
-let markerAAC;
+let markerAAC = new Map();
 // A complete 20 ms Opus silence packet lets FFmpeg verify native decoding/timing
 // without installing a separate JavaScript codec library to generate test media.
 let opusSilence = Buffer.from([0xf8, 0xff, 0xfe]);
 
-for (let reordered of [false, true]) {
+for (let [
+  reordered,
+  requestOffset = 0,
+  sourceClockOffset = 0,
+  arriveDuringStart = false,
+  audioOffset = 40,
+  viaNexus = false,
+  openingAudioDelta = 0,
+] of [
+    [false],
+    [true],
+    [false, 100],
+    [false, 100, -1000],
+    [false, 100, 1000],
+    [true, 100],
+    [true, 100, -1000],
+    [false, 2499.999],
+    [false, 2500],
+    [false, 2500.001],
+    [false, 66.667],
+    [true, 1999.999],
+    [true, 2000],
+    [true, 2000.001],
+    [true, 133.334],
+    [true, 200.001],
+    [false, 100, -3000],
+    [true, 100, -3000],
+    [false, 100, 0, true],
+    [true, 100, 0, true],
+    [false, 100, 0, false, 1.322021484375],
+    [true, 100, 0, false, 1.322021484375],
+    [false, 100, 0, false, -40],
+    [true, 100, 0, false, -40],
+    [false, 100, 0, false, 2336],
+    [false, 100, 0, false, 1.322021484375, true],
+    [true, 100, 0, false, 1.322021484375, true],
+    [true, 2000.001, 0, false, -40, true],
+    [false, 100, 0, true, 40, true],
+    [false, 100, 0, false, 35, true, 1024],
+    [true, 2000.001, 0, false, 51, true, 3072],
+    [false, 100, 0, false, -40, true, -1024],
+  ]) {
   test(
-    'Streamer HKSV prebuffer preserves a four-second audio marker; B-frames=' + reordered,
+    'Streamer HKSV prebuffer preserves flash/tone alignment; B-frames=' +
+      reordered +
+      ' requestOffset=' +
+      requestOffset +
+      ' sourceClockOffset=' +
+      sourceClockOffset +
+      ' newArrivals=' +
+      arriveDuringStart +
+      ' audioOffset=' +
+      audioOffset +
+      ' NexusTalk=' +
+      viaNexus +
+      ' openingAudioDelta=' +
+      openingAudioDelta,
     { skip: binary === undefined ? 'Set FFMPEG_TEST_BINARY for real media checks' : false, timeout: 15000 },
     async (context) => {
       let controller = new AbortController();
       let reading;
-      let transport = new StreamTransport();
-      Object.assign(transport.audio, { codec: 'aac', sampleRate: 48000, channels: 1 });
-      transport.open = async () => transport.setState(StreamTransport.STATE.READY);
-      transport.close = async () => transport.setState(StreamTransport.STATE.CLOSED);
+      let sockets = [];
+      let transport;
+      if (viaNexus === true) {
+        context.mock.method(tls, 'connect', (settings, handshake) => {
+          let socket = nexusSocket(settings, handshake);
+          sockets.push(socket);
+          return socket;
+        });
+        transport = new NexusTalk({ uuid: 'camera.test', host: 'camera.example', apiAccess: { token: 'fixture-token' } });
+      } else {
+        transport = new StreamTransport();
+        Object.assign(transport.audio, { codec: 'aac', sampleRate: 48000, channels: 1 });
+        transport.open = async () => transport.setState(StreamTransport.STATE.READY);
+        transport.close = async () => transport.setState(StreamTransport.STATE.CLOSED);
+      }
       let streamer = new Streamer(
-        'prebuffer-marker-' + reordered,
+        'prebuffer-marker-' + reordered + '-' + requestOffset + '-' + sourceClockOffset,
         { online: true, streaming_enabled: true, audio_enabled: true },
         { transport, bufferDuration: 15000 },
       );
@@ -44,9 +113,21 @@ for (let reordered of [false, true]) {
         controller.abort();
         await streamer.stopEverything();
         await reading;
+        for (let socket of sockets) {
+          socket.emit('close');
+        }
       });
-      await streamer.onMessage(Streamer.MESSAGE_TYPE.START_BUFFER);
-      let source = reordered === true ? bFrameVideo().units : videoFrames();
+      let buffering = streamer.onMessage(Streamer.MESSAGE_TYPE.START_BUFFER);
+      if (viaNexus === true) {
+        let deadline = performance.now() + 2000;
+        while (sockets.length === 0 && performance.now() < deadline) {
+          await delay(1);
+        }
+        assert.equal(sockets.length, 1, 'NexusTalk did not acquire its TLS socket');
+        sockets[0].handshake();
+      }
+      await buffering;
+      let source = reordered === true ? bFrameVideo(true, 75).units : videoFrames(true, 70);
       // Supply enough trailing video to close the complete fragment containing
       // the marker before normal HomeKit cancellation discards the partial tail.
       let events = [...source, ...source.slice(0, 40)].map((data, index) => ({
@@ -57,16 +138,25 @@ for (let reordered of [false, true]) {
         timestamp:
           reordered === true
             ? index < source.length
-              ? bFrameVideo().times[index]
-              : 6000 + bFrameVideo().times[index - source.length]
-            : index * 75,
+              ? bFrameVideo(true, 75).times[index]
+              : 6000 + bFrameVideo(true, 75).times[index - source.length]
+            : index >= source.length
+              ? 6000 + (index - source.length) * 75
+              : index < 20
+                ? index * 100
+                : index < 60
+                  ? 2000 + (index - 20) * 50
+                  : 4000 + (index - 60) * 100,
       }));
-      let audio = aacFrames(true);
+      // Place markers at five source seconds, after the IDR selected by cuts
+      // immediately beyond the earlier keyframe. Original four-second fixtures
+      // remain available to the independent receiver tests below.
+      let audio = aacFrames(true, 5);
       for (let [index, data] of [...audio, ...audio.slice(0, 140)].entries()) {
-        let timestamp = 40 + (index * 1024 * 1000) / 48000;
-        // Remove several short stretches before the marker. Both the shared
-        // prebuffer and the encoder must retain their time rather than shift it.
-        if (timestamp < 500 || timestamp >= 3500 || timestamp % 500 >= 40) {
+        let timestamp = audioOffset + (index * 1024 * 1000) / 48000;
+        // Keep seek cases continuous, matching the reported zero-gap session.
+        // The original cases separately exercise short missing audio stretches.
+        if (requestOffset > 0 || timestamp < 500 || timestamp >= 3500 || timestamp % 500 >= 40) {
           events.push({ type: 'audio', codec: 'aac', timestamp, data });
         }
       }
@@ -76,13 +166,53 @@ for (let reordered of [false, true]) {
         event.deliverAt = watermark[event.type];
       }
       events.sort((left, right) => left.deliverAt - right.deliverAt);
-      for (let event of events) {
-        transport.emitMedia({ ...event, timestamp: 100000 + event.timestamp });
+      let epoch = 1700000000000;
+      let previousTicks = { video: 0, audio: 0 };
+      let firstNexusAudio = true;
+      if (viaNexus === true) {
+        sockets[0].emit('data', nexusPacket(200));
+        sockets[0].emit(
+          'data',
+          nexusPacket(202, 'PlaybackBegin', {
+            sessionId: 7,
+            channels: [
+              { channelId: 1, codec: 'H264', sampleRate: 90000, startTime: (epoch + sourceClockOffset) / 1000 },
+              { channelId: 2, codec: 'AAC', sampleRate: 48000, startTime: (epoch + sourceClockOffset + audioOffset) / 1000 },
+            ],
+          }),
+        );
+      }
+      let deliver = (event) => {
+        if (viaNexus === true) {
+          // Exercise the production protobuf parser and signed tick conversion,
+          // including negative B-frame deltas and independent channel anchors.
+          let ticks = event.type === 'video' ? Math.round(event.timestamp * 90) : Math.round((event.timestamp - audioOffset) * 48);
+          let delta = ticks - previousTicks[event.type];
+          if (event.type === 'audio' && firstNexusAudio === true) {
+            delta += openingAudioDelta;
+            firstNexusAudio = false;
+          }
+          sockets[0].emit(
+            'data',
+            nexusPacket(204, 'PlaybackPacket', {
+              sessionId: 7,
+              channelId: event.type === 'video' ? 1 : 2,
+              timestampDelta: delta,
+              payload: event.data,
+            }),
+          );
+          previousTicks[event.type] = ticks;
+        } else {
+          transport.emitMedia({ ...event, timestamp: epoch + sourceClockOffset + event.timestamp });
+        }
+      };
+      for (let event of events.filter((event) => arriveDuringStart === false || event.deliverAt < 1500)) {
+        deliver(event);
       }
 
       let output = await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, {
         sessionID: 'prebuffer-marker',
-        options: { includeAudio: true, recordTime: 100000, signal: controller.signal },
+        options: { includeAudio: true, recordTime: epoch + requestOffset, signal: controller.signal },
       });
       let manager = new FFmpeg(binary);
       let handle;
@@ -95,6 +225,13 @@ for (let reordered of [false, true]) {
         sourceAudio: 'aac',
         video: { profile: 'baseline', level: '3.1', fps: 30, iFrameInterval: 2000, bitRate: 200 },
       });
+      if (arriveDuringStart === true) {
+        // The next IDR and marker arrive after the prebuffer boundary was
+        // captured and FFmpeg started. Exercise startup together with new media.
+        for (let event of events.filter((event) => event.deliverAt >= 1500)) {
+          deliver(event);
+        }
+      }
       let chunks = [];
       reading = (async () => {
         for await (let fragment of output.fragments()) {
@@ -102,10 +239,54 @@ for (let reordered of [false, true]) {
         }
       })();
       let deadline = performance.now() + 6000;
-      while (chunks.length < 4 && handle.active === true && performance.now() < deadline) {
+      let inspected = 0;
+      let markersReady = false;
+      while (markersReady === false && handle.active === true && performance.now() < deadline) {
         await delay(10);
+        if (chunks.length < 2 || chunks.length === inspected) {
+          continue;
+        }
+        inspected = chunks.length;
+        // Scene changes and late cuts change fragment lengths. Wait for both
+        // actual markers instead of assuming a fragment count means six seconds.
+        let probe = spawnSync(
+          binary,
+          [
+            '-hide_banner',
+            '-loglevel',
+            'error',
+            '-i',
+            'pipe:0',
+            '-map',
+            '0:a:0',
+            '-ar',
+            '16000',
+            '-ac',
+            '1',
+            '-f',
+            's16le',
+            'pipe:1',
+            '-map',
+            '0:v:0',
+            '-vf',
+            'scale=1:1,format=gray',
+            '-f',
+            'rawvideo',
+            'pipe:3',
+          ],
+          { input: Buffer.concat(chunks), stdio: ['pipe', 'pipe', 'pipe', 'pipe'], timeout: 2000, maxBuffer: 1024 * 1024 },
+        );
+        assert.equal(probe.status, 0, probe.stderr?.toString());
+        let toneReady = false;
+        for (let offset = 0; offset + 2 <= probe.stdout.length; offset += 2) {
+          if (Math.abs(probe.stdout.readInt16LE(offset)) > 1000) {
+            toneReady = true;
+            break;
+          }
+        }
+        markersReady = toneReady === true && probe.output[3].some((value) => value > 200);
       }
-      assert.ok(chunks.length >= 4, handle.diagnosticLines.join('\n'));
+      assert.equal(markersReady, true, 'The selected recording did not deliver both markers: ' + handle.diagnosticLines.join('\n'));
       controller.abort();
       await output.stop();
       await reading;
@@ -131,16 +312,35 @@ for (let reordered of [false, true]) {
           '-f',
           'framecrc',
           'pipe:3',
+          '-map',
+          '0:v:0',
+          '-vf',
+          'scale=1:1,format=gray',
+          '-f',
+          'rawvideo',
+          'pipe:4',
+          '-map',
+          '0:a:0',
+          '-f',
+          'framecrc',
+          'pipe:5',
         ],
-        { input: Buffer.concat(chunks), stdio: ['pipe', 'pipe', 'pipe', 'pipe'], timeout: 5000, maxBuffer: 1024 * 1024 },
+        { input: Buffer.concat(chunks), stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe', 'pipe'], timeout: 5000, maxBuffer: 1024 * 1024 },
       );
       assert.equal(decoded.status, 0, decoded.stderr?.toString());
       let videoCRC = decoded.output[3].toString();
       let base = /^#tb 0: (\d+)\/(\d+)$/m.exec(videoCRC);
       let videoPTS = videoCRC.split('\n').filter((line) => line.startsWith('0,') === true);
-      assert.ok(videoPTS.length >= 180, 'The marker must be compared with at least six seconds of decoded video');
+      assert.ok(videoPTS.length > 0, 'The selected recording has no decoded video');
       let videoStart = (Number(videoPTS[0].split(',')[2]) * Number(base[1])) / Number(base[2]);
-      assert.ok(Math.abs(videoStart) < 1 / 30, 'The decoded video lost its source start: ' + videoStart);
+      let audioCRC = decoded.output[5].toString();
+      let audioBase = /^#tb 0: (\d+)\/(\d+)$/m.exec(audioCRC);
+      let firstAudio = audioCRC.split('\n').find((line) => line.startsWith('0,') === true);
+      let audioStart = (Number(firstAudio.split(',')[2]) * Number(audioBase[1])) / Number(audioBase[2]);
+      context.diagnostic('Decoded starts: video=' + videoStart + ' audio=' + audioStart);
+      if (requestOffset === 0 && sourceClockOffset === 0) {
+        assert.ok(Math.abs(videoStart) < 1 / 30, 'The decoded video lost its source start: ' + videoStart);
+      }
       context.diagnostic('PCM duration=' + decoded.stdout.length / 32000 + '; fragments=' + chunks.length);
       let onset;
       for (let offset = 0; offset + 2 <= decoded.stdout.length; offset += 2) {
@@ -150,14 +350,205 @@ for (let reordered of [false, true]) {
         }
       }
       context.diagnostic('Decoded prebuffer tone starts at ' + onset + ' seconds');
-      assert.ok(Math.abs(onset - videoStart - 4.04) < 0.05, 'Prebuffer shifted the source audio marker: ' + onset);
+      // Seek can discard the original IDR and its audio, or select a different
+      // window when the camera clock differs from wall time. Compare actual
+      // flash/tone content after that selection, not just the first output PTS.
+      let flashIndex = decoded.output[4].findIndex((value) => value > 200);
+      assert.ok(flashIndex >= 0, 'The selected recording lost the video flash');
+      let flashTime = (Number(videoPTS[flashIndex].split(',')[2]) * Number(base[1])) / Number(base[2]);
+      let difference = onset + audioStart - flashTime;
+      context.diagnostic('Selected recording tone/flash difference=' + difference);
+      // The generated ADTS fixture includes one 1024-sample AAC priming block.
+      // Allow one output video frame for marker placement after CFR conversion.
+      let expectedDifference = audioOffset / 1000 + 1024 / 48000;
+      assert.ok(Math.abs(difference - expectedDifference) < 1 / 30, 'Recording selection changed A/V alignment: ' + difference);
     },
   );
 }
 
-function videoFrames() {
-  if (frames !== undefined) {
-    return frames;
+test(
+  'HKSV recording preserves three flash/tone markers across 15 to 30 to 15 fps input',
+  { skip: binary === undefined ? 'Set FFMPEG_TEST_BINARY for real media checks' : false, timeout: 15000 },
+  async (context) => {
+    let source = videoFrames(true, 15);
+    let markerTimes = [1, 80 / 15 + 15 / 30, 80 / 15 + 80 / 30 + 1];
+    // Each segment begins with an IDR and black pictures, then turns white at
+    // frame 15. Source timestamps, not packet delivery speed, set the frame rate.
+    let events = [15, 30, 15].flatMap((fps, segment) =>
+      source.map((data, index) => ({
+        type: 'video',
+        data,
+        timestamp: (segment === 0 ? 0 : segment === 1 ? 80000 / 15 : 80000 / 15 + 80000 / 30) + (index * 1000) / fps,
+      })),
+    );
+    let encoded = spawnSync(
+      binary,
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-f',
+        'lavfi',
+        '-i',
+        'aevalsrc=0.125*sin(2*PI*440*t)*(' +
+          markerTimes.map((time) => 'between(t\\,' + time + '\\,' + (time + 0.2) + ')').join('+') +
+          '):s=48000',
+        '-t',
+        String(80 / 15 + 80 / 30 + 80 / 15),
+        '-c:a',
+        'aac',
+        '-b:a',
+        '64k',
+        '-ac',
+        '1',
+        '-f',
+        'adts',
+        'pipe:1',
+      ],
+      { timeout: 10000, maxBuffer: 2 * 1024 * 1024 },
+    );
+    assert.equal(encoded.status, 0, encoded.stderr?.toString());
+    let audio = [];
+    for (let offset = 0; offset < encoded.stdout.length;) {
+      let data = encoded.stdout;
+      let size = ((data[offset + 3] & 3) << 11) | (data[offset + 4] << 3) | (data[offset + 5] >> 5);
+      assert.ok(size > 7 && offset + size <= data.length, 'Invalid generated AAC frame');
+      audio.push(data.subarray(offset, offset + size));
+      offset += size;
+    }
+    for (let [index, data] of audio.entries()) {
+      events.push({ type: 'audio', data, timestamp: (index * 1024 * 1000) / 48000 });
+    }
+    events.sort((left, right) => left.timestamp - right.timestamp);
+    let output = new RTPMuxer({ audio: { codec: 'aac', sampleRate: 48000, channels: 1 } });
+    output.configureAudio(audio[0]);
+    context.after(() => output.close());
+    await output.prepare();
+    let manager = new FFmpeg(binary);
+    let handle = manager.startRecording({
+      id: 'fps-transition',
+      input: output.input,
+      sourceAudio: 'aac',
+      video: { profile: 'baseline', level: '3.1', fps: 30, iFrameInterval: 2000, bitRate: 200 },
+    });
+    context.after(() => handle.stop('SIGKILL'));
+    let chunks = [];
+    let reading = (async () => {
+      for await (let fragment of manager.fragments(handle)) {
+        chunks.push(fragment);
+      }
+    })();
+    let deadline = performance.now() + 5000;
+    while (output.blocked('video') === true && handle.active === true && performance.now() < deadline) {
+      await delay(5);
+    }
+    assert.equal(output.blocked('video'), false, handle.diagnosticLines.join('\n'));
+    let started = performance.now();
+    for (let event of events) {
+      let due = started + event.timestamp / 4;
+      if (due > performance.now()) {
+        await delay(due - performance.now());
+      }
+      while (output.blocked(event.type) === true && handle.active === true && performance.now() < deadline + 5000) {
+        await delay(5);
+      }
+      assert.equal(handle.active, true, handle.diagnosticLines.join('\n'));
+      if (event.type === 'video') {
+        output.writeVideo(event.data, event.timestamp);
+      } else {
+        output.writeAudio(event.data, event.timestamp);
+      }
+      output.tick();
+    }
+    while (output.queuedBytes() > 0 && performance.now() < deadline + 5000) {
+      await delay(5);
+    }
+    await output.close();
+    let result = await handle.finished;
+    await reading;
+    assert.equal(result.code, 0, handle.diagnosticLines.join('\n'));
+    let decoded = spawnSync(
+      binary,
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-i',
+        'pipe:0',
+        '-map',
+        '0:a:0',
+        '-ar',
+        '16000',
+        '-ac',
+        '1',
+        '-f',
+        's16le',
+        'pipe:1',
+        '-map',
+        '0:v:0',
+        '-f',
+        'framecrc',
+        'pipe:3',
+        '-map',
+        '0:v:0',
+        '-vf',
+        'scale=1:1,format=gray',
+        '-f',
+        'rawvideo',
+        'pipe:4',
+        '-map',
+        '0:a:0',
+        '-f',
+        'framecrc',
+        'pipe:5',
+      ],
+      { input: Buffer.concat(chunks), stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe', 'pipe'], timeout: 10000, maxBuffer: 4 * 1024 * 1024 },
+    );
+    assert.equal(decoded.status, 0, decoded.stderr?.toString());
+    let videoCRC = decoded.output[3].toString();
+    let videoBase = /^#tb 0: (\d+)\/(\d+)$/m.exec(videoCRC);
+    let videoPTS = videoCRC
+      .split('\n')
+      .filter((line) => line.startsWith('0,') === true)
+      .map((line) => (Number(line.split(',')[2]) * Number(videoBase[1])) / Number(videoBase[2]));
+    assert.ok(videoPTS.length >= 390, 'Recording lost video duration across a rate transition');
+    for (let index = 1; index < videoPTS.length; index++) {
+      assert.ok(Math.abs(videoPTS[index] - videoPTS[index - 1] - 1 / 30) < 0.00001, 'Recording is not continuous 30 fps');
+    }
+    let flashes = [];
+    for (let index = 0; index < decoded.output[4].length; index++) {
+      if (decoded.output[4][index] > 200 && (index === 0 || decoded.output[4][index - 1] <= 200)) {
+        flashes.push(videoPTS[index]);
+      }
+    }
+    let audioCRC = decoded.output[5].toString();
+    let audioBase = /^#tb 0: (\d+)\/(\d+)$/m.exec(audioCRC);
+    let firstAudio = audioCRC.split('\n').find((line) => line.startsWith('0,') === true);
+    let audioStart = (Number(firstAudio.split(',')[2]) * Number(audioBase[1])) / Number(audioBase[2]);
+    let tones = [];
+    for (let offset = 0; offset + 2 <= decoded.stdout.length; offset += 2) {
+      let time = audioStart + offset / 32000;
+      if (Math.abs(decoded.stdout.readInt16LE(offset)) > 1000 && (tones.length === 0 || time - tones.at(-1) > 0.5)) {
+        tones.push(time);
+      }
+    }
+    assert.equal(flashes.length, 3, 'Missing a video marker before, during or after the transitions');
+    assert.equal(tones.length, 3, 'Missing an audio marker before, during or after the transitions');
+    let offsets = tones.map((time, index) => time - flashes[index]);
+    for (let [index, offset] of offsets.entries()) {
+      assert.ok(Math.abs(flashes[index] - markerTimes[index]) <= 1 / 30, 'Video marker moved at a rate transition');
+      // The source AAC fixture includes a 1024-sample encoder priming block.
+      assert.ok(Math.abs(offset - 1024 / 48000) < 1 / 30, 'A/V alignment changed: ' + offsets.join(', '));
+    }
+    assert.ok(Math.max(...offsets) - Math.min(...offsets) < 1 / 30, 'A/V offset accumulated across rate transitions');
+    context.diagnostic('Decoded tone-minus-flash offsets (seconds): ' + offsets.join(', '));
+  },
+);
+
+function videoFrames(markers = false, markerFrame = 60) {
+  let cached = markers === true ? markerVideo.get(markerFrame) : frames;
+  if (cached !== undefined) {
+    return cached;
   }
   const encoded = spawnSync(
     binary,
@@ -168,7 +559,9 @@ function videoFrames() {
       '-f',
       'lavfi',
       '-i',
-      'testsrc2=size=160x90:rate=30',
+      markers === true
+        ? 'color=c=black:size=160x90:rate=30,drawbox=color=white:t=fill:enable=gte(n\\,' + markerFrame + ')'
+        : 'testsrc2=size=160x90:rate=30',
       '-frames:v',
       '80',
       '-c:v',
@@ -186,26 +579,33 @@ function videoFrames() {
     { timeout: 10000, maxBuffer: 8 * 1024 * 1024 },
   );
   assert.equal(encoded.status, 0, encoded.stderr?.toString());
-  frames = [];
+  let units = [];
   let parts = [];
   for (const nal of H264.getNALUnits(encoded.stdout)) {
     if (nal.type === 9 && parts.length > 0) {
-      frames.push(Buffer.concat(parts));
+      units.push(Buffer.concat(parts));
       parts = [];
     }
     parts.push(H264.NALUS.START_CODE, nal.data);
   }
   if (parts.length > 0) {
-    frames.push(Buffer.concat(parts));
+    units.push(Buffer.concat(parts));
   }
-  assert.equal(frames.length, 80);
-  return frames;
+  assert.equal(units.length, 80);
+  if (markers === true) {
+    markerVideo.set(markerFrame, units);
+  } else {
+    frames = units;
+  }
+  return units;
 }
 
 let reorderedVideo;
-function bFrameVideo() {
-  if (reorderedVideo !== undefined) {
-    return reorderedVideo;
+let reorderedMarkerVideo = new Map();
+function bFrameVideo(markers = false, markerFrame = 60) {
+  let cached = markers === true ? reorderedMarkerVideo.get(markerFrame) : reorderedVideo;
+  if (cached !== undefined) {
+    return cached;
   }
   // Tee one encoder run to payload bytes and packet PTS, so fixtures have real
   // reference/B/B dependencies and cannot accidentally assign decode time as PTS.
@@ -218,7 +618,9 @@ function bFrameVideo() {
       '-f',
       'lavfi',
       '-i',
-      'testsrc2=size=160x90:rate=15',
+      markers === true
+        ? 'color=c=black:size=160x90:rate=15,drawbox=color=white:t=fill:enable=gte(n\\,' + markerFrame + ')'
+        : 'testsrc2=size=160x90:rate=15',
       '-frames:v',
       '90',
       '-map',
@@ -259,12 +661,17 @@ function bFrameVideo() {
     times.some((time, index) => index > 0 && time < times[index - 1]),
     true,
   );
-  reorderedVideo = { units, times };
-  return reorderedVideo;
+  let result = { units, times };
+  if (markers === true) {
+    reorderedMarkerVideo.set(markerFrame, result);
+  } else {
+    reorderedVideo = result;
+  }
+  return result;
 }
 
-function aacFrames(markers = false) {
-  let cached = markers === true ? markerAAC : aac;
+function aacFrames(markers = false, markerTime = 4) {
+  let cached = markers === true ? markerAAC.get(markerTime) : aac;
   if (cached !== undefined) {
     return cached;
   }
@@ -277,7 +684,9 @@ function aacFrames(markers = false) {
       '-f',
       'lavfi',
       '-i',
-      markers === true ? 'aevalsrc=0.125*sin(2*PI*440*t)*between(t\\,4\\,5):s=48000' : 'sine=frequency=440:sample_rate=48000',
+      markers === true
+        ? 'aevalsrc=0.125*sin(2*PI*440*t)*between(t\\,' + markerTime + '\\,' + (markerTime + 1) + '):s=48000'
+        : 'sine=frequency=440:sample_rate=48000',
       '-frames:a',
       '280',
       '-c:a',
@@ -305,7 +714,7 @@ function aacFrames(markers = false) {
   // The AAC encoder can emit a priming packet in addition to the requested frames.
   packets = packets.slice(0, 280);
   if (markers === true) {
-    markerAAC = packets;
+    markerAAC.set(markerTime, packets);
   } else {
     aac = packets;
   }
@@ -440,7 +849,8 @@ for (let sourceAudio of ['opus', 'aac']) {
   );
 }
 
-for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack, reordered = false, audioGap = false] of [
+for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack, reordered = false, audioGap = false, commonOffset = 0] of [
+  [4, 'hksv', 'aac', 1.322021484375, undefined, false, false, 4436.01123046875],
   [4, 'hksv', 'aac', 40, undefined, false, 'repeated'],
   [1, 'hksv', 'aac', 40, undefined, false, 'repeated'],
   [4, 'hksv', 'aac', 40, undefined, false, true],
@@ -478,16 +888,22 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack, reordered = fals
       (lateTrack === undefined ? '' : ' with late first ' + lateTrack) +
       (audioOffset > 1000 ? ' with source audio offset ' + audioOffset + ' ms' : '') +
       (audioGap === true ? ' with a one-second source audio gap' : '') +
-      (audioGap === 'repeated' ? ' with repeated short source audio gaps and a timed tone' : ''),
+      (audioGap === 'repeated' ? ' with repeated short source audio gaps and a timed tone' : '') +
+      (commonOffset > 0 ? ' with a ' + commonOffset + ' ms shared startup offset' : ''),
     { skip: binary === undefined ? 'Set FFMPEG_TEST_BINARY for real media checks' : false, timeout: 20000 },
     async (context) => {
-      const video = reordered === true ? bFrameVideo().units : videoFrames();
-      let encodedAAC = audioCodec === 'aac' ? aacFrames(audioGap === 'repeated') : undefined;
+      const video = reordered === true ? bFrameVideo().units : videoFrames(commonOffset > 0);
+      let encodedAAC = audioCodec === 'aac' ? aacFrames(audioGap === 'repeated' || commonOffset > 0) : undefined;
       const output = new RTPMuxer({ audio: { codec: audioCodec, sampleRate: 48000, channels: encodedAAC === undefined ? 2 : 1 } });
       if (encodedAAC !== undefined) {
         output.configureAudio(encodedAAC[0]);
       }
       await output.prepare();
+      if (commonOffset > 0) {
+        // Match an epoch established from retained media before the decoder-safe
+        // starting IDR. Both tracks retain the time skipped during keyframe recovery.
+        output.setSourceEpoch(0);
+      }
       context.after(() => output.close());
       let manager = codec === 'hksv' ? new FFmpeg(binary) : undefined;
       let managed = manager?.startRecording({
@@ -536,6 +952,7 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack, reordered = fals
       let stderr = '';
       let stopped = false;
       let audioOnset = undefined;
+      let videoMarkerIndex = undefined;
       context.after(() => {
         if (stopped !== true) {
           context.diagnostic('FFmpeg did not finish. stderr=' + stderr.slice(-4000) + ' stdout=' + stdout.slice(-2000));
@@ -615,6 +1032,7 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack, reordered = fals
       // frame then arrives after the other track established a later RTP epoch.
       let deliveryTime = {};
       for (let event of events) {
+        event.timestamp += commonOffset;
         deliveryTime[event.type] = Math.max(deliveryTime[event.type] ?? -Infinity, event.timestamp);
         event.deliverAt = deliveryTime[event.type] + (event.type === lateTrack ? 120 : 0);
       }
@@ -650,6 +1068,32 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack, reordered = fals
 
       if (codec === 'hksv') {
         let file = Buffer.concat(mp4);
+        if (commonOffset > 0) {
+          // A late shared start can produce repeated startup pictures. Measure
+          // the actual black-to-white marker, rather than assuming the first
+          // displayed frame marks the start of source motion.
+          let marker = spawnSync(
+            binary,
+            [
+              '-hide_banner',
+              '-loglevel',
+              'error',
+              '-i',
+              'pipe:0',
+              '-map',
+              '0:v:0',
+              '-vf',
+              'scale=1:1,format=gray',
+              '-f',
+              'rawvideo',
+              'pipe:1',
+            ],
+            { input: file, timeout: 10000, maxBuffer: 1024 * 1024 },
+          );
+          assert.equal(marker.status, 0, marker.stderr?.toString());
+          videoMarkerIndex = marker.stdout.findIndex((value) => value > 200);
+          assert.ok(videoMarkerIndex >= 0, 'The video flash marker is missing');
+        }
         let boxes = [];
         for (let offset = 0; offset < file.length;) {
           let size = file.readUInt32BE(offset);
@@ -667,7 +1111,7 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack, reordered = fals
         );
         assert.equal(decoded.status, 0, decoded.stderr?.toString());
         stdout = decoded.stdout.toString();
-        if (audioOffset > 1000 || (audioGap !== false && audioCodec === 'aac')) {
+        if (audioOffset > 1000 || (audioGap !== false && audioCodec === 'aac') || commonOffset > 0) {
           // Measure actual decoded tone placement, not just playable tracks or
           // equal start timestamps: fragmented MP4 can hide a lost audio offset.
           let pcm = spawnSync(
@@ -693,12 +1137,6 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack, reordered = fals
               audioOnset = offset / (2 * 16000);
               break;
             }
-          }
-          if (audioGap === 'repeated') {
-            assert.ok(
-              Math.abs(audioOnset - 4 - audioOffset / 1000) < 0.05,
-              'Repeated short gaps moved the four-second tone: ' + audioOnset,
-            );
           }
         }
       }
@@ -727,6 +1165,21 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack, reordered = fals
           decoded[1].at(-1),
       );
       if (codec === 'hksv') {
+        if (commonOffset > 0) {
+          let markerOffset = audioOnset + decoded[1][0] - decoded[0][videoMarkerIndex];
+          context.diagnostic('Decoded audio/flash marker offset=' + markerOffset + ' seconds');
+          assert.ok(Math.abs(markerOffset - audioOffset / 1000) < 0.05, 'Startup offset separated the A/V markers: ' + markerOffset);
+        }
+        if (audioGap === 'repeated') {
+          // Raw PCM has no timestamps. Relate its marker to the decoded audio
+          // start before comparing against video when both tracks start late.
+          let relativeOnset = audioOnset + decoded[1][0] - decoded[0][0];
+          context.diagnostic('Tone offset from video start=' + relativeOnset);
+          assert.ok(
+            Math.abs(relativeOnset - 4 - audioOffset / 1000) < 0.05,
+            'The four-second tone moved relative to video: ' + relativeOnset,
+          );
+        }
         if (reordered === true) {
           assert.equal(decoded[0].length, 180);
           assert.deepEqual(

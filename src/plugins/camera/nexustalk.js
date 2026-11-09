@@ -44,7 +44,7 @@
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.10.24
+// Code version 2026.11.07
 // Mark Hulskamp
 'use strict';
 
@@ -147,8 +147,10 @@ export default class NexusTalk extends StreamTransport {
       id: undefined,
       startOffset: 0,
       timestampBase: undefined, // Fixed session anchor; source ticks accumulate separately
-      timestampTicks: 0,
+      timestampTicks: undefined, // No source packets processed yet
+      initialTimestampDelta: undefined, // Opening delta retained only until startup is resolved
       pendingTimestamp: undefined,
+      pendingTimestampTicks: undefined,
       pendingKeyFrame: false,
       pendingParts: [],
       pendingBytes: 0,
@@ -159,7 +161,7 @@ export default class NexusTalk extends StreamTransport {
       id: undefined,
       startOffset: 0,
       timestampBase: undefined, // Fixed session anchor; source ticks accumulate separately
-      timestampTicks: 0,
+      timestampTicks: undefined,
     },
   };
 
@@ -893,11 +895,32 @@ export default class NexusTalk extends StreamTransport {
     // Handle video packet.
     if (decodedMessage.channelId === this.#channels.video?.id) {
       video = this.#channels.video;
-      timestamp = this.#calculateTimestamp(decodedMessage.timestampDelta, video, this.video.clockRate);
+      let delta = Number.isFinite(decodedMessage.timestampDelta) === true ? decodedMessage.timestampDelta : 0;
+      if (video.timestampTicks === undefined) {
+        video.initialTimestampDelta = delta;
+      }
+      timestamp = this.#calculateTimestamp(delta, video, this.video.clockRate);
       data = this.#getPayloadBuffer(decodedMessage.payload);
 
       if (typeof timestamp !== 'number' || Buffer.isBuffer(data) !== true || data.length === 0) {
         return;
+      }
+
+      nalUnits = H264.getNALUnits(data);
+      if (video.initialTimestampDelta !== undefined && nalUnits.some((nal) => nal.type === H264.NALUS.TYPES.SLICE_NON_IDR) === true) {
+        if (delta < 0 && Number.isFinite(this.video.clockRate) === true && this.video.clockRate > 0) {
+          // Replace the opening delta with the first backwards picture interval
+          // to align leading B-pictures with the channel start. Shift the pending
+          // IDR too, before either frame reaches consumers.
+          let correctionTicks = -delta - video.initialTimestampDelta;
+          video.timestampTicks += correctionTicks;
+          timestamp = video.timestampBase + (video.timestampTicks * 1000) / this.video.clockRate;
+          if (video.pendingTimestampTicks !== undefined) {
+            video.pendingTimestampTicks += correctionTicks;
+            video.pendingTimestamp = video.timestampBase + (video.pendingTimestampTicks * 1000) / this.video.clockRate;
+          }
+        }
+        video.initialTimestampDelta = undefined;
       }
 
       // Flush before accepting this timestamp's SPS/PPS so the prior frame
@@ -905,8 +928,6 @@ export default class NexusTalk extends StreamTransport {
       if (typeof video.pendingTimestamp === 'number' && timestamp !== video.pendingTimestamp) {
         this.#flushPendingVideo(video);
       }
-
-      nalUnits = H264.getNALUnits(data);
 
       for (let nalu of nalUnits) {
         if (nalu.type === H264.NALUS.TYPES.SPS) {
@@ -925,6 +946,7 @@ export default class NexusTalk extends StreamTransport {
       // Initialise pending frame state for this timestamp.
       if (typeof video.pendingTimestamp !== 'number') {
         video.pendingTimestamp = timestamp;
+        video.pendingTimestampTicks = video.timestampTicks;
         video.pendingKeyFrame = false;
         video.pendingParts = [];
         video.pendingBytes = 0;
@@ -969,12 +991,17 @@ export default class NexusTalk extends StreamTransport {
     // Handle audio packet.
     if (decodedMessage.channelId === this.#channels.audio?.id) {
       audio = this.#channels.audio;
-      timestamp = this.#calculateTimestamp(decodedMessage.timestampDelta, audio, this.audio.sampleRate);
       data = this.#getPayloadBuffer(decodedMessage.payload);
-
-      if (typeof timestamp !== 'number' || Buffer.isBuffer(data) !== true || data.length === 0) {
+      if (Buffer.isBuffer(data) !== true || data.length === 0) {
         return;
       }
+      let delta = Number.isFinite(decodedMessage.timestampDelta) === true ? decodedMessage.timestampDelta : 0;
+      if (audio.timestampTicks === undefined) {
+        // Anchor the first audio packet to startTime; it has no preceding packet
+        // in this playback. Preserve subsequent deltas, including gaps.
+        delta = 0;
+      }
+      timestamp = this.#calculateTimestamp(delta, audio, this.audio.sampleRate);
 
       this.emitMedia({
         type: Streamer.MEDIA_TYPE.AUDIO,
@@ -1338,6 +1365,7 @@ export default class NexusTalk extends StreamTransport {
     if (typeof stream?.timestampBase !== 'number') {
       stream.timestampBase = typeof this.#sessionStartTime === 'number' ? this.#sessionStartTime + (stream?.startOffset ?? 0) : Date.now();
     }
+    stream.timestampTicks ??= 0;
 
     if (Number.isFinite(sampleRate) !== true || sampleRate <= 0) {
       return stream.timestampBase;
@@ -1376,6 +1404,7 @@ export default class NexusTalk extends StreamTransport {
     }
 
     video.pendingTimestamp = undefined;
+    video.pendingTimestampTicks = undefined;
     video.pendingKeyFrame = false;
 
     // Emitted frames retain this array. Start a new group without clearing theirs.
@@ -1397,6 +1426,8 @@ export default class NexusTalk extends StreamTransport {
     }
 
     pendingTimestamp = video.pendingTimestamp;
+    // Once a frame leaves, do not apply startup corrections to later frames.
+    video.initialTimestampDelta = undefined;
 
     try {
       this.emitMedia({
@@ -1428,8 +1459,10 @@ export default class NexusTalk extends StreamTransport {
     this.#channels.video.id = undefined;
     this.#channels.video.startOffset = 0;
     this.#channels.video.timestampBase = undefined;
-    this.#channels.video.timestampTicks = 0;
+    this.#channels.video.timestampTicks = undefined;
+    this.#channels.video.initialTimestampDelta = undefined;
     this.#channels.video.pendingTimestamp = undefined;
+    this.#channels.video.pendingTimestampTicks = undefined;
     this.#channels.video.pendingKeyFrame = false;
 
     if (Array.isArray(this.#channels.video.pendingParts) === true) {
@@ -1446,6 +1479,6 @@ export default class NexusTalk extends StreamTransport {
     this.#channels.audio.id = undefined;
     this.#channels.audio.startOffset = 0;
     this.#channels.audio.timestampBase = undefined;
-    this.#channels.audio.timestampTicks = 0;
+    this.#channels.audio.timestampTicks = undefined;
   }
 }

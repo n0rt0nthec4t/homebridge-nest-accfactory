@@ -2,7 +2,6 @@
 import assert from 'node:assert/strict';
 import { importSource } from './helpers/import-source.js';
 import { Buffer } from 'node:buffer';
-import { EventEmitter } from 'node:events';
 import { readFile } from 'node:fs/promises';
 import tls from 'node:tls';
 import { fileURLToPath, URL } from 'node:url';
@@ -12,6 +11,7 @@ import { setImmediate } from 'node:timers/promises';
 import { getProtoRoot, getProtoType } from '../src/protobuf.js';
 import RTPMuxer from '../src/plugins/camera/rtpmuxer.js';
 import { adts } from './helpers/aac-fixtures.js';
+import { nexusPacket as packet, nexusSocket } from './helpers/nexustalk-fixtures.js';
 
 // Streamer is used only for media type constants here; avoid its Homebridge imports.
 let location = new URL('../src/plugins/camera/nexustalk.js', import.meta.url);
@@ -49,45 +49,13 @@ source = source.replace(/from '([^']+)'/g, (match, specifier) => {
 let { default: NexusTalk } = await importSource(location, source);
 let root = getProtoRoot(fileURLToPath(new URL('../src/protobuf/nest/nexustalk.proto', import.meta.url)));
 
-function packet(id, type, value = {}) {
-  let message = type === undefined ? Buffer.alloc(0) : root.lookupType('nest.nexustalk.v1.' + type);
-  let payload = Buffer.isBuffer(message) === true ? message : Buffer.from(message.encode(message.fromObject(value)).finish());
-  let header = Buffer.alloc(id === 205 ? 5 : 3);
-  header[0] = id;
-  if (id === 205) {
-    header.writeUInt32BE(payload.length, 1);
-  } else {
-    header.writeUInt16BE(payload.length, 1);
-  }
-  return Buffer.concat([header, payload]);
-}
-
 function setup(t, options = {}) {
   t.mock.timers.enable({ apis: ['setInterval', 'Date'], now: 100000 });
   let sockets = [];
   let media = [];
   let active = true;
   t.mock.method(tls, 'connect', (settings, handshake) => {
-    let socket = new EventEmitter();
-    Object.assign(socket, {
-      settings,
-      handshake,
-      destroyed: false,
-      readyState: 'open',
-      writable: true,
-      writes: [],
-      cork() {},
-      uncork() {},
-      setKeepAlive() {},
-      write(data) {
-        this.writes.push(Buffer.from(data));
-        return true;
-      },
-      destroy() {
-        this.destroyed = true;
-        this.writable = false;
-      },
-    });
+    let socket = nexusSocket(settings, handshake);
     sockets.push(socket);
     return socket;
   });
@@ -166,13 +134,13 @@ test('NexusTalk decodes fragmented and coalesced playback packets with source ti
     socket.emit('data', Buffer.from([byte]));
   }
   assert.equal(context.media.length, 1);
-  assert.equal(context.media[0].timestamp, 100110);
+  assert.equal(context.media[0].timestamp, 100100);
   let next = packet(204, 'PlaybackPacket', { channelId: 2, timestampDelta: 960, payload: Buffer.from([3]) });
   let negative = packet(204, 'PlaybackPacket', { channelId: 2, timestampDelta: -480, payload: Buffer.from([4]) });
   socket.emit('data', Buffer.concat([next, negative]));
   assert.deepEqual(
     context.media.map((item) => item.timestamp),
-    [100110, 100130, 100120],
+    [100100, 100120, 100110],
   );
   assert.deepEqual(context.media[0].data, Buffer.from([1, 2]));
 });
@@ -760,6 +728,49 @@ test('NexusTalk absent video clock metadata cannot make timestamps non-finite', 
   assert.equal(Number.isFinite(flow.media[0].timestamp), true);
 });
 
+// The first audio packet starts at its channel anchor; later deltas preserve
+// packet spacing. Channel startTime supplies the A/V offset.
+for (let [sampleRate, frequency] of [
+  [48000, 3],
+  [44100, 4],
+  [16000, 8],
+]) {
+  for (let openingDelta of [0, 1024, 3072, -1024]) {
+    test('NexusTalk first audio matches channel anchor; rate=' + sampleRate + ' openingDelta=' + openingDelta, async (context) => {
+      let flow = setup(context);
+      let socket = await open(flow);
+      let epoch = 1794042908232;
+      for (let [sessionId, offsetMs] of [
+        [7, 35],
+        [8, -51],
+      ]) {
+        socket.emit(
+          'data',
+          packet(202, 'PlaybackBegin', {
+            sessionId,
+            channels: [
+              { channelId: 1, codec: 'H264', sampleRate: 90000, startTime: epoch / 1000 },
+              { channelId: 2, codec: 'AAC', sampleRate, startTime: (epoch + offsetMs) / 1000 },
+            ],
+          }),
+        );
+        let before = flow.media.length;
+        // Include a later gap: only the opening delta is normalised.
+        for (let timestampDelta of [openingDelta, 1024, 3072, 1024]) {
+          socket.emit(
+            'data',
+            packet(204, 'PlaybackPacket', { channelId: 2, timestampDelta, payload: adts(Buffer.from([0x21, 0x10]), { frequency }) }),
+          );
+        }
+        assert.deepEqual(
+          flow.media.slice(before).map((frame) => Math.round(((frame.timestamp - epoch - offsetMs) * sampleRate) / 1000)),
+          [0, 1024, 4096, 5120],
+        );
+      }
+    });
+  }
+}
+
 test('ending and resuming talkback preserves the playback session and empty end marker', async (context) => {
   let flow = setup(context);
   let socket = await open(flow);
@@ -913,32 +924,271 @@ for (let [codec, sampleRate, timestampDelta, frequency] of [
     socket.emit('data', packet(204, 'PlaybackPacket', { channelId: 1, timestampDelta, payload }));
     await flow.transport.close();
     assert.equal(flow.media.length, count + 1);
-    assert.equal(flow.media.at(-1).timestamp, epoch + 10000 + (timestampDelta * 1000) / sampleRate);
+    assert.equal(flow.media.at(-1).timestamp, epoch + 10000 + (codec === 'AAC' ? 0 : (timestampDelta * 1000) / sampleRate));
   });
 }
 
-test('NexusTalk signed timestamp deltas preserve reference/B/B decode order and fractional PTS', async (context) => {
+for (let openingDelta of [0, 12000, 24000]) {
+  test('NexusTalk normalizes leading B-picture phase with opening delta ' + openingDelta, async (context) => {
+    let flow = setup(context);
+    let socket = await open(flow);
+    begin(socket);
+    // 90 kHz deltas reproduce +266.7 / -133.3 / +66.7 ms in the Indoor trace.
+    for (let [index, timestampDelta] of [openingDelta, -12000, 6000, 24000, -12000, 6000, 24000].entries()) {
+      socket.emit(
+        'data',
+        packet(204, 'PlaybackPacket', {
+          channelId: 1,
+          timestampDelta,
+          payload: Buffer.from([index === 0 ? 0x65 : 0x41, index]),
+        }),
+      );
+    }
+    assert.equal(flow.media.length, 6, 'the final timestamp group stays pending until the next frame');
+    assert.deepEqual(
+      flow.media.map((frame) => Math.round((frame.timestamp - 100000) * 90)),
+      [12000, 0, 6000, 30000, 18000, 24000],
+    );
+    assert.deepEqual(
+      flow.media.map((frame) => frame.nals[0][1]),
+      [0, 1, 2, 3, 4, 5],
+    );
+  });
+}
+
+test('NexusTalk startup phase resets per playback and leaves later B-pictures unchanged', async (context) => {
   let flow = setup(context);
   let socket = await open(flow);
-  begin(socket);
-  // 90 kHz deltas reproduce +266.7 / -133.3 / +66.7 ms in the Indoor trace.
-  for (let [index, timestampDelta] of [24000, -12000, 6000, 24000, -12000, 6000, 24000].entries()) {
+  for (let session of [7, 8]) {
+    socket.emit(
+      'data',
+      packet(202, 'PlaybackBegin', {
+        sessionId: session,
+        channels: [
+          { channelId: 1, codec: 'H264', sampleRate: 90000, startTime: 100 },
+          { channelId: 2, codec: 'AAC', sampleRate: 48000, startTime: 100.01 },
+        ],
+      }),
+    );
+    let start = flow.media.length;
+    // Parameter sets and the IDR share the initial timestamp. The first
+    // non-IDR is forward in session 7; only session 8 needs phase correction.
+    for (let [delta, payload] of [
+      [24000, Buffer.from([0x67, 0x42, 0, 0x1f])],
+      [0, Buffer.from([0x68, 0xce])],
+      [0, Buffer.from([0x65, 0])],
+      [session === 7 ? 12000 : -12000, Buffer.from([0x41, 1])],
+      [-6000, Buffer.from([0x41, 2])],
+      [18000, Buffer.from([0x41, 3])],
+    ]) {
+      socket.emit('data', packet(204, 'PlaybackPacket', { channelId: 1, timestampDelta: delta, payload }));
+    }
     socket.emit(
       'data',
       packet(204, 'PlaybackPacket', {
-        channelId: 1,
-        timestampDelta,
-        payload: Buffer.from([index === 0 ? 0x65 : 0x41, index]),
+        channelId: 2,
+        timestampDelta: 0,
+        payload: adts(Buffer.from([0x21, 0x10])),
       }),
     );
+    let frames = flow.media.slice(start);
+    assert.deepEqual(
+      frames.filter((frame) => frame.type === 'video').map((frame) => Math.round((frame.timestamp - 100000) * 90)),
+      session === 7 ? [24000, 36000, 30000] : [12000, 0, -6000],
+    );
+    assert.equal(frames.at(-1).timestamp, 100010, 'retain the declared 10 ms audio offset');
   }
-  assert.equal(flow.media.length, 6, 'the final timestamp group stays pending until the next frame');
-  assert.deepEqual(
-    flow.media.map((frame) => Math.round((frame.timestamp - 100000) * 90)),
-    [24000, 12000, 18000, 42000, 30000, 36000],
-  );
-  assert.deepEqual(
-    flow.media.map((frame) => frame.nals[0][1]),
-    [0, 1, 2, 3, 4, 5],
-  );
 });
+
+for (let [deltas, expected, secondIDR = false] of [
+  [
+    [24000, -12000, 6000],
+    [12000, 0, 6000],
+  ],
+  [
+    [12000, -12000, 6000],
+    [12000, 0, 6000],
+  ],
+  [
+    [0, 6000, -3000, 6000],
+    [0, 6000, 3000, 9000],
+  ],
+  [[0, 9000, -6000, 6000], [0, 9000, 3000, 9000], true],
+]) {
+  test('NexusTalk resolves startup timing before output: ' + deltas.join('/'), async (context) => {
+    let flow = setup(context);
+    let socket = await open(flow);
+    begin(socket);
+    for (let [index, timestampDelta] of deltas.entries()) {
+      socket.emit(
+        'data',
+        packet(204, 'PlaybackPacket', {
+          channelId: 1,
+          timestampDelta,
+          payload: Buffer.from([index === 0 || (secondIDR === true && index === 1) ? 0x65 : 0x41, index]),
+        }),
+      );
+    }
+    await flow.transport.close();
+    assert.deepEqual(
+      flow.media.map((frame) => Math.round((frame.timestamp - 100000) * 90)),
+      expected,
+    );
+  });
+}
+
+// Independent protobuf bytes: uint32 wire tags 6 (SSRC) and 7 (RTP epoch).
+test('NexusTalk channel RTP fields match provider wire tags', () => {
+  let Type = root.lookupType('nest.nexustalk.v1.PlaybackBegin.Channels');
+  let decoded = Type.decode(Buffer.from([0x30, 0x96, 0x01, 0x38, 0xac, 0x02]));
+  assert.equal(decoded.udpSsrc, 150);
+  assert.equal(decoded.rtpStartTime, 300);
+});
+
+for (let [sampleRate, frequency] of [
+  [48000, 3],
+  [44100, 4],
+  [16000, 8],
+]) {
+  test('NexusTalk interleaved 15-minute A/V clocks retain exact ticks at ' + sampleRate + ' Hz', async (context) => {
+    let flow = setup(context);
+    let socket = await open(flow);
+    let epoch = 1794040000000;
+    let videoBase = epoch + 0.125;
+    let audioBase = epoch + 123.456;
+    socket.emit('data', packet(200));
+    socket.emit(
+      'data',
+      packet(202, 'PlaybackBegin', {
+        sessionId: 7,
+        channels: [
+          { channelId: 1, codec: 'H264', sampleRate: 90000, startTime: videoBase / 1000 },
+          { channelId: 2, codec: 'AAC', sampleRate, startTime: audioBase / 1000 },
+        ],
+      }),
+    );
+    let events = [{ type: 'video', ticks: 9000 }];
+    let videoTicks = 9000;
+    // Three five-minute segments use 15, 20 and 30 fps. Reference/B/B order
+    // deliberately walks backwards within each group instead of flattening PTS.
+    for (let groupMs of [200, 150, 100]) {
+      let groupTicks = groupMs * 90;
+      for (let elapsed = 0; elapsed < 300000; elapsed += groupMs) {
+        for (let offset of [groupTicks, groupTicks / 3, (groupTicks * 2) / 3]) {
+          events.push({ type: 'video', ticks: videoTicks + offset });
+        }
+        videoTicks += groupTicks;
+      }
+    }
+    for (let ticks = 3072; ticks < 3072 + sampleRate * 900; ticks += 1024) {
+      events.push({ type: 'audio', ticks });
+    }
+    let expected = {
+      video: events.filter((event) => event.type === 'video').map((event) => event.ticks),
+      audio: events.filter((event) => event.type === 'audio').map((event) => event.ticks - 3072),
+    };
+    let watermark = {};
+    for (let event of events) {
+      let milliseconds = (event.ticks * 1000) / (event.type === 'video' ? 90000 : sampleRate);
+      watermark[event.type] = Math.max(watermark[event.type] ?? -Infinity, milliseconds);
+      event.arrival = 1000 + Math.floor(watermark[event.type] / 250) * 250 + (event.type === 'video' ? 70 : 0);
+    }
+    events.sort((left, right) => left.arrival - right.arrival);
+    let audio = adts(Buffer.from([0x21, 0x10]), { frequency });
+    let previous = { video: 0, audio: 0 };
+    let arrival = 0;
+    for (let event of events) {
+      context.mock.timers.tick(event.arrival - arrival);
+      arrival = event.arrival;
+      socket.emit(
+        'data',
+        packet(204, 'PlaybackPacket', {
+          sessionId: 7,
+          channelId: event.type === 'video' ? 1 : 2,
+          timestampDelta: event.ticks - previous[event.type],
+          payload: event.type === 'audio' ? audio : Buffer.from([previous.video === 0 ? 0x65 : 0x41, 1]),
+        }),
+      );
+      previous[event.type] = event.ticks;
+    }
+    await flow.transport.close();
+    for (let type of ['video', 'audio']) {
+      let frames = flow.media.filter((frame) => frame.type === type);
+      let base = type === 'video' ? videoBase : audioBase;
+      let rate = type === 'video' ? 90000 : sampleRate;
+      assert.equal(frames.length, expected[type].length);
+      // Recover the independently generated integer clock, including the first
+      // normalised audio opening delta and fractional channel anchors.
+      assert.deepEqual(
+        frames.map((frame) => Math.round(((frame.timestamp - base) * rate) / 1000)),
+        expected[type],
+      );
+    }
+
+    // Restart both channels with new anchors and a different audio clock rate.
+    let count = flow.media.length;
+    socket = await open(flow);
+    let nextRate = sampleRate === 16000 ? 48000 : 16000;
+    socket.emit(
+      'data',
+      packet(202, 'PlaybackBegin', {
+        sessionId: 8,
+        channels: [
+          { channelId: 1, codec: 'H264', sampleRate: 90000, startTime: (epoch + 1800000) / 1000 },
+          { channelId: 2, codec: 'AAC', sampleRate: nextRate, startTime: (epoch + 1800125) / 1000 },
+        ],
+      }),
+    );
+    socket.emit('data', packet(204, 'PlaybackPacket', { channelId: 1, timestampDelta: 9000, payload: Buffer.from([0x65, 1]) }));
+    socket.emit(
+      'data',
+      packet(204, 'PlaybackPacket', {
+        channelId: 2,
+        timestampDelta: 1024,
+        payload: adts(Buffer.from([0x21, 0x10]), { frequency: nextRate === 16000 ? 8 : 3 }),
+      }),
+    );
+    await flow.transport.close();
+    let restarted = flow.media.slice(count);
+    assert.equal(restarted.length, 2);
+    assert.equal(restarted.find((frame) => frame.type === 'video').timestamp, epoch + 1800100);
+    assert.equal(restarted.find((frame) => frame.type === 'audio').timestamp, epoch + 1800125);
+  });
+}
+
+for (let [codec, rate] of [
+  ['H264', 90000],
+  ['AAC', 44100],
+]) {
+  test('NexusTalk ' + codec + ' tick accumulation crosses 32-bit boundaries without wrapping', async (context) => {
+    let flow = setup(context);
+    let socket = await open(flow);
+    let epoch = 1794040000000;
+    socket.emit(
+      'data',
+      packet(202, 'PlaybackBegin', {
+        sessionId: 7,
+        channels: [{ channelId: 1, codec, sampleRate: rate, startTime: epoch / 1000 }],
+      }),
+    );
+    let ticks = 0n;
+    let expected = [];
+    for (let delta of [2147483647, 2147483647, 2147483647, 9000, -6000, 3000]) {
+      ticks += BigInt(codec === 'AAC' && expected.length === 0 ? 0 : delta);
+      expected.push(Number(ticks));
+      socket.emit(
+        'data',
+        packet(204, 'PlaybackPacket', {
+          channelId: 1,
+          timestampDelta: delta,
+          payload: codec === 'AAC' ? adts(Buffer.from([0x21, 0x10]), { frequency: 4 }) : Buffer.from([0x65, 1]),
+        }),
+      );
+    }
+    await flow.transport.close();
+    assert.deepEqual(
+      flow.media.map((frame) => Math.round(((frame.timestamp - epoch) * rate) / 1000)),
+      expected,
+    );
+  });
+}

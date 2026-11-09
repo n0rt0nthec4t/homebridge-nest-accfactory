@@ -225,6 +225,128 @@ test('recording merges retained audio and video by source time and drops audio b
   );
 });
 
+for (let codec of ['aac', 'opus']) {
+  for (let [expire, videoDelay, phase = 'prepare'] of [
+    [false, 0],
+    [false, 200],
+    [true, 0],
+    [true, 200],
+    [true, 0, 'before-first-write'],
+    [true, 0, 'after-first-write'],
+  ]) {
+    test(
+      'recording acquisition preserves A/V after new arrivals; codec=' +
+        codec +
+        ' expiry=' +
+        expire +
+        ' videoDelay=' +
+        videoDelay +
+        ' phase=' +
+        phase,
+      async (context) => {
+        context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+        let { adts } = await import('./helpers/aac-fixtures.js');
+        let { streamer, transport } = setup(context, {}, { bufferDuration: 2000, ffmpegDebug: true });
+        transport.audio.codec = codec;
+        let frameDuration = codec === 'aac' ? 1024 / 48 : 20;
+        let audio = codec === 'aac' ? adts(Buffer.from([0x21, 0x10, 0x56])) : Buffer.from([0xf8, 0xff, 0xfe]);
+        await streamer.onMessage(Streamer.MESSAGE_TYPE.START_BUFFER);
+        let events = [];
+        for (let group = 0; group < (expire === true ? 6 : 2); group++) {
+          // Reference/B/B decode order has different PTS and delivery order.
+          for (let offset of [0, 200, 66, 133, 400, 266, 333, 600, 466, 533, 800, 666, 733]) {
+            events.push({ type: 'video', timestamp: 100000 + group * 1000 + offset, keyFrame: offset === 0, group });
+          }
+        }
+        for (let index = 0; index * frameDuration < (expire === true ? 6000 : 2000); index++) {
+          events.push({ type: 'audio', timestamp: 100000 + index * frameDuration });
+        }
+        let watermark = {};
+        for (let event of events) {
+          watermark[event.type] = Math.max(watermark[event.type] ?? -Infinity, event.timestamp);
+          event.arrival = watermark[event.type] + (event.type === 'video' ? videoDelay : 0);
+        }
+        events.sort((left, right) => left.arrival - right.arrival);
+        let emit = (event) => {
+          if (event.type === 'video') {
+            transport.emitMedia({
+              type: 'video',
+              codec: 'h264',
+              timestamp: event.timestamp,
+              keyFrame: event.keyFrame,
+              data: Buffer.from([0, 0, 0, 1, event.keyFrame === true ? 0x65 : 0x61, event.group + 1]),
+              codecConfig: event.keyFrame === true ? { sps: Buffer.from([0x67, 0x42]), pps: Buffer.from([0x68, 1]) } : undefined,
+            });
+          } else {
+            transport.emitMedia({ type: 'audio', timestamp: event.timestamp, data: audio });
+          }
+        };
+        for (let event of events.filter((event) => event.arrival < 101000)) {
+          emit(event);
+        }
+        let prepared = Promise.withResolvers();
+        let release = Promise.withResolvers();
+        hooks.prepare = async () => {
+          prepared.resolve();
+          await release.promise;
+        };
+        let starting = streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, {
+          sessionID: 'acquiring',
+          options: { recordTime: phase === 'after-first-write' ? 100000 : 100100, includeAudio: true },
+        });
+        await prepared.promise;
+        let muxer = hooks.instances[0];
+        let blocked = false;
+        if (phase !== 'prepare') {
+          release.resolve();
+          await starting;
+          if (phase === 'after-first-write') {
+            advance(context, 400);
+            assert.ok(media(muxer, 'audio').length > 0);
+          }
+          let original = muxer.blocked.bind(muxer);
+          context.mock.method(muxer, 'blocked', (track) => blocked === true || original(track));
+          blocked = true;
+        }
+        let audioBefore = media(muxer, 'audio').length;
+        let videoBefore = media(muxer).length;
+        // The timeline can move or evict the requested start while preparation
+        // is pending. Retain original track timestamps through the new IDR.
+        for (let event of events.filter((event) => event.arrival >= 101000)) {
+          emit(event);
+        }
+        release.resolve();
+        await starting;
+        if (blocked === true) {
+          advance(context, 1000);
+          blocked = false;
+          muxer.resume('video');
+          muxer.resume('audio');
+        }
+        advance(context, phase === 'prepare' ? 1000 : 6500);
+        let firstIDR = media(muxer)
+          .slice(videoBefore)
+          .find(({ data }) => (data[12] & 31) === 5);
+        let firstVideoTime = expire === true ? 104000 : 101000;
+        assert.equal(firstIDR.data[13], expire === true ? 5 : 2, 'recording must recover at the expected retained keyframe');
+        let expectedAudio = events.filter((event) => event.type === 'audio' && event.timestamp >= firstVideoTime);
+        let relativeStart = muxer.audioTiming.startOffsetMs - muxer.videoTiming.startOffsetMs;
+        if (audioBefore > 0) {
+          let packets = media(muxer, 'audio');
+          let audioTicks = (packets[audioBefore].data.readUInt32BE(4) - packets[0].data.readUInt32BE(4)) >>> 0;
+          let videoTicks = (firstIDR.data.readUInt32BE(4) - media(muxer)[0].data.readUInt32BE(4)) >>> 0;
+          relativeStart = audioTicks / 48 - videoTicks / 90;
+        }
+        assert.ok(Math.abs(relativeStart - (expectedAudio[0].timestamp - firstVideoTime)) < 0.001, 'acquisition shifted the track starts');
+        assert.equal(muxer.audioTiming.units, audioBefore + expectedAudio.length);
+        assert.equal(muxer.audioTiming.gaps, audioBefore > 0 ? 1 : 0);
+        assert.equal(muxer.audioTiming.overlaps, 0);
+        assert.equal(muxer.closed, false);
+      },
+    );
+  }
+}
+
 test('VFR source intervals survive accelerated retained recording playback', async (context) => {
   context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
   let { streamer, transport } = setup(context, {}, { bufferDuration: 8000 });

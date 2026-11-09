@@ -16,7 +16,7 @@
 // - Device lifecycle and shared HomeKit helpers are provided by HomeKitDevice.js
 // - Eve Home integration is provided via HomeKitHistory.js
 //
-// Code version 2026.05.10
+// Code version 2026.11.09
 // Mark Hulskamp
 'use strict';
 
@@ -33,7 +33,7 @@ HomeKitDevice.EVEHOME = HomeKitHistory;
 export default (api) => {
   // Validate Homebridge API object
   if (typeof api?.registerPlatform !== 'function') {
-    throw new Error('NestAccfactory: Invalid Homebridge API object - registerPlatform method not found');
+    throw new Error(HomeKitDevice.PLATFORM_NAME + ': Invalid Homebridge API object - registerPlatform method not found');
   }
 
   // Register our platform with Homebridge

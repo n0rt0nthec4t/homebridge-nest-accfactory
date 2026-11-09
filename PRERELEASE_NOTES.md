@@ -4,6 +4,25 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.5-beta.2 (2026/11/09)
+
+### Changed
+
+- Update HomeKitDevice to `2026.11.09`
+
+### Removed
+
+- Remove the motion sensor from Protects running 5.x firmware because occupancy reporting is unreliable; existing HomeKit automations using that sensor need updating
+
+### Fixed
+
+- Display weather sunrise and sunset in the home's reported timezone, including daylight-saving changes; retain the host timezone when unavailable or invalid
+- Anchor the first NexusTalk audio packet to its declared channel start, matching Nest playback when its opening delta is non-zero; retain subsequent packet intervals and gaps
+- Correct NexusTalk startup video timing for streams beginning with leading B-pictures, which could leave video behind audio by a constant offset
+- Correct NexusTalk UDP SSRC and RTP start-time protobuf field definitions
+
+Recording audio/video sync still needs verification on physical cameras and in Apple Home recordings.
+
 ## v0.4.5-beta.1 (2026/11/07)
 
 ### Changed

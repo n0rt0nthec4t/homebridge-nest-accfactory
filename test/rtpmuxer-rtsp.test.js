@@ -121,6 +121,79 @@ test('SDP describes actual audio, and PLAY gates RTP delivery on the owned liste
   assert.equal((await client.request('GET_PARAMETER', output.input.url, ['Session: ' + session])).status, 200);
 });
 
+for (let [sampleRate, config] of [
+  [48000, '1188'],
+  [44100, '1208'],
+  [16000, '1408'],
+]) {
+  for (let offsetMs of [3, 51, -40]) {
+    for (let audioFirst of [false, true]) {
+      test(
+        'RTSP wire A/V alignment survives late delivery and rollover; rate=' +
+          sampleRate +
+          ' offset=' +
+          offsetMs +
+          ' audioFirst=' +
+          audioFirst,
+        { timeout: 5000 },
+        async (context) => {
+          let unixEpoch = 1794042908232;
+          let sourceEpoch = 1794041394709;
+          let now = unixEpoch;
+          let output = new RTPMuxer({
+            audio: { codec: 'aac-lc', sampleRate, channels: 1, config: Buffer.from(config, 'hex') },
+            unixNow: () => now,
+          });
+          let client = await connect(context, output);
+          let response = await play(client, output, true);
+          assert.equal(response.status, 200);
+          let origins = response.headers
+            .get('rtp-info')
+            .split(',')
+            .map((value) => Number(/rtptime=(\d+)/.exec(value)[1]));
+          output.setSourceEpoch(sourceEpoch);
+          // Advance the simulated clock, not real time. The last point forces
+          // both RTP clocks through rollover regardless of their random origins.
+          for (let elapsed of [0, 191333, 900000, 86400000]) {
+            let before = client.packets.length;
+            now = unixEpoch + elapsed;
+            let sendVideo = () => output.writeVideo(Buffer.from([0x65, 1]), sourceEpoch + elapsed);
+            let sendAudio = () => output.writeAudio(Buffer.from([0x21, 0x10]), sourceEpoch + elapsed + offsetMs);
+            (audioFirst === true ? sendAudio : sendVideo)();
+            // The second track arrives late but must retain its source time.
+            now += 1200;
+            (audioFirst === true ? sendVideo : sendAudio)();
+            output.tick();
+            await waitFor(() => client.packets.length >= before + (elapsed === 0 ? 6 : 4));
+            let packets = client.packets.slice(before);
+            let presentation = [];
+            for (let [channel, rate, origin, expected] of [
+              [4, 90000, origins[0], 0],
+              [6, sampleRate, origins[1], offsetMs],
+            ]) {
+              let media = packets.find((packet) => packet.channel === channel).data;
+              let report = packets.filter((packet) => packet.channel === channel + 1).at(-1).data;
+              assert.equal(
+                (media.readUInt32BE(4) - origin) >>> 0,
+                Math.round(((elapsed + expected) * rate) / 1000) >>> 0,
+                'PLAY origins must describe the same source epoch for both tracks',
+              );
+              // Recover presentation time as a receiver would, using the wire
+              // NTP/RTP correspondence rather than muxer diagnostic counters.
+              let reportUnixMs = (report.readUInt32BE(8) - 2208988800) * 1000 + (report.readUInt32BE(12) * 1000) / 0x100000000;
+              let signedTicks = (media.readUInt32BE(4) - report.readUInt32BE(16)) | 0;
+              let recovered = reportUnixMs - unixEpoch + (signedTicks * 1000) / rate;
+              assert.ok(Math.abs(recovered - elapsed - expected) < 0.03, 'wire presentation time changed: ' + recovered);
+              presentation.push(recovered);
+            }
+            assert.ok(Math.abs(presentation[1] - presentation[0] - offsetMs) < 0.03, 'wire A/V offset changed');
+          }
+        },
+      );
+    }
+  }
+}
+
 test('independent outputs bind distinct ports and reject foreign paths, sessions and transports', { timeout: 5000 }, async (context) => {
   const first = new RTPMuxer();
   const second = new RTPMuxer();

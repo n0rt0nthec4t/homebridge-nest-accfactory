@@ -60,7 +60,7 @@ function hasSafetySummaryFailure(raw, failureType) {
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.PROTECT;
-  static VERSION = '2026.10.28'; // Code version
+  static VERSION = '2026.11.08'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -80,6 +80,19 @@ export default class NestProtect extends HomeKitDevice {
       }
     }
     // End of pre-0.4.5-alpha.10 cleanup
+
+    // Pre-0.4.5-beta.2 cleanup
+    // Protect 5.x firmware no longer reliably reports occupancy through either API.
+    // Remove cached motion services while preserving the accessory and alarm services.
+    if (this.deviceData.softwareVersion?.startsWith('5.') === true) {
+      this.accessory.services
+        .filter((service) => service.UUID === this.hap.Service.MotionSensor.UUID)
+        .forEach((service) => {
+          this.removeService(service);
+        });
+      this.motionService = undefined;
+    }
+    // End of pre-0.4.5-beta.2 cleanup
 
     // Setup the smoke sensor service if not already present on the accessory
     this.smokeService = this.addService(this.hap.Service.SmokeSensor, '', 1, {
@@ -113,8 +126,8 @@ export default class NestProtect extends HomeKitDevice {
     // Setup battery service if not already present on the accessory
     this.batteryService = this.addService(this.hap.Service.Battery, '', 1, { hidden: true });
 
-    // Setup motion service if not already present on the accessory and Nest protect is a wired version
-    if (this.deviceData?.wired_or_battery === false) {
+    // Only wired Protects outside the affected 5.x firmware series expose motion.
+    if (this.deviceData?.wired_or_battery === false && this.deviceData.softwareVersion?.startsWith('5.') !== true) {
       this.motionService = this.addService(this.hap.Service.MotionSensor, '', 1);
       this.motionService.updateCharacteristic(this.hap.Characteristic.MotionDetected, false); // No motion initially
       this.postSetupDetail('With motion sensor');

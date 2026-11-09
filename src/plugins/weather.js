@@ -50,7 +50,7 @@ import { DATA_SOURCE, DEVICE_TYPE, MAX_ELEVATION, MIN_ELEVATION, NESTLABS_MAC_PR
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.WEATHER;
-  static VERSION = '2026.10.26'; // Code version
+  static VERSION = '2026.11.09'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -182,16 +182,20 @@ export default class NestWeather extends HomeKitDevice {
       this.temperatureService.testCharacteristic(this.hap.Characteristic.SunriseTime) === true &&
       deviceData?.sunrise !== undefined
     ) {
-      let dateString = new Date(deviceData.sunrise * 1000).toLocaleTimeString();
-      this.temperatureService.updateCharacteristic(this.hap.Characteristic.SunriseTime, dateString);
+      this.temperatureService.updateCharacteristic(
+        this.hap.Characteristic.SunriseTime,
+        new Date(deviceData.sunrise * 1000).toLocaleTimeString(undefined, { timeZone: deviceData.timezone ?? undefined }),
+      );
     }
     if (
       this.hap.Characteristic?.SunsetTime !== undefined &&
       this.temperatureService.testCharacteristic(this.hap.Characteristic.SunsetTime) === true &&
       deviceData?.sunset !== undefined
     ) {
-      let dateString = new Date(deviceData.sunset * 1000).toLocaleTimeString();
-      this.temperatureService.updateCharacteristic(this.hap.Characteristic.SunsetTime, dateString);
+      this.temperatureService.updateCharacteristic(
+        this.hap.Characteristic.SunsetTime,
+        new Date(deviceData.sunset * 1000).toLocaleTimeString(undefined, { timeZone: deviceData.timezone ?? undefined }),
+      );
     }
 
     // If we have the history service running, record temperature and humidity every 5mins
@@ -303,6 +307,30 @@ const WEATHER_FIELD_MAP = {
   },
 
   // Optional weather detail fields
+  timezone: {
+    // Null explicitly clears a previously reported zone so updates can return to the host timezone.
+    merge: ({ values }) => values.google ?? null,
+    google: {
+      fields: [],
+      translate: ({ raw }) => {
+        // Observe labels can vary; identify TimezoneTrait by its schema field on this home only.
+        let zones = new Set(Object.values(raw?.value ?? {}).flatMap((trait) => {
+          let zone = trait?.timezoneName?.value ?? trait?.timezoneName;
+          if (typeof zone !== 'string' || zone.trim() === '' || /^[+-]/.test(zone.trim()) === true) {
+            return [];
+          }
+          try {
+            return [new Intl.DateTimeFormat(undefined, { timeZone: zone.trim() }).resolvedOptions().timeZone];
+          } catch {
+            // Ignore invalid upstream names without blocking other valid timezone traits.
+            return [];
+          }
+        }));
+        return zones.size === 1 ? zones.values().next().value : undefined;
+      },
+    },
+  },
+
   condition: {
     google: {
       fields: ['weather'],
@@ -382,7 +410,8 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
           let fields = changedData.get(object_key)?.fields;
           if (
             fields instanceof Set !== true ||
-            ['structure_info', 'structure_location', 'weather'].some((field) => fields.has(field)) === false
+            (['structure_info', 'structure_location', 'weather', 'time_zone'].some((field) => fields.has(field)) === false &&
+              [...fields].some((field) => value?.value?.[field]?.timezoneName !== undefined) === false)
           ) {
             return;
           }

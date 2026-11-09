@@ -113,8 +113,8 @@ message PlaybackBegin {
         uint32 sampleRate = 3;
         bytes privateData = 4;
         double startTime = 5;
-        double rtpStartTime = 6;
-        uint32 udpSsrc = 7;
+        uint32 udpSsrc = 6;
+        uint32 rtpStartTime = 7;
         Profile profile = 8;
     }
     uint32 sessionId = 1;

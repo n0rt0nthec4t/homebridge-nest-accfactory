@@ -64,3 +64,56 @@ for (let order of [
     );
   });
 }
+
+test('weather resolves timezone-only changes from its own home and clears unusable zones', () => {
+  let raw = {
+    STRUCTURE_HOME: { source: DATA_SOURCE.GOOGLE, value: structuredClone(traits) },
+    STRUCTURE_OTHER: {
+      source: DATA_SOURCE.GOOGLE,
+      value: {
+        ...structuredClone(traits),
+        structure_info: { rtsStructureId: 'structure.other' },
+        time_zone: { timezoneName: 'Europe/London' },
+      },
+    },
+  };
+  assert.equal(processRawData(undefined, raw, config)[serial].data.timezone, null);
+  for (let label of ['time_zone', 'home_timezone']) {
+    for (let [reported, expected] of [
+      [{ value: 'Australia/Sydney' }, 'Australia/Sydney'],
+      ['America/Phoenix', 'America/Phoenix'],
+      [{ value: 'Not/AZone' }, null],
+      [{ value: '' }, null],
+      [{ value: '+05:00' }, null],
+      [null, null],
+    ]) {
+      raw.STRUCTURE_HOME.value[label] = { timezoneName: reported };
+      let devices = processRawData(undefined, raw, config, undefined, new Map([['STRUCTURE_HOME', { fields: new Set([label]) }]]));
+      assert.equal(devices[serial].full, true);
+      assert.equal(devices[serial].data.timezone, expected);
+      assert.equal(devices[serial].data.current_temperature, 20);
+    }
+    delete raw.STRUCTURE_HOME.value[label];
+  }
+  let devices = processRawData(undefined, raw, config);
+  let other = Object.values(devices).find((device) => device.data.nest_google_home_uuid === 'STRUCTURE_OTHER');
+  assert.equal(other.data.timezone, 'Europe/London');
+  assert.equal(devices[serial].data.timezone, null);
+  raw.STRUCTURE_HOME.value.time_zone = {};
+  devices = processRawData(undefined, raw, config, undefined, new Map([['STRUCTURE_HOME', { fields: new Set(['time_zone']) }]]));
+  assert.equal(devices[serial].data.timezone, null);
+});
+
+test('weather does not choose arbitrarily between conflicting home timezone traits', () => {
+  let raw = {
+    STRUCTURE_HOME: {
+      source: DATA_SOURCE.GOOGLE,
+      value: {
+        ...structuredClone(traits),
+        time_zone: { timezoneName: { value: 'Australia/Sydney' } },
+        other_timezone: { timezoneName: 'America/Phoenix' },
+      },
+    },
+  };
+  assert.equal(processRawData(undefined, raw, config)[serial].data.timezone, null);
+});

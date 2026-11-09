@@ -257,6 +257,48 @@ for (let wired of [true, false]) {
   }
 }
 
+for (let softwareVersion of ['3.6.8', '5.0.31', '5.0.38', '5.1.0', '6.0.0']) {
+  test('Protect motion availability follows firmware series: ' + softwareVersion, async (context) => {
+    let flow = await setup(context, 'protect', { wired_or_battery: false, softwareVersion, logMotionEvents: true });
+    let affected = softwareVersion.startsWith('5.');
+    assert.equal(flow.device.motionService === undefined, affected);
+    assert.equal(flow.device.accessory.getService(hap.Service.MotionSensor) === undefined, affected);
+    let logs = [];
+    flow.device.log = { info: (...args) => logs.push(args) };
+    await flow.device.update({ detected_motion: true });
+    assert.equal(logs.length, affected === true ? 0 : 1);
+    assert.equal(flow.history.length, affected === true ? 0 : 1);
+    if (affected === false) {
+      assert.equal(value(flow.device.motionService, C.MotionDetected), true);
+    }
+    assert.deepEqual(flow.warnings, []);
+  });
+}
+
+test('Protect removes cached motion on 5.x without replacing other services', async (context) => {
+  let flow = await setup(context, 'protect', { wired_or_battery: false, softwareVersion: '3.6.8', logMotionEvents: true });
+  let accessory = flow.device.accessory;
+  let services = [flow.device.smokeService, flow.device.carbonMonoxideService, flow.device.batteryService];
+  let motion = flow.device.motionService;
+  let logs = [];
+  flow.device.log = { info: (...args) => logs.push(args) };
+  flow.device.deviceData.softwareVersion = '5.0.38';
+  await flow.device.onAdd();
+  await flow.device.update({ detected_motion: false });
+  await flow.device.update({ detected_motion: true, smoke_status: true, co_status: true });
+  await flow.device.onShutdown();
+  assert.equal(flow.device.accessory, accessory);
+  assert.equal(flow.device.motionService, undefined);
+  assert.equal(accessory.services.includes(motion), false);
+  assert.equal(accessory.getService(hap.Service.MotionSensor), undefined);
+  assert.deepEqual([flow.device.smokeService, flow.device.carbonMonoxideService, flow.device.batteryService], services);
+  assert.equal(value(flow.device.smokeService, C.SmokeDetected), C.SmokeDetected.SMOKE_DETECTED);
+  assert.equal(value(flow.device.carbonMonoxideService, C.CarbonMonoxideDetected), C.CarbonMonoxideDetected.CO_LEVELS_ABNORMAL);
+  assert.deepEqual(logs, []);
+  assert.deepEqual(flow.history, []);
+  assert.deepEqual(flow.warnings, []);
+});
+
 for (let [name, primary] of [
   ['thermostat', 'thermostatService'],
   ['heatlink', 'thermostatService'],
@@ -1006,6 +1048,32 @@ test('weather optional environmental characteristics publish values and preserve
   await flow.device.update({ current_temperature: 20 });
   assert.equal(value(service, C.Condition), 'Clear');
   assert.equal(flow.device.temperatureService, service);
+  // A home can differ from the host zone; Sydney changes offset seasonally, Phoenix does not.
+  for (let [date, timezone, offset] of [
+    ['2026-01-15T00:00:00Z', 'Australia/Sydney', 11],
+    ['2026-07-15T00:00:00Z', 'Australia/Sydney', 10],
+    ['2026-01-15T00:00:00Z', 'America/Phoenix', -7],
+    ['2026-07-15T00:00:00Z', 'America/Phoenix', -7],
+  ]) {
+    let sunrise = Date.parse(date) / 1000;
+    let sunset = sunrise + 12 * 3600;
+    await flow.device.update({ timezone, sunrise, sunset });
+    for (let [name, timestamp] of [['SunriseTime', sunrise], ['SunsetTime', sunset]]) {
+      let expected = new Date((timestamp + offset * 3600) * 1000).toLocaleTimeString(undefined, { timeZone: 'UTC' });
+      assert.equal(value(service, C[name]), expected);
+    }
+  }
+  // Refresh the same timestamps on zone-only changes, including clearing an invalid/missing mapped zone.
+  for (let timezone of ['Australia/Sydney', 'America/Phoenix', null]) {
+    await flow.device.update({ timezone });
+    for (let [name, field] of [['SunriseTime', 'sunrise'], ['SunsetTime', 'sunset']]) {
+      assert.equal(
+        value(service, C[name]),
+        new Date(flow.device.deviceData[field] * 1000).toLocaleTimeString(undefined, { timeZone: timezone ?? undefined }),
+      );
+    }
+    assert.equal(flow.device.temperatureService, service);
+  }
   assert.deepEqual(flow.warnings, []);
   // Remove while extension definitions still exist; the test cleanup restores globals afterwards.
   await flow.device.remove();
