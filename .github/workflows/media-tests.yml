@@ -20,11 +20,18 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      # Keep the media binary separate from the project's dependency installation.
+      # Download the pinned Linux x64 binary directly: the npm installer can exit successfully without installing it.
       - name: Install Homebridge FFmpeg
-        run: npm install --prefix "$RUNNER_TEMP/media-ffmpeg" --no-save --package-lock=false ffmpeg-for-homebridge@2.2.2
+        run: |
+          mkdir -p "$RUNNER_TEMP/media-ffmpeg"
+          curl --fail --location --show-error --retry 2 --connect-timeout 30 --max-time 180 \
+            https://github.com/homebridge/ffmpeg-for-homebridge/releases/download/v2.2.2/ffmpeg-alpine-x86_64.tar.gz \
+            --output "$RUNNER_TEMP/media-ffmpeg/ffmpeg.tar.gz"
+          tar -xzf "$RUNNER_TEMP/media-ffmpeg/ffmpeg.tar.gz" -C "$RUNNER_TEMP/media-ffmpeg" \
+            --strip-components=4 ./usr/local/bin/ffmpeg
+          chmod +x "$RUNNER_TEMP/media-ffmpeg/ffmpeg"
       # A failed install must fail this job rather than turn its cases into skips.
       - name: Verify media binary
-        run: '"$RUNNER_TEMP/media-ffmpeg/node_modules/ffmpeg-for-homebridge/ffmpeg" -version'
+        run: '"$RUNNER_TEMP/media-ffmpeg/ffmpeg" -version'
       - name: Run real media regressions
-        run: FFMPEG_TEST_BINARY="$RUNNER_TEMP/media-ffmpeg/node_modules/ffmpeg-for-homebridge/ffmpeg" node --test test/rtpmuxer-media.test.js
+        run: FFMPEG_TEST_BINARY="$RUNNER_TEMP/media-ffmpeg/ffmpeg" node --test test/rtpmuxer-media.test.js
