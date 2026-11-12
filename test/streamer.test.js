@@ -198,7 +198,7 @@ test('recording reads retained prebuffer while a later live view starts at the l
   advance(context, 500);
   assert.equal(media(hooks.instances[1]).length, 3);
 });
-test('recording merges retained audio and video by source time and drops audio before its first IDR', async (context) => {
+test('recording keeps preceding IDR and its audio in the pre-roll window', async (context) => {
   context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
   let { streamer, transport } = setup(context, {}, { bufferDuration: 8000 });
   await streamer.onMessage(Streamer.MESSAGE_TYPE.START_BUFFER, { options: {} });
@@ -216,14 +216,86 @@ test('recording merges retained audio and video by source time and drops audio b
   });
   advance(context, 500);
   let packets = hooks.instances[0].packets.filter((packet) => packet.kind === 'rtp');
-  // The first selected video is a delta frame. Audio from before the next IDR
-  // must not slip through merely because the entire video backlog ran first.
-  assert.equal(media(hooks.instances[0], 'audio').length, 2);
+  // Retain the earlier IDR and audio rather than shortening the requested pre-roll.
+  assert.equal(media(hooks.instances[0], 'audio').length, 3);
   assert.deepEqual(
     packets.map(({ track }) => track),
-    ['video', 'video', 'video', 'audio', 'video', 'audio'],
+    ['video', 'video', 'video', 'video', 'audio', 'video', 'audio', 'video', 'audio'],
   );
 });
+
+for (let [requested, selected, frames] of [
+  [99900, 100000, 4],
+  [100000, 100000, 4],
+  [100100, 100000, 4],
+  [100200, 100200, 2],
+  [100201, 100200, 2],
+  [101000, 100200, 2],
+]) {
+  test('recording selects retained IDR for requested time ' + requested, async (context) => {
+    context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+    let { streamer, transport } = setup(context, {}, { bufferDuration: 8000, ffmpegDebug: true });
+    await streamer.onMessage(Streamer.MESSAGE_TYPE.START_BUFFER);
+    addVideo(transport, 100000);
+    addVideo(transport, 100100, false);
+    addVideo(transport, 100200);
+    addVideo(transport, 100300, false);
+    for (let timestamp of [100020, 100120, 100220, 100320]) {
+      transport.emitMedia({ type: 'audio', timestamp, data: Buffer.from([0xf8, 0xff, 0xfe]) });
+    }
+    let written = [];
+    let writeVideo = RTPMuxer.prototype.writeVideo;
+    context.mock.method(RTPMuxer.prototype, 'writeVideo', function (data, timestamp, bootstrap) {
+      written.push(timestamp);
+      return writeVideo.call(this, data, timestamp, bootstrap);
+    });
+    await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, {
+      sessionID: 'preceding-idr', options: { recordTime: requested, includeAudio: true },
+    });
+    advance(context, 500);
+    assert.equal(written[0], selected);
+    assert.equal(written.length, frames);
+    let muxer = hooks.instances[0];
+    assert.equal(muxer.audioTiming.units, frames);
+    assert.ok(Math.abs(muxer.audioTiming.startOffsetMs - muxer.videoTiming.startOffsetMs - 20) < 0.001);
+  });
+}
+
+for (let codec of ['aac', 'opus']) {
+  for (let lateAudio of [false, true]) {
+    test('recording excludes pre-IDR ' + codec + ' regardless of arrival order: late=' + lateAudio, async (context) => {
+      context.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 });
+      let { adts } = await import('./helpers/aac-fixtures.js');
+      let { streamer, transport } = setup(context, {}, { bufferDuration: 8000, ffmpegDebug: true });
+      transport.audio.codec = codec;
+      let payload = codec === 'aac' ? adts(Buffer.from([0x21, 0x10, 0x56])) : Buffer.from([0xf8, 0xff, 0xfe]);
+      await streamer.onMessage(Streamer.MESSAGE_TYPE.START_BUFFER);
+      addVideo(transport, 104100, false);
+      addVideo(transport, 106000);
+      addVideo(transport, 106200, false);
+      let audio = (timestamp) => transport.emitMedia({ type: 'audio', timestamp, data: payload });
+      audio(104000);
+      if (lateAudio === false) {
+        audio(105000);
+        audio(106020);
+      }
+      await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, {
+        sessionID: 'late-preroll',
+        options: { recordTime: 104100, includeAudio: true },
+      });
+      advance(context, 400);
+      let muxer = hooks.instances[0];
+      if (lateAudio === true) {
+        audio(105000);
+        audio(106020);
+        advance(context, 500);
+      }
+      assert.equal(media(muxer, 'audio').length, 1, 'late pre-IDR audio must be discarded just like buffered pre-IDR audio');
+      assert.ok(Math.abs(muxer.audioTiming.startOffsetMs - muxer.videoTiming.startOffsetMs - 20) < 0.001);
+      context.diagnostic('Selected IDR is 1900ms after the requested cut; accepted audio must remain 20ms after that IDR');
+    });
+  }
+}
 
 for (let codec of ['aac', 'opus']) {
   for (let [expire, videoDelay, phase = 'prepare'] of [
@@ -327,8 +399,8 @@ for (let codec of ['aac', 'opus']) {
         let firstIDR = media(muxer)
           .slice(videoBefore)
           .find(({ data }) => (data[12] & 31) === 5);
-        let firstVideoTime = expire === true ? 104000 : 101000;
-        assert.equal(firstIDR.data[13], expire === true ? 5 : 2, 'recording must recover at the expected retained keyframe');
+        let firstVideoTime = expire === true ? 104000 : 100000;
+        assert.equal(firstIDR.data[13], expire === true ? 5 : 1, 'recording must recover at the expected retained keyframe');
         let expectedAudio = events.filter((event) => event.type === 'audio' && event.timestamp >= firstVideoTime);
         let relativeStart = muxer.audioTiming.startOffsetMs - muxer.videoTiming.startOffsetMs;
         if (audioBefore > 0) {

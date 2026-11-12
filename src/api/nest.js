@@ -26,7 +26,7 @@
 // - connect() starts ingestion without a consumer; onData optionally reports committed changes
 // - Camera media streaming belongs to the separate camera transport modules
 //
-// Code version 2026.11.05
+// Code version 2026.11.10
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -122,6 +122,7 @@ export default class NestAPI {
     let account = session.account;
     let subscription = this.#subscription;
     let buckets = this.#buckets;
+    let requestToken = account.token;
 
     // Account identity and this exact run must both survive asynchronous work.
     let isCurrent = () => subscription !== undefined && this.#subscription === subscription && account.authorised === true;
@@ -157,7 +158,7 @@ export default class NestAPI {
         headers: {
           Referer: 'https://' + account.referer,
           Origin: 'https://' + account.referer,
-          Authorization: 'Basic ' + account.token,
+          Authorization: 'Basic ' + requestToken,
           Connection: 'keep-alive',
           'User-Agent': USER_AGENT,
           'Sec-Fetch-Mode': 'cors',
@@ -402,6 +403,17 @@ export default class NestAPI {
         // If we get a 401 Unauthorized or 403 Forbidden, wake the account
         // lifecycle so it can re-authorise and reschedule itself.
         if ((statusCode === 401 || statusCode === 403) && isCurrent() === true) {
+          // Nest long polls survive refresh. A rejection of their old token
+          // cannot invalidate the replacement credentials now shared by both APIs.
+          if (requestToken !== account.token) {
+            subscribeFailed = false;
+            log?.debug?.(
+              'Nest API rejected an earlier token for account "%s" with HTTP %s; retrying with refreshed credentials',
+              account.name,
+              statusCode,
+            );
+            return;
+          }
           log?.debug?.('Account "%s" is no longer authorised with the Nest API, will attempt to reconnect', account.name);
           this.#options.session?.markUnauthorised('nest-api-' + statusCode);
 

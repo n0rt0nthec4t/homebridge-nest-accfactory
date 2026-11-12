@@ -586,7 +586,8 @@ for (let reply of [{ error: 'TEMPORARY' }, { error: '' }]) {
     assert.equal(connection.authorised, false);
     assert.equal(connection.allowRetry, true);
     assert.equal(requests.mock.callCount(), 1);
-    assert.equal(logs[0][4], reply.error === '' ? '' : ' (TEMPORARY)');
+    let diagnostic = logs.find((entry) => entry[0].startsWith('Failed to connect using'));
+    assert.equal(diagnostic[4], reply.error === '' ? '' : ' (TEMPORARY)');
   });
 }
 
@@ -605,8 +606,9 @@ for (let [label, replies] of [
     await startAndAuthenticate(manager, uuid);
     assert.equal(connection.authorised, false);
     assert.equal(connection.allowRetry, true);
-    assert.equal(logs[0][0].includes('response object'), false);
-    assert.equal(logs[0][4], 'Missing ' + (label === 'JWT' ? 'jwt in JWT' : 'access_token in session') + ' response');
+    let diagnostic = logs.find((entry) => entry[0].startsWith('Failed to connect using'));
+    assert.equal(diagnostic[0].includes('response object'), false);
+    assert.equal(diagnostic[4], 'Missing ' + (label === 'JWT' ? 'jwt in JWT' : 'access_token in session') + ' response');
   });
 }
 

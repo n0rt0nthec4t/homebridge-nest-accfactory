@@ -36,6 +36,24 @@ Contributions should focus on functionality, compatibility and improvements rele
 
 Integration with third-party platforms is outside the scope of this project. Changes requested solely to accommodate those platforms will not be accepted.
 
+## Provenance and attribution
+
+Preserve source attribution, copyright notices, and applicable licence notices when contributing or reusing code. Identify the source of adapted code and distinguish inherited implementation from original additions. Independent maintenance, renaming, or extending a project does not by itself establish independent development of its underlying implementation.
+
+Describe provenance accurately and support disputed authorship claims with specific source or history evidence. Credit both upstream work and original contributions made in forks.
+
+## Security
+
+Design security into the implementation. Enforce account and device boundaries, validate inputs at trust boundaries, minimise credential exposure, and ensure failure and recovery paths preserve those protections. Use regression tests to verify the affected behaviour.
+
+Code must not emit credentials, OAuth tokens, cookies, authorisation headers, or credential-bearing URLs in logs or support dumps, including debug output and error paths. Use fabricated credentials in tests.
+
+Use redacted examples in issues and pull requests. Before sharing logs, support dumps, screenshots, or fixtures, check for and remove secrets and private account or device details. This review is an additional safeguard, not a substitute for preventing secret disclosure in code.
+
+If you suspect a vulnerability, use GitHub private vulnerability reporting if enabled, or an established private maintainer contact. If neither route is available, use a public issue only to ask for a private way to get in touch, keeping vulnerability details out of the issue.
+
+Preserve TLS certificate validation and account and device boundaries. For changes to authentication, session refresh, device routing, or diagnostics, include regression coverage for the affected failure paths. For a dependency security update, identify the affected package and verify the resolved version in the lockfile, including affected transitive dependencies.
+
 ## Native HomeKit functionality
 
 This project exposes device functionality through HomeKit services and characteristics that accurately represent its purpose. Standard HomeKit representations are preferred, while custom characteristics may be considered where they provide a meaningful and accurate representation of device-specific functionality. It does not aim to expose every feature available in the Nest or Google apps.
@@ -54,12 +72,19 @@ names, device identifiers and translated text must not be used as generation
 inputs. Renaming a generation identifier changes its UUID, so keep identifiers
 and their meaning permanent even when a type is renamed for display or retired.
 
-Record built-in characteristic UUIDs in `CUSTOM_CHARACTERISTIC_UUID` and import
-its named exports from device plugins. For example:
+Record built-in characteristic UUIDs in `CUSTOM_CHARACTERISTIC_UUID` in
+`src/consts.js`. For example, an entry in that registry is:
 
 ```js
 REPLACE_BY_DATE: uuidv5('characteristic.replace-by-date', CUSTOM_UUID_NAMESPACE).toUpperCase(),
 ```
+
+Device plugins import `CUSTOM_CHARACTERISTIC_UUID` and use the corresponding
+property, such as `CUSTOM_CHARACTERISTIC_UUID.REPLACE_BY_DATE`; individual
+characteristic UUIDs are not separate named exports. If plugin-owned custom
+services are introduced, register their `service.*` UUIDs in a separate
+`CUSTOM_SERVICE_UUID` object in `src/consts.js`, using the same permanent namespace.
+No custom service registry is currently defined.
 
 The catalogue below documents existing types; numeric allocation is unnecessary.
 Retain retired entries and identifiers to prevent their reuse. Independent
@@ -101,11 +126,11 @@ Test dependency replacements must preserve production code and its source locati
 
 Successful automated tests do not verify live Nest/Google services, physical HomeKit or Matter accessories, camera hardware, or FFmpeg hardware acceleration.
 
-For affected behaviour, separately check native-app and HomeKit changes, offline recovery, cached accessory restoration and shutdown. Camera checks should include snapshots, live streaming, two-way audio, HKSV playback and stop/replacement races. FFmpeg verification requires version 7.1 or newer and the actual software or hardware encoder being tested.
+Choose verification that covers the affected behaviour, including native-app and HomeKit changes, offline recovery, cached accessory restoration and shutdown where relevant. For camera changes, exercise the affected paths among snapshots, live streaming, two-way audio, HKSV playback and stop/replacement races. Identify relevant hardware checks that could not be run rather than treating every camera change as requiring the full hardware checklist. FFmpeg verification must meet the minimum declared by `FFMPEG_VERSION` in `src/consts.js` and exercise the actual software or hardware encoder being tested.
 
 Describe what you tested and what remains unverified. For live checks, record relevant runtime, Homebridge/HAP and FFmpeg versions, device models, source API and observed outcomes. Never include credentials, cookies or tokens in fixtures, logs or issue reports.
 
-CI is configured to run checks with Node.js 22 and 24 against Homebridge 1.11.4 and 2.4.0, and Node.js 26 against Homebridge 2.4.0. A local pass does not establish that all CI combinations passed.
+CI is configured to run checks with Node.js 22 and 24 against Homebridge 1.11.4 and 2.5.0, and Node.js 26 against Homebridge 2.5.0. See `.github/workflows/test.yml` for the configured matrix and `package.json` for the declared compatibility ranges. A local pass does not establish that all CI combinations passed.
 
 ## Release notes
 

@@ -4,6 +4,35 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.5-beta.3 (2026/11/13)
+
+### Added
+
+- Add debug logging of Google OAuth token lifetime and scheduled refresh timing to help investigate authentication expiry
+
+### Changed
+
+- Preserve variable frame rates in HKSV recordings and request keyframes by elapsed time
+- Start HKSV pre-roll from the retained keyframe at or before the requested start, preserving extra lead-in; use the next keyframe if no earlier one remains
+- Remove `delay_moov` from HKSV output so FFmpeg can avoid startup MP4 edit lists, as part of testing recording audio/video sync in Apple Home
+- Rename the transcoding option to "Enable Live Video Transcoding"; HKSV recordings are always transcoded
+- Update werift to `0.27.0`, the TypeScript ESLint parser to `8.72.2`, and Prettier to `3.10.1`
+
+### Fixed
+
+- Prevent timestamp rounding from delaying an HKSV keyframe by a full frame at a fragment boundary
+- Exclude late-arriving audio that precedes the recording's selected video start
+- Prevent a delayed Nest polling authentication failure for an old token from disconnecting an already refreshed account
+
+### Security
+
+- Override development-tooling minimatch to `11.0.1` to address CVE-2026-118764
+
+### Testing
+
+- Recording audio/video sync remains under investigation; these changes are not yet a confirmed fix for the reported audio drift in Apple Home
+- Check recordings with speech or a clear sound matched to visible movement, including near the beginning and end of longer clips
+
 ## v0.4.5-beta.2 (2026/11/09)
 
 ### Changed

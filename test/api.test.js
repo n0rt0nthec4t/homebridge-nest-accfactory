@@ -90,6 +90,41 @@ function setup(context, kind = 'google', overrides = {}) {
 }
 let reply = (data) => ({ json: async () => data });
 
+for (let status of [401, 403]) {
+  for (let refreshed of [false, true]) {
+    test('Nest subscription auth failure ' + status + ' respects token replacement: ' + refreshed, async (context) => {
+      let flow = setup(context, 'nest');
+      let invalidations = [];
+      flow.options.session.markUnauthorised = (reason) => {
+        invalidations.push(reason);
+        flow.connection.authorised = false;
+      };
+      await flow.api.connect();
+      assert.equal(flow.requests[0][2].headers.Authorization, 'Basic token');
+      flow.pending[0].resolve(
+        reply({ objects: [{ object_key: 'topaz.TEST', object_revision: 1, object_timestamp: 10, value: {} }] }),
+      );
+      await setImmediate();
+      context.mock.timers.tick(1000);
+      await setImmediate();
+      assert.equal(new URL(flow.requests[1][1]).pathname, '/v5/subscribe');
+      if (refreshed === true) {
+        flow.connection.token = 'replacement-token';
+      }
+      flow.pending[1].reject(Object.assign(new Error('rejected'), { status }));
+      await setImmediate();
+      assert.deepEqual(invalidations, refreshed === true ? [] : ['nest-api-' + status]);
+      assert.equal(flow.connection.authorised, refreshed);
+      if (refreshed === true) {
+        context.mock.timers.tick(1000);
+        await setImmediate();
+        assert.equal(flow.requests[2][2].headers.Authorization, 'Basic replacement-token');
+        assert.deepEqual(flow.requests[2][3].objects, flow.requests[1][3].objects);
+      }
+    });
+  }
+}
+
 for (let [mode, expected] of [
   ['manual', 'manual-eco'],
   ['MANUAL', 'manual-eco'],

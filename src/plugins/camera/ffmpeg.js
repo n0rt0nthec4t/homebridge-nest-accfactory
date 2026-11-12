@@ -28,7 +28,7 @@
 // - Drain complete output after exit; requested stop may discard an incomplete tail
 // - Camera retains the HomeKit generator adapter and isLast workaround
 //
-// Code version 2026.11.07
+// Code version 2026.11.12
 // Mark Hulskamp
 'use strict';
 
@@ -382,9 +382,16 @@ export default class FFmpeg extends EventEmitter {
       // The Pi's V4L2 encoder needs extra capture buffers for sustained HKSV output.
       ...(encoding.codec === 'h264_v4l2m2m' ? ['-num_capture_buffers', '32'] : []),
       '-filter:v',
-      'fps=fps=' + video.fps + ',' + encoding.filter,
+      encoding.filter,
+      // Preserve source cadence and timestamp precision. A frame-count GOP alone
+      // cannot bound fragment duration when the camera's frame rate changes.
       '-fps_mode',
-      'cfr',
+      'passthrough',
+      '-enc_time_base:v',
+      '1:90000',
+      '-force_key_frames:v',
+      // A target frame may round one encoder tick early; do not delay its IDR by a full frame.
+      'expr:gte(t+1/90000,n_forced*' + video.iFrameInterval / 1000 + ')',
       '-g:v',
       String(Math.max(1, Math.round((video.fps * video.iFrameInterval) / 1000))),
       '-b:v',
@@ -396,7 +403,7 @@ export default class FFmpeg extends EventEmitter {
       '-video_track_timescale',
       '90000',
       '-movflags',
-      'frag_keyframe+empty_moov+delay_moov+default_base_moof',
+      'frag_keyframe+empty_moov+default_base_moof',
       // Preserve an initially later audio start without an async sample-clock correction.
       ...(includeAudio === true
         ? [

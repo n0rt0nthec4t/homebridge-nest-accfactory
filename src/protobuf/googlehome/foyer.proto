@@ -1,6 +1,7 @@
 syntax = "proto3";
 
 import "google/protobuf/wrappers.proto";
+import "google/protobuf/struct.proto";
 
 package google.internal.home.foyer.v1;
 
@@ -21,17 +22,63 @@ message GetHomeGraphRequest {
 }
 
 message GetHomeGraphResponse {
+  // Catalogue fields follow the reference HomeGraph schema; unknown numbered
+  // placeholders are deliberately left unmapped until their purpose is established.
+  message SpaceType {
+    string code = 1;
+    string name = 2;
+  }
+
+  message DeviceType {
+    string code = 1;
+    string name = 2;
+  }
+
+  message Agent {
+    string apiProjectId = 1;
+    string name = 2;
+    string appStoreUrl = 4;
+    string playStoreUrl = 5;
+  }
+
+  message HomeGraphState {
+    message DeviceTypes {
+      repeated string types = 1;
+    }
+
+    uint32 count = 2;
+    DeviceTypes deviceTypes = 3;
+  }
+
+  message LinkableApplication {
+    string name = 2;
+  }
+
   uint64 responseTimestamp = 1; // Epoch in ms for this response
   repeated Home homes = 2;
+  repeated Device unassignedDevices = 3;
+  repeated SpaceType spaceTypes = 4;
+  string stableHash = 5;
+  bool homeGraphHasChanged = 6;
+  repeated DeviceType deviceTypes = 7;
+  repeated Agent agentsInfo = 9;
+  map<string, HomeGraphState> homeGraphState = 11;
+  repeated LinkableApplication linkableApplications = 12;
 }
 
 message Home {
+  message Trait {
+    string name = 1;
+    map<string, google.protobuf.Value> fields = 2;
+  }
+
   string uuid = 1;
   string name = 2;
   Address address = 3;
   repeated EmailAddress linked_users = 4;
   repeated Room rooms = 6;
   repeated Device devices = 7;
+  repeated Trait traits = 21;
 }
 
 message Address {
@@ -61,6 +108,20 @@ message Room {
 }
 
 message Device {
+  // Metadata field numbers cross-checked against KapJI/ghome-foyer-api HomeGraph.Device.
+  // Keep existing identity fields intact; metadata does not determine accessory identity.
+  message Hardware {
+    string manufacturer = 1;
+    string model = 2;
+    string softwareVersion = 4;
+  }
+
+  message Names {
+    string name = 2;
+    repeated string defaultNames = 3;
+    repeated string nicknames = 4;
+  }
+
   message Id {
     string googleUuid = 1;
     ThirdPartyId thirdPartyId = 2;
@@ -76,6 +137,13 @@ message Device {
   }
 
   Id id = 1;
+  string displayName = 4;
+  string type = 6;
+  repeated string traits = 7;
+  repeated string defaultNames = 16;
+  Hardware hardware = 17;
+  Names names = 18;
+  google.protobuf.Struct attributes = 20;
   OtherThirdPartyIds otherIds = 39;
 }
 
@@ -92,7 +160,8 @@ message SendTalkbackRequest {
 }
 
 message SendTalkbackResponse {
-
+  // Reported by the Foyer client schema; status values have no established meaning here.
+  int32 status = 1;
 }
 
 message SendCameraViewIntentRequest {

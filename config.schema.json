@@ -391,7 +391,7 @@
         },
         {
           "key": "options.ffmpegTranscode",
-          "title": "Enable Video Transcoding"
+          "title": "Enable Live Video Transcoding"
         },
         {
           "key": "options.maxStreams",

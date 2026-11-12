@@ -32,7 +32,7 @@
 // - Protocol signalling, packet reordering and frame assembly remain in the source
 // - FFmpeg owns command construction and the bounded MP4 fragment reader
 //
-// Code version 2026.11.07
+// Code version 2026.11.13
 // Mark Hulskamp
 'use strict';
 
@@ -642,6 +642,22 @@ export default class Streamer {
     // Prevent unhandled stream errors from bubbling.
     talkback?.on?.('error', () => {});
 
+    let videoCursor = type === Streamer.STREAM_TYPE.RECORD ? timeline.seek('video', recordTime ?? -Infinity) : timeline.end('video');
+    let audioStartTime = recordTime ?? -Infinity;
+    if (type === Streamer.STREAM_TYPE.RECORD && Number.isFinite(recordTime) === true) {
+      // Keep the requested pre-roll by starting at the preceding retained IDR.
+      // Search once within bounded retention, preserving the track's decode order.
+      // If none remains, the existing output gate waits for the next usable IDR.
+      for (let index = Math.min(videoCursor, timeline.end('video') - 1); index >= timeline.start('video'); index--) {
+        let item = timeline.get('video', index);
+        if (item.keyFrame === true && item.presentationTime <= recordTime) {
+          videoCursor = index;
+          audioStartTime = item.presentationTime;
+          break;
+        }
+      }
+    }
+
     // Each receiver owns its cursors and one common A/V clock. Recording can
     // drain the retained startup range before normal timed delivery begins.
     Object.assign(output, {
@@ -653,14 +669,15 @@ export default class Streamer {
       includeAudio: includeAudio,
 
       // Each consumer follows bounded track indexes. Eviction never waits for a slow receiver.
-      videoCursor: type === Streamer.STREAM_TYPE.RECORD ? timeline.seek('video', recordTime ?? -Infinity) : timeline.end('video'),
-      audioCursor: type === Streamer.STREAM_TYPE.RECORD ? timeline.seek('audio', recordTime ?? -Infinity) : timeline.end('audio'),
+      videoCursor: videoCursor,
+      audioCursor: type === Streamer.STREAM_TYPE.RECORD ? timeline.seek('audio', audioStartTime) : timeline.end('audio'),
       prebufferEnd: type === Streamer.STREAM_TYPE.RECORD ? { video: timeline.end('video'), audio: timeline.end('audio') } : {},
       generation: undefined,
 
       // Codec / decoder state tracking.
       config: undefined, // Decoder configuration last delivered to this receiver
       seenKeyFrame: false, // first keyframe seen
+      recordingStartTime: undefined, // Source PTS of the recording's selected decoder-safe start
 
       // Time mapping for paced playback:
       // wallclockTime = wallclockBaseTime + (item.time - sourceBaseTime)
@@ -1173,6 +1190,9 @@ export default class Streamer {
           if (writable === false && this.ffmpegDebug === true) {
             output.stats.diagnostics.videoBackpressureStops++;
           }
+          if (output.type === Streamer.STREAM_TYPE.RECORD && output.seenKeyFrame !== true) {
+            output.recordingStartTime = item.presentationTime;
+          }
           output.seenKeyFrame = true;
           output.config = item.config;
           this.#statsWrite(output, type, now);
@@ -1183,7 +1203,12 @@ export default class Streamer {
         output.videoCursor++;
         video = timeline.get('video', output.videoCursor);
       } else {
-        if (output.type !== Streamer.STREAM_TYPE.RECORD || output.seenKeyFrame === true) {
+        // A late audio packet can precede the selected IDR in source time even
+        // after video has started. Keep the same cut regardless of arrival order.
+        if (
+          output.type !== Streamer.STREAM_TYPE.RECORD ||
+          (output.seenKeyFrame === true && item.presentationTime >= output.recordingStartTime)
+        ) {
           muxer.writeAudio(item.data, item.presentationTime);
           this.#statsWrite(output, type, now);
         } else if (output.stats !== undefined) {

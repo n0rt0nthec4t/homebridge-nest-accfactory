@@ -19,7 +19,7 @@
 // - Camera credential notification completes before clients resume ingestion
 // - This session does not own resource data, API transports or HomeKit accessories
 //
-// Code version 2026.10.29
+// Code version 2026.11.10
 // Mark Hulskamp
 'use strict';
 
@@ -222,6 +222,7 @@ export default class AccountSession extends EventEmitter {
 
     if (account.authorised === true) {
       account.retryDelay = AUTH_RETRY_INITIAL;
+      this.#log?.debug?.('Next token refresh for account "%s" in %s seconds', account.name, account.refreshDelay / 1000);
       this.#run(account.refreshDelay);
 
       return true;
@@ -266,6 +267,11 @@ export default class AccountSession extends EventEmitter {
     // WebRTC Foyer signalling needs the OAuth token as well as the Nest session
     // credentials used by device queries and legacy camera endpoints.
     let googleOAuth2Token = tokenData.access_token.trim();
+    this.#log?.debug?.(
+      'Google OAuth token lifetime for account "%s": %s seconds; requesting a Nest JWT lasting 3600 seconds',
+      account.name,
+      Number.isFinite(Number(tokenData.expires_in)) === true ? Number(tokenData.expires_in) : 'unknown',
+    );
 
     // Convert the OAuth token into the JWT expected by the Nest session endpoint.
     let jwtResponse = await fetchWrapper(

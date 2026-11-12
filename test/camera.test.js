@@ -1,5 +1,5 @@
 // Verify camera cleanup uses managed FFmpeg completion without Homebridge, media backends or network sockets.
-// Code version 2026.11.07
+// Code version 2026.11.12
 import assert from 'node:assert/strict';
 import { importSource } from './helpers/import-source.js';
 import { Buffer } from 'node:buffer';
@@ -396,7 +396,7 @@ for (let codec of ['libx264', 'h264_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_v4l2
     for (let [index, child] of processes.entries()) {
       let args = child.args;
       assert.equal(args[args.indexOf('-codec:v') + 1], codec);
-      assert.equal(args[args.indexOf('-filter:v') + 1], (index === 0 ? '' : 'fps=fps=30,') + encoding.filter);
+      assert.equal(args[args.indexOf('-filter:v') + 1], encoding.filter);
       if (encoding.inputArguments.length > 0) {
         let position = args.indexOf(encoding.inputArguments[0]);
         assert.ok(position >= 0 && position < args.indexOf('-i'));
@@ -793,9 +793,10 @@ for (let sourceCodec of ['opus', 'aac']) {
     assert.equal(args[args.indexOf('-ar') + 1], '16000');
     assert.equal(args[args.indexOf('-ac') + 1], '1');
     assert.equal(args[args.indexOf('-codec:v') + 1], 'libx264');
-    assert.equal(args[args.indexOf('-fps_mode') + 1], 'cfr');
+    assert.equal(args[args.indexOf('-fps_mode') + 1], 'passthrough');
+    assert.equal(args[args.indexOf('-enc_time_base:v') + 1], '1:90000');
     assert.equal(args[args.indexOf('-g:v') + 1], '120');
-    assert.equal(args.includes('frag_keyframe+empty_moov+delay_moov+default_base_moof'), true);
+    assert.equal(args.includes('frag_keyframe+empty_moov+default_base_moof'), true);
     assert.equal(args.includes('pipe:0'), false);
     assert.equal(args[args.indexOf('-fflags') + 1], sourceCodec === 'aac' ? '+discardcorrupt+genpts' : '+discardcorrupt+genpts+nofillin');
     await camera.closeRecordingStream('native-audio');

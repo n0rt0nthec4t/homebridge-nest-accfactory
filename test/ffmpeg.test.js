@@ -1,5 +1,5 @@
 // Verify FFmpeg hardware discovery, capability queries, diagnostics, and session lifecycle.
-// Code version 2026.10.25
+// Code version 2026.11.12
 import assert from 'node:assert/strict';
 import child_process from 'node:child_process';
 import { Buffer } from 'node:buffer';
@@ -273,6 +273,13 @@ test('HomeKit AAC-ELD block length applies only to live AAC-ELD encoding', (t) =
   assert.equal(commands[1][commands[1].indexOf('-frame_duration') + 1], '20');
   assert.equal(commands[2].includes('-frame_length'), false);
   assert.equal(commands[2][commands[2].indexOf('-profile:a') + 1], 'aac_low');
+  assert.equal(commands[2][commands[2].indexOf('-force_key_frames:v') + 1], 'expr:gte(t+1/90000,n_forced*4)');
+  assert.equal(commands[2][commands[2].indexOf('-enc_time_base:v') + 1], '1:90000');
+  assert.equal(commands[2][commands[2].indexOf('-fps_mode') + 1], 'passthrough');
+  assert.equal(commands[2][commands[2].indexOf('-movflags') + 1], 'frag_keyframe+empty_moov+default_base_moof');
+  assert.equal(commands[2][commands[2].indexOf('-filter:v') + 1].includes('fps='), false);
+  assert.equal(commands[0].includes('-force_key_frames:v'), false);
+  assert.equal(commands[1].includes('-force_key_frames:v'), false);
 });
 
 test('capability queries distinguish encoders, decoders and muxers including format aliases', (t) => {

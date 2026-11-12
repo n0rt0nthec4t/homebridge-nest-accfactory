@@ -27,7 +27,7 @@
 // type. After prepare, ports exposes the internal audioControl and talkback ports
 // for FFmpeg arguments. FFmpeg retains SRTP and codec handling.
 //
-// Code version 2026.11.07
+// Code version 2026.11.13
 // Mark Hulskamp
 'use strict';
 

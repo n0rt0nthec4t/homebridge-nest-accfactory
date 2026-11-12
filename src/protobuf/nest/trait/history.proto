@@ -67,6 +67,7 @@ message CameraObservationHistoryTrait {
             message EventUrls {
                 string snapshotUrl = 1;
                 google.protobuf.StringValue clipUrl = 2;
+                google.protobuf.StringValue thumbnailUrl = 5;
             }
 
             message FamiliarFace {
@@ -89,6 +90,9 @@ message CameraObservationHistoryTrait {
             FamiliarFace familiarFace = 7;
             EventUrls timeWindowUrls = 8;
             int32 unknown = 10;
+            // Possibly the initial trigger time; startTime/endTime may bound media including pre-roll.
+            // Stays fixed as the window expands. Meaning unconfirmed.
+            google.protobuf.Timestamp unknown11 = 11;
         }
 
         CameraEventTimeWindow cameraEventWindow = 1;
