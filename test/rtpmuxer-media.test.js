@@ -1448,20 +1448,29 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack, reordered = fals
           assert.ok(Math.abs(markerOffset - audioOffset / 1000) < 0.05, 'Startup offset separated the A/V markers: ' + markerOffset);
         }
         if (audioGap === 'repeated') {
-          // Raw PCM has no timestamps. Relate its marker to the decoded audio
-          // start before comparing against video when both tracks start late.
-          let relativeOnset = audioOnset + decoded[1][0] - decoded[0][0];
-          context.diagnostic('Tone offset from video start=' + relativeOnset);
+          // Edit-list-free MP4 extends the first video sample to carry AAC
+          // startup delay. Compare matching source times rather than treating
+          // that first sample as the origin of every later video timestamp.
+          let markerIndex = events
+            .filter((event) => event.type === 'video')
+            .findIndex((event) => event.timestamp >= commonOffset + 4000);
+          assert.ok(markerIndex >= 0, 'The four-second source video frame is missing');
+          let relativeOnset = audioOnset + decoded[1][0] - decoded[0][markerIndex];
+          context.diagnostic('Tone offset from the four-second video frame=' + relativeOnset);
+          // The generated ADTS fixture retains one source AAC priming block.
           assert.ok(
-            Math.abs(relativeOnset - 4 - audioOffset / 1000) < 0.05,
+            Math.abs(relativeOnset - audioOffset / 1000 - 1024 / 48000) < 0.05,
             'The four-second tone moved relative to video: ' + relativeOnset,
           );
         }
         assert.equal(decoded[0].length, video.length, 'Recording changed the source frame count');
         if (reordered === true) {
+          // Without edit lists, the first video sample begins at zero and
+          // later samples include the 2048-sample output AAC startup delay.
+          let sourceTimes = bFrameVideo().times.slice().sort((left, right) => left - right);
           assert.deepEqual(
             decoded[0].map((time) => Math.round(time * 90000)),
-            bFrameVideo().times.map((time) => Math.round(time * 90)).sort((left, right) => left - right),
+            sourceTimes.map((time, index) => index === 0 ? 0 : Math.round((time / 1000 + 2048 / 16000) * 90000)),
           );
         }
         if (audioOffset > 1000) {
