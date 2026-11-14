@@ -11,7 +11,7 @@
 // - Keep encoder-specific profiles, tuning and input options in one place
 // - Own child processes and connected pipes without owning caller streams
 // - Supply finite talkback SDP on stdin and optionally pipe stdout to its destination
-// - Read bounded MP4 initialization segments and fragments through an async iterator
+// - Read bounded MP4 initialisation segments and fragments through an async iterator
 // - Retain bounded stderr diagnostics after process completion
 //
 // Session lifecycle:
@@ -28,7 +28,7 @@
 // - Drain complete output after exit; requested stop may discard an incomplete tail
 // - Camera retains the HomeKit generator adapter and isLast workaround
 //
-// Code version 2026.11.12
+// Code version 2026.11.13
 // Mark Hulskamp
 'use strict';
 
@@ -54,6 +54,23 @@ const HARDWARE_PROBE_TIMEOUT_MS = 2000;
 const HARDWARE_PROBE_BUDGET_MS = 4000;
 const HARDWARE_PROBE_CACHE_CAPACITY = 32;
 const CAPABILITY_CACHE_CAPACITY = 32;
+
+// Constant AAC initialisation metadata is shared across recordings, not rebuilt
+// for each clip. The zero edit retains FFmpeg's common-clock startup allowance.
+const RECORDING_AAC_EDIT = Buffer.from(
+  '0000002465647473' + // edts container, 36 bytes.
+  '0000001c656c73740000000000000001' + // elst version 0, one edit.
+  '000000000000000000010000', // Fragmented duration 0, media offset 0, playback rate 1.
+  'hex',
+);
+const RECORDING_AAC_GROUP = Buffer.from(
+  '0000001e7367706402000000726f6c6c' + // sgpd version 2, roll group.
+  '000000020000000100000001ffff' + // Entry length 2, default index 1, one entry, decoder pre-roll -1.
+  '000000147362677000000000726f6c6c00000000', // Empty sbgp: future samples use the default group.
+  'hex',
+);
+const RECORDING_CONTAINERS = new Set(['moov', 'trak', 'mdia', 'minf', 'stbl']);
+const RECORDING_TABLES = new Set(['sgpd', 'sbgp', 'stco', 'co64']);
 
 // FFmpeg object
 export default class FFmpeg extends EventEmitter {
@@ -177,42 +194,6 @@ export default class FFmpeg extends EventEmitter {
     ];
 
     return { ...encoding, inputArguments: [...encoding.inputArguments], outputArguments };
-  }
-
-  #mediaInput(input, audioCodec, encoding) {
-    // Keep the common RTP clock. AAC needs duration recovery for parser startup;
-    // other encoded audio avoids video-rate inference while the input is probed.
-    // Keep default probing so live video can reach its first keyframe before analysis ends.
-    return [
-      '-hide_banner',
-      '-nostats',
-      ...encoding.inputArguments,
-      '-copyts',
-      '-fflags',
-      audioCodec === 'aac' ? '+discardcorrupt+genpts' : '+discardcorrupt+genpts+nofillin',
-      '-avoid_negative_ts',
-      'make_zero',
-      '-max_delay',
-      '500000',
-      '-flags',
-      'low_delay',
-      '-rtsp_transport',
-      'tcp',
-      '-i',
-      input.url,
-    ];
-  }
-
-  #videoArguments(video, encoding) {
-    // V4L2 expects numeric profiles and omits the explicit level used elsewhere.
-    return [
-      '-codec:v',
-      encoding.codec,
-      '-profile:v',
-      encoding.codec === 'h264_v4l2m2m' ? { baseline: '66', main: '77', high: '100' }[video.profile] : video.profile,
-      ...(encoding.codec === 'h264_v4l2m2m' ? [] : ['-level:v', video.level]),
-      ...encoding.outputArguments,
-    ];
   }
 
   startLive({
@@ -434,7 +415,7 @@ export default class FFmpeg extends EventEmitter {
 
   async *fragments(handle, signal = undefined) {
     // Readable backpressure bounds queued stdout data. Retain views into chunks
-    // until one initialization segment or moof/mdat fragment is complete, copying
+    // until one initialisation segment or moof/mdat fragment is complete, copying
     // payload bytes only once at yield. Process exit does not discard its remaining stdout.
     let header = Buffer.allocUnsafe(16);
     let headerSize = 8;
@@ -490,9 +471,10 @@ export default class FFmpeg extends EventEmitter {
         offset += count;
         remaining -= count;
 
-        // Initialization ends at moov; a media fragment ends at its mdat.
+        // Initialisation ends at moov; a media fragment ends at its mdat.
         if (remaining === 0 && (boxType === 'moov' || boxType === 'mdat')) {
-          yield Buffer.concat(parts, bytes);
+          let segment = Buffer.concat(parts, bytes);
+          yield boxType === 'moov' ? FFmpeg.#recordingInitialisation(segment) : segment;
           parts = [];
           bytes = 0;
         }
@@ -774,6 +756,129 @@ export default class FFmpeg extends EventEmitter {
     }
 
     return this.#shutdown.promise;
+  }
+
+  #mediaInput(input, audioCodec, encoding) {
+    // Keep the common RTP clock. AAC needs duration recovery for parser startup;
+    // other encoded audio avoids video-rate inference while the input is probed.
+    // Keep default probing so live video can reach its first keyframe before analysis ends.
+    return [
+      '-hide_banner',
+      '-nostats',
+      ...encoding.inputArguments,
+      '-copyts',
+      '-fflags',
+      audioCodec === 'aac' ? '+discardcorrupt+genpts' : '+discardcorrupt+genpts+nofillin',
+      '-avoid_negative_ts',
+      'make_zero',
+      '-max_delay',
+      '500000',
+      '-flags',
+      'low_delay',
+      '-rtsp_transport',
+      'tcp',
+      '-i',
+      input.url,
+    ];
+  }
+
+  #videoArguments(video, encoding) {
+    // V4L2 expects numeric profiles and omits the explicit level used elsewhere.
+    return [
+      '-codec:v',
+      encoding.codec,
+      '-profile:v',
+      encoding.codec === 'h264_v4l2m2m' ? { baseline: '66', main: '77', high: '100' }[video.profile] : video.profile,
+      ...(encoding.codec === 'h264_v4l2m2m' ? [] : ['-level:v', video.level]),
+      ...encoding.outputArguments,
+    ];
+  }
+
+  static #recordingInitialisation(data) {
+    // Add an explicit zero-offset audio edit and default AAC roll group to stop
+    // Apple inferring extra priming that shortens playable audio and lets it
+    // run ahead of video. FFmpeg already accounts for startup padding on the
+    // common A/V timeline. Only the initialisation metadata is changed;
+    // encoded media and timestamps stay intact.
+    let additions = [], count = 0, fragmented = false, populatedChunks = false;
+    let scan = (start, end, parent = '', depth = 0) => {
+      let aac = false, conflict, growth = 0, mediaStart = end;
+      while (start < end) {
+        // Bound the moov/trak/mdia/minf/stbl walk before reading any child.
+        if (depth > 5 || ++count > 4096 || end - start < 8) {
+          throw new RangeError('Invalid recording MP4 initialisation');
+        }
+        let size = data.readUInt32BE(start);
+        let headerSize = size === 1 ? 16 : 8; // Size 1 introduces a 64-bit extended size.
+        // Truncated extended headers leave size=1; reject them and EOF-sized boxes below.
+        size = headerSize === 16 && end - start >= 16 ? Number(data.readBigUInt64BE(start + 8)) : size;
+        if (Number.isSafeInteger(size) !== true || size < headerSize || size > end - start) {
+          throw new RangeError('Invalid recording MP4 initialisation box');
+        }
+        let type = data.toString('ascii', start + 4, start + 8);
+        let payload = start + headerSize;
+        let length = size - headerSize;
+        if (RECORDING_CONTAINERS.has(type) === true) {
+          let extra = scan(payload, start + size, type, depth + 1);
+          growth += extra;
+          if (extra > 0) {
+            // The reader caps headers at 32 MiB: even extended sizes fit in
+            // their low 32 bits. Preserve the zero high word and header format.
+            data.writeUInt32BE(size + extra, start + (headerSize === 16 ? 12 : 0));
+          }
+        } else if (type === 'stsd' && length >= 16) {
+          // The recording command fixes the codec to AAC-LC. Locate its mp4a
+          // sample entry without assuming a track number or changing video.
+          aac ||= data.readUInt32BE(payload + 4) === 1 && data.toString('ascii', payload + 12, payload + 16) === 'mp4a';
+        }
+        // Both table forms place their group type or entry count after version/flags.
+        if (parent === 'stbl' && RECORDING_TABLES.has(type) === true) {
+          if (length < 8) {
+            throw new RangeError('Truncated recording MP4 ' + type);
+          }
+          if (type === 'stco' || type === 'co64') {
+            populatedChunks ||= data.readUInt32BE(payload + 4) !== 0;
+          } else {
+            let group = data.toString('ascii', payload + 4, payload + 8);
+            if (group === 'roll' || group === 'prol') {
+              conflict = 'sample groups';
+            }
+          }
+        } else if (parent === 'trak' && type === 'edts') {
+          conflict = 'edit list';
+        }
+        fragmented ||= parent === 'moov' && type === 'mvex';
+        if (parent === 'trak' && type === 'mdia') {
+          mediaStart = start; // Put edts before mdia, after the existing track header.
+        }
+        start += size;
+      }
+      if ((parent === 'stbl' && aac === true) || (parent === 'trak' && growth > 0)) {
+        // Never overwrite delay metadata. The track gets timing; its table gets decoder pre-roll.
+        if (conflict !== undefined) {
+          throw new Error('Unexpected AAC recording ' + conflict);
+        }
+        let metadata = parent === 'stbl' ? RECORDING_AAC_GROUP : RECORDING_AAC_EDIT;
+        additions.push({ offset: parent === 'stbl' ? end : mediaStart, data: metadata });
+        growth += metadata.length;
+      }
+      return growth; // Positive growth marks an AAC table for its enclosing track.
+    };
+    let result = scan(0, data.length);
+    // Growing moov requires mvex and empty absolute chunk-offset tables.
+    if (result > 0 && (fragmented === false || populatedChunks === true)) {
+      throw new Error('Expected an empty fragmented recording initialisation');
+    }
+    if (data.length + result > 32 * 1024 * 1024) {
+      throw new RangeError('Recording MP4 initialisation exceeds segment limit');
+    }
+    let parts = [], offset = 0;
+    for (let addition of additions.sort((left, right) => left.offset - right.offset)) {
+      parts.push(data.subarray(offset, addition.offset), addition.data);
+      offset = addition.offset;
+    }
+    parts.push(data.subarray(offset));
+    return Buffer.concat(parts, data.length + result);
   }
 
   // Validate binary, extract version + feature flags

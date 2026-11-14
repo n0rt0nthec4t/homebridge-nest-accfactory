@@ -1281,8 +1281,127 @@ function fragmentBox(type, payload = Buffer.alloc(0), extended = false) {
   return Buffer.concat([header, payload]);
 }
 
+function recordingInitialization(codec = 'mp4a', extended = false, groups = Buffer.alloc(0), edits = Buffer.alloc(0),
+  fragmented = true, offsets = Buffer.alloc(0)) {
+  let description = Buffer.alloc(8);
+  description.writeUInt32BE(1, 4);
+  let table = fragmentBox('stbl', Buffer.concat([
+    fragmentBox('stsd', Buffer.concat([description, fragmentBox(codec, Buffer.alloc(28))])), groups, offsets,
+  ]), extended);
+  let audio = fragmentBox('trak', Buffer.concat([
+    fragmentBox('tkhd', Buffer.alloc(20)), edits, fragmentBox('mdia', fragmentBox('minf', table)),
+  ]), extended);
+  // A video track and unrelated metadata must survive without audio edits.
+  let video = fragmentBox('trak', fragmentBox('mdia', fragmentBox('minf', fragmentBox('stbl', fragmentBox('free')))));
+  return Buffer.concat([fragmentBox('ftyp'), fragmentBox('moov',
+    Buffer.concat([video, audio, ...(fragmented === true ? [fragmentBox('mvex')] : [])]), extended)]);
+}
+
+for (let extended of [false, true]) {
+  test('recording AAC correction changes only initialization; extended boxes=' + extended, async () => {
+    let group = Buffer.alloc(50);
+    group.writeUInt32BE(30);
+    group.write('sgpd', 4);
+    group.writeUInt32BE(2 << 24, 8);
+    group.write('roll', 12);
+    group.writeUInt32BE(2, 16);
+    group.writeUInt32BE(1, 20); // Default group for future fragment samples.
+    group.writeUInt32BE(1, 24);
+    group.writeInt16BE(-1, 28);
+    group.writeUInt32BE(20, 30);
+    group.write('sbgp', 34);
+    group.write('roll', 42); // Empty explicit mapping, with the sgpd default.
+    let edit = Buffer.alloc(20);
+    edit.writeUInt32BE(1, 4);
+    edit.writeUInt16BE(1, 16); // Zero media time, unit playback rate.
+    let edits = fragmentBox('edts', fragmentBox('elst', edit));
+    let init = recordingInitialization('mp4a', extended);
+    let expected = recordingInitialization('mp4a', extended, group, edits);
+    let media = Buffer.concat([fragmentBox('moof', Buffer.from([1, 2])), fragmentBox('mdat', Buffer.from('mp4a sgpd elst'))]);
+    let stdout = new PassThrough();
+    stdout.end(Buffer.concat([init, media, media]));
+    let segments = [];
+    for await (let data of FFmpeg.prototype.fragments({ stdout })) {
+      segments.push(data);
+    }
+    assert.deepEqual(segments, [expected, media, media]);
+    assert.equal(init.includes(Buffer.from('sgpd')), false, 'Input bytes were mutated');
+  });
+}
+
+for (let codec of ['avc1', 'Opus']) {
+  test('recording initialization leaves ' + codec + ' sample descriptions unchanged', async () => {
+    let stdout = new PassThrough();
+    let init = recordingInitialization(codec);
+    stdout.end(init);
+    let reader = FFmpeg.prototype.fragments({ stdout });
+    assert.deepEqual((await reader.next()).value, init);
+    assert.equal((await reader.next()).done, true);
+  });
+}
+
+for (let type of ['sgpd', 'sbgp']) {
+  for (let grouping of ['seig', 'sap ']) {
+    test('recording initialization preserves unrelated ' + type + ' ' + grouping + ' metadata', async () => {
+      let group = fragmentBox(type, Buffer.concat([Buffer.alloc(4), Buffer.from(grouping), Buffer.alloc(4)]));
+      let init = recordingInitialization('mp4a', false, group);
+      let stdout = new PassThrough();
+      stdout.end(init);
+      let reader = FFmpeg.prototype.fragments({ stdout });
+      let { value } = await reader.next();
+      assert.equal(value.length, init.length + 86);
+      assert.equal(value.includes(group), true);
+      assert.equal(value.indexOf(group), value.lastIndexOf(group));
+    });
+  }
+}
+
+for (let type of ['stco', 'co64']) {
+  test('recording initialization accepts empty ' + type + ' offsets', async () => {
+    let offsets = fragmentBox(type, Buffer.alloc(8));
+    let init = recordingInitialization('mp4a', false, Buffer.alloc(0), Buffer.alloc(0), true, offsets);
+    let stdout = new PassThrough();
+    stdout.end(init);
+    let reader = FFmpeg.prototype.fragments({ stdout });
+    let { value } = await reader.next();
+    assert.equal(value.length, init.length + 86);
+    assert.equal(value.includes(offsets), true);
+  });
+}
+
+for (let [label, init] of [
+  ['existing audio edit', recordingInitialization('mp4a', false, Buffer.alloc(0), fragmentBox('edts'))],
+  ...['sgpd', 'sbgp'].flatMap((type) => ['roll', 'prol'].map((group) => [
+    'existing ' + type + ' ' + group, recordingInitialization('mp4a', false, fragmentBox(type, Buffer.concat([Buffer.alloc(4), Buffer.from(group)]))),
+  ])),
+  ['truncated audio group', recordingInitialization('mp4a', false, fragmentBox('sgpd'))],
+  ['nonfragmented AAC', recordingInitialization('mp4a', false, Buffer.alloc(0), Buffer.alloc(0), false)],
+  ...['stco', 'co64'].flatMap((type) => [
+    ['truncated ' + type, recordingInitialization('mp4a', false, Buffer.alloc(0), Buffer.alloc(0), true, fragmentBox(type))],
+    ['populated ' + type, recordingInitialization('mp4a', false, Buffer.alloc(0), Buffer.alloc(0), true,
+      fragmentBox(type, Buffer.concat([Buffer.from('0000000000000001', 'hex'), Buffer.alloc(type === 'stco' ? 4 : 8)])))],
+  ]),
+  ['truncated nested header', fragmentBox('moov', Buffer.from([1]))],
+  ['zero nested box size', fragmentBox('moov', Buffer.from('0000000066726565', 'hex'))],
+  ['nested size beyond parent', fragmentBox('moov', Buffer.from('0000001066726565', 'hex'))],
+  ['truncated extended child', fragmentBox('moov', Buffer.from('0000000166726565', 'hex'))],
+  ['unsafe extended child', fragmentBox('moov', Buffer.from('0000000166726565ffffffffffffffff', 'hex'))],
+  ['excessive depth', Array.from({ length: 7 }).reduce((child) => fragmentBox('moov', child), fragmentBox('free'))],
+  ['excessive boxes', fragmentBox('moov', Buffer.concat(Array.from({ length: 4096 }, () => fragmentBox('free'))))],
+]) {
+  test('recording initialization rejects ' + label, async () => {
+    let stdout = new PassThrough();
+    stdout.end(init);
+    await assert.rejects(async () => {
+      for await (let segment of FFmpeg.prototype.fragments({ stdout })) {
+        assert.fail('Unexpected corrected initialization: ' + segment.length);
+      }
+    }, /recording|AAC/i);
+  });
+}
+
 test('MP4 reader joins split and extended headers, drains exited stdout and ignores the complete seek trailer', async () => {
-  let init = Buffer.concat([fragmentBox('ftyp'), fragmentBox('moov', Buffer.from([1]), true)]);
+  let init = Buffer.concat([fragmentBox('ftyp'), fragmentBox('moov', fragmentBox('free', Buffer.from([1])), true)]);
   let media = Buffer.concat([fragmentBox('moof'), fragmentBox('mdat', Buffer.from([2, 3]))]);
   let input = Buffer.concat([init, media, fragmentBox('mfra')]);
   let stdout = new PassThrough();

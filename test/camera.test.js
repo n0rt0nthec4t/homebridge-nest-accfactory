@@ -506,7 +506,7 @@ test('HKSV yields fragmented MP4 initialisation before media and stops a waiting
   let recording = camera.handleRecordingStreamRequest('clip');
   let initial = recording.next();
   await setImmediate();
-  let init = Buffer.concat([mp4Box('ftyp', Buffer.from([1])), mp4Box('moov', Buffer.from([2]))]);
+  let init = Buffer.concat([mp4Box('ftyp', Buffer.from([1])), mp4Box('moov', mp4Box('free', Buffer.from([2])))]);
   processes[0].stdout.write(init.subarray(0, 3));
   processes[0].stdout.write(init.subarray(3));
   assert.deepEqual((await initial).value, { data: init, isLast: false });

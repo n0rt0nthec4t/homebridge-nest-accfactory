@@ -2,11 +2,11 @@
     "name": "homebridge-nest-accfactory",
     "displayName": "Nest Accfactory",
     "type": "module",
-    "version": "0.4.5-beta.3",
-    "description": "Homebridge support for Nest/Google devices including HomeKit Secure Video (HKSV) support for doorbells and cameras",
+    "version": "0.4.5-beta.4",
+    "description": "Your Nest devices. At home in Apple Home. A Homebridge plugin with HomeKit Secure Video support for cameras and doorbells.",
     "author": "n0rt0nthec4t",
     "license": "Apache-2.0",
-    "homepage": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/#readme",
+    "homepage": "https://n0rt0nthec4t.dev/homebridge-nest-accfactory",
     "repository": {
         "type": "git",
         "url": "git+https://github.com/n0rt0nthec4t/homebridge-nest-accfactory.git"
@@ -16,23 +16,26 @@
     },
     "funding": "https://github.com/n0rt0nthec4t/homebridge-nest-accfactory?sponsor=1",
     "keywords": [
-        "apple home",
-        "homekit",
+        "apple-home",
+        "homebridge",
         "homebridge-plugin",
         "supports-hap",
+        "homekit",
+        "homekit-secure-video",
         "hksv",
-        "homekit secure video",
+        "google-home",
         "nest",
-        "google",
-        "doorbell",
-        "camera",
-        "thermostat",
-        "temperature",
-        "smoke",
-        "sensor",
-        "floodlight",
+        "nest-camera",
+        "nest-doorbell",
+        "nest-floodlight",
+        "nest-thermostat",
+        "nest-protect",
+        "nest-yale-lock",
+        "nest-temperature-sensor",
+        "nest-heat-link",
         "hotwater",
-        "lock"
+        "weather",
+        "home-automation"
     ],
     "main": "dist/index.js",
     "engines": {
@@ -76,4 +79,3 @@
         "werift": "^0.27.0"
     }
 }
-

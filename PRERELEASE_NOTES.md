@@ -4,6 +4,28 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.5-beta.4 (2026/11/14)
+
+### Added
+
+- New project website: [Your Nest devices. At home in Apple Home.](https://n0rt0nthec4t.dev/homebridge-nest-accfactory)
+
+### Changed
+
+- Add trademark attribution to the README disclaimer and clarify the project's independence from Apple and Google
+- Declare an explicit zero-offset AAC edit and default roll group in the HKSV initialisation header to prevent implicit priming-related audio shortening in local Apple fragment-export tests; encoded media and timestamps remain unchanged
+- Reduce repeated header-buffer copies and temporary allocations when preparing HKSV recordings
+- Align npm keywords with the project topics and specific Nest device names
+
+### Fixed
+
+- Reject unsafe HKSV initialisation rewrites when fragmented metadata is missing or chunk-offset tables already reference media
+
+### Testing
+
+- Add repeated sound/flash alignment checks for Opus-to-AAC HKSV recordings, including Streamer pre-roll, paced delivery and recording cancellation
+- Continue checking longer Apple Home recordings for accumulating audio lead; the metadata correction is not yet a confirmed fix for every reported case
+
 ## v0.4.5-beta.3 (2026/11/13)
 
 ### Added

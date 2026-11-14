@@ -349,6 +349,6 @@ Want to contribute code? See [CONTRIBUTING.md](CONTRIBUTING.md) for development 
 
 This is a personal hobby project provided **"as-is"**, with no warranty whatsoever, express or implied, including but not limited to warranties of merchantability or fitness for a particular purpose.
 
-Building and running this project is done entirely at your own risk.
+This is an independent project and is not affiliated with or endorsed by Apple or Google. The author of this project shall not be held liable for any damages or issues arising from its use.
 
-I am not affiliated with any companies such as Google, Apple, or other related entities. The author of this project shall not be held liable for any damages or issues arising from its use.
+Apple, Apple Home and HomeKit are trademarks of Apple Inc. Google, Google Home and Nest are trademarks of Google LLC or its affiliates. Other trademarks belong to their respective owners.
