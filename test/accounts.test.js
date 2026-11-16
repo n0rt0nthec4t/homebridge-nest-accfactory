@@ -51,7 +51,7 @@ let sessionLocation = new URL('../src/accountsession.js', import.meta.url);
 let sessionSource = (await readFile(sessionLocation, 'utf8'))
   .replace('from \'./fetchWrapper.js\'', 'from ' + JSON.stringify(networkModule))
   .replace('from \'node:timers\'', 'from ' + JSON.stringify(timerModule));
-await importSource(sessionLocation, sessionSource);
+let { default: AccountSession } = await importSource(sessionLocation, sessionSource);
 // Authentication and protocol classes share the same isolated HTTP/timer boundary.
 for (let name of ['nest', 'google']) {
   let apiLocation = new URL('../src/api/' + name + '.js', import.meta.url);
@@ -936,4 +936,102 @@ for (let client of ['nestAPI', 'googleAPI']) {
     assert.equal(subscriptions, client === 'nestAPI' ? 1 : 0);
     assert.equal(grpcRuntime.observations.length - beforeObserve, client === 'googleAPI' ? 1 : 0);
   });
+}
+
+// Setup tests use fabricated credentials and the same HTTP boundary as runtime authentication.
+let googleTestAccount = { type: 'google', issueToken: 'https://accounts.google.com/token', cookie: 'SIDCC=fake-cookie' };
+let googleTestReplies = [{ access_token: 'fake-oauth', token_type: 'Bearer', expires_in: 3600 }, { jwt: 'fake-jwt' }, session];
+let nestTestReplies = [{ items: [{ session_token: 'fake-camera-cookie' }] }, session];
+
+for (let [credentials, replies] of [
+  [googleTestAccount, googleTestReplies],
+  [account, nestTestReplies],
+]) {
+  test('connection test authenticates ' + credentials.type + ' without discovery, retries or changing runtime state', async (context) => {
+    let { connection } = setup(context);
+    let before = { ...connection };
+    let config = { ...credentials };
+    let transports = grpcRuntime.transports.length;
+    let disconnect = context.mock.method(AccountSession.prototype, 'disconnect');
+    let replyIndex = 0;
+    let requests = context.mock.method(network, 'request', async () => response(replies[replyIndex++]));
+    assert.equal(await AccountSession.testConnection(config), 'success');
+    assert.deepEqual(config, credentials);
+    assert.deepEqual(connection, before);
+    assert.equal(grpcRuntime.transports.length, transports);
+    assert.equal(disconnect.mock.callCount(), 1);
+    let retired = disconnect.mock.calls[0].this;
+    assert.equal(retired.account.authorised, false);
+    assert.equal(retired.account.token, undefined);
+    assert.equal(retired.account.cameraAuth, undefined);
+    context.mock.timers.tick(86400000);
+    await setImmediate();
+    assert.equal(requests.mock.callCount(), replies.length);
+    assert.equal(retired.account.timer, undefined);
+  });
+}
+
+for (let credentials of [
+  undefined,
+  {},
+  { type: 'other' },
+  { type: 'nest', access_token: ' ' },
+  { ...googleTestAccount, cookie: '' },
+  { ...googleTestAccount, issueToken: 'invalid' },
+  { ...googleTestAccount, issueToken: 'http://accounts.google.com/token' },
+  { ...googleTestAccount, issueToken: 'https://untrusted.example/token' },
+  { ...googleTestAccount, issueToken: 'https://user:password@accounts.google.com/token' },
+]) {
+  test('connection test rejects incomplete or unsafe credentials: ' + JSON.stringify(credentials), async (context) => {
+    let requests = context.mock.method(network, 'request');
+    assert.equal(await AccountSession.testConnection(credentials), 'failed');
+    assert.equal(requests.mock.callCount(), 0);
+  });
+}
+
+for (let credentials of [account, googleTestAccount]) {
+  test('connection test keeps ' + credentials.type + ' authentication failures quiet and does not retry', async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    let requests = context.mock.method(network, 'request', async () => {
+      throw Object.assign(new Error('fake-secret-in-backend-error'), { code: 403 });
+    });
+    assert.equal(await AccountSession.testConnection(credentials), 'failed');
+    context.mock.timers.tick(60000);
+    await setImmediate();
+    assert.equal(requests.mock.callCount(), 1);
+  });
+}
+
+for (let [credentials, replies] of [
+  [googleTestAccount, googleTestReplies],
+  [account, nestTestReplies],
+]) {
+  for (let stalled = 0; stalled < replies.length; stalled++) {
+    test('connection test cancels ' + credentials.type + ' request ' + stalled + ' at the overall deadline', async (context) => {
+      context.mock.timers.enable({ apis: ['setTimeout'] });
+      let signals = [];
+      let requests = context.mock.method(network, 'request', async (method, url, options) => {
+        signals.push(options.signal);
+        if (signals.length - 1 === stalled) {
+          return await new Promise((resolve, reject) => {
+            options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+          });
+        }
+        return response(replies[signals.length - 1]);
+      });
+      let pending = AccountSession.testConnection(credentials);
+      await setImmediate();
+      context.mock.timers.tick(14999);
+      assert.equal(signals.at(-1).aborted, false);
+      context.mock.timers.tick(1);
+      assert.equal(await pending, 'timeout');
+      assert.equal(
+        signals.every((signal) => signal === signals[0] && signal.aborted === true),
+        true,
+      );
+      context.mock.timers.tick(60000);
+      await setImmediate();
+      assert.equal(requests.mock.callCount(), stalled + 1);
+    });
+  }
 }

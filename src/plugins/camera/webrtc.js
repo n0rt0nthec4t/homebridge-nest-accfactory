@@ -36,7 +36,6 @@
 // - Stream health monitoring with recovery/suppression logic
 // - Startup timing and stream diagnostics logging
 // - Automatic handling of packet loss, corruption, and stalled playback
-// - Local vs remote stream path detection based on SDP candidates
 //
 // Notes:
 // - This transport owns its Google Home Foyer gRPC client and stream signalling
@@ -51,7 +50,7 @@
 // - Streamer owns retention and delivery pacing; source timestamps are not playout deadlines
 // - Incomplete keyframes and pathological access units are dropped/recovered locally rather than blocking the plugin process
 //
-// Code version 2026.10.27
+// Code version 2026.11.15
 // Mark Hulskamp
 'use strict';
 
@@ -94,6 +93,7 @@ const KEYFRAME_MAX_BYTES = 4 * 1024 * 1024; // Absolute bound for unusually larg
 const KEYFRAME_BYTES_PER_PIXEL = 0.5; // Conservative compressed-IDR allowance derived from learned resolution
 const KEYFRAME_BITRATE_SECONDS = 4; // Allow an IDR burst up to four seconds of the learned average bitrate
 const STALLED_TIMEOUT = 10000; // Time with no playback packets before we consider stream stalled and attempt restart
+const CLOCK_SYNC_MAX_ADJUSTMENT_MS = 10000; // Allow startup skew, but never apply a correction beyond the source stall allowance.
 // Allow delayed Opus packets to arrive within the existing 300 ms playout headroom.
 const AUDIO_RTP_REORDER_DELAY_MS = 150;
 const AUDIO_RTP_REORDER_MAX_PACKETS = 64; // Bound audio RTP reorder queue
@@ -127,6 +127,7 @@ export default class WebRTC extends StreamTransport {
   #closeInProgress = false; // True while close() teardown is running to avoid re-entrant shutdown races
   #reconnectPending = false; // Reconnect requested once socket closes
   #clockSynchronized = false; // Sender reports establish one A/V reference per source pair.
+  #clockSyncRejected = false; // Log an unusable sender-report relationship only once per source pair.
   #tracks = { audio: {}, video: {}, talkback: {} }; // Track state for audio and video
 
   constructor(options = {}) {
@@ -295,7 +296,7 @@ export default class WebRTC extends StreamTransport {
     homeFoyerResponse = await this.#grpcTransport.command(GOOGLE_HOME_FOYER_PREFIX, 'CameraService', 'JoinStream', {
       command: 'offer',
       deviceId: this.uuid,
-      local: false, // Request direct peer-to-peer connection if possible
+      local: false, // Keep local requests disabled while their A/V clock alignment is investigated.
       streamContext: 'STREAM_CONTEXT_DEFAULT',
       // Request highest possible resolution; actual delivered resolution may be lower.
       requestedVideoResolution: 'VIDEO_RESOLUTION_FULL_HIGH',
@@ -327,9 +328,8 @@ export default class WebRTC extends StreamTransport {
       return;
     }
 
-    // If the SDP answer contains a private/local candidate, then local access was granted.
-    // Otherwise traffic will use the normal routed/remote path and we should continue sending
-    // periodic stream extension requests to keep the session alive.
+    // Use the answer's private candidates as the existing signal for local access.
+    // Requesting local access alone does not mean Google offered a LAN endpoint.
     let localAccessGranted =
       /a=candidate:.* (10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+|fd[0-9a-f]{2}:[0-9a-f:]+)/i.test(
         homeFoyerResponse.data[0].sdp || '',
@@ -528,6 +528,7 @@ export default class WebRTC extends StreamTransport {
       // This lets any in-flight callbacks naturally no-op while shutdown continues.
       this.#tracks = { audio: {}, video: {}, talkback: {} };
       this.#clockSynchronized = false;
+      this.#clockSyncRejected = false;
 
       if (closingStreamId !== undefined && talkbackActive === true) {
         await this.#grpcTransport.command(GOOGLE_HOME_FOYER_PREFIX, 'CameraService', 'SendTalkback', {
@@ -894,6 +895,7 @@ export default class WebRTC extends StreamTransport {
       this.#tracks.video.clock = { rtpTimestamp: undefined, timestamp: undefined, lastTimestamp: undefined, report: undefined };
       this.#tracks.video.ssrc = undefined;
       this.#clockSynchronized = false;
+      this.#clockSyncRejected = false;
       this.#tracks.video.deltaAudit = { hasAcceptedKeyframe: false, recoveryGroup: undefined };
       this.#tracks.video.h264 = { lastSPS: undefined, lastPPS: undefined };
 
@@ -919,6 +921,7 @@ export default class WebRTC extends StreamTransport {
       this.#tracks.audio.clock = { rtpTimestamp: undefined, timestamp: undefined, lastTimestamp: undefined, report: undefined };
       this.#tracks.audio.ssrc = undefined;
       this.#clockSynchronized = false;
+      this.#clockSyncRejected = false;
 
       if (typeof this.#tracks.audio.jitter === 'object' && this.#tracks.audio.jitter !== null) {
         this.clearJitterBuffer(this.#tracks.audio.jitter);
@@ -975,6 +978,50 @@ export default class WebRTC extends StreamTransport {
       ),
     );
 
+    // A bad report pair must not move a track minutes ahead and evict the other
+    // track from shared retention. For unseen media, compare its proposed anchor
+    // with now. Keep the RTP estimates and retry later reports instead of clamping.
+    let now = Date.now();
+    let correctionMs = Math.max(
+      ...tracks.map((track, index) => Math.abs(localOrigin + sourceTimes[index] - (track.clock.timestamp ?? now))),
+    );
+    let rejected = Number.isFinite(correctionMs) !== true || correctionMs > CLOCK_SYNC_MAX_ADJUSTMENT_MS;
+    if (rejected === true && this.#clockSyncRejected === true) {
+      return;
+    }
+
+    // Keep the first rejected proposal and the accepted mapping for diagnosis,
+    // without logging every repeated unusable sender-report pair.
+    this?.log?.debug?.(
+      'WebRTC source clock synchronisation for uuid "%s": %j',
+      this.uuid,
+      tracks.map((track, index) => ({
+        track: index === 0 ? 'video' : 'audio',
+        ssrc: track.clock.report.ssrc,
+        clockRate: track.sampleRate,
+        reportNtp: track.clock.report.ntpTimestamp.toString(),
+        reportRtp: track.clock.report.rtpTimestamp,
+        currentRtp: track.clock.rtpTimestamp,
+        ntpDeltaMs: (Number(track.clock.report.ntpTimestamp - ntpOrigin) * 1000) / 0x100000000,
+        rtpDeltaMs:
+          ((((track.clock.rtpTimestamp ?? track.clock.report.rtpTimestamp) - track.clock.report.rtpTimestamp) | 0) * 1000) /
+          track.sampleRate,
+        previousTimeMs: track.clock.timestamp,
+        mappedTimeMs: localOrigin + sourceTimes[index],
+        adjustmentMs: track.clock.timestamp === undefined ? undefined : localOrigin + sourceTimes[index] - track.clock.timestamp,
+      })),
+    );
+
+    if (rejected === true) {
+      this?.log?.debug?.(
+        'Ignoring implausible WebRTC source clock correction for uuid "%s": %s ms; retaining RTP timeline and waiting for later reports',
+        this.uuid,
+        correctionMs,
+      );
+      this.#clockSyncRejected = true;
+      return;
+    }
+
     // Late reports replace arrival-based estimates for both tracks together.
     // Choose one translation that never rewinds either emitted track. A one-time
     // forward gap is preferable to rewriting retained media or shifting tracks independently.
@@ -985,7 +1032,6 @@ export default class WebRTC extends StreamTransport {
       tracks[index].clock.timestamp = localOrigin + sourceTimes[index];
     }
     this.#clockSynchronized = true;
-    this?.log?.debug?.('Synchronized WebRTC source A/V clocks for uuid "%s" using RTCP sender reports', this.uuid);
   }
 
   #mapPlaybackTimestamp(mediaType, rtpTimestamp, receivedAt) {

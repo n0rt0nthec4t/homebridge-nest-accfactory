@@ -233,20 +233,98 @@ test('consecutive night-vision writes retain boolean state before cloud reconcil
   assert.deepEqual(flow.writes, [false, true, false].map((enabled) => ({ uuid: 'DEVICE_CAMERA', irled_enabled: enabled })));
 });
 
+for (let name of ['camera', 'doorbell', 'floodlight']) {
+  for (let [source, start] of [
+    ['Nest', 1700000000],
+    ['Google', 1700000000000],
+  ]) {
+    test(name + ' ignores replayed ' + source + ' motion history but accepts advancing and new events', async (context) => {
+      let { device } = await setup(context, name);
+      let history = context.mock.method(device, 'history', () => {});
+      let timers = context.mock.method(device, 'addTimer');
+      let resets = () => timers.mock.calls.filter((call) => call.arguments[0] === TIMERS.MOTION_COOLDOWN.name).length;
+      let motion = device.motionService.getCharacteristic(C.MotionDetected);
+      let event = { id: 'motion-1', start_time: start, end_time: start + 2, types: ['motion'] };
+      await device.update({ events: [event] });
+      assert.equal(motion.value, true);
+      assert.equal(resets(), 1);
+      await device.update({ battery_level: 79 });
+      await device.update({ events: [{ ...event, zone_ids: [2] }] });
+      await device.update({ events: [] });
+      await device.update({ events: [event] });
+      assert.equal(resets(), 1, 'unchanged history must not extend the cooldown, including after an empty poll');
+      assert.equal(history.mock.callCount(), 1);
+      event = { ...event, end_time: start + 4 };
+      await device.update({ events: [event] });
+      assert.equal(resets(), 2, 'an advancing end time is genuine continuation');
+      await device.update({ events: [{ ...event, end_time: start + 3 }] });
+      assert.equal(resets(), 2, 'older event revisions must not rewind progress');
+      await device.message(HomeKitDevice.TIMER, { timer: TIMERS.MOTION_COOLDOWN.name });
+      assert.equal(motion.value, false);
+      await device.update({ events: [event], battery_level: 78 });
+      assert.equal(motion.value, false, 'replayed history must not rearm expired motion');
+      assert.equal(resets(), 2);
+      await device.update({ events: [{ ...event, id: 'motion-2' }] });
+      assert.equal(motion.value, false, 'a different ID at the same motion time must not rearm it');
+      await device.update({ events: [{ ...event, id: 'delayed-motion', end_time: start + 3 }] });
+      assert.equal(motion.value, false, 'a delayed older event must not rearm it');
+      await device.update({ events: [{ ...event, id: 'motion-2', end_time: start + 5 }] });
+      assert.equal(motion.value, true, 'newer motion must still start the cooldown');
+      assert.equal(resets(), 3);
+    });
+  }
+}
+
+test('camera motion uses available timestamps and ignores events without usable times', async (context) => {
+  let { device } = await setup(context);
+  let timers = context.mock.method(device, 'addTimer');
+  let motion = device.motionService.getCharacteristic(C.MotionDetected);
+  await device.update({ events: [{ types: ['motion'] }, { id: 'invalid-time', start_time: NaN, end_time: Infinity, types: ['motion'] }] });
+  assert.equal(motion.value, false);
+  let event = { start_time: 100, end_time: 101, types: ['motion'] };
+  await device.update({ events: [event] });
+  assert.equal(motion.value, true);
+  await device.update({ events: [{ ...event, zone_ids: [2] }] });
+  await device.update({ events: [{ ...event, end_time: 102 }] });
+  await device.update({ events: [{ start_time: 103, end_time: 0, types: ['motion'] }] });
+  await device.update({ events: [{ end_time: 104, types: ['motion'] }] });
+  assert.equal(timers.mock.calls.filter((call) => call.arguments[0] === TIMERS.MOTION_COOLDOWN.name).length, 4);
+});
+
+test('camera motion watermark survives source changes between epoch seconds and milliseconds', async (context) => {
+  let { device } = await setup(context, 'camera', { nest_google_device_uuid: 'quartz.CAMERA' });
+  let motion = device.motionService.getCharacteristic(C.MotionDetected);
+  let start = 1700000000;
+  await device.update({ events: [{ start_time: start, end_time: start + 1, types: ['motion'] }] });
+  assert.equal(motion.value, true);
+  await device.message(HomeKitDevice.TIMER, { timer: TIMERS.MOTION_COOLDOWN.name });
+  await device.update({ nest_google_device_uuid: 'DEVICE_CAMERA' });
+  assert.equal(motion.value, false, 'retained history must not rearm motion when the source changes');
+  await device.update({ events: [{ start_time: start * 1000, end_time: (start + 2) * 1000, types: ['motion'] }] });
+  assert.equal(motion.value, true);
+  await device.message(HomeKitDevice.TIMER, { timer: TIMERS.MOTION_COOLDOWN.name });
+  await device.update({ nest_google_device_uuid: 'quartz.CAMERA' });
+  assert.equal(motion.value, false);
+  await device.update({ events: [{ start_time: start, end_time: start + 3, types: ['motion'] }] });
+  assert.equal(motion.value, true, 'returning to seconds must still accept newer activity');
+});
+
 test('motion, detection disable, offline and shutdown clear the same HomeKit service', async (context) => {
   let flow = await setup(context);
   let device = flow.device;
   let service = device.motionService;
-  let event = { id: 'motion-1', types: ['motion'] };
+  let event = { id: 'motion-1', start_time: 100, end_time: 101, types: ['motion'] };
   await device.update({ events: [event] });
   assert.equal(service.getCharacteristic(C.MotionDetected).value, true);
   await device.update({ events: [], motion_detection_enabled: false });
   assert.equal(service.getCharacteristic(C.MotionDetected).value, false);
   await device.update({ motion_detection_enabled: true, events: [event] });
+  assert.equal(service.getCharacteristic(C.MotionDetected).value, false);
+  await device.update({ events: [{ ...event, id: 'motion-2', end_time: 102 }] });
   assert.equal(service.getCharacteristic(C.MotionDetected).value, true);
   await device.onTimer({ timer: TIMERS.MOTION_COOLDOWN.name });
   assert.equal(service.getCharacteristic(C.MotionDetected).value, false);
-  await device.update({ events: [{ ...event, id: 'motion-2' }] });
+  await device.update({ events: [{ ...event, id: 'motion-3', end_time: 103 }] });
   await device.onShutdown();
   assert.equal(service.getCharacteristic(C.MotionDetected).value, false);
   assert.equal(device.motionService, service);
@@ -353,7 +431,7 @@ for (let active of [false, true]) {
   test('camera offline/online notifications restore motion and HKSV prebuffer only when active=' + active, async (context) => {
     let flow = await setup(context);
     let device = flow.device;
-    await device.update({ events: [{ id: 'before-offline', types: ['motion'] }], speaker_volume: 51 });
+    await device.update({ events: [{ id: 'before-offline', start_time: 100, end_time: 101, types: ['motion'] }], speaker_volume: 51 });
     let management = device.controller.recordingManagement.recordingManagementService;
     management.updateCharacteristic(C.Active, active === true ? C.Active.ACTIVE : C.Active.INACTIVE);
     await device.updateRecordingActive(true);
@@ -394,7 +472,7 @@ for (let enabled of [false, true]) {
     assert.deepEqual(flow.writes, []);
   });
 }
-for (let events of [undefined, {}, [{ id: 'poll-motion', types: ['motion'] }]]) {
+for (let events of [undefined, {}, [{ id: 'poll-motion', start_time: 100, end_time: 101, types: ['motion'] }]]) {
   test('camera event polling publishes ' + (Array.isArray(events) === true ? 'motion' : 'an empty event list'), async (context) => {
     let flow = await setup(context);
     let requests = [];
@@ -437,7 +515,7 @@ test('camera timer dispatch polls through GET and commits motion through the lif
   let { device } = await setup(context);
   let polled = Promise.withResolvers();
   let queries = [];
-  let events = [{ id: 'timer-motion', types: ['motion'] }];
+  let events = [{ id: 'timer-motion', start_time: 100, end_time: 101, types: ['motion'] }];
   await HomeKitDevice.message(device.uuid, HomeKitDevice.GET, async (query) => {
     queries.push(query);
     polled.resolve();

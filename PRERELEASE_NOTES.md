@@ -4,6 +4,28 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.5-beta.5 (2026/11/16)
+
+### Deprecated
+
+- Homebridge 1 and Node.js 22 support are deprecated and will be retired together in a plugin release after Node.js 22 reaches end of life on 30 April 2027. Both remain supported for now. Users should plan to upgrade to Homebridge 2 with Node.js 24 or 26
+
+### Added
+
+- Add a quiet, bounded account authentication test for future setup interfaces, without starting discovery or background retries
+- Debug logging of WebRTC sender-report timestamps and calculated A/V clock corrections to investigate live audio and HKSV timing failures
+
+### Changed
+
+- Correct the minimum supported Homebridge 2 version to `2.4.0` and align documentation and CI
+- Raise the minimum supported Node.js 22 version to `22.13.0` and test that baseline in CI; Node.js 24 and 26 support remains unchanged
+- Update development dependencies Stylistic to `6.0.0`, ESLint to `10.15.0` and prettier-eslint to `17.1.3`
+
+### Fixed
+
+- Prevent replayed or delayed camera history from extending the cooldown or retriggering motion; only newer reported motion restarts or extends it
+- Reject WebRTC sender-report corrections exceeding ten seconds, preserving the existing RTP timeline and allowing later reports to synchronise instead of permanently separating audio and video
+
 ## v0.4.5-beta.4 (2026/11/14)
 
 ### Added

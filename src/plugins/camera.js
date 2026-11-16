@@ -91,7 +91,7 @@ const PREBUFFER_LENGTH = 4000;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.11.02'; // Code version
+  static VERSION = '2026.11.16'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -105,6 +105,7 @@ export default class NestCamera extends HomeKitDevice {
   #recordingConfig = {}; // HomeKit Secure Video recording configuration
   #cameraImages = {}; // Snapshot resource images
   #motionCooldownActive = false; // Flag to track if motion cooldown is active
+  #lastMotionTime = 0; // Latest handled motion time; retained across cooldown expiry and empty polls.
 
   constructor(accessory, api, deviceData) {
     super(accessory, api, deviceData);
@@ -526,6 +527,18 @@ export default class NestCamera extends HomeKitDevice {
         // Handle motion event
         // We will use this to trigger the starting of the HKSV recording if the camera is active
         if (event.types.includes('motion') === true) {
+          // Compare recent epoch seconds and milliseconds on one clock. Replayed
+          // or delayed history must not restart motion after newer activity.
+          let eventTime = Math.max(
+            Number.isFinite(event.start_time) === true ? event.start_time : 0,
+            Number.isFinite(event.end_time) === true ? event.end_time : 0,
+          );
+          eventTime = eventTime < 1e12 ? eventTime * 1000 : eventTime;
+          if (eventTime <= this.#lastMotionTime) {
+            continue;
+          }
+          this.#lastMotionTime = eventTime;
+
           // Only set motion to true on first detection
           if (this.#motionCooldownActive === false) {
             if (typeof this.motionService === 'object') {

@@ -19,7 +19,7 @@
 // - Camera credential notification completes before clients resume ingestion
 // - This session does not own resource data, API transports or HomeKit accessories
 //
-// Code version 2026.11.10
+// Code version 2026.11.16
 // Mark Hulskamp
 'use strict';
 
@@ -76,6 +76,37 @@ export default class AccountSession extends EventEmitter {
     return this.#account;
   }
 
+  static async testConnection(account) {
+    // Static so supplied credentials are checked in a fresh session, without reusing or changing a running session.
+    // Validate credentials before testing; Google cookies must only be sent to its HTTPS account endpoint.
+    let fields = account?.type === 'google' ? ['issueToken', 'cookie'] : account?.type === 'nest' ? ['access_token'] : undefined;
+    if (fields === undefined || fields.some((field) => typeof account[field] !== 'string' || account[field].trim() === '')) {
+      return 'failed';
+    }
+    let credentials = Object.fromEntries(fields.map((field) => [field, account[field].trim()]));
+    if (account.type === 'google') {
+      let url = URL.parse(credentials.issueToken);
+      if (url?.origin !== 'https://accounts.google.com' || url.username !== '' || url.password !== '') {
+        return 'failed';
+      }
+    }
+
+    // Use an isolated, quiet session with a 15-second deadline for the complete authentication exchange.
+    let session = new AccountSession({ type: account.type, fieldTest: account.fieldTest === true, ...credentials });
+    let controller = new AbortController();
+    let timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      // Bypass connect()'s scheduler; the same login exchange runs without a logger or API clients.
+      let authorised = await session.#authenticate(controller.signal);
+      // Return only success, failed or timeout, keeping credentials and backend errors private.
+      return controller.signal.aborted === true ? 'timeout' : authorised === true ? 'success' : 'failed';
+    } finally {
+      // Always retire the temporary session and deadline timer.
+      clearTimeout(timer);
+      session.disconnect();
+    }
+  }
+
   // API clients reuse valid credentials. The scheduler and callers requesting
   // an explicit reconnect pass refresh=true to repeat the original login exchange.
   async connect(refresh = false) {
@@ -106,7 +137,7 @@ export default class AccountSession extends EventEmitter {
     return await this.#pending;
   }
 
-  async #authenticate() {
+  async #authenticate(signal) {
     let uuid = this.#uuid;
     let account = this.#account;
 
@@ -125,7 +156,8 @@ export default class AccountSession extends EventEmitter {
     }
 
     try {
-      let session = account.type === ACCOUNT_TYPE.GOOGLE ? await this.#connectGoogle(account) : await this.#connectNest(account);
+      let session =
+        account.type === ACCOUNT_TYPE.GOOGLE ? await this.#connectGoogle(account, signal) : await this.#connectNest(account, signal);
 
       // Authentication can finish after shutdown; only its original account may adopt the session.
       if (this.#active === true) {
@@ -238,10 +270,11 @@ export default class AccountSession extends EventEmitter {
     return true;
   }
 
-  async #connectGoogle(account) {
+  async #connectGoogle(account, signal) {
     // Google login has three steps: browser credentials -> OAuth token -> Nest JWT
     // -> Nest session. The resulting session is shared by REST and protobuf.
     let tokenResponse = await fetchWrapper('get', account.issueToken, {
+      signal,
       headers: {
         Referer: 'https://accounts.google.com/',
         Cookie: account.cookie,
@@ -278,6 +311,7 @@ export default class AccountSession extends EventEmitter {
       'post',
       'https://nestauthproxyservice-pa.googleapis.com/v1/issue_jwt',
       {
+        signal,
         headers: {
           Referer: 'https://' + account.referer,
           Origin: 'https://' + account.referer,
@@ -302,7 +336,7 @@ export default class AccountSession extends EventEmitter {
       throw new Error('Missing jwt in JWT response');
     }
 
-    let sessionData = await this.#fetchSession(account, 'Basic ' + jwtData.jwt);
+    let sessionData = await this.#fetchSession(account, 'Basic ' + jwtData.jwt, signal);
 
     return {
       sessionData,
@@ -317,13 +351,14 @@ export default class AccountSession extends EventEmitter {
     };
   }
 
-  async #connectNest(account) {
+  async #connectNest(account, signal) {
     // Legacy camera endpoints require a website session cookie. Obtain that
     // separately; REST/protobuf use the token returned by the Nest session endpoint.
     let loginResponse = await fetchWrapper(
       'post',
       new URL('/api/v1/login.login_nest', 'https://webapi.' + account.cameraAPIHost).href,
       {
+        signal,
         withCredentials: true,
         headers: {
           Referer: 'https://' + account.referer,
@@ -346,7 +381,7 @@ export default class AccountSession extends EventEmitter {
       throw error;
     }
 
-    let sessionData = await this.#fetchSession(account, 'Basic ' + account.access_token);
+    let sessionData = await this.#fetchSession(account, 'Basic ' + account.access_token, signal);
 
     return {
       sessionData,
@@ -360,10 +395,11 @@ export default class AccountSession extends EventEmitter {
     };
   }
 
-  async #fetchSession(account, authorisation) {
+  async #fetchSession(account, authorisation, signal) {
     // Both Google and legacy Nest auth flows finish by asking the Nest session
     // endpoint for the access token and service URLs used by runtime APIs.
     let response = await fetchWrapper('get', new URL('/session', 'https://' + account.restAPIHost).href, {
+      signal,
       headers: {
         Referer: 'https://' + account.referer,
         Origin: 'https://' + account.referer,

@@ -15,16 +15,17 @@ jobs:
     strategy:
       matrix:
         include:
-          - node: 22
+          # Exercise the declared minimum; publish validation also checks latest Node 22.
+          - node: 22.13.0
             homebridge: 1.11.4
-          - node: 22
-            homebridge: 2.5.0
+          - node: 22.13.0
+            homebridge: 2.4.0
           - node: 24
             homebridge: 1.11.4
           - node: 24
-            homebridge: 2.5.0
+            homebridge: 2.4.0
           - node: 26
-            homebridge: 2.5.0
+            homebridge: 2.4.0
 
     steps:
       - uses: actions/checkout@v5

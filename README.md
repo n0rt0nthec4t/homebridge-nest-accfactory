@@ -32,10 +32,12 @@ Connect your supported Nest and Google Home devices to Apple Home through Homebr
 
 ### Requirements
 
-- **Node.js 22 (22.12 or later) or 24.** Node.js 26 is also supported with Homebridge 2.5 or later.
-- **Homebridge 1 (1.11.4 or later) or Homebridge 2 (2.5.0 or later).**
+- **Homebridge 2.5 or later is recommended.** Homebridge 2.4 and Homebridge 1.11.4 are also supported.
+- **Node.js 24 or 26 is recommended.** Node.js 22.13 and later 22.x releases are also supported. To use Node.js 26, you need Homebridge 2.4 or later.
 - A Nest or Google account with access to the supported devices.
 - **FFmpeg 7.1 or later** for cameras and doorbells. See [FFmpeg setup](#ffmpeg) for a compatible build.
+
+Homebridge 1 and Node.js 22 remain supported for now, but support for both will be retired together in a plugin release after Node.js 22 reaches [end of life on 30 April 2027](https://github.com/nodejs/Release#release-schedule). If you use either, please plan to move to Homebridge 2 with Node.js 24 or 26, checking that your other plugins are compatible before upgrading. The release removing support will be announced in the release notes.
 
 [Supported devices](#supported-devices) · [Configuration](#configuration) · [Configuration reference](#configuration-reference) · [HomeKit Secure Video](#homekit-secure-video-hksv) · [Support](#support-policy)
 
