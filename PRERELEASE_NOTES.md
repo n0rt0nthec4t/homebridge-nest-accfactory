@@ -4,6 +4,18 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.5-beta.6 (2026/11/17)
+
+### Fixed
+
+- Filter WebRTC padding and compact delivered sequence numbers with Werift 0.27 to prevent false video-fragment gaps
+- Reserve image download time within the Google snapshot deadline and avoid reporting a missing URL when a download fails
+- Reconnect WebRTC streams when usable video stops despite continued audio or rejected video packets, allowing the initial keyframe startup window
+
+### Changed
+
+- Add CI checks for the recommended Homebridge `2.5.0` with Node.js 24 and 26, alongside the supported minimum versions
+
 ## v0.4.5-beta.5 (2026/11/16)
 
 ### Deprecated

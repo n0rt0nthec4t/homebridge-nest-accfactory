@@ -26,7 +26,7 @@
 // - FFmpeg validation determines availability of camera streaming and HKSV recording
 // - Used during plugin startup before any device initialisation
 //
-// Code version 2026.10.26
+// Code version 2026.11.17
 // Mark Hulskamp
 'use strict';
 

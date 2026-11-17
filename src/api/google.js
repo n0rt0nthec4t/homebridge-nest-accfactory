@@ -25,7 +25,7 @@
 // - connect() starts ingestion without a consumer; onData optionally reports committed changes
 // - Google Home Foyer media signalling belongs to the WebRTC camera transport
 //
-// Code version 2026.11.06
+// Code version 2026.11.17
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -990,7 +990,8 @@ export default class GoogleAPI {
     return result;
   }
 
-  async #getCameraSnapshot(resourceId, signal, retryUpload = true) {
+  // Upload and Observe share a cutoff that reserves download time; retries reuse it.
+  async #getCameraSnapshot(resourceId, signal, refreshUntil = Date.now() + SNAPSHOT_TIMEOUT - SNAPSHOT_FETCH_TIMEOUT, retryUpload = true) {
     signal.throwIfAborted();
     let account = this.#options.session?.account;
 
@@ -1066,7 +1067,7 @@ export default class GoogleAPI {
             },
           ],
         },
-        { timeout: SNAPSHOT_TIMEOUT },
+        { timeout: Math.max(1, refreshUntil - Date.now()) },
       );
 
       // A caller may already have timed out while this command was in flight.
@@ -1085,7 +1086,7 @@ export default class GoogleAPI {
         acceptedImage = await Promise.race([
           waitForSnapshotUpdate,
           new Promise((resolve) => {
-            waitTimer = setTimeout(resolve, SNAPSHOT_WAIT_TIMEOUT);
+            waitTimer = setTimeout(resolve, Math.max(0, Math.min(SNAPSHOT_WAIT_TIMEOUT, refreshUntil - Date.now())));
           }),
         ]);
       }
@@ -1134,8 +1135,8 @@ export default class GoogleAPI {
       } catch (error) {
         // A replaced live-image URL can answer HTTP 400. Request one new upload
         // through the existing freshness flow, sharing the original deadline.
-        if (error?.status === 400 && retryUpload === true && signal.aborted === false) {
-          return await this.#getCameraSnapshot(resourceId, signal, false);
+        if (error?.status === 400 && retryUpload === true && signal.aborted === false && Date.now() < refreshUntil) {
+          return await this.#getCameraSnapshot(resourceId, signal, refreshUntil, false);
         }
 
         // Preserve visibility of unexpected HTTP/body failures while suppressing timeouts.
@@ -1157,7 +1158,9 @@ export default class GoogleAPI {
       }
     }
 
-    this.#options.log?.debug?.('Google API did not provide a usable snapshot URL for device uuid "%s"', resourceId);
+    if ((latestUrl ?? '') === '') {
+      this.#options.log?.debug?.('Google API did not provide a usable snapshot URL for device uuid "%s"', resourceId);
+    }
 
     return;
   }

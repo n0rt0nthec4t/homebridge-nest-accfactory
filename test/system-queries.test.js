@@ -277,11 +277,9 @@ for (let [label, status, recover, expectedUploads] of [
   });
 }
 
-test('Google snapshot fresh-upload retry retains the original deadline', async (context) => {
+test('Google snapshot skips a fresh-upload retry when only download time remains', async (context) => {
   context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 100000 });
   let uploads = 0;
-  let secondUpload = Promise.withResolvers();
-  let lateReply = Promise.withResolvers();
   let flow = await platformHarness(context, {
     value: { device_info: { typeName: 'google.resource.SpencerResource' } },
     fetch: async () => {
@@ -293,22 +291,12 @@ test('Google snapshot fresh-upload retry retains the original deadline', async (
   let success = { data: [{ traitOperations: [{ progress: 'COMPLETE', event: { event: { status: 'STATUS_SUCCESSFUL' } } }] }] };
   flow.connection.grpcTransport.command = async () => {
     uploads++;
-    if (uploads === 2) {
-      secondUpload.resolve();
-      return await lateReply.promise;
-    }
     await flow.send('DEVICE_TEST', { upload_live_image: { liveImageUrl: 'https://image.invalid/first.jpg' } });
     return success;
   };
   let request = flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true });
-  await secondUpload.promise;
-  context.mock.timers.tick(1000);
   assert.equal((await request).camera_snapshot, undefined);
-  let requests = flow.requests.length;
-  lateReply.resolve(success);
-  await setImmediate();
-  assert.equal(uploads, 2);
-  assert.equal(flow.requests.length, requests, 'A late retry reply must not start another image download');
+  assert.equal(uploads, 1);
 });
 
 test('snapshot command rejection cleans its waiter and GET degrades safely', async (context) => {
@@ -346,6 +334,56 @@ test('Google snapshot times out its Observe wait and fetches the previously avai
     flow.logs.some((args) => String(args[1]).includes('using the last available image')),
     false,
   );
+});
+
+test('Google snapshot shortens the Observe wait after a slow successful command', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 100000 });
+  let downloadedAt;
+  let flow = await platformHarness(context, {
+    value: {
+      device_info: { typeName: 'google.resource.SpencerResource' },
+      upload_live_image: { liveImageUrl: 'https://image.invalid/cached.jpg' },
+    },
+    fetch: async () => {
+      downloadedAt = Date.now();
+      return { arrayBuffer: async () => Buffer.from([6]) };
+    },
+  });
+  let command = Promise.withResolvers();
+  flow.connection.grpcTransport.command = () => command.promise;
+  let request = flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true });
+  await setImmediate();
+  context.mock.timers.tick(3500);
+  command.resolve({ data: [{ traitOperations: [{ progress: 'COMPLETE', event: { event: { status: 'STATUS_SUCCESSFUL' } } }] }] });
+  await setImmediate();
+  context.mock.timers.tick(499);
+  assert.equal(downloadedAt, undefined);
+  context.mock.timers.tick(1);
+  assert.deepEqual((await request).camera_snapshot, Buffer.from([6]));
+  assert.equal(downloadedAt, 104000);
+});
+
+test('Google snapshot reserves download time after the command timeout', async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 100000 });
+  let flow = await platformHarness(context, {
+    value: {
+      device_info: { typeName: 'google.resource.SpencerResource' },
+      upload_live_image: { liveImageUrl: 'https://image.invalid/cached.jpg' },
+    },
+    fetch: async () => ({ arrayBuffer: async () => Buffer.from([7]) }),
+  });
+  let pending = Promise.withResolvers();
+  let started = Promise.withResolvers();
+  flow.connection.grpcTransport.command = (...args) => {
+    assert.equal(args[4].timeout, 4000);
+    started.resolve();
+    return pending.promise;
+  };
+  let request = flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true });
+  await started.promise;
+  context.mock.timers.tick(4000);
+  pending.resolve({ status: 4, code: 'REQUEST_TIMEOUT' });
+  assert.deepEqual((await request).camera_snapshot, Buffer.from([7]));
 });
 
 test('overall snapshot timeout lets HomeKit continue when a cloud command never settles', async (context) => {
@@ -386,7 +424,7 @@ test('snapshot expiry removes only its own waiter while an overlapping request c
   });
   let commands = [];
   flow.connection.grpcTransport.command = (...args) => {
-    assert.equal(args[4].timeout, 7000);
+    assert.equal(args[4].timeout, 4000);
     let command = Promise.withResolvers();
     commands.push(command);
     return command.promise;
@@ -397,8 +435,10 @@ test('snapshot expiry removes only its own waiter while an overlapping request c
   context.mock.timers.tick(1000);
   let second = flow.connection.googleAPI.get('DEVICE_TEST', 'camera_snapshot');
   await setImmediate();
-  context.mock.timers.tick(6000);
+  context.mock.timers.tick(3000);
+  commands[0].resolve({ status: 4, code: 'REQUEST_TIMEOUT' });
   assert.equal(await first, undefined);
+  context.mock.timers.tick(500);
   await flow.send('DEVICE_TEST', { upload_live_image: { liveImageUrl: 'https://image.invalid/fresh.jpg' } });
   let success = { status: 0, data: [{ traitOperations: [{ progress: 'COMPLETE', event: { event: { status: 'STATUS_SUCCESSFUL' } } }] }] };
   commands[1].resolve(success);
@@ -431,6 +471,11 @@ test('overall snapshot deadline aborts an in-flight HTTP image fetch', async (co
   context.mock.timers.tick(7000);
   assert.equal((await request).camera_snapshot, undefined);
   assert.equal(signal.aborted, true);
+  await setImmediate();
+  assert.equal(
+    flow.logs.some((args) => String(args[1]).includes('did not provide a usable snapshot URL')),
+    false,
+  );
 });
 
 // Match the transport's decode().toJSON() boundary, which serialises int64 seconds as strings.

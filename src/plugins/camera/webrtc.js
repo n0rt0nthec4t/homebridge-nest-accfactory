@@ -50,7 +50,7 @@
 // - Streamer owns retention and delivery pacing; source timestamps are not playout deadlines
 // - Incomplete keyframes and pathological access units are dropped/recovered locally rather than blocking the plugin process
 //
-// Code version 2026.11.15
+// Code version 2026.11.17
 // Mark Hulskamp
 'use strict';
 
@@ -124,6 +124,7 @@ export default class WebRTC extends StreamTransport {
   #startupKeyframeTimer = undefined; // Interval object for bounded startup keyframe PLI retries
   #startupKeyframeStartedAt = undefined; // Wall-clock time when startup keyframe retry began
   #lastPacketAt = undefined; // Last playback packet receipt time in ms
+  #lastVideoFrameAt = undefined; // Watchdog start or last accepted video frame, independent of audio activity.
   #closeInProgress = false; // True while close() teardown is running to avoid re-entrant shutdown races
   #reconnectPending = false; // Reconnect requested once socket closes
   #clockSynchronized = false; // Sender reports establish one A/V reference per source pair.
@@ -173,6 +174,7 @@ export default class WebRTC extends StreamTransport {
     this.#startupKeyframeTimer = undefined;
     this.#startupKeyframeStartedAt = undefined;
     this.#lastPacketAt = undefined;
+    this.#lastVideoFrameAt = undefined;
     this.stats.webrtc = undefined;
     this.#streamId = undefined;
     this.#reconnectPending = false;
@@ -221,6 +223,9 @@ export default class WebRTC extends StreamTransport {
       iceUseIpv4: true,
       iceUseIpv6: false,
       bundlePolicy: 'max-bundle',
+      // Added in Werift 0.27 (default false): remove padding and compact media sequences
+      // so padding cannot look like lost H264 fragments.
+      filterProbePaddingOnReceiveRtp: true,
       codecs: {
         audio: [
           new werift.RTCRtpCodecParameters({
@@ -523,6 +528,7 @@ export default class WebRTC extends StreamTransport {
       // Release complete queued timestamp groups before teardown. Incomplete
       // groups are discarded by the same validation used during playback.
       this.#drainPlaybackVideoJitterBuffer(true);
+      this.#lastVideoFrameAt = undefined;
 
       // Clear media/talkback track state before closing remote transport.
       // This lets any in-flight callbacks naturally no-op while shutdown continues.
@@ -1652,39 +1658,59 @@ export default class WebRTC extends StreamTransport {
       nals: nals,
     });
 
+    this.#lastVideoFrameAt = now;
     this.markMediaFrame('video', { keyFrame: pendingKeyFrame === true });
   }
 
   #refreshStallTimer() {
+    // Teardown can drain queued frames; those must not rearm the watchdog.
+    if (this.#closeInProgress === true || this.closing === true || this.closed === true) {
+      return;
+    }
     this.#lastPacketAt = Date.now();
+    this.#lastVideoFrameAt ??= this.#lastPacketAt;
 
     if (this.#stalledTimer !== undefined) {
       return;
     }
 
+    let peerConnection = this.#peerConnection;
     this.#stalledTimer = setInterval(
       () => {
         if (typeof this.#lastPacketAt !== 'number') {
           return;
         }
 
-        if (Date.now() - this.#lastPacketAt <= STALLED_TIMEOUT) {
+        let now = Date.now();
+        let packetStalled = now - this.#lastPacketAt > STALLED_TIMEOUT;
+        // Audio and rejected video can keep packets flowing without a usable
+        // picture. Allow initial keyframe retries and assembly before reconnecting.
+        let videoTimeout = this.ready === true ? STALLED_TIMEOUT : STARTUP_KEYFRAME_REQUEST_MAX_MS + KEYFRAME_STARTUP_MAX_ASSEMBLY_MS;
+        let videoStalled = now - this.#lastVideoFrameAt > videoTimeout;
+        if (packetStalled !== true && videoStalled !== true) {
           return;
         }
 
-        if (this.#peerConnection === undefined || this.#streamId === undefined || this.closed === true) {
+        if (
+          this.#peerConnection !== peerConnection ||
+          this.#streamId === undefined ||
+          this.#closeInProgress === true ||
+          this.closed === true
+        ) {
           // Stream was stopped/closed after this timer was armed, so ignore the timeout
           return;
         }
 
         this?.log?.debug?.(
-          'No WebRTC playback packets received for uuid "%s" in the past %s seconds. Closing connection',
+          packetStalled === true
+            ? 'No WebRTC playback packets received for uuid "%s" in the past %s seconds. Closing connection'
+            : 'No decodable WebRTC video received for uuid "%s" in the past %s seconds. Closing connection',
           this.uuid,
-          Math.round(STALLED_TIMEOUT / 1000),
+          Math.round((packetStalled === true ? STALLED_TIMEOUT : videoTimeout) / 1000),
         );
 
         this.#lastPacketAt = undefined;
-        this.#requestReconnect('stall');
+        this.#requestReconnect(packetStalled === true ? 'stall' : 'video-stall');
         this.close();
       },
       Math.max(1000, Math.round(STALLED_TIMEOUT / 2)),

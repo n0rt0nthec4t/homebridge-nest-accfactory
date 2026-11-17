@@ -130,7 +130,7 @@ Choose verification that covers the affected behaviour, including native-app and
 
 Describe what you tested and what remains unverified. For live checks, record relevant runtime, Homebridge/HAP and FFmpeg versions, device models, source API and observed outcomes. Never include credentials, cookies or tokens in fixtures, logs or issue reports.
 
-CI is configured to run checks with the minimum Node.js 22.13.0 and Node.js 24 against Homebridge 1.11.4 and 2.4.0, and Node.js 26 against Homebridge 2.4.0. Publish validation also checks the latest Node.js 22 release. See `.github/workflows/test.yml` for the configured matrix and `package.json` for the declared compatibility ranges. A local pass does not establish that all CI combinations passed.
+CI is configured to run checks with the minimum Node.js 22.13.0 and Node.js 24 against Homebridge 1.11.4 and 2.4.0, and Node.js 26 against Homebridge 2.4.0. The recommended Homebridge 2.5.0 is also checked with Node.js 24 and 26. Publish validation also checks the latest Node.js 22 release. See `.github/workflows/test.yml` for the configured matrix and `package.json` for the declared compatibility ranges. A local pass does not establish that all CI combinations passed.
 
 ## Release notes
 

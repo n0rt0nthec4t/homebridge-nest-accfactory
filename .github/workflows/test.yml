@@ -26,6 +26,11 @@ jobs:
             homebridge: 2.4.0
           - node: 26
             homebridge: 2.4.0
+          # Verify the recommended platform as well as the supported minimum.
+          - node: 24
+            homebridge: 2.5.0
+          - node: 26
+            homebridge: 2.5.0
 
     steps:
       - uses: actions/checkout@v5
