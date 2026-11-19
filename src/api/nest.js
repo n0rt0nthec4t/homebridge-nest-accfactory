@@ -26,7 +26,7 @@
 // - connect() starts ingestion without a consumer; onData optionally reports committed changes
 // - Camera media streaming belongs to the separate camera transport modules
 //
-// Code version 2026.11.10
+// Code version 2026.11.18
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -653,6 +653,16 @@ export default class NestAPI {
     } else if (resourceId.startsWith('device.') === true) {
       let shared = this.resources.get('shared.' + serial)?.value;
       switch (key) {
+        case 'active_sensor': {
+          // Selecting the thermostat means disabling remote sensing in its own settings bucket.
+          let settingsId = 'rcs_settings.' + serial;
+          if (value === true && this.resources.get(settingsId)?.source === DATA_SOURCE.NEST) {
+            objectKey = settingsId;
+            setting = { active_rcs_sensors: [], rcs_control_setting: 'OFF' };
+          }
+          break;
+        }
+
         case 'eco_mode':
           if (typeof value === 'string' && ['MANUAL', 'OFF'].includes(value.toUpperCase()) === true) {
             // Eco belongs to the device bucket. Returning to schedule restores the
@@ -814,7 +824,11 @@ export default class NestAPI {
         );
       }
       let settings = settingsId === undefined ? undefined : this.resources.get(settingsId)?.value;
-      if (settings?.associated_rcs_sensors?.includes(resourceId) === true) {
+      if (this.resources.get(settingsId)?.source === DATA_SOURCE.NEST && settings?.associated_rcs_sensors?.includes(resourceId) === true) {
+        // Recheck the API cache as HomeKit's sensor state may lag a parent selection update.
+        if (value === false && settings.active_rcs_sensors?.includes(resourceId) !== true) {
+          throw new Error('Cannot deselect a sensor that is not the active temperature sensor');
+        }
         objectKey = settingsId;
         setting =
           value === true

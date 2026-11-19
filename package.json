@@ -2,7 +2,7 @@
     "name": "homebridge-nest-accfactory",
     "displayName": "Nest Accfactory",
     "type": "module",
-    "version": "0.4.5-beta.6",
+    "version": "0.4.5-beta.7",
     "description": "Your Nest devices. At home in Apple Home. A Homebridge plugin with HomeKit Secure Video support for cameras and doorbells.",
     "author": "n0rt0nthec4t",
     "license": "Apache-2.0",

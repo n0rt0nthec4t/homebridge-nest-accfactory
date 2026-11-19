@@ -1,5 +1,5 @@
 // Verify FFmpeg hardware discovery, capability queries, diagnostics, and session lifecycle.
-// Code version 2026.11.12
+// Code version 2026.11.19
 import assert from 'node:assert/strict';
 import child_process from 'node:child_process';
 import { Buffer } from 'node:buffer';
@@ -125,7 +125,7 @@ test('hardware selection requires encoded output and preserves Pi encoder-node d
       let repeated = new FFmpeg(binary);
       assert.equal(repeated.hardwareH264Codec, scenario.codec);
       assert.deepEqual(repeated.getH264EncoderOptions(true), original, 'Returned options cannot mutate another camera manager');
-      assert.equal(probe.mock.callCount(), calls + 4, 'Camera managers must reuse hardware validation');
+      assert.equal(probe.mock.callCount(), calls + 6, 'Camera managers must reuse hardware validation');
     });
   }
 });
@@ -227,6 +227,8 @@ function createMockFFmpeg(t) {
       '-version': 'ffmpeg version 8.0 ',
       '-encoders': ' V..... libx264\n A..... libopus',
       '-decoders': ' A..... libspeex',
+      '-demuxers': ' D rtsp\n D sdp\n D matroska,webm',
+      '-protocols': 'Supported file protocols:\nInput:\n  tcp\n  pipe\n  udp\n  rtp\nOutput:\n  pipe\n  udp\n  rtp\n  srtp',
       '-muxers': ' E mp4\n E matroska,webm',
     }[args[0]],
   }));
@@ -255,7 +257,17 @@ test('HomeKit AAC-ELD block length applies only to live AAC-ELD encoding', (t) =
     commands.push(args);
     return {};
   });
-  let video = { profile: 'baseline', level: '3.1', fps: 30, iFrameInterval: 4000, bitRate: 200, payloadType: 99, mtu: 1378 };
+  let video = {
+    profile: 'baseline',
+    level: '3.1',
+    width: 1280,
+    height: 720,
+    fps: 30,
+    iFrameInterval: 4000,
+    bitRate: 200,
+    payloadType: 99,
+    mtu: 1378,
+  };
   for (let codec of ['aac-eld', 'opus']) {
     ffmpeg.startLive({
       id: codec,
@@ -277,7 +289,11 @@ test('HomeKit AAC-ELD block length applies only to live AAC-ELD encoding', (t) =
   assert.equal(commands[2][commands[2].indexOf('-enc_time_base:v') + 1], '1:90000');
   assert.equal(commands[2][commands[2].indexOf('-fps_mode') + 1], 'passthrough');
   assert.equal(commands[2][commands[2].indexOf('-movflags') + 1], 'frag_keyframe+empty_moov+default_base_moof');
-  assert.equal(commands[2][commands[2].indexOf('-filter:v') + 1].includes('fps='), false);
+  assert.equal(
+    commands[2][commands[2].indexOf('-filter:v') + 1],
+    'scale=w=1280:h=720:flags=bilinear:force_original_aspect_ratio=decrease:force_divisible_by=2,' +
+      'pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p',
+  );
   assert.equal(commands[0].includes('-force_key_frames:v'), false);
   assert.equal(commands[1].includes('-force_key_frames:v'), false);
 });
@@ -300,12 +316,34 @@ test('capability queries distinguish encoders, decoders and muxers including for
   }
 });
 
+test('minimum transport support distinguishes demuxers, aliases and protocol directions', (t) => {
+  let { ffmpeg } = createMockFFmpeg(t);
+  for (let demuxer of ['rtsp', 'sdp', 'matroska', 'webm']) {
+    assert.equal(ffmpeg.supportsDemuxer(demuxer), true);
+    assert.equal(ffmpeg.hasMinimumSupport({ demuxers: [demuxer] }), true);
+  }
+  assert.equal(ffmpeg.supportsProtocol('tcp', 'input'), true);
+  assert.equal(ffmpeg.supportsProtocol('tcp', 'output'), false);
+  assert.equal(ffmpeg.supportsProtocol('srtp', 'input'), false);
+  assert.equal(ffmpeg.supportsProtocol('srtp', 'output'), true);
+  assert.equal(ffmpeg.hasMinimumSupport({ inputProtocols: ['tcp'], outputProtocols: ['srtp'] }), true);
+  assert.equal(ffmpeg.hasMinimumSupport({ inputProtocols: ['srtp'] }), false);
+  assert.equal(ffmpeg.hasMinimumSupport({ outputProtocols: ['tcp'] }), false);
+  assert.equal(ffmpeg.hasMinimumSupport({ demuxers: ['missing'] }), false);
+  for (let missing of ['', undefined, 'missing']) {
+    assert.equal(ffmpeg.supportsDemuxer(missing), false);
+    assert.equal(ffmpeg.supportsProtocol(missing), false);
+  }
+});
+
 test('capability queries return false when the binary probe fails', (t) => {
   t.mock.method(child_process, 'spawnSync', () => ({ error: new Error('Unavailable') }));
   let ffmpeg = new FFmpeg('ffmpeg');
   assert.equal(ffmpeg.supportsEncoder('libx264'), false);
   assert.equal(ffmpeg.supportsDecoder('libspeex'), false);
   assert.equal(ffmpeg.supportsMuxer('mp4'), false);
+  assert.equal(ffmpeg.supportsDemuxer('rtsp'), false);
+  assert.equal(ffmpeg.supportsProtocol('tcp'), false);
 });
 
 test('session diagnostics join split lines and UTF-8 while preserving raw callbacks', (t) => {
@@ -818,7 +856,7 @@ for (let result of [
   });
 }
 
-for (let command of ['-encoders', '-decoders', '-muxers']) {
+for (let command of ['-encoders', '-decoders', '-muxers', '-demuxers', '-protocols']) {
   for (let result of [{ error: new Error('Fixture feature probe failed') }, { status: 1 }, { status: 0, stdout: null }]) {
     test('failed ' + command + ' query isolates unavailable features: ' + String(result.status ?? result.error.message), (context) => {
       context.mock.method(child_process, 'spawnSync', (binary, args) =>
@@ -830,6 +868,8 @@ for (let command of ['-encoders', '-decoders', '-muxers']) {
                 '-version': 'ffmpeg version 8.0 ',
                 '-encoders': ' V..... libx264',
                 '-decoders': ' A..... libspeex',
+                '-demuxers': ' D rtsp\n D sdp\n D matroska,webm',
+                '-protocols': 'Supported file protocols:\nInput:\n  tcp\n  pipe\n  udp\n  rtp\nOutput:\n  pipe\n  udp\n  rtp\n  srtp',
                 '-muxers': ' E mp4',
               }[args[0]],
             },
@@ -839,6 +879,8 @@ for (let command of ['-encoders', '-decoders', '-muxers']) {
       assert.equal(ffmpeg.supportsEncoder('libx264'), command !== '-encoders');
       assert.equal(ffmpeg.supportsDecoder('libspeex'), command !== '-decoders');
       assert.equal(ffmpeg.supportsMuxer('mp4'), command !== '-muxers');
+      assert.equal(ffmpeg.supportsDemuxer('rtsp'), command !== '-demuxers');
+      assert.equal(ffmpeg.supportsProtocol('tcp', 'input'), command !== '-protocols');
       assert.equal(ffmpeg.supportsHardwareH264, false);
     });
   }
@@ -1061,7 +1103,7 @@ test('capability probes have a forced timeout and isolate timed-out feature quer
       : { error: Object.assign(new Error('Fixture probe timed out'), { code: 'ETIMEDOUT' }), status: null, stdout: null };
   });
   let ffmpeg = new FFmpeg('fixture-probe-timeout');
-  assert.deepEqual(commands, ['-version', '-encoders', '-decoders', '-muxers']);
+  assert.deepEqual(commands, ['-version', '-encoders', '-decoders', '-muxers', '-demuxers', '-protocols']);
   assert.equal(ffmpeg.version, '8.0');
   assert.equal(ffmpeg.supportsEncoder('libx264'), false);
   assert.equal(ffmpeg.supportsDecoder('libspeex'), false);
@@ -1155,6 +1197,8 @@ function capabilityProbe(binary, args) {
       '-version': 'ffmpeg version 8.0 --enable-libx264',
       '-encoders': ' V..... libx264',
       '-decoders': ' V..... h264',
+      '-demuxers': ' D rtsp\n D sdp\n D matroska,webm',
+      '-protocols': 'Supported file protocols:\nInput:\n  tcp\n  pipe\n  udp\n  rtp\nOutput:\n  pipe\n  udp\n  rtp\n  srtp',
       '-muxers': ' E mp4',
     }[args[0]],
   };
@@ -1165,16 +1209,18 @@ test('camera managers share successful private capability discovery', (context) 
   let probes = context.mock.method(child_process, 'spawnSync', capabilityProbe);
   let first = new FFmpeg(binary);
   let second = new FFmpeg(binary);
-  assert.equal(probes.mock.callCount(), 4);
+  assert.equal(probes.mock.callCount(), 6);
   for (let manager of [first, second]) {
     assert.equal(manager.version, '8.0');
     assert.equal(manager.supportsEncoder('libx264'), true);
     assert.equal(manager.supportsDecoder('h264'), true);
     assert.equal(manager.supportsMuxer('mp4'), true);
+    assert.equal(manager.supportsDemuxer('rtsp'), true);
+    assert.equal(manager.supportsProtocol('tcp'), true);
     assert.equal(manager.features, undefined);
   }
   new FFmpeg(binary);
-  assert.equal(probes.mock.callCount(), 4);
+  assert.equal(probes.mock.callCount(), 6);
 });
 
 test('capability discovery separates executables and invalidates replaced files', (context) => {
@@ -1183,16 +1229,16 @@ test('capability discovery separates executables and invalidates replaced files'
   let probes = context.mock.method(child_process, 'spawnSync', capabilityProbe);
   new FFmpeg(first);
   new FFmpeg(second);
-  assert.equal(probes.mock.callCount(), 8);
+  assert.equal(probes.mock.callCount(), 12);
   fs.writeFileSync(first, 'replaced fixture executable');
   new FFmpeg(first);
-  assert.equal(probes.mock.callCount(), 12);
+  assert.equal(probes.mock.callCount(), 18);
   new FFmpeg(first);
   new FFmpeg(second);
-  assert.equal(probes.mock.callCount(), 12);
+  assert.equal(probes.mock.callCount(), 18);
 });
 
-for (let failedCommand of ['-version', '-encoders']) {
+for (let failedCommand of ['-version', '-encoders', '-demuxers', '-protocols']) {
   test('failed discovery remains retryable: ' + failedCommand, (context) => {
     let binary = capabilityBinary(context);
     let fail = true;
@@ -1203,7 +1249,7 @@ for (let failedCommand of ['-version', '-encoders']) {
     fail = false;
     let recovered = new FFmpeg(binary);
     assert.equal(recovered.supportsEncoder('libx264'), true);
-    assert.equal(probes.mock.callCount(), failedCommand === '-version' ? 5 : 8);
+    assert.equal(probes.mock.callCount(), failedCommand === '-version' ? 7 : 12);
     let count = probes.mock.callCount();
     new FFmpeg(binary);
     assert.equal(probes.mock.callCount(), count);
@@ -1224,10 +1270,10 @@ test('capability cache follows PATH changes', (context) => {
   let probes = context.mock.method(child_process, 'spawnSync', capabilityProbe);
   process.env.PATH = path.dirname(first);
   new FFmpeg(path.basename(first));
-  assert.equal(probes.mock.callCount(), 4);
+  assert.equal(probes.mock.callCount(), 6);
   process.env.PATH = path.dirname(second);
   new FFmpeg(path.basename(second));
-  assert.equal(probes.mock.callCount(), 8);
+  assert.equal(probes.mock.callCount(), 12);
 });
 
 test('capability cache skips nonexecutable PATH shadow files', (context) => {
@@ -1255,7 +1301,7 @@ test('capability cache skips nonexecutable PATH shadow files', (context) => {
   new FFmpeg(path.basename(first));
   fs.writeFileSync(shadow, 'changed inaccessible shadow');
   new FFmpeg(path.basename(first));
-  assert.equal(probes.mock.callCount(), 4);
+  assert.equal(probes.mock.callCount(), 6);
 });
 
 test('capability cache stays bounded across distinct executable paths', (context) => {
@@ -1264,11 +1310,11 @@ test('capability cache stays bounded across distinct executable paths', (context
   for (let binary of binaries) {
     new FFmpeg(binary);
   }
-  assert.equal(probes.mock.callCount(), 132);
+  assert.equal(probes.mock.callCount(), 198);
   new FFmpeg(binaries.at(-1));
-  assert.equal(probes.mock.callCount(), 132);
+  assert.equal(probes.mock.callCount(), 198);
   new FFmpeg(binaries[0]);
-  assert.equal(probes.mock.callCount(), 136);
+  assert.equal(probes.mock.callCount(), 204);
 });
 
 function fragmentBox(type, payload = Buffer.alloc(0), extended = false) {

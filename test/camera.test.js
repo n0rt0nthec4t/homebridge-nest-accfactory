@@ -1,5 +1,5 @@
 // Verify camera cleanup uses managed FFmpeg completion without Homebridge, media backends or network sockets.
-// Code version 2026.11.12
+// Code version 2026.11.19
 import assert from 'node:assert/strict';
 import { importSource } from './helpers/import-source.js';
 import { Buffer } from 'node:buffer';
@@ -12,6 +12,7 @@ import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
 import { URL } from 'node:url';
 import FFmpeg from '../src/plugins/camera/ffmpeg.js';
+import hap from './helpers/homebridge-hap.js';
 import { processConfig } from '../src/config.js';
 import { DATA_SOURCE } from '../src/consts.js';
 import { UDPPorts } from '../src/utils.js';
@@ -23,7 +24,7 @@ let baseModule =
   encodeURIComponent(
     'import { EventEmitter } from "node:events"; export default class extends EventEmitter {' +
       'constructor(accessory, api, data) { super(); this.hap = api.hap; this.deviceData = data; this.uuid = data.serialNumber; }' +
-      'addTimer() {} removeTimer() {} static makeValidHKName(name) { return name; } }',
+      'addTimer() {} removeTimer() {} postSetupDetail() {} static makeValidHKName(name) { return name; } }',
   );
 let streamModule =
   'data:text/javascript,' +
@@ -91,6 +92,24 @@ test('Nest and Google cameras default to two live viewers and forward configured
         assert.equal(camera.generateControllerOptions().cameraStreamCount, maxStreams ?? 2);
       }
     }
+    // Both source schemas must produce the same ratio without inventing a value when metadata is absent or invalid.
+    for (let [width, height, expected] of [[4, 3, 4 / 3], [16, 9, 16 / 9], [0, 3, undefined], [4, 0, undefined], [-4, 3, undefined]]) {
+      if (source === DATA_SOURCE.NEST) {
+        value.capabilities = ['aspect_ratio_' + width + 'x' + height];
+      } else {
+        value.aspect_ratio = { widthRelative: width, heightRelative: height };
+      }
+      let config = processConfig({}, log, {});
+      let fields = new Set([source === DATA_SOURCE.NEST ? 'capabilities' : 'aspect_ratio']);
+      let result = processRawData(log, raw, config, undefined, new Map([[resource, { fields }]])).CAMERA;
+      assert.equal(result.data.aspect_ratio, expected);
+    }
+    if (source === DATA_SOURCE.NEST) {
+      value.capabilities = [];
+    } else {
+      delete value.aspect_ratio;
+    }
+    assert.equal(processRawData(log, raw, processConfig({}, log, {})).CAMERA.data.aspect_ratio, undefined);
   }
 });
 
@@ -269,6 +288,40 @@ test('an unrequested successful live process exit also releases camera resources
   );
 });
 
+for (let ratio of [4 / 3, 16 / 9, undefined, 1, 3 / 4, 0, NaN, 100]) {
+  test('live and recording capabilities use camera aspect ratio ' + ratio, (context) => {
+    let { camera } = setup(context);
+    camera.hap = hap;
+    camera.deviceData.aspect_ratio = ratio;
+    let setupDetail = context.mock.method(camera, 'postSetupDetail');
+    let options = camera.generateControllerOptions();
+    let live = options.streamingOptions.video.resolutions;
+    let recording = options.recording.options.video.resolutions;
+    let expectedRatio = [4 / 3, 16 / 9, 1, 3 / 4].includes(ratio) === true ? ratio : 16 / 9;
+    assert.equal(setupDetail.mock.callCount(), 0, 'Controller options must not emit setup details');
+    assert.ok(recording.length > 0);
+    assert.equal(recording.every(([width, height]) => width <= 1920 && height <= 1080 && width % 2 === 0), true);
+    assert.deepEqual(recording[0], [Math.round((1080 * expectedRatio) / 2) * 2, 1080, 30]);
+    assert.equal(recording.every(([width, height, fps]) => Math.abs(width - height * expectedRatio) <= 1 && fps === 30), true);
+    assert.equal(live.every(([width, height]) => width <= 2560 && height <= 1440 && width % 2 === 0), true);
+    assert.equal(live.some(([width, height, fps]) => width === 320 && height === 240 && fps === 15), true);
+    assert.deepEqual(live[0], [Math.round((1440 * expectedRatio) / 2) * 2, 1440, 30]);
+    assert.equal(live.every(([width, height, fps]) =>
+      Math.abs(width - height * expectedRatio) <= 1 || (width === 320 && height === 240 && fps === 15)), true);
+    for (let fps of [15, 30]) {
+      assert.equal(live.some(([width, height, rate]) => width === 1152 && height === 864 && rate === fps), ratio === 4 / 3);
+      assert.equal(live.some(([width, height, rate]) => width === 512 && height === 384 && rate === fps), ratio === 4 / 3);
+    }
+    if (ratio === 4 / 3) {
+      assert.equal(live.some(([width, height]) => width === 1600 && height === 1200), true);
+      assert.equal(recording.some(([width, height]) => width === 1152 && height === 864), true);
+      assert.equal(recording.some(([width, height]) => width === 512 && height === 384), true);
+    }
+    // Exercise the installed HAP API, not just the shape of our options object.
+    assert.doesNotThrow(() => new hap.CameraController(options));
+  });
+}
+
 test('late completion after requested stop cannot tear down a replacement live session', async (t) => {
   let { camera, handles, processes, prepare, start } = setup(t);
   await camera.prepareStream(prepare, () => {});
@@ -396,7 +449,11 @@ for (let codec of ['libx264', 'h264_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_v4l2
     for (let [index, child] of processes.entries()) {
       let args = child.args;
       assert.equal(args[args.indexOf('-codec:v') + 1], codec);
-      assert.equal(args[args.indexOf('-filter:v') + 1], encoding.filter);
+      assert.equal(
+        args[args.indexOf('-filter:v') + 1],
+        (index === 0 ? '' : 'scale=w=1280:h=720:flags=bilinear:force_original_aspect_ratio=decrease:force_divisible_by=2,' +
+          'pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,') + encoding.filter,
+      );
       if (encoding.inputArguments.length > 0) {
         let position = args.indexOf(encoding.inputArguments[0]);
         assert.ok(position >= 0 && position < args.indexOf('-i'));
@@ -506,6 +563,7 @@ test('HKSV yields fragmented MP4 initialisation before media and stops a waiting
   let recording = camera.handleRecordingStreamRequest('clip');
   let initial = recording.next();
   await setImmediate();
+  assert.match(processes[0].args[processes[0].args.indexOf('-filter:v') + 1], /^scale=w=1280:h=720:/);
   let init = Buffer.concat([mp4Box('ftyp', Buffer.from([1])), mp4Box('moov', mp4Box('free', Buffer.from([2])))]);
   processes[0].stdout.write(init.subarray(0, 3));
   processes[0].stdout.write(init.subarray(3));

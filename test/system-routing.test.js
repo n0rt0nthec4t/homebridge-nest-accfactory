@@ -96,7 +96,11 @@ for (let enabled of [true, false]) {
   test('platform sensor selection routes to parent, selected=' + enabled, async (context) => {
     let flow = await platformHarness(context, { value: { device_identity: { serialNumber: 'SENSOR' } } });
     await flow.send('DEVICE_PARENT', {
-      remote_comfort_sensing_settings: { retained: true, associatedRcsSensors: [{ deviceId: { resourceId: 'DEVICE_TEST' } }] },
+      remote_comfort_sensing_settings: {
+        retained: true,
+        associatedRcsSensors: [{ deviceId: { resourceId: 'DEVICE_TEST' } }],
+        activeRcsSelection: { activeRcsSensor: { resourceId: 'DEVICE_TEST' } },
+      },
     });
     await flow.device.set({ uuid: 'DEVICE_TEST', active_sensor: enabled });
     let request = flow.commands[0][3].batchUpdateStateRequest[0];

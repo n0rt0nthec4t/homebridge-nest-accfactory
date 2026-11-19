@@ -129,6 +129,75 @@ test('thermostat Eco characteristic retains its type and cached service without 
   assert.deepEqual(flow.warnings, []);
 });
 
+for (let name of ['thermostat', 'tempsensor']) {
+  test(name + ' migrates cached source selection to a shared writable characteristic', async (context) => {
+    let flow = await setup(context, name, { active_sensor: true, active_rcs_sensor: 'REMOTE' });
+    let device = flow.device;
+    let service = name === 'thermostat' ? device.thermostatService : device.temperatureService;
+    let control = service.getCharacteristic(C.ActiveTemperatureSensor);
+    assert.equal(control.UUID, CUSTOM_CHARACTERISTIC_UUID.ACTIVE_TEMPERATURE_SENSOR);
+    assert.equal(control.displayName, 'Active Temperature Sensor');
+    assert.equal(control.props.format, hap.Formats.BOOL);
+    assert.deepEqual(control.props.perms, [hap.Perms.PAIRED_READ, hap.Perms.PAIRED_WRITE, hap.Perms.NOTIFY]);
+    assert.equal(service.testCharacteristic(C.StatusActive), true);
+    let identity = [device.accessory.UUID, service.UUID, service.subtype];
+    // Simulate cached selection state from the previous release.
+    service.updateCharacteristic(C.StatusActive, false);
+    device.accessory = hap.Accessory.deserialize(hap.Accessory.serialize(device.accessory));
+    let cached = device.accessory.getService(name === 'thermostat' ? hap.Service.Thermostat : hap.Service.TemperatureSensor);
+    let cachedControl = cached.getCharacteristic(C.ActiveTemperatureSensor);
+    await device.onAdd();
+    await device.onUpdate(device.deviceData);
+    assert.deepEqual([device.accessory.UUID, cached.UUID, cached.subtype], identity);
+    assert.equal(name === 'thermostat' ? device.thermostatService : device.temperatureService, cached);
+    assert.equal(cached.getCharacteristic(C.ActiveTemperatureSensor), cachedControl);
+    assert.equal(cached.testCharacteristic(C.StatusActive), true);
+    let cachedStatus = cached.getCharacteristic(C.StatusActive);
+    assert.equal(cachedStatus.value, true);
+    assert.equal(await cachedControl.handleGetRequest(), name === 'tempsensor');
+    await cachedControl.handleSetRequest(true);
+    assert.deepEqual(flow.writes, [{ uuid: 'DEVICE_TEST', active_sensor: true }]);
+    if (name === 'thermostat') {
+      await assert.rejects(
+        cachedControl.handleSetRequest(false),
+        (error) => (error.hapStatus ?? error) === hap.HAPStatus.INVALID_VALUE_IN_REQUEST,
+      );
+      await device.update({ active_rcs_sensor: '', online: false });
+      assert.equal(cachedControl.value, true);
+      assert.equal(await cachedControl.handleGetRequest(), true);
+      await device.update({ active_rcs_sensor: 'ANOTHER_REMOTE' });
+      assert.equal(cachedControl.value, false);
+    } else {
+      await cachedControl.handleSetRequest(false);
+      assert.deepEqual(flow.writes[1], { uuid: 'DEVICE_TEST', active_sensor: false });
+      await device.update({ active_sensor: false });
+      await cachedControl.handleSetRequest(false);
+      assert.equal(flow.writes.length, 2, 'Off on an unselected sensor must not clear another selection');
+      await device.update({ active_sensor: true, online: false });
+      assert.equal(cachedControl.value, true, 'offline selection remains independent of availability');
+      await device.update({ associated_thermostat: '' });
+      await assert.rejects(
+        cachedControl.handleSetRequest(true),
+        (error) => (error.hapStatus ?? error) === hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE,
+      );
+      await device.update({ associated_thermostat: 'DEVICE_PARENT' });
+    }
+    assert.equal(cachedStatus.value, false, 'offline availability is independent of the selected sensor');
+    await device.update({ online: true });
+    assert.equal(cachedStatus.value, true);
+    assert.equal(cached.getCharacteristic(C.StatusActive), cachedStatus);
+    device.set = async () => {
+      throw new Error('fixture command rejected');
+    };
+    await assert.rejects(
+      cachedControl.handleSetRequest(true),
+      (error) => (error.hapStatus ?? error) === hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,
+    );
+    assert.equal(cached.characteristics.filter((item) => item.UUID === control.UUID).length, 1);
+    assert.deepEqual(flow.warnings, []);
+  });
+}
+
 for (let [capability, canHeat, canCool, modes] of [
   ['heat/cool', true, true, ['off', 'heat', 'cool', 'range', 'ecoheat', 'ecocool', 'ecorange']],
   ['heat only', true, false, ['off', 'heat', 'ecoheat']],
@@ -212,7 +281,8 @@ for (let online of [true, false]) {
         let flow = await setup(context, 'tempsensor', { associated_thermostat: associated });
         for (let battery of [0, LOW_BATTERY_LEVEL, LOW_BATTERY_LEVEL + 1, 100]) {
           await flow.device.update({ online, active_sensor: active, battery_level: battery, current_temperature: 18.5 });
-          assert.equal(value(flow.device.temperatureService, C.StatusActive), online === true && (associated === '' || active === true));
+          assert.equal(value(flow.device.temperatureService, C.StatusActive), online);
+          assert.equal(value(flow.device.temperatureService, C.ActiveTemperatureSensor), active);
           assert.equal(value(flow.device.temperatureService, C.StatusFault), online === true ? 0 : 1);
           assert.equal(value(flow.device.temperatureService, C.CurrentTemperature), 18.5);
           assert.equal(value(flow.device.batteryService, C.BatteryLevel), battery);
@@ -1058,7 +1128,10 @@ test('weather optional environmental characteristics publish values and preserve
     let sunrise = Date.parse(date) / 1000;
     let sunset = sunrise + 12 * 3600;
     await flow.device.update({ timezone, sunrise, sunset });
-    for (let [name, timestamp] of [['SunriseTime', sunrise], ['SunsetTime', sunset]]) {
+    for (let [name, timestamp] of [
+      ['SunriseTime', sunrise],
+      ['SunsetTime', sunset],
+    ]) {
       let expected = new Date((timestamp + offset * 3600) * 1000).toLocaleTimeString(undefined, { timeZone: 'UTC' });
       assert.equal(value(service, C[name]), expected);
     }
@@ -1066,7 +1139,10 @@ test('weather optional environmental characteristics publish values and preserve
   // Refresh the same timestamps on zone-only changes, including clearing an invalid/missing mapped zone.
   for (let timezone of ['Australia/Sydney', 'America/Phoenix', null]) {
     await flow.device.update({ timezone });
-    for (let [name, field] of [['SunriseTime', 'sunrise'], ['SunsetTime', 'sunset']]) {
+    for (let [name, field] of [
+      ['SunriseTime', 'sunrise'],
+      ['SunsetTime', 'sunset'],
+    ]) {
       assert.equal(
         value(service, C[name]),
         new Date(flow.device.deviceData[field] * 1000).toLocaleTimeString(undefined, { timeZone: timezone ?? undefined }),

@@ -25,7 +25,7 @@
 // - connect() starts ingestion without a consumer; onData optionally reports committed changes
 // - Google Home Foyer media signalling belongs to the WebRTC camera transport
 //
-// Code version 2026.11.17
+// Code version 2026.11.18
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -763,30 +763,43 @@ export default class GoogleAPI {
         }
         break;
 
-      case 'active_sensor':
-        if (typeof value === 'boolean') {
-          // Resolve the parent from this API's observed relationships; a standalone
-          // client must not rely on System injecting a thermostat ID into the sensor.
-          let parent = [...this.resources].find(
-            ([, candidate]) =>
-              candidate.value?.remote_comfort_sensing_settings?.associatedRcsSensors?.some(
-                (sensor) => sensor.deviceId?.resourceId === resourceId,
-              ) === true,
-          );
-          if (parent !== undefined) {
-            updateElement.traitRequest.resourceId = parent[0];
-            setUpdateTrait(
-              'remote_comfort_sensing_settings',
-              'type.nestlabs.com/nest.trait.hvac.RemoteComfortSensingSettingsTrait',
-              parent[1].value.remote_comfort_sensing_settings,
-            );
-            updateElement.state.value.activeRcsSelection =
-              value === true
-                ? { rcsSourceType: 'RCS_SOURCE_TYPE_SINGLE_SENSOR', activeRcsSensor: { resourceId } }
-                : { rcsSourceType: 'RCS_SOURCE_TYPE_BACKPLATE' };
-          }
+      case 'active_sensor': {
+        if (typeof value !== 'boolean') {
+          break;
         }
+        // A thermostat owns the settings; a remote sensor resolves its parent within this account.
+        let parent =
+          resource.value?.remote_comfort_sensing_settings !== undefined
+            ? [resourceId, resource]
+            : [...this.resources].find(
+                ([, candidate]) =>
+                  candidate.source === DATA_SOURCE.GOOGLE &&
+                  candidate.value?.remote_comfort_sensing_settings?.associatedRcsSensors?.some(
+                    (sensor) => sensor.deviceId?.resourceId === resourceId,
+                  ) === true,
+              );
+        if (parent === undefined) {
+          break;
+        }
+        let settings = parent[1].value.remote_comfort_sensing_settings;
+        // Off must identify the selected remote sensor; it cannot clear the thermostat or a replacement sensor.
+        if (value === false && (parent[0] === resourceId || settings.activeRcsSelection?.activeRcsSensor?.resourceId !== resourceId)) {
+          throw new Error('Cannot deselect a sensor that is not the active temperature sensor');
+        }
+        let remote = parent[0] !== resourceId && value === true;
+        updateElement.traitRequest.resourceId = parent[0];
+        setUpdateTrait('remote_comfort_sensing_settings', 'type.nestlabs.com/nest.trait.hvac.RemoteComfortSensingSettingsTrait', settings);
+        // Override an existing schedule for remote selection; hold the internal sensor when selected.
+        updateElement.state.value.rcsControlMode =
+          remote === true && ['RCS_CONTROL_MODE_SCHEDULE', 'RCS_CONTROL_MODE_SCHEDULE_OVERRIDE'].includes(settings.rcsControlMode) === true
+            ? 'RCS_CONTROL_MODE_SCHEDULE_OVERRIDE'
+            : 'RCS_CONTROL_MODE_HOLD';
+        updateElement.state.value.activeRcsSelection =
+          remote === true
+            ? { rcsSourceType: 'RCS_SOURCE_TYPE_SINGLE_SENSOR', activeRcsSensor: { resourceId } }
+            : { rcsSourceType: 'RCS_SOURCE_TYPE_BACKPLATE' };
         break;
+      }
 
       case 'hot_water_boost_active':
         if (

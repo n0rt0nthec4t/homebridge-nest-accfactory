@@ -175,6 +175,54 @@ async function setup(context, options = {}) {
   };
 }
 
+test('HomeKit temperature source writes target the parent and Observe updates both accessories', async (context) => {
+  let flow = await setup(context);
+  let settings = {
+    rcsControlMode: 'RCS_CONTROL_MODE_SCHEDULE',
+    associatedRcsSensors: [{ deviceId: { resourceId: 'DEVICE_SENSOR' } }],
+    activeRcsSelection: { rcsSourceType: 'RCS_SOURCE_TYPE_BACKPLATE' },
+  };
+  flow.values.remote_comfort_sensing_settings = settings;
+  await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
+  let thermostat = flow.device;
+  await flow.send([
+    trait('DEVICE_SENSOR', 'device_identity', { serialNumber: 'SOURCE_SENSOR', productIdDescription: { literal: 'KRX' } }),
+    trait('DEVICE_SENSOR', 'device_info', { typeName: 'nest.resource.NestKryptoniteResource', pairerId: { resourceId: 'STRUCTURE_HOME' } }),
+    trait('DEVICE_SENSOR', 'current_temperature', { temperatureValue: { temperature: { value: 19 } } }),
+    trait('DEVICE_SENSOR', 'battery', { assessedVoltage: { value: 3 } }),
+    trait('DEVICE_SENSOR', 'last_updated_beacon', { lastBeaconTime: { seconds: String(Math.floor(Date.now() / 1000)) } }),
+  ]);
+  let sensor = flow.registered.find((accessory) => accessory.getService(hap.Service.TemperatureSensor) !== undefined);
+  assert.notEqual(sensor, undefined);
+  let remoteControl = sensor.getService(hap.Service.TemperatureSensor).getCharacteristic(hap.Characteristic.ActiveTemperatureSensor);
+  let internalControl = thermostat.thermostatService.getCharacteristic(hap.Characteristic.ActiveTemperatureSensor);
+  assert.equal(internalControl.value, true);
+  assert.equal(remoteControl.value, false);
+  await remoteControl.handleSetRequest(true);
+  let update = flow.commands.at(-1)[3].batchUpdateStateRequest[0];
+  assert.equal(update.traitRequest.resourceId, 'DEVICE_THERMOSTAT');
+  assert.equal(update.state.value.rcsControlMode, 'RCS_CONTROL_MODE_SCHEDULE_OVERRIDE');
+  await flow.send([trait('DEVICE_THERMOSTAT', 'remote_comfort_sensing_settings', update.state.value)]);
+  assert.equal(internalControl.value, false);
+  assert.equal(remoteControl.value, true);
+  assert.equal(await internalControl.handleGetRequest(), false);
+  assert.equal(await remoteControl.handleGetRequest(), true);
+  await internalControl.handleSetRequest(true);
+  update = flow.commands.at(-1)[3].batchUpdateStateRequest[0];
+  assert.equal(update.traitRequest.resourceId, 'DEVICE_THERMOSTAT');
+  assert.equal(update.state.value.rcsControlMode, 'RCS_CONTROL_MODE_HOLD');
+  assert.deepEqual(update.state.value.activeRcsSelection, { rcsSourceType: 'RCS_SOURCE_TYPE_BACKPLATE' });
+  await flow.send([trait('DEVICE_THERMOSTAT', 'remote_comfort_sensing_settings', update.state.value)]);
+  assert.equal(internalControl.value, true);
+  assert.equal(remoteControl.value, false);
+  await remoteControl.handleSetRequest(false);
+  assert.equal(flow.commands.length, 2, 'unselected Off and Observe updates must not send commands');
+  flow.connection.grpcTransport.command = async () => ({ status: 14 });
+  // This harness retains the supplied transport object, so a rejected command reaches the real HAP error boundary.
+  await assert.rejects(remoteControl.handleSetRequest(true));
+  assert.equal(await remoteControl.handleGetRequest(), false);
+});
+
 test('split Observe traits create one thermostat, publish remote Off, then remove the same accessory', async (context) => {
   let flow = await setup(context);
   for (let [label, values] of Object.entries(flow.values)) {

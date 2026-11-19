@@ -26,7 +26,7 @@
 // - FFmpeg validation determines availability of camera streaming and HKSV recording
 // - Used during plugin startup before any device initialisation
 //
-// Code version 2026.11.17
+// Code version 2026.11.19
 // Mark Hulskamp
 'use strict';
 
@@ -138,11 +138,16 @@ function processConfig(config, log, api) {
     log?.warn?.('ffmpeg binary "%s" not found or not executable, camera/doorbell streaming will be unavailable', ffmpeg.binary);
   } else {
     // Proceed with compatibility checks
-    options.ffmpeg.valid = ffmpeg.hasMinimumSupport({
+    let requirements = {
       version: FFMPEG_VERSION,
       encoders: ['libx264', 'libfdk_aac', 'libopus'],
       decoders: ['libspeex'],
-    });
+      // RTSP/TCP carries camera input; SDP and pipe/UDP/RTP support talkback.
+      demuxers: ['rtsp', 'sdp'],
+      inputProtocols: ['tcp', 'pipe', 'udp', 'rtp'],
+      outputProtocols: ['pipe', 'udp', 'rtp', 'srtp'],
+    };
+    options.ffmpeg.valid = ffmpeg.hasMinimumSupport(requirements);
     if (options.ffmpeg.valid === false) {
       log?.warn?.('ffmpeg binary "%s" does not meet the minimum support requirements', ffmpeg.binary);
       log?.warn?.('Stream video/recording from camera/doorbells will be unavailable');
@@ -156,20 +161,19 @@ function processConfig(config, log, api) {
         log?.warn?.('Minimum binary version is "%s", however the installed version is "%s"', FFMPEG_VERSION, ffmpeg.version);
       }
 
-      if (ffmpeg.supportsDecoder('libspeex') === false) {
-        log?.warn?.('Missing speex decoder in ffmpeg');
-      }
-
-      if (ffmpeg.supportsEncoder('libfdk_aac') === false) {
-        log?.warn?.('Missing fdk_aac encoder in ffmpeg');
-      }
-
-      if (ffmpeg.supportsEncoder('libopus') === false) {
-        log?.warn?.('Missing opus encoder in ffmpeg');
-      }
-
-      if (ffmpeg.supportsEncoder('libx264') === false) {
-        log?.warn?.('Missing libx264 encoder in ffmpeg');
+      // Use the validated requirements for diagnostics too, including protocol direction.
+      for (let [names, label, supports, direction] of [
+        [requirements.demuxers, 'demuxer', ffmpeg.supportsDemuxer],
+        [requirements.inputProtocols, 'input protocol', ffmpeg.supportsProtocol, 'input'],
+        [requirements.outputProtocols, 'output protocol', ffmpeg.supportsProtocol, 'output'],
+        [requirements.decoders, 'decoder', ffmpeg.supportsDecoder],
+        [requirements.encoders, 'encoder', ffmpeg.supportsEncoder],
+      ]) {
+        for (let name of names) {
+          if (supports.call(ffmpeg, name, direction) === false) {
+            log?.warn?.('Missing %s %s in ffmpeg', name, label);
+          }
+        }
       }
     }
 

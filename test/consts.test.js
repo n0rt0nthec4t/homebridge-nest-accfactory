@@ -8,5 +8,6 @@ test('custom characteristic UUIDs retain their permanent v5 identities', () => {
   assert.deepEqual(CUSTOM_CHARACTERISTIC_UUID, {
     REPLACE_BY_DATE: '391ED041-9783-577A-81EB-4B6BFEE97869',
     ECO_MODE: '3EA35F7F-3CB1-5991-84B7-00B36A8CF698',
+    ACTIVE_TEMPERATURE_SENSOR: '60076A74-7FE6-5CDA-B894-DABE078A14F8',
   });
 });

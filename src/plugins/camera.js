@@ -91,7 +91,7 @@ const PREBUFFER_LENGTH = 4000;
 
 export default class NestCamera extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.CAMERA;
-  static VERSION = '2026.11.16'; // Code version
+  static VERSION = '2026.11.19'; // Code version
 
   controller = undefined; // HomeKit Camera/Doorbell controller service
   streamer = undefined; // Streamer object for live/recording stream
@@ -310,6 +310,12 @@ export default class NestCamera extends HomeKitDevice {
       );
 
     // Extra setup details for output
+    if (Number.isFinite(this.deviceData.aspect_ratio) === true) {
+      let ratio = this.deviceData.aspect_ratio;
+      let label = { [4 / 3]: '4:3', [16 / 9]: '16:9', [3 / 4]: '3:4', [9 / 16]: '9:16', 1: '1:1' }[ratio] ?? ratio + ':1';
+      this.postSetupDetail('Aspect ratio "%s"', label, LOG_LEVELS.DEBUG);
+    }
+
     this.deviceData?.streaming_protocols?.forEach?.((protocol) => {
       TRANSPORTS[protocol]?.module !== undefined && this.postSetupDetail(TRANSPORTS[protocol].label, LOG_LEVELS.DEBUG);
     });
@@ -748,6 +754,8 @@ export default class NestCamera extends HomeKitDevice {
       recording.output.start(this.ffmpeg, {
         video: {
           ...this.#homeKitVideo(config.parameters),
+          width: config.resolution[0],
+          height: config.resolution[1],
           fps: config.resolution[2],
           iFrameInterval: config.parameters.iFrameInterval,
           bitRate: config.parameters.bitRate,
@@ -1080,24 +1088,32 @@ export default class NestCamera extends HomeKitDevice {
   generateControllerOptions() {
     // Setup HomeKit controller camera/doorbell options
 
-    let resolutions = [
-      [3840, 2160, 30], // 4K
-      [2560, 1440, 30], // 2K (QHD)
-      [1920, 1080, 30], // 1080p
-      [1920, 1080, 15], // 1080p low bitrate
-      [1600, 1200, 30], // Native res of Nest Hello
-      [1280, 960, 30],
-      [1280, 720, 30], // 720p
-      [1024, 768, 30],
-      [640, 480, 30],
-      [640, 360, 30],
-      [480, 360, 30],
-      [480, 270, 30],
-      [320, 240, 30],
-      [320, 240, 15], // Apple Watch requires this (plus OPUS @16K)
-      [320, 180, 30],
-      [320, 180, 15],
-    ];
+    // Google's per-model source resolutions and quality settings:
+    // https://support.google.com/googlehome/answer/9245832
+    // Advertised HomeKit sizes are independent of the camera quality setting.
+    // One height ladder supplies both lists; even widths suit H264. Fall back
+    // to 16:9 if metadata is missing, invalid or produces no recording choices.
+    let resolutions = [];
+    let recordingResolutions = [];
+    for (let aspectRatio of [this.deviceData.aspect_ratio, 16 / 9]) {
+      if (Number.isFinite(aspectRatio) === false || aspectRatio <= 0) {
+        continue;
+      }
+      let sizes = [1440, 1200, 1080, 960, 864, 768, 720, 540, 480, 384, 360, 240, 180].flatMap((height) => {
+        let width = Math.round((height * aspectRatio) / 2) * 2;
+        return width > 0 && width <= 2560 ? [[width, height, 30]] : [];
+      });
+      recordingResolutions = sizes.filter(([width, height]) => width <= 1920 && height <= 1080);
+      if (recordingResolutions.length > 0) {
+        resolutions = sizes.flatMap(([width, height]) => [[width, height, 30], [width, height, 15]]);
+        break;
+      }
+    }
+
+    // Apple Watch needs this live option even when the camera has another ratio.
+    if (resolutions.some(([width, height, fps]) => width === 320 && height === 240 && fps === 15) === false) {
+      resolutions.push([320, 240, 15]);
+    }
 
     let profiles = [this.hap.H264Profile.BASELINE, this.hap.H264Profile.MAIN];
     let levels = [this.hap.H264Level.LEVEL3_1, this.hap.H264Level.LEVEL3_2, this.hap.H264Level.LEVEL4_0];
@@ -1162,7 +1178,7 @@ export default class NestCamera extends HomeKitDevice {
                 ],
                 prebufferLength: PREBUFFER_LENGTH, // Seems to always be 4000???
                 video: {
-                  resolutions,
+                  resolutions: recordingResolutions,
                   parameters: {
                     profiles,
                     levels,
@@ -1436,6 +1452,31 @@ const CAMERA_FIELD_MAP = {
       fields: ['description', 'structure_id', 'where_id'],
       related: ['wheres'],
       translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
+    },
+  },
+
+  // Numeric width/height ratio, independent of the source's current pixel resolution.
+  aspect_ratio: {
+    google: {
+      fields: ['aspect_ratio'],
+      translate: ({ raw }) => {
+        let width = raw?.value?.aspect_ratio?.widthRelative;
+        let height = raw?.value?.aspect_ratio?.heightRelative;
+        return Number.isSafeInteger(width) === true && width > 0 && Number.isSafeInteger(height) === true && height > 0
+          ? width / height
+          : undefined;
+      },
+    },
+    nest: {
+      fields: ['capabilities'],
+      translate: ({ raw }) => {
+        let capabilities = raw?.value?.capabilities;
+        let ratio = Array.isArray(capabilities) === true
+          ? capabilities.find((entry) => typeof entry === 'string' && /^aspect_ratio_[1-9]\d*x[1-9]\d*$/.test(entry))
+          : undefined;
+        let [width, height] = ratio?.match(/\d+/g)?.map(Number) ?? [];
+        return Number.isSafeInteger(width) === true && Number.isSafeInteger(height) === true ? width / height : undefined;
+      },
     },
   },
 

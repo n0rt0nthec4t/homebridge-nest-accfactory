@@ -28,7 +28,7 @@
 // - Drain complete output after exit; requested stop may discard an incomplete tail
 // - Camera retains the HomeKit generator adapter and isLast workaround
 //
-// Code version 2026.11.13
+// Code version 2026.11.19
 // Mark Hulskamp
 'use strict';
 
@@ -158,7 +158,10 @@ export default class FFmpeg extends EventEmitter {
     return (
       hasAllRequired(min?.encoders, this.supportsEncoder) === true &&
       hasAllRequired(min?.decoders, this.supportsDecoder) === true &&
-      hasAllRequired(min?.muxers, this.supportsMuxer) === true
+      hasAllRequired(min?.muxers, this.supportsMuxer) === true &&
+      hasAllRequired(min?.demuxers, this.supportsDemuxer) === true &&
+      hasAllRequired(min?.inputProtocols, (protocol) => this.supportsProtocol(protocol, 'input')) === true &&
+      hasAllRequired(min?.outputProtocols, (protocol) => this.supportsProtocol(protocol, 'output')) === true
     );
   }
 
@@ -363,7 +366,11 @@ export default class FFmpeg extends EventEmitter {
       // The Pi's V4L2 encoder needs extra capture buffers for sustained HKSV output.
       ...(encoding.codec === 'h264_v4l2m2m' ? ['-num_capture_buffers', '32'] : []),
       '-filter:v',
-      encoding.filter,
+      // Keep negotiated dimensions across source changes without stretching the picture.
+      'scale=w=' + video.width + ':h=' + video.height +
+        ':flags=bilinear:force_original_aspect_ratio=decrease:force_divisible_by=2,' +
+        'pad=' + video.width + ':' + video.height + ':(ow-iw)/2:(oh-ih)/2,setsar=1,' +
+        encoding.filter,
       // Preserve source cadence and timestamp precision. A frame-count GOP alone
       // cannot bound fragment duration when the camera's frame rate changes.
       '-fps_mode',
@@ -500,6 +507,15 @@ export default class FFmpeg extends EventEmitter {
   supportsMuxer(muxer) {
     // FFmpeg may list multiple names for a format on a single capability row.
     return this.#features.muxers?.some((names) => names.split(',').includes(muxer) === true) === true;
+  }
+
+  supportsDemuxer(demuxer) {
+    return this.#features.demuxers?.some((names) => names.split(',').includes(demuxer) === true) === true;
+  }
+
+  // Protocol support is directional: output-only TCP cannot satisfy an RTSP input.
+  supportsProtocol(protocol, direction = 'input') {
+    return this.#features.protocols?.includes(direction + ':' + protocol) === true;
   }
 
   // Optional finite stdin supplies talkback SDP; stdout may feed a caller-owned writable.
@@ -933,10 +949,15 @@ export default class FFmpeg extends EventEmitter {
       }
 
       let features = [];
+      let section = '';
       for (let line of String(output.stdout).split('\n')) {
+        // FFmpeg lists protocol inputs and outputs separately; preserve that distinction.
+        if (command === '-protocols' && /^(Input|Output):$/.test(line.trim()) === true) {
+          section = line.trim().slice(0, -1).toLowerCase() + ':';
+        }
         let m = line.match(regex);
         if ((m?.[1] ?? '') !== '') {
-          features.push(m[1]);
+          features.push(section + m[1]);
         }
       }
 
@@ -947,6 +968,8 @@ export default class FFmpeg extends EventEmitter {
     this.#features.encoders = parseFeatures('-encoders', /^\s*[A-Z.]+\s+([^\s]+)/);
     this.#features.decoders = parseFeatures('-decoders', /^\s*[A-Z.]+\s+([^\s]+)/);
     this.#features.muxers = parseFeatures('-muxers', /^\s*[E][A-Z.]*\s+([^\s]+)/);
+    this.#features.demuxers = parseFeatures('-demuxers', /^\s*D[A-Z.]*\s+([^\s]+)/);
+    this.#features.protocols = parseFeatures('-protocols', /^\s+([a-z0-9_]+)\s*$/);
 
     // Capabilities stay private and are not mutated after discovery. Synchronous
     // setup prevents another constructor from observing a partially filled entry.

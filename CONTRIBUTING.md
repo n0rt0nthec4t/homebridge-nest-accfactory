@@ -97,6 +97,7 @@ UUIDs and does not generate project-specific identities.
 | --- | --- | --- | --- | --- |
 | `characteristic.replace-by-date` | `REPLACE_BY_DATE` | `391ED041-9783-577A-81EB-4B6BFEE97869` | Reported device replacement date, exposed as a read-only local date string | Active |
 | `characteristic.eco-mode` | `ECO_MODE` | `3EA35F7F-3CB1-5991-84B7-00B36A8CF698` | Boolean thermostat Eco control; On enables manual Eco, Off disables Eco | Active |
+| `characteristic.active-temperature-sensor` | `ACTIVE_TEMPERATURE_SENSOR` | `60076A74-7FE6-5CDA-B894-DABE078A14F8` | Active Temperature Sensor: read/write/notify Boolean; On selects this sensor, remote Off returns to the internal sensor, thermostat Off is rejected | Active |
 
 Where no appropriate HomeKit representation exists, do not expose the functionality through an unrelated service or characteristic:
 

@@ -44,11 +44,11 @@ import { adjustTemperature, scaleValue, buildDeviceDescription } from '../utils.
 import { buildMappedObject, createMappingContext } from '../translator.js';
 
 // Define constants
-import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE } from '../consts.js';
+import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE, CUSTOM_CHARACTERISTIC_UUID } from '../consts.js';
 
 export default class NestTemperatureSensor extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.TEMPSENSOR;
-  static VERSION = '2026.10.28'; // Code version
+  static VERSION = '2026.11.18'; // Code version
 
   batteryService = undefined;
   temperatureService = undefined;
@@ -57,6 +57,35 @@ export default class NestTemperatureSensor extends HomeKitDevice {
   onAdd() {
     // Setup temperature service if not already present on the accessory and link it to the Eve app if configured to do so
     this.temperatureService = this.addService(this.hap.Service.TemperatureSensor, '', 1, { primary: true, history: {} });
+
+    // Report whether the temperature sensor is online.
+    this.addCharacteristic(this.temperatureService, this.hap.Characteristic.StatusActive);
+
+    // Report and control whether this sensor supplies the thermostat's control temperature.
+    this.addCharacteristic(
+      this.temperatureService,
+      {
+        name: 'Active Temperature Sensor',
+        uuid: CUSTOM_CHARACTERISTIC_UUID.ACTIVE_TEMPERATURE_SENSOR,
+        props: { format: this.hap.Formats.BOOL, perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.PAIRED_WRITE, this.hap.Perms.NOTIFY] },
+      },
+      {
+        onGet: () => this.deviceData.active_sensor === true,
+        onSet: async (value) => {
+          if (typeof value !== 'boolean') {
+            throw new this.hap.HapStatusError(this.hap.HAPStatus.INVALID_VALUE_IN_REQUEST);
+          }
+          if (typeof this.deviceData.associated_thermostat !== 'string' || this.deviceData.associated_thermostat === '') {
+            throw new this.hap.HapStatusError(this.hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE);
+          }
+          // An Off action on an unselected sensor must not deselect another sensor.
+          if (value === false && this.deviceData.active_sensor !== true) {
+            return;
+          }
+          await this.set({ uuid: this.deviceData.nest_google_device_uuid, active_sensor: value });
+        },
+      },
+    );
 
     // Setup battery service if not already present on the accessory
     this.batteryService = this.addService(this.hap.Service.Battery, '', 1, { hidden: true });
@@ -80,19 +109,16 @@ export default class NestTemperatureSensor extends HomeKitDevice {
       return;
     }
 
+    this.temperatureService.updateCharacteristic(this.hap.Characteristic.StatusActive, deviceData.online === true);
+
     // If device isn't online report in HomeKit
     this.temperatureService.updateCharacteristic(
       this.hap.Characteristic.StatusFault,
       deviceData.online === true ? this.hap.Characteristic.StatusFault.NO_FAULT : this.hap.Characteristic.StatusFault.GENERAL_FAULT,
     );
 
-    // Status active: if linked to thermostat, must be online AND the active sensor; otherwise just online
-    this.temperatureService.updateCharacteristic(
-      this.hap.Characteristic.StatusActive,
-      typeof deviceData?.associated_thermostat === 'string' && deviceData.associated_thermostat !== ''
-        ? deviceData.online === true && deviceData?.active_sensor === true
-        : deviceData.online === true,
-    );
+    // Selection remains visible while offline; StatusFault reports sensor availability.
+    this.temperatureService.updateCharacteristic(this.hap.Characteristic.ActiveTemperatureSensor, deviceData.active_sensor === true);
 
     // Update temperature
     this.temperatureService.updateCharacteristic(this.hap.Characteristic.CurrentTemperature, deviceData.current_temperature);
@@ -416,7 +442,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
           }
 
           // Rebuild from cached sensor traits when the sensor or its parent changes. Parent-only RCS
-          // selection updates must refresh StatusActive even when no sensor traits have changed.
+          // selection updates must refresh Active Temperature Sensor even when no sensor traits have changed.
           storeCandidate(
             buildMappedObject(
               TEMPSENSOR_FIELD_MAP,

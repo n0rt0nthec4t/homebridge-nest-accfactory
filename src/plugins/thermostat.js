@@ -73,7 +73,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.THERMOSTAT;
-  static VERSION = '2026.11.05'; // Code version
+  static VERSION = '2026.11.18'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -106,9 +106,28 @@ export default class NestThermostat extends HomeKitDevice {
 
     // Setup set characteristics
 
-    // Used to indicate active temperature if the thermostat is using its temperature sensor data
-    // or an external temperature sensor ie: Nest Temperature Sensor
+    // Report whether the thermostat is online.
     this.addCharacteristic(this.thermostatService, this.hap.Characteristic.StatusActive);
+
+    // Report and control whether the thermostat's internal sensor supplies its control temperature.
+    this.addCharacteristic(
+      this.thermostatService,
+      {
+        name: 'Active Temperature Sensor',
+        uuid: CUSTOM_CHARACTERISTIC_UUID.ACTIVE_TEMPERATURE_SENSOR,
+        props: { format: this.hap.Formats.BOOL, perms: [this.hap.Perms.PAIRED_READ, this.hap.Perms.PAIRED_WRITE, this.hap.Perms.NOTIFY] },
+      },
+      {
+        onGet: () => (this.deviceData.active_rcs_sensor ?? '') === '',
+        onSet: async (value) => {
+          // Off cannot identify a replacement remote sensor; select that sensor directly instead.
+          if (value !== true) {
+            throw new this.hap.HapStatusError(this.hap.HAPStatus.INVALID_VALUE_IN_REQUEST);
+          }
+          await this.set({ uuid: this.deviceData.nest_google_device_uuid, active_sensor: true });
+        },
+      },
+    );
 
     this.addCharacteristic(this.thermostatService, this.hap.Characteristic.StatusFault);
 
@@ -402,10 +421,13 @@ export default class NestThermostat extends HomeKitDevice {
       );
     }
 
-    // Using a temperature sensor as active temperature?
-    // Probably not the best way for HomeKit, but works ;-)
-    // Maybe a custom characteristic would be better?
-    this.thermostatService.updateCharacteristic(this.hap.Characteristic.StatusActive, (deviceData.active_rcs_sensor ?? '') === '');
+    this.thermostatService.updateCharacteristic(this.hap.Characteristic.StatusActive, deviceData.online === true);
+
+    // Availability is reported separately through StatusFault; this indicates the selected control sensor.
+    this.thermostatService.updateCharacteristic(
+      this.hap.Characteristic.ActiveTemperatureSensor,
+      (deviceData.active_rcs_sensor ?? '') === '',
+    );
 
     // Update battery status
     if (deviceData.battery_level !== undefined) {

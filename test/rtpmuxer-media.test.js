@@ -28,6 +28,55 @@ let markerAAC = new Map();
 // without installing a separate JavaScript codec library to generate test media.
 let opusSilence = Buffer.from([0xf8, 0xff, 0xfe]);
 
+test(
+  'HKSV recording keeps negotiated dimensions and aspect ratio across source resolution changes',
+  { skip: binary === undefined ? 'Set FFMPEG_TEST_BINARY for real media checks' : false },
+  (context) => {
+    let sources = [[160, 90], [320, 180], [160, 120]].map(([width, height]) => {
+      let source = spawnSync(binary, [
+        '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i',
+        'color=white:size=' + width + 'x' + height + ':rate=15',
+        '-frames:v', '6', '-c:v', 'libx264', '-preset', 'ultrafast',
+        '-x264-params', 'repeat-headers=1:keyint=6:scenecut=0', '-f', 'h264', 'pipe:1',
+      ], { timeout: 10000, maxBuffer: 1024 * 1024 });
+      assert.equal(source.status, 0, source.stderr?.toString());
+      return source.stdout;
+    });
+    let manager = new FFmpeg(binary);
+    let args;
+    context.mock.method(manager, 'start', (settings) => {
+      args = settings.args;
+      return {};
+    });
+    manager.startRecording({
+      id: 'resolution-change', input: { url: 'rtsp://127.0.0.1/fixture' }, includeAudio: false,
+      video: { profile: 'baseline', level: '3.1', width: 320, height: 180, fps: 15, iFrameInterval: 4000, bitRate: 200 },
+    });
+    // Keep the production output arguments; substitute a deterministic elementary-stream input for RTSP.
+    let encoded = spawnSync(binary, [
+      '-hide_banner', '-loglevel', 'error', '-f', 'h264', '-r', '15', '-i', 'pipe:0',
+      ...args.slice(args.indexOf('-i') + 2),
+    ], { input: Buffer.concat(sources), timeout: 10000, maxBuffer: 4 * 1024 * 1024 });
+    assert.equal(encoded.status, 0, encoded.stderr?.toString());
+    let decoded = spawnSync(binary, [
+      '-hide_banner', '-loglevel', 'info', '-i', 'pipe:0', '-vf', 'showinfo',
+      '-pix_fmt', 'gray', '-fps_mode', 'passthrough', '-f', 'rawvideo', 'pipe:1',
+    ], { input: encoded.stdout, timeout: 10000, maxBuffer: 4 * 1024 * 1024 });
+    assert.equal(decoded.status, 0, decoded.stderr?.toString());
+    let dimensions = [...decoded.stderr.toString().matchAll(/ s:(\d+x\d+)/g)].map((match) => match[1]);
+    assert.equal(dimensions.length, 18);
+    assert.deepEqual([...new Set(dimensions)], ['320x180']);
+    assert.equal(decoded.stdout.length, 18 * 320 * 180);
+    // 16:9 fills the frame; the later 4:3 picture is centred with black sides, retaining its proportions.
+    let first = decoded.stdout.subarray(0, 320 * 180);
+    let last = decoded.stdout.subarray(-320 * 180);
+    assert.ok(first[90 * 320 + 4] > 220);
+    assert.ok(last[90 * 320 + 4] < 24);
+    assert.ok(last[90 * 320 + 160] > 220);
+    assert.ok(last[90 * 320 + 315] < 24);
+  },
+);
+
 for (let [boundary, expected] of [[359998, 360002], [359999, 359999], [360000, 360000], [360001, 360001]]) {
   test('HKSV timed keyframe tolerates one clock tick at boundary ' + boundary,
     { skip: binary === undefined ? 'Set FFMPEG_TEST_BINARY for real media checks' : false }, (context) => {
@@ -37,7 +86,15 @@ for (let [boundary, expected] of [[359998, 360002], [359999, 359999], [360000, 3
         args = settings.args; return {};
       });
       manager.startRecording({ id: 'keyframe-boundary', input: { url: 'rtsp://127.0.0.1/fixture' }, includeAudio: false,
-        video: { profile: 'baseline', level: '3.1', fps: 30, iFrameInterval: 4000, bitRate: 200 } });
+        video: {
+          profile: 'baseline',
+          level: '3.1',
+          width: 64,
+          height: 64,
+          fps: 30,
+          iFrameInterval: 4000,
+          bitRate: 200,
+        } });
       let output = args.slice(args.indexOf('-i') + 2);
       let filter = output.indexOf('-filter:v') + 1;
       output[filter] = 'settb=1/90000,setpts=if(eq(N\\,0)\\,0\\,if(eq(N\\,1)\\,' + boundary + '\\,360002)),' + output[filter];
@@ -266,7 +323,15 @@ for (let [
       });
       output.start(manager, {
         sourceAudio: 'aac',
-        video: { profile: 'baseline', level: '3.1', fps: 30, iFrameInterval: 2000, bitRate: 200 },
+        video: {
+          profile: 'baseline',
+          level: '3.1',
+          width: 160,
+          height: 90,
+          fps: 30,
+          iFrameInterval: 2000,
+          bitRate: 200,
+        },
       });
       if (arriveDuringStart === true) {
         // The next IDR and marker arrive after the prebuffer boundary was
@@ -660,7 +725,15 @@ for (let scenario of [
         id: 'fps-transition',
         input: output.input,
         sourceAudio: audioCodec,
-        video: { profile: 'baseline', level: '3.1', fps: 30, iFrameInterval: audioCodec === 'opus' ? 4000 : 2000, bitRate: 200 },
+        video: {
+          profile: 'baseline',
+          level: '3.1',
+          width: 160,
+          height: 90,
+          fps: 30,
+          iFrameInterval: audioCodec === 'opus' ? 4000 : 2000,
+          bitRate: 200,
+        },
       };
       let handle;
       if (recording !== undefined) {
@@ -1302,7 +1375,15 @@ for (let [rate, codec, audioCodec, audioOffset = 40, lateTrack, reordered = fals
         id: 'media-test',
         input: output.input,
         sourceAudio: audioCodec,
-        video: { profile: 'baseline', level: '3.1', fps: 30, iFrameInterval: 4000, bitRate: 200 },
+        video: {
+          profile: 'baseline',
+          level: '3.1',
+          width: 160,
+          height: 90,
+          fps: 30,
+          iFrameInterval: 4000,
+          bitRate: 200,
+        },
       });
       const child =
         managed === undefined

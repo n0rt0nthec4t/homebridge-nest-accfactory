@@ -101,9 +101,7 @@ for (let status of [401, 403]) {
       };
       await flow.api.connect();
       assert.equal(flow.requests[0][2].headers.Authorization, 'Basic token');
-      flow.pending[0].resolve(
-        reply({ objects: [{ object_key: 'topaz.TEST', object_revision: 1, object_timestamp: 10, value: {} }] }),
-      );
+      flow.pending[0].resolve(reply({ objects: [{ object_key: 'topaz.TEST', object_revision: 1, object_timestamp: 10, value: {} }] }));
       await setImmediate();
       context.mock.timers.tick(1000);
       await setImmediate();
@@ -853,7 +851,7 @@ for (let active of [true, false]) {
     flow.api.resources.set('kryptonite.SENSOR', { source: DATA_SOURCE.NEST, value: {} });
     flow.api.resources.set('rcs_settings.PARENT', {
       source: DATA_SOURCE.NEST,
-      value: { associated_rcs_sensors: ['kryptonite.SENSOR'] },
+      value: { associated_rcs_sensors: ['kryptonite.SENSOR'], active_rcs_sensors: ['kryptonite.SENSOR'] },
     });
     await flow.api.connect();
     flow.pending[0].resolve(
@@ -953,7 +951,14 @@ for (let active of [true, false]) {
         {
           traitId: { resourceId: 'DEVICE_PARENT', traitLabel: 'remote_comfort_sensing_settings' },
           stateTypes: ['ACCEPTED'],
-          patch: { values: { associatedRcsSensors: [{ deviceId: { resourceId: 'DEVICE_SENSOR' } }] } },
+          patch: {
+            values: {
+              associatedRcsSensors: [{ deviceId: { resourceId: 'DEVICE_SENSOR' } }],
+              activeRcsSelection: { activeRcsSensor: { resourceId: 'DEVICE_SENSOR' } },
+              rcsControlMode: 'RCS_CONTROL_MODE_SCHEDULE',
+              rcsControlSchedule: { fixture: true },
+            },
+          },
         },
       ],
     });
@@ -964,7 +969,118 @@ for (let active of [true, false]) {
       update.state.value.activeRcsSelection.rcsSourceType,
       active === true ? 'RCS_SOURCE_TYPE_SINGLE_SENSOR' : 'RCS_SOURCE_TYPE_BACKPLATE',
     );
+    assert.equal(update.state.value.rcsControlMode, active === true ? 'RCS_CONTROL_MODE_SCHEDULE_OVERRIDE' : 'RCS_CONTROL_MODE_HOLD');
+    assert.deepEqual(update.state.value.rcsControlSchedule, { fixture: true });
+    assert.equal(flow.api.resources.get('DEVICE_PARENT').value.remote_comfort_sensing_settings.rcsControlMode, 'RCS_CONTROL_MODE_SCHEDULE');
     assert.equal(flow.api.resources.get('DEVICE_SENSOR').value.associated_thermostat, undefined);
+  });
+}
+
+test('Nest thermostat selection disables RCS only in its own account settings bucket', async (context) => {
+  let flow = setup(context, 'nest');
+  flow.api.resources.set('device.PARENT', { source: DATA_SOURCE.NEST, value: {} });
+  flow.api.resources.set('rcs_settings.PARENT', { source: DATA_SOURCE.NEST, value: { active_rcs_sensors: ['kryptonite.SENSOR'] } });
+  let before = structuredClone(flow.api.resources.get('rcs_settings.PARENT'));
+  let write = flow.api.set('device.PARENT', { active_sensor: true });
+  assert.deepEqual(JSON.parse(flow.requests[0][3]).objects, [
+    {
+      object_key: 'rcs_settings.PARENT',
+      op: 'MERGE',
+      value: { active_rcs_sensors: [], rcs_control_setting: 'OFF' },
+    },
+  ]);
+  flow.pending[0].resolve(reply({ objects: [{}] }));
+  await write;
+  assert.deepEqual(flow.api.resources.get('rcs_settings.PARENT'), before, 'subscription remains authoritative');
+  for (let invalid of [false, 'true', 1, null]) {
+    await assert.rejects(flow.api.set('device.PARENT', { active_sensor: invalid }), AggregateError);
+  }
+  flow.api.resources.get('rcs_settings.PARENT').source = DATA_SOURCE.GOOGLE;
+  await assert.rejects(flow.api.set('device.PARENT', { active_sensor: true }), AggregateError);
+  flow.api.resources.delete('rcs_settings.PARENT');
+  await assert.rejects(flow.api.set('device.PARENT', { active_sensor: true }), AggregateError);
+  assert.equal(flow.requests.length, 1);
+});
+
+for (let mode of ['RCS_CONTROL_MODE_HOLD', 'RCS_CONTROL_MODE_SCHEDULE', 'RCS_CONTROL_MODE_SCHEDULE_OVERRIDE']) {
+  test('Google thermostat selection switches to backplate from ' + mode, async (context) => {
+    let flow = setup(context);
+    let commands = [];
+    let rejectCommand = false;
+    flow.connection.grpcTransport.command = async (...args) => {
+      if (rejectCommand === true) {
+        return { status: 14 };
+      }
+      commands.push(args);
+      return { status: 0, data: [{ traitOperations: [{ progress: 'COMPLETE' }] }] };
+    };
+    await flow.api.connect();
+    let settings = {
+      rcsControlMode: mode,
+      activeRcsSelection: { activeRcsSensor: { resourceId: 'DEVICE_SENSOR' } },
+      associatedRcsSensors: [{ deviceId: { resourceId: 'DEVICE_SENSOR' } }],
+      rcsControlSchedule: { fixture: true },
+    };
+    flow.api.resources.set('DEVICE_PARENT', { source: DATA_SOURCE.GOOGLE, value: { remote_comfort_sensing_settings: settings } });
+    await flow.api.set('DEVICE_PARENT', { active_sensor: true });
+    let update = commands[0][3].batchUpdateStateRequest[0];
+    assert.equal(update.traitRequest.resourceId, 'DEVICE_PARENT');
+    assert.deepEqual(update.state.value, {
+      ...settings,
+      rcsControlMode: 'RCS_CONTROL_MODE_HOLD',
+      activeRcsSelection: { rcsSourceType: 'RCS_SOURCE_TYPE_BACKPLATE' },
+    });
+    assert.equal(settings.rcsControlMode, mode);
+    for (let invalid of [false, 'true', 1, null]) {
+      await assert.rejects(flow.api.set('DEVICE_PARENT', { active_sensor: invalid }), AggregateError);
+    }
+    rejectCommand = true;
+    await assert.rejects(flow.api.set('DEVICE_PARENT', { active_sensor: true }), AggregateError);
+    assert.equal(settings.rcsControlMode, mode);
+    assert.equal(commands.length, 1);
+  });
+}
+
+for (let kind of ['nest', 'google']) {
+  test(kind + ' rejects stale remote deselection without clearing the replacement', async (context) => {
+    let flow = setup(context, kind);
+    let commands = [];
+    if (kind === 'google') {
+      flow.connection.grpcTransport.command = async (...args) => {
+        commands.push(args);
+      };
+      await flow.api.connect();
+      flow.api.resources.set('DEVICE_SENSOR', { source: DATA_SOURCE.GOOGLE, value: {} });
+      flow.api.resources.set('DEVICE_PARENT', {
+        source: DATA_SOURCE.GOOGLE,
+        value: {
+          remote_comfort_sensing_settings: {
+            associatedRcsSensors: [{ deviceId: { resourceId: 'DEVICE_SENSOR' } }],
+            activeRcsSelection: { activeRcsSensor: { resourceId: 'DEVICE_REPLACEMENT' } },
+          },
+        },
+      });
+    } else {
+      flow.api.resources.set('kryptonite.SENSOR', { source: DATA_SOURCE.NEST, value: { associated_thermostat: 'device.PARENT' } });
+      flow.api.resources.set('rcs_settings.PARENT', {
+        source: DATA_SOURCE.NEST,
+        value: {
+          associated_rcs_sensors: ['kryptonite.SENSOR', 'kryptonite.REPLACEMENT'],
+          active_rcs_sensors: ['kryptonite.REPLACEMENT'],
+        },
+      });
+    }
+    let before = structuredClone([...flow.api.resources]);
+    await assert.rejects(flow.api.set(kind === 'nest' ? 'kryptonite.SENSOR' : 'DEVICE_SENSOR', { active_sensor: false }), AggregateError);
+    assert.deepEqual([...flow.api.resources], before);
+    assert.equal(commands.length, 0);
+    assert.equal(flow.requests.length, 0);
+    // A related resource from the other source cannot authorise a parent write.
+    flow.api.resources.get(kind === 'nest' ? 'rcs_settings.PARENT' : 'DEVICE_PARENT').source =
+      kind === 'nest' ? DATA_SOURCE.GOOGLE : DATA_SOURCE.NEST;
+    await assert.rejects(flow.api.set(kind === 'nest' ? 'kryptonite.SENSOR' : 'DEVICE_SENSOR', { active_sensor: true }), AggregateError);
+    assert.equal(commands.length, 0);
+    assert.equal(flow.requests.length, 0);
   });
 }
 

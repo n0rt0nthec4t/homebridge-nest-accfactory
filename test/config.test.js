@@ -156,6 +156,7 @@ for (let [label, version, missing, valid] of [
   ['missing Opus', '8.0', 'libopus', false],
   ['missing H264', '8.0', 'libx264', false],
   ['missing Speex', '8.0', 'libspeex', false],
+  ...['rtsp', 'sdp', 'tcp', 'pipe', 'udp', 'rtp', 'srtp'].map((name) => ['missing ' + name, '8.0', name, false]),
 ]) {
   test('configuration enforces FFmpeg minimum support: ' + label, (context) => {
     context.mock.method(child_process, 'spawnSync', (binary, args) => ({
@@ -169,13 +170,30 @@ for (let [label, version, missing, valid] of [
             .join('\n'),
           '-decoders': missing === 'libspeex' ? '' : ' A..... libspeex',
           '-muxers': '',
-          '-demuxers': '',
+          '-demuxers': ['rtsp', 'sdp'].filter((name) => name !== missing).map((name) => ' D ' + name).join('\n'),
+          '-protocols': 'Input:\n' +
+            ['tcp', 'pipe', 'udp', 'rtp'].filter((name) => name !== missing).map((name) => '  ' + name).join('\n') +
+            '\nOutput:\n' + ['pipe', 'udp', 'rtp', 'srtp'].filter((name) => name !== missing).map((name) => '  ' + name).join('\n'),
         }[args[0]] ?? '',
     }));
     let warnings = [];
     let log = { warn: (...args) => warnings.push(args), info() {}, debug() {} };
     let config = processConfig({ options: { ffmpegPath: 'fixture-ffmpeg', debug: true } }, log, {});
     assert.equal(config.options.ffmpeg.valid, valid);
+    for (let demuxer of ['rtsp', 'sdp']) {
+      assert.equal(warnings.some((entry) =>
+        entry[0] === 'Missing %s %s in ffmpeg' && entry[1] === demuxer && entry[2] === 'demuxer'), missing === demuxer);
+    }
+    for (let [direction, protocols] of [['input', ['tcp', 'pipe', 'udp', 'rtp']], ['output', ['pipe', 'udp', 'rtp', 'srtp']]]) {
+      for (let protocol of protocols) {
+        assert.equal(warnings.some((entry) =>
+          entry[0] === 'Missing %s %s in ffmpeg' && entry[1] === protocol && entry[2] === direction + ' protocol'), missing === protocol);
+      }
+    }
+    for (let [name, kind] of [['libspeex', 'decoder'], ['libx264', 'encoder'], ['libfdk_aac', 'encoder'], ['libopus', 'encoder']]) {
+      assert.equal(warnings.some((entry) =>
+        entry[0] === 'Missing %s %s in ffmpeg' && entry[1] === name && entry[2] === kind), missing === name);
+    }
     if (valid === true) {
       assert.equal(config.options.ffmpeg.version, version);
       assert.equal(config.options.ffmpeg.binary, 'fixture-ffmpeg');
@@ -378,6 +396,8 @@ test('configuration publishes a successfully probed hardware encoder and debug d
         '-version': 'ffmpeg version 7.1 ',
         '-encoders': ' V..... libx264\n A..... libfdk_aac\n A..... libopus\n V..... h264_videotoolbox',
         '-decoders': ' A..... libspeex',
+        '-demuxers': ' D rtsp\n D sdp',
+        '-protocols': 'Input:\n  tcp\n  pipe\n  udp\n  rtp\nOutput:\n  pipe\n  udp\n  rtp\n  srtp',
         '-hide_banner': Buffer.from([0, 0, 0, 1, 0x65, 1]),
       }[args[0]] ?? '',
   }));

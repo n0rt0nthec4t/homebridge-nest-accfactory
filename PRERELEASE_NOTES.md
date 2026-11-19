@@ -4,6 +4,24 @@ All notable pre-release changes to `homebridge-nest-accfactory` are documented h
 Entries are specific to individual alpha and beta releases and are not cumulative.  
 This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v0.4.5-beta.7 (2026/11/19)
+
+### Added
+
+- Add a shared read/write Active Temperature Sensor characteristic to thermostats and Nest Temperature Sensors for source selection in compatible HomeKit apps and automations
+- Normalise camera aspect-ratio metadata from Nest REST capabilities and Google protobuf traits
+
+### Changed
+
+- Replace thermostat and temperature-sensor StatusActive selection reporting with Active Temperature Sensor, using StatusActive for online availability and StatusFault for faults. Existing automations using StatusActive for selection must be updated
+- Dynamically generate live-view and HKSV recording resolution choices to match the camera's aspect ratio, capped at 2K for live viewing and 1080p for recording. Retain the Apple Watch compatibility option and use 16:9 when aspect ratio metadata is unavailable or unusable
+
+### Fixed
+
+- Reject FFmpeg builds missing the RTSP/SDP demuxers or input/output protocols required for live streaming, recording and talkback, with warnings identifying each missing capability
+- Set the Google RCS control mode with manual sensor selection and reject stale remote deselection that would clear another selected sensor
+- Keep HKSV recordings at the resolution selected by HomeKit when the source resolution changes, preserving picture proportions with padding where needed
+
 ## v0.4.5-beta.6 (2026/11/17)
 
 ### Fixed

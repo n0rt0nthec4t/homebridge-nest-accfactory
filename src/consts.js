@@ -28,7 +28,7 @@
 // - Imported throughout the codebase for consistency and reuse
 // - Changes here may affect multiple subsystems (devices, streaming, APIs)
 //
-// Code version 2026.10.28
+// Code version 2026.11.18
 // Mark Hulskamp
 'use strict';
 
@@ -61,6 +61,7 @@ export const CUSTOM_CHARACTERISTIC_UUID = {
   // This catalogue records built-in types; independent addons use their own namespace.
   REPLACE_BY_DATE: uuidv5('characteristic.replace-by-date', CUSTOM_UUID_NAMESPACE).toUpperCase(),
   ECO_MODE: uuidv5('characteristic.eco-mode', CUSTOM_UUID_NAMESPACE).toUpperCase(),
+  ACTIVE_TEMPERATURE_SENSOR: uuidv5('characteristic.active-temperature-sensor', CUSTOM_UUID_NAMESPACE).toUpperCase(),
 };
 
 export const TIMERS = {
