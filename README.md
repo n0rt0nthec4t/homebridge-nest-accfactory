@@ -16,7 +16,6 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/sponsors/n0rt0nthec4t"><img src="https://img.shields.io/badge/GitHub-Sponsors-EA4AAA?logo=githubsponsors&logoColor=white" alt="GitHub Sponsors"></a>
   <a href="https://www.buymeacoffee.com/n0rt0nthec4t"><img src="https://img.shields.io/badge/Buy_Me_a_Coffee-FFDD00?logo=buymeacoffee&logoColor=black" alt="Buy Me a Coffee"></a>
 </p>
 
