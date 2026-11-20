@@ -1,17 +1,24 @@
-# Change Log
+# Changelog
 
 All notable changes to `homebridge-nest-accfactory` are documented in this file.  
 Pre-release notes for alpha and beta versions are maintained separately in `PRERELEASE_NOTES.md`.  
-This project adheres to [Semantic Versioning](http://semver.org/).
 
-### Known Issues
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+[Unreleased]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.4
+
+## Known Issues
 
 - Some newer Nest/Google cameras may use different video sizes or aspect ratios, causing the video to appear slightly cropped or not fill the screen correctly
 - Enabling HomeKit Secure Video (HKSV) on battery-powered cameras will significantly reduce battery life
 - Motion sensing on wired Nest Protect devices may report incorrect states due to recent firmware changes
 - Video from Google Home-hosted streams may be slow to start up
 
-## v0.4.4 (2026/10/20)
+## [Unreleased]
+
+## [0.4.4] - 2026-10-20
 
 ### ⚠️ Compatibility Changes
 

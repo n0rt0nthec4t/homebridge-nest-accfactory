@@ -8,6 +8,7 @@ import timers from 'node:timers';
 import { URL } from 'node:url';
 import test from 'node:test';
 import { format } from 'node:util';
+import * as receiveWerift from 'werift';
 import GrpcTransport from '../src/grpctransport.js';
 import StreamTransport from '../src/plugins/camera/streamtransport.js';
 import H264 from '../src/plugins/camera/h264.js';
@@ -1126,20 +1127,20 @@ for (let delay of [850, 950]) {
   });
 }
 
-test('WebRTC keyframe expiry logs recent fragment progress without changing the deadline', async (context) => {
+test('WebRTC keyframe expiry logs progress at the absolute grace-period cap', async (context) => {
   let flow = await videoFlow(context);
   let logs = [];
   flow.transport.log = { debug: (...args) => logs.push(format(...args)) };
   flow.keyframe(0);
   flow.emit(Buffer.from([0x7c, 0x85, 1]), 3000, false, { sequenceNumber: 1 });
-  context.mock.timers.tick(2501);
+  context.mock.timers.tick(4001);
   flow.emit(Buffer.from([0x7c, 0x05, 2]), 3000, false, { sequenceNumber: 2 });
   let drop = logs.find((line) => line.startsWith('Dropping incomplete jittered'));
-  assert.match(drop, /ageMs="2501" idleMs="0" spanMs="2501" limitMs="2500" forced="false"/);
+  assert.match(drop, /ageMs="4001" idleMs="0" spanMs="4001" limitMs="4000" forced="false"/);
   assert.equal(flow.transport.stats.media.videoDrops['jitter-keyframe-incomplete'], 1);
 });
 
-test('WebRTC expiry logs retain the first group deadline when one drain expires multiple keyframes', async (context) => {
+test('WebRTC expiry logs retain the first deadline while a progressing later keyframe gets grace', async (context) => {
   let flow = await videoFlow(context);
   let logs = [];
   flow.transport.log = { debug: (...args) => logs.push(format(...args)) };
@@ -1151,6 +1152,10 @@ test('WebRTC expiry logs retain the first group deadline when one drain expires 
   let drops = logs.filter((line) => line.startsWith('Dropping incomplete jittered'));
   assert.equal(drops.length, 1);
   assert.match(drops[0], /rtpTs="3000".*idleMs="2600" spanMs="0" limitMs="900" forced="false"/);
+  assert.equal(flow.transport.stats.media.videoDrops['jitter-keyframe-incomplete'], 1);
+  // The later group's new fragment earns grace, but cannot move its absolute cap.
+  context.mock.timers.tick(1401);
+  flow.emit(Buffer.from([0x7c, 0x05, 4]), 6000, false, { sequenceNumber: 4 });
   assert.equal(flow.transport.stats.media.videoDrops['jitter-keyframe-incomplete'], 2);
 });
 
@@ -1760,3 +1765,145 @@ test('WebRTC revalidates a waiting recovery IDR when more packets change its com
   );
   assert.equal(H264.getNALUnits(flow.media[1].data).length, 3);
 });
+
+// Exercise the installed Werift receive implementation before our real track callback.
+// Only signalling and outbound RTCP are isolated; packets are encrypted/decrypted.
+async function encryptedVideoFlow(context) {
+  let flow = await videoFlow(context);
+  let receiver = new receiveWerift.RTCRtpReceiver({ filterProbePaddingOnReceiveRtp: true }, 'video', 123);
+  receiver.runRtcp = () => {};
+  receiver.dtlsTransport = { sendRtcp: async () => {} };
+  receiver.codecs = {
+    98: new receiveWerift.RTCRtpCodecParameters({
+      mimeType: 'video/H264', payloadType: 98, clockRate: 90000, rtcpFeedback: [{ type: 'nack' }],
+    }),
+    99: new receiveWerift.RTCRtpCodecParameters({ mimeType: 'video/rtx', payloadType: 99, clockRate: 90000, parameters: 'apt=98' }),
+  };
+  let track = { kind: 'video', onReceiveRtp: { execute: (packet) => flow.track.onReceiveRtp.emit(packet) } };
+  receiver.trackBySSRC[10] = track;
+  receiver.ssrcByRtx[20] = 10;
+  context.after(() => receiver.nack.close());
+  let config = {
+    profile: 1,
+    keys: {
+      localMasterKey: Buffer.alloc(16, 1), remoteMasterKey: Buffer.alloc(16, 1),
+      localMasterSalt: Buffer.alloc(14, 2), remoteMasterSalt: Buffer.alloc(14, 2),
+    },
+  };
+  let sender = new receiveWerift.SrtpSession(config);
+  let session = new receiveWerift.SrtpSession(config);
+  let feed = (sequenceNumber, payload, timestamp = 3000, marker = false, rtx = false, padding = false) => {
+    let header = new receiveWerift.RtpHeader({
+      sequenceNumber, timestamp, marker, padding, payloadType: rtx === true ? 99 : 98, ssrc: rtx === true ? 20 : 10,
+    });
+    let wire = sender.encrypt(payload, header);
+    let packet = receiveWerift.RtpPacket.deSerialize(session.decrypt(wire));
+    receiver.handleRtpBySsrc(packet, {});
+  };
+  let keyframe = (sequence, timestamp) => feed(sequence, flow.stap([flow.sps, flow.pps, Buffer.from([0x65, 1])]), timestamp, true);
+  return { ...flow, feed, keyframe, receiver };
+}
+
+for (let mode of ['ordered', 'reordered', 'RTX', 'padding', 'padding-RTX', 'wrap-RTX']) {
+  test('encrypted Werift receive and WebRTC assembly preserve complete IDR: ' + mode, async (context) => {
+    let flow = await encryptedVideoFlow(context);
+    let wrap = mode === 'wrap-RTX';
+    let initial = wrap === true ? 65532 : 0;
+    flow.keyframe(initial, 0);
+    let seq = (offset) => (initial + offset) & 0xffff;
+    flow.feed(seq(1), Buffer.from([0x7c, 0x85, 1]));
+    let padding = ['padding', 'padding-RTX', 'wrap-RTX'].includes(mode);
+    if (padding === true) {
+      flow.feed(seq(2), Buffer.from([0, 0, 0, 4]), 3000, false, false, true);
+    }
+    let middle = padding === true ? 3 : 2;
+    let end = middle + 1;
+    if (mode === 'padding') {
+      flow.feed(seq(middle), Buffer.from([0x7c, 0x45, 3]), 3000, true);
+    } else if (mode === 'ordered') {
+      flow.feed(seq(middle), Buffer.from([0x7c, 0x05, 2]));
+      flow.feed(seq(end), Buffer.from([0x7c, 0x45, 3]), 3000, true);
+    } else {
+      flow.feed(seq(end), Buffer.from([0x7c, 0x45, 3]), 3000, true);
+      let retransmission = ['RTX', 'padding-RTX', 'wrap-RTX'].includes(mode);
+      let payload = Buffer.from([0x7c, 0x05, 2]);
+      if (retransmission === true) {
+        let original = Buffer.alloc(2);
+        original.writeUInt16BE(seq(middle));
+        payload = Buffer.concat([original, payload]);
+      }
+      flow.feed(retransmission === true ? 1000 : seq(middle), payload, 3000, false, retransmission);
+    }
+    assert.equal(flow.media.filter((item) => item.keyFrame === true).length, 2);
+    assert.equal(flow.transport.stats.media.videoDrops['jitter-keyframe-incomplete'], undefined);
+  });
+}
+
+for (let duration of [2400, 2600, 3778, 3999, 4300]) {
+  test('encrypted Werift keyframe progress reaches WebRTC absolute deadline: ' + duration, async (context) => {
+    let flow = await encryptedVideoFlow(context);
+    flow.keyframe(0, 0);
+    flow.feed(1, Buffer.from([0x7c, 0x85, 1]));
+    let elapsed = 0;
+    for (let index = 1; index <= 35; index++) {
+      let next = Math.round((duration * index) / 35);
+      context.mock.timers.tick(next - elapsed);
+      elapsed = next;
+      flow.feed(index + 1, Buffer.from([0x7c, index === 35 ? 0x45 : 0x05, index]), 3000, index === 35);
+    }
+    assert.equal(flow.media.filter((item) => item.keyFrame === true).length, duration < 4000 ? 2 : 1);
+    assert.equal(flow.transport.stats.media.videoDrops['jitter-keyframe-incomplete'] ?? 0, duration < 4000 ? 0 : 1);
+    // A fresh complete IDR must still restore video after the expired timestamp.
+    flow.keyframe(37, 6000);
+    assert.equal(flow.media.at(-1).keyFrame, true);
+    assert.equal(flow.media.at(-1).timestamp > flow.media[0].timestamp, true);
+  });
+}
+
+for (let delay of [100, 800, 1000]) {
+  test('encrypted RTX repair competes with newer frames and the inactivity deadline: ' + delay, async (context) => {
+    let flow = await encryptedVideoFlow(context);
+    flow.keyframe(0, 0);
+    flow.feed(1, Buffer.from([0x7c, 0x85, 1]));
+    for (let elapsed = 100; elapsed <= delay; elapsed += 100) {
+      context.mock.timers.tick(100);
+      flow.feed(2 + elapsed / 100, Buffer.from([0x41, 9]), 6000 + elapsed * 90, true);
+    }
+    // The RTX sequence is independent; its payload identifies the original end.
+    flow.feed(1000, Buffer.from([0, 2, 0x7c, 0x45, 2]), 3000, true, true);
+    assert.equal(flow.media.filter((item) => item.keyFrame === true).length, delay < 900 ? 2 : 1);
+    assert.equal(flow.transport.stats.media.videoDrops['jitter-keyframe-incomplete'] ?? 0, delay < 900 ? 0 : 1);
+    flow.keyframe(100, 180000);
+    assert.equal(flow.media.at(-1).keyFrame, true);
+  });
+}
+
+test('encrypted receive keeps a complete replacement IDR after discarding its incomplete predecessor', async (context) => {
+  let flow = await encryptedVideoFlow(context);
+  flow.keyframe(0, 0);
+  flow.feed(1, Buffer.from([0x7c, 0x85, 1]));
+  context.mock.timers.tick(100);
+  flow.keyframe(3, 6000);
+  flow.feed(4, Buffer.from([0x41, 9]), 12000, true);
+  assert.equal(flow.media.filter((item) => item.keyFrame === true).length, 2);
+  assert.equal(flow.transport.stats.media.videoDrops['jitter-keyframe-incomplete'], 1);
+  assert.equal(flow.media.at(-1).keyFrame, false);
+});
+
+for (let duplicate of [false, true]) {
+  test('keyframe grace counts only unique fragments as progress; duplicate=' + duplicate, async (context) => {
+    let flow = await videoFlow(context);
+    flow.keyframe(0);
+    flow.emit(Buffer.from([0x7c, 0x85, 1]), 3000, false, { sequenceNumber: 1 });
+    context.mock.timers.tick(2400);
+    flow.emit(Buffer.from([0x7c, 0x05, 2]), 3000, false, { sequenceNumber: 2 });
+    context.mock.timers.tick(800);
+    flow.emit(Buffer.from([0x7c, 0x05, 2]), 3000, false, { sequenceNumber: duplicate === true ? 2 : 3 });
+    context.mock.timers.tick(150);
+    flow.emit(Buffer.from([0x41, 9]), 6000, true, { sequenceNumber: 5 });
+    context.mock.timers.tick(50);
+    flow.emit(Buffer.from([0x7c, 0x45, 3]), 3000, true, { sequenceNumber: duplicate === true ? 3 : 4 });
+    assert.equal(flow.transport.stats.media.videoDrops['jitter-keyframe-incomplete'] ?? 0, duplicate === true ? 1 : 0);
+    assert.equal(flow.media.filter((item) => item.keyFrame === true).length, duplicate === true ? 1 : 2);
+  });
+}

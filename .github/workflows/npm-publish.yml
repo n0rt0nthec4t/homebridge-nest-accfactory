@@ -8,7 +8,8 @@ name: Release & Publish
 # - Existing npm versions resume only when registry gitHead matches this commit.
 #   Missing commit metadata requires manual verification; version equality alone
 #   never permits the workflow to create a tag or finish a GitHub release.
-# - Release notes use ## vVERSION, optionally followed by a parenthesised date.
+# - Release notes support ## [VERSION] - YYYY-MM-DD and legacy ## vVERSION
+#   headings, optionally followed by a parenthesised date.
 # - Alpha/beta notes live in PRERELEASE_NOTES.md; stable notes in CHANGELOG.md.
 # - Configure this repository and workflow filename as an npm trusted publisher.
 # - Adjust the validation matrix to the runtimes supported by each project.
@@ -161,12 +162,18 @@ jobs:
           let isPrerelease = process.env.IS_PRERELEASE === 'true';
           let filename = isPrerelease === true ? 'PRERELEASE_NOTES.md' : 'CHANGELOG.md';
           let lines = fs.readFileSync(filename, 'utf8').split(/\r?\n/);
+          // Support linked Keep a Changelog headings and the historical vVERSION format.
+          // Compare the captured version exactly so beta.1 cannot select beta.10.
+          let headingPattern = /^##\s+(?:\[([^\]\s]+)\]\s+-\s+\d{4}-\d{2}-\d{2}|v(\S+)(?:\s+\([^)]+\))?)(?:\s+\[YANKED\])?\s*$/;
           let start = lines.findIndex((line) => {
-            let heading = /^##\s+v(\S+)(?:\s+\([^)]+\))?\s*$/.exec(line.trim());
-            return heading !== null && heading[1] === process.env.VERSION;
+            let heading = headingPattern.exec(line.trim());
+            return heading !== null && (heading[1] ?? heading[2]) === process.env.VERSION;
           });
           if (start === -1) {
             throw new Error('Missing release notes section: v' + process.env.VERSION + ' in ' + filename);
+          }
+          if (lines[start].trim().endsWith('[YANKED]') === true) {
+            throw new Error('Cannot publish a withdrawn release: v' + process.env.VERSION);
           }
           let endOffset = lines.slice(start + 1).findIndex((line) => /^##\s/.test(line.trim()));
           let end = endOffset === -1 ? lines.length : start + 1 + endOffset;
@@ -177,9 +184,10 @@ jobs:
           if (isPrerelease === false && /^### Known Issues\s*$/m.test(body) !== true) {
             // Global Known Issues belong to the introduction, before any release.
             // Never append another version's historical issues to this release.
-            let firstRelease = lines.findIndex((line) => /^##\s+v[0-9]/.test(line.trim()));
+            let firstRelease = lines.findIndex((line) =>
+              headingPattern.test(line.trim()) === true || /^##\s+\[?Unreleased\]?\s*$/.test(line.trim()) === true);
             let intro = firstRelease === -1 ? lines : lines.slice(0, firstRelease);
-            let issuesAt = intro.findIndex((line) => line.trim() === '### Known Issues');
+            let issuesAt = intro.findIndex((line) => /^#{2,3}\s+Known Issues\s*$/.test(line.trim()));
             if (issuesAt !== -1) {
               let remaining = intro.slice(issuesAt + 1);
               let nextHeading = remaining.findIndex((line) => /^#{1,3}\s/.test(line.trim()));

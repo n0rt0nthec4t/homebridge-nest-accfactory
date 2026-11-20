@@ -2,15 +2,85 @@
 
 All notable pre-release changes to `homebridge-nest-accfactory` are documented here.  
 Entries are specific to individual alpha and beta releases and are not cumulative.  
-This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
-## v1.0.0-beta.1 (2026/11/20)
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+[Unreleased]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/compare/v1.0.0-beta.1...HEAD
+[1.0.0-beta.1]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v1.0.0-beta.1
+[0.4.5-beta.7]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-beta.7
+[0.4.5-beta.6]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-beta.6
+[0.4.5-beta.5]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-beta.5
+[0.4.5-beta.4]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-beta.4
+[0.4.5-beta.3]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-beta.3
+[0.4.5-beta.2]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-beta.2
+[0.4.5-beta.1]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-beta.1
+[0.4.5-alpha.14]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-alpha.14
+[0.4.5-alpha.13]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-alpha.13
+[0.4.5-alpha.12]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-alpha.12
+[0.4.5-alpha.11]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-alpha.11
+[0.4.5-alpha.10]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-alpha.10
+[0.4.5-alpha.9]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-alpha.9
+[0.4.5-alpha.8]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-alpha.8
+[0.4.5-alpha.7]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-alpha.7
+[0.4.5-alpha.6]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-alpha.6
+[0.4.5-alpha.5]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-alpha.5
+[0.4.5-alpha.4]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-alpha.4
+[0.4.5-alpha.3]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-alpha.3
+[0.4.5-alpha.2]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-alpha.2
+[0.4.5-alpha.1]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.5-alpha.1
+[0.4.4-beta.10]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.4-beta.10
+[0.4.4-beta.9]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.4-beta.9
+[0.4.4-beta.8]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.4-beta.8
+[0.4.4-beta.7]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.4-beta.7
+[0.4.4-beta.6]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.4-beta.6
+[0.4.4-beta.5]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.4-beta.5
+[0.4.4-beta.4]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.4-beta.4
+[0.4.4-beta.3]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.4-beta.3
+[0.4.4-beta.2]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.4-beta.2
+[0.4.4-beta.1]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.4-beta.1
+[0.4.3-beta.4]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.3-beta.4
+[0.4.3-beta.3]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.3-beta.3
+[0.4.3-beta.1]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.3-beta.1
+[0.4.3-alpha.7]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.3-alpha.7
+[0.4.3-alpha.6]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.3-alpha.6
+[0.4.3-alpha.5]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.3-alpha.5
+[0.4.3-alpha.4]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.3-alpha.4
+[0.4.3-alpha.3]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.3-alpha.3
+[0.4.3-alpha.2]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.3-alpha.2
+[0.4.2-beta.4]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.2-beta.4
+[0.4.2-beta.3]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.2-beta.3
+[0.4.2-beta.2]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.2-beta.2
+[0.4.2-beta.1]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.2-beta.1
+[0.4.0-beta.16]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.0-beta.16
+[0.4.0-beta.15]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.0-beta.15
+[0.4.0-beta.14]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.0-beta.14
+[0.4.0-beta.13]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.0-beta.13
+[0.4.0-alpha.24]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.0-alpha.24
+[0.4.0-alpha.23]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.0-alpha.23
+[0.4.0-alpha.22]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.0-alpha.22
+[0.4.0-beta.12]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.0-beta.12
+[0.4.0-beta.11]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.0-beta.11
+[0.4.0-beta.10]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.0-beta.10
+[0.4.0-beta.9]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.0-beta.9
+[0.4.0-beta.8]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.0-beta.8
+[0.4.0-beta.7]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.0-beta.7
+[0.4.0-beta.6]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/v0.4.0-beta.6
+
+## [Unreleased]
+
+## [1.0.0-beta.1] - 2026-11-20
 
 ### Changed
 
 - Begin the 1.0.0 beta release series to establish a stable compatibility baseline under Semantic Versioning
 
-## v0.4.5-beta.7 (2026/11/19)
+### Fixed
+
+- Support both Keep a Changelog and historical release-note headings when publishing, retaining global Known Issues for stable releases and rejecting withdrawn releases
+- Allow progressing WebRTC keyframes up to four seconds to assemble, retaining inactivity expiry and the absolute assembly limit
+
+## [0.4.5-beta.7] - 2026-11-19
 
 ### Added
 
@@ -28,7 +98,11 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 - Set the Google RCS control mode with manual sensor selection and reject stale remote deselection that would clear another selected sensor
 - Keep HKSV recordings at the resolution selected by HomeKit when the source resolution changes, preserving picture proportions with padding where needed
 
-## v0.4.5-beta.6 (2026/11/17)
+## [0.4.5-beta.6] - 2026-11-17
+
+### Changed
+
+- Add CI checks for the recommended Homebridge `2.5.0` with Node.js 24 and 26, alongside the supported minimum versions
 
 ### Fixed
 
@@ -36,15 +110,7 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 - Reserve image download time within the Google snapshot deadline and avoid reporting a missing URL when a download fails
 - Reconnect WebRTC streams when usable video stops despite continued audio or rejected video packets, allowing the initial keyframe startup window
 
-### Changed
-
-- Add CI checks for the recommended Homebridge `2.5.0` with Node.js 24 and 26, alongside the supported minimum versions
-
-## v0.4.5-beta.5 (2026/11/16)
-
-### Deprecated
-
-- Homebridge 1 and Node.js 22 support are deprecated and will be retired together in a plugin release after Node.js 22 reaches end of life on 30 April 2027. Both remain supported for now. Users should plan to upgrade to Homebridge 2 with Node.js 24 or 26
+## [0.4.5-beta.5] - 2026-11-16
 
 ### Added
 
@@ -57,12 +123,21 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 - Raise the minimum supported Node.js 22 version to `22.13.0` and test that baseline in CI; Node.js 24 and 26 support remains unchanged
 - Update development dependencies Stylistic to `6.0.0`, ESLint to `10.15.0` and prettier-eslint to `17.1.3`
 
+### Deprecated
+
+- Homebridge 1 and Node.js 22 support are deprecated and will be retired together in a plugin release after Node.js 22 reaches end of life on 30 April 2027. Both remain supported for now. Users should plan to upgrade to Homebridge 2 with Node.js 24 or 26
+
 ### Fixed
 
 - Prevent replayed or delayed camera history from extending the cooldown or retriggering motion; only newer reported motion restarts or extends it
 - Reject WebRTC sender-report corrections exceeding ten seconds, preserving the existing RTP timeline and allowing later reports to synchronise instead of permanently separating audio and video
 
-## v0.4.5-beta.4 (2026/11/14)
+## [0.4.5-beta.4] - 2026-11-14
+
+> **Testing notes**
+>
+> - Add repeated sound/flash alignment checks for Opus-to-AAC HKSV recordings, including Streamer pre-roll, paced delivery and recording cancellation
+> - Continue checking longer Apple Home recordings for accumulating audio lead; the metadata correction is not yet a confirmed fix for every reported case
 
 ### Added
 
@@ -79,12 +154,12 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
 - Reject unsafe HKSV initialisation rewrites when fragmented metadata is missing or chunk-offset tables already reference media
 
-### Testing
+## [0.4.5-beta.3] - 2026-11-13
 
-- Add repeated sound/flash alignment checks for Opus-to-AAC HKSV recordings, including Streamer pre-roll, paced delivery and recording cancellation
-- Continue checking longer Apple Home recordings for accumulating audio lead; the metadata correction is not yet a confirmed fix for every reported case
-
-## v0.4.5-beta.3 (2026/11/13)
+> **Testing notes**
+>
+> - Recording audio/video sync remains under investigation; these changes are not yet a confirmed fix for the reported audio drift in Apple Home
+> - Check recordings with speech or a clear sound matched to visible movement, including near the beginning and end of longer clips
 
 ### Added
 
@@ -108,12 +183,7 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
 - Override development-tooling minimatch to `11.0.1` to address CVE-2026-118764
 
-### Testing
-
-- Recording audio/video sync remains under investigation; these changes are not yet a confirmed fix for the reported audio drift in Apple Home
-- Check recordings with speech or a clear sound matched to visible movement, including near the beginning and end of longer clips
-
-## v0.4.5-beta.2 (2026/11/09)
+## [0.4.5-beta.2] - 2026-11-09
 
 ### Changed
 
@@ -132,7 +202,11 @@ This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
 Recording audio/video sync still needs verification on physical cameras and in Apple Home recordings.
 
-## v0.4.5-beta.1 (2026/11/07)
+## [0.4.5-beta.1] - 2026-11-07
+
+> **Testing notes**
+>
+> - Recording A/V sync remains under investigation; reproduce with global `debug` and `ffmpegDebug` enabled and include the recording's `Media timing` and `Media delivery` summaries
 
 ### Changed
 
@@ -141,11 +215,12 @@ Recording audio/video sync still needs verification on physical cameras and in A
 - Clarify HomePod chimes, motion detection requirements for HKSV and camera debug logging; distinguish virtual Home/Away and weather accessories from physical devices
 - Update the README header with the new Nest Accfactory device-family icon and Apple Home tagline; include camera, doorbell and thermostat imagery
 
-### Testing
+## [0.4.5-alpha.14] - 2026-11-07
 
-- Recording A/V sync remains under investigation; reproduce with global `debug` and `ffmpegDebug` enabled and include the recording's `Media timing` and `Media delivery` summaries
-
-## v0.4.5-alpha.14 (2026/11/07)
+> **Testing notes**
+>
+> - Add real FFmpeg recording checks for one-second AAC/Opus audio gaps, repeated short AAC gaps and timed audio markers through shared prebuffer playback with and without H264 B-frames
+> - These synthetic checks preserve the timed marker but do not reproduce or resolve the reported recording audio lead; physical camera and HomeKit recording verification remain required
 
 ### Changed
 
@@ -156,12 +231,11 @@ Recording audio/video sync still needs verification on physical cameras and in A
 
 - Remove the short live FFmpeg probing limit that could leave video parameters undetected while waiting for a keyframe, preventing Raspberry Pi hardware encoder startup; retain passthrough timing
 
-### Testing
+## [0.4.5-alpha.13] - 2026-11-06
 
-- Add real FFmpeg recording checks for one-second AAC/Opus audio gaps, repeated short AAC gaps and timed audio markers through shared prebuffer playback with and without H264 B-frames
-- These synthetic checks preserve the timed marker but do not reproduce or resolve the reported recording audio lead; physical camera and HomeKit recording verification remain required
-
-## v0.4.5-alpha.13 (2026/11/06)
+> **Testing notes**
+>
+> - Retest Nest Cam Indoor live view and HKSV on the reported Raspberry Pi 4 configuration, including hardware encoding, recording prebuffer and A/V sync; synthetic FFmpeg decoding and software recording checks do not verify the physical camera or Pi encoder
 
 ### Changed
 
@@ -174,11 +248,13 @@ Recording audio/video sync still needs verification on physical cameras and in A
 - Retry Google camera snapshots with one fresh upload after an image URL returns HTTP 400, retaining the original snapshot deadline
 - Preserve NexusTalk H264 B-frames through live view and HKSV prebuffer playback, keeping decode order and original presentation timestamps instead of dropping video until the next keyframe [#343](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issues/343#issuecomment-6667393488)
 
-### Testing
+## [0.4.5-alpha.12] - 2026-11-05
 
-- Retest Nest Cam Indoor live view and HKSV on the reported Raspberry Pi 4 configuration, including hardware encoding, recording prebuffer and A/V sync; synthetic FFmpeg decoding and software recording checks do not verify the physical camera or Pi encoder
+### Changed
 
-## v0.4.5-alpha.12 (2026/11/05)
+- HomeKit mode and unambiguous temperature requests leave Eco and apply normal settings; compound writes stop dependent mode/temperature changes if an earlier transition command fails
+- Update Homebridge development dependency and 2.x CI matrix to `2.5.0`, retaining the existing supported Homebridge ranges
+- Update werift to `0.26.0`, ESLint to `10.14.0`, and globals to `17.14.0`
 
 ### Fixed
 
@@ -188,21 +264,7 @@ Recording audio/video sync still needs verification on physical cameras and in A
 - Preserve normal target temperatures for disabled Eco heating/cooling limits instead of publishing inactive stored Eco values
 - Accept both boolean and numeric camera status-LED controls across supported Homebridge versions
 
-### Changed
-
-- HomeKit mode and unambiguous temperature requests leave Eco and apply normal settings; compound writes stop dependent mode/temperature changes if an earlier transition command fails
-- Update Homebridge development dependency and 2.x CI matrix to `2.5.0`, retaining the existing supported Homebridge ranges
-- Update werift to `0.26.0`, ESLint to `10.14.0`, and globals to `17.14.0`
-
-## v0.4.5-alpha.11 (2026/10/30)
-
-### Fixed
-
-- Wait for cloud acceptance before acknowledging HomeKit writes or reporting success across locks, floodlights, Heat Links, cameras and thermostats
-- Centralise HAP and Matter callback error handling in HomeKitDevice, preserving explicit protocol errors and internal GET/SET behaviour
-- Correct Google snapshot freshness checks for decoded timestamps and reused URLs; clear Nest snapshot deadline timers when queries finish
-- Quietly skip queries during account reauthorisation and resume after recovery, retaining diagnostics for unexpected failures
-- Keep night-vision state boolean after accepted writes so consecutive HomeKit toggles reach the camera without waiting for cloud updates
+## [0.4.5-alpha.11] - 2026-10-30
 
 ### Changed
 
@@ -212,7 +274,28 @@ Recording audio/video sync still needs verification on physical cameras and in A
 - Inline thermostat display-unit and child-lock handlers; remove unused PIN and camera black-image detection scaffolding
 - Replace extracted-method and rewritten-source tests with file-backed platform and HAP flows, preserving regression coverage and coverage floors
 
-## v0.4.5-alpha.10 (2026/10/29)
+### Fixed
+
+- Wait for cloud acceptance before acknowledging HomeKit writes or reporting success across locks, floodlights, Heat Links, cameras and thermostats
+- Centralise HAP and Matter callback error handling in HomeKitDevice, preserving explicit protocol errors and internal GET/SET behaviour
+- Correct Google snapshot freshness checks for decoded timestamps and reused URLs; clear Nest snapshot deadline timers when queries finish
+- Quietly skip queries during account reauthorisation and resume after recovery, retaining diagnostics for unexpected failures
+- Keep night-vision state boolean after accepted writes so consecutive HomeKit toggles reach the camera without waiting for cloud updates
+
+## [0.4.5-alpha.10] - 2026-10-29
+
+> **Testing notes**
+>
+> - Check discovery, controls and snapshots with Google and legacy Nest accounts, including after a token refresh; devices represented by both APIs should keep their selected source and accessory identity
+> - Check existing wired and battery Protect accessories after restart: wired models without voltage readings should lose the percentage characteristic, retain the same battery service and show the reported battery health
+> - Enable `supportDump` and restart Homebridge; check that initial Google API device traits appear, including Protect battery and power fields where provided, with large resources split across JSON blocks
+
+### Changed
+
+- Complete self-contained Nest and Google API clients with shared session authentication, API-owned source resources and connection state, and optional change notifications; keep HomeKit routing in System
+- Remove obsolete PCM camera-source code and update source tests to cover encoded audio
+- Align Eco Observe flow tests with dependency-based mapping and verify unrelated temperature updates preserve the reported Eco state
+- Separate System's accessory delivery worker from API batch commits and clarify lifecycle, reconciliation and request routing responsibilities
 
 ### Fixed
 
@@ -223,32 +306,23 @@ Recording audio/video sync still needs verification on physical cameras and in A
 - Split large support dumps into bounded JSON blocks so startup Google data is retained; an unsafe resource no longer discards diagnostics for other devices
 - Support Eco Mode reads and On/Off commands for Nest REST thermostats, with Off returning to scheduled operation
 
-### Changed
+## [0.4.5-alpha.9] - 2026-10-28
 
-- Complete self-contained Nest and Google API clients with shared session authentication, API-owned source resources and connection state, and optional change notifications; keep HomeKit routing in System
-- Remove obsolete PCM camera-source code and update source tests to cover encoded audio
-- Align Eco Observe flow tests with dependency-based mapping and verify unrelated temperature updates preserve the reported Eco state
-- Separate System's accessory delivery worker from API batch commits and clarify lifecycle, reconciliation and request routing responsibilities
-
-### Testing
-
-- Check discovery, controls and snapshots with Google and legacy Nest accounts, including after a token refresh; devices represented by both APIs should keep their selected source and accessory identity
-- Check existing wired and battery Protect accessories after restart: wired models without voltage readings should lose the percentage characteristic, retain the same battery service and show the reported battery health
-- Enable `supportDump` and restart Homebridge; check that initial Google API device traits appear, including Protect battery and power fields where provided, with large resources split across JSON blocks
-
-## v0.4.5-alpha.9 (2026/10/28)
+> **Testing notes**
+>
+> - Check startup and device discovery with Google accounts and, where available, legacy Nest accounts; existing accessories should retain their identity without duplicates
+> - Leave Homebridge running through an account token refresh and check that device updates, controls and camera snapshots continue working; with multiple accounts, check devices from each account
+> - Change a device setting in HomeKit and confirm it reaches the device, then change it in the Nest/Google app and confirm HomeKit updates; include thermostat mode/setpoints and supported camera, Protect, lock or floodlight controls
+> - For REST-only thermostats, sensors and Heat Links, check discovery, online status, room names, remote sensor selection, setpoints and supported fan, humidity and hot water controls; devices also available through protobuf should keep using Google data without duplicate accessories
+> - Where supported, change related settings together, such as humidifier enable/target humidity or fan state/duration/speed, and check that one change does not undo another
+> - Check that weather accessories receive readings after startup and continue refreshing for homes discovered through either API
+> - Request camera snapshots repeatedly, including while live view or HKSV recording is active; check that images update and an unavailable camera does not leave snapshot requests hanging
+> - Test repeated live-view start/stop, longer viewing sessions, two-way audio and playable HKSV recordings on WebRTC and NexusTalk cameras; listen for audio gaps and check recording audio/video sync and WebRTC startup or freezes
+> - When reporting an issue, include the plugin version, account login type, affected device model, Node.js/FFmpeg versions and host hardware; for streaming issues, enable `ffmpegDebug` and include the per-stream summary and timing lines logged when the session closes
 
 ### Added
 
 - Expose thermostat Eco Mode On/Off through a custom characteristic for compatible HomeKit apps, scenes and automations; Manual and Automatic Eco report On, with On selecting Manual Eco and Off disabling Eco [#353](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/pull/353) [@jakemike1](https://github.com/jakemike1)
-
-### Fixed
-
-- Restore Nest REST fallback for thermostats, temperature sensors and Heat Links not available through protobuf, while preferring complete Google data when both sources represent the device
-- Correct WebRTC FIR packet length and media-source SSRC so keyframe recovery feedback and its following REMB packet have valid wire boundaries
-- Preserve earlier accepted Google trait changes when one request updates multiple settings on the same trait
-- Remove all accessories using a deleted resource, including linked Heat Links, while preserving accessories using the other API; handle swarm updates that evict Nest identity before bucket removal
-- Retire timed-out Google snapshot waiters, discard late refresh replies and abort image fetches at the overall request deadline
 
 ### Changed
 
@@ -260,19 +334,23 @@ Recording audio/video sync still needs verification on physical cameras and in A
 
 - Remove recurring source audio-gap debug messages during background buffering and streaming; per-stream timing and delivery summaries remain available with `ffmpegDebug`
 
-### Testing
+### Fixed
 
-- Check startup and device discovery with Google accounts and, where available, legacy Nest accounts; existing accessories should retain their identity without duplicates
-- Leave Homebridge running through an account token refresh and check that device updates, controls and camera snapshots continue working; with multiple accounts, check devices from each account
-- Change a device setting in HomeKit and confirm it reaches the device, then change it in the Nest/Google app and confirm HomeKit updates; include thermostat mode/setpoints and supported camera, Protect, lock or floodlight controls
-- For REST-only thermostats, sensors and Heat Links, check discovery, online status, room names, remote sensor selection, setpoints and supported fan, humidity and hot water controls; devices also available through protobuf should keep using Google data without duplicate accessories
-- Where supported, change related settings together, such as humidifier enable/target humidity or fan state/duration/speed, and check that one change does not undo another
-- Check that weather accessories receive readings after startup and continue refreshing for homes discovered through either API
-- Request camera snapshots repeatedly, including while live view or HKSV recording is active; check that images update and an unavailable camera does not leave snapshot requests hanging
-- Test repeated live-view start/stop, longer viewing sessions, two-way audio and playable HKSV recordings on WebRTC and NexusTalk cameras; listen for audio gaps and check recording audio/video sync and WebRTC startup or freezes
-- When reporting an issue, include the plugin version, account login type, affected device model, Node.js/FFmpeg versions and host hardware; for streaming issues, enable `ffmpegDebug` and include the per-stream summary and timing lines logged when the session closes
+- Restore Nest REST fallback for thermostats, temperature sensors and Heat Links not available through protobuf, while preferring complete Google data when both sources represent the device
+- Correct WebRTC FIR packet length and media-source SSRC so keyframe recovery feedback and its following REMB packet have valid wire boundaries
+- Preserve earlier accepted Google trait changes when one request updates multiple settings on the same trait
+- Remove all accessories using a deleted resource, including linked Heat Links, while preserving accessories using the other API; handle swarm updates that evict Nest identity before bucket removal
+- Retire timed-out Google snapshot waiters, discard late refresh replies and abort image fetches at the overall request deadline
 
-## v0.4.5-alpha.8 (2026/10/26)
+## [0.4.5-alpha.8] - 2026-10-26
+
+> **Testing notes**
+>
+> - Listen for crackling or regular audio pauses during longer live views on both WebRTC and NexusTalk cameras
+> - Check WebRTC startup time and any video freezes after playback begins
+> - Check HKSV audio/video sync, especially on NexusTalk cameras, using visible actions with clear sounds; report whether audio leads or trails and whether the offset grows
+> - WebRTC startup/video pauses and NexusTalk recording sync remain under investigation. Initial short live-view tests show continuous audio timing, but do not establish that all audio issues are resolved
+> - When reporting an issue, include the camera model, plugin version and host hardware. Enable `ffmpegDebug`, reproduce the issue, then include the per-stream summary, timing and delivery lines logged when the live view or recording closes; `supportDump` is not required
 
 ### Changed
 
@@ -287,15 +365,7 @@ Recording audio/video sync still needs verification on physical cameras and in A
 - Keep progressing WebRTC keyframes within bounded assembly limits, recover promptly at a valid newer keyframe, and suppress dependent video frames after keyframe loss
 - Allow 150 ms for WebRTC audio packet reordering to reduce avoidable gaps from delayed packets while preserving source timestamps and bounded buffering
 
-### Testing
-
-- Listen for crackling or regular audio pauses during longer live views on both WebRTC and NexusTalk cameras
-- Check WebRTC startup time and any video freezes after playback begins
-- Check HKSV audio/video sync, especially on NexusTalk cameras, using visible actions with clear sounds; report whether audio leads or trails and whether the offset grows
-- WebRTC startup/video pauses and NexusTalk recording sync remain under investigation. Initial short live-view tests show continuous audio timing, but do not establish that all audio issues are resolved
-- When reporting an issue, include the camera model, plugin version and host hardware. Enable `ffmpegDebug`, reproduce the issue, then include the per-stream summary, timing and delivery lines logged when the live view or recording closes; `supportDump` is not required
-
-## v0.4.5-alpha.7 (2026/10/25)
+## [0.4.5-alpha.7] - 2026-10-25
 
 ### Added
 
@@ -306,7 +376,7 @@ Recording audio/video sync still needs verification on physical cameras and in A
 - Generate plugin-owned custom HomeKit UUIDs with UUID v5 using a permanent project namespace and stable type identifiers
 - Update HomeKitDevice to `2026.10.25`, supporting custom characteristic definitions through its existing API while preserving existing UUIDs and cached instances
 
-## v0.4.5-alpha.6 (2026/10/25)
+## [0.4.5-alpha.6] - 2026-10-25
 
 ### Changed
 
@@ -320,7 +390,7 @@ Recording audio/video sync still needs verification on physical cameras and in A
 - Set live-view AAC-ELD audio to HomeKit's required 480-sample blocks instead of the encoder's 512-sample default
 - Replay recording prebuffer audio and video in source-time order, excluding audio before the recording's first video keyframe
 
-## v0.4.5-alpha.5 (2026/10/24)
+## [0.4.5-alpha.5] - 2026-10-24
 
 ### Changed
 
@@ -344,7 +414,7 @@ Recording audio/video sync still needs verification on physical cameras and in A
 
 - Redact HomeKit SRTP key material from FFmpeg command diagnostics
 
-## v0.4.5-alpha.4 (2026/10/24)
+## [0.4.5-alpha.4] - 2026-10-24
 
 ### Changed
 
@@ -366,7 +436,7 @@ Recording audio/video sync still needs verification on physical cameras and in A
 - Synchronise WebRTC audio/video using paired RTCP sender reports when available, retaining fractional RTP timing
 - Preserve recording A/V alignment when audio starts later than video, preventing audio from playing several seconds ahead in HKSV clips
 
-## v0.4.5-alpha.3 (2026/10/23)
+## [0.4.5-alpha.3] - 2026-10-23
 
 ### Changed
 
@@ -385,7 +455,13 @@ Recording audio/video sync still needs verification on physical cameras and in A
 
 - Restrict the local RTSP endpoint to its random resource URL, bound receiver admission time and pending connections, and reject invalid clients without retiring the camera output
 
-## v0.4.5-alpha.2 (2026/10/21)
+## [0.4.5-alpha.2] - 2026-10-21
+
+> **Testing notes**
+>
+> - Automated coverage includes RTP timing, slow keyframes, snapshots, concurrent outputs and real FFmpeg live-copy/HKSV output
+> - Further local testing is needed for long live views, reconnects and HKSV recording A/V sync; recording sync remains under investigation
+> - Automatic Eco requests are covered by command-routing tests but have not been verified on a physical thermostat
 
 ### Added
 
@@ -404,13 +480,12 @@ Recording audio/video sync still needs verification on physical cameras and in A
 - Wait for newer Google snapshot updates before falling back to the last available image, and remove repetitive fallback logging
 - Reject invalid or unsupported device settings instead of reporting successful writes for values never sent to the device
 
-### Testing
+## [0.4.5-alpha.1] - 2026-10-20
 
-- Automated coverage includes RTP timing, slow keyframes, snapshots, concurrent outputs and real FFmpeg live-copy/HKSV output
-- Further local testing is needed for long live views, reconnects and HKSV recording A/V sync; recording sync remains under investigation
-- Automatic Eco requests are covered by command-routing tests but have not been verified on a physical thermostat
-
-## v0.4.5-alpha.1 (2026/10/20)
+> **Testing notes**
+>
+> - Initial local live-view testing is positive for both WebRTC and NexusTalk; automated FFmpeg tests cover source timing and playable fragmented MP4 output
+> - Further device testing is needed for HKSV prebuffer contents, longer recordings, concurrent viewing, reconnects and hardware encoders; a fix for VFR-related HKSV TIMEOUT cancellations is not yet established
 
 ### Changed
 
@@ -432,12 +507,7 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
 
 - Preserve fractional source timestamps and recovery intervals until RTP clock conversion, keeping AAC sample spacing and fractional video frame rates accurate
 
-### Testing
-
-- Initial local live-view testing is positive for both WebRTC and NexusTalk; automated FFmpeg tests cover source timing and playable fragmented MP4 output
-- Further device testing is needed for HKSV prebuffer contents, longer recordings, concurrent viewing, reconnects and hardware encoders; a fix for VFR-related HKSV TIMEOUT cancellations is not yet established
-
-## v0.4.4-beta.10 (2026/10/19)
+## [0.4.4-beta.10] - 2026-10-19
 
 ### Changed
 
@@ -459,7 +529,7 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
 - Include retained FFmpeg diagnostics when talkback stops unexpectedly, including exits with code zero
 - Keep the HomeKit talkback receiver waiting while the microphone is idle instead of timing out and closing live view
 
-## v0.4.4-beta.9 (2026/10/18)
+## [0.4.4-beta.9] - 2026-10-18
 
 ### Changed
 
@@ -498,7 +568,7 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
 - Discover Home/Away, thermostats, Heat Links, Protects, locks and camera-family accessories from cached fields when required data or parent resources arrive separately
 - Initialise thermostat and Heat Link characteristic values within their device ranges without changing shared HAP defaults for other accessories
 
-## v0.4.4-beta.8 (2026/10/16)
+## [0.4.4-beta.8] - 2026-10-16
 
 ### Changed
 
@@ -513,10 +583,6 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
 - Flatten project tests into `test/` and update test and coverage discovery
 - Use the `globals` development dependency for ESLint's Node.js ES module globals
 
-### Security
-
-- Redact credentials and personal details from API support dumps, retain consistent aliases for device/home references, and bound diagnostic collection and output
-
 ### Fixed
 
 - Refresh temperature sensor active status when its associated thermostat changes sensor selection
@@ -524,7 +590,11 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
 - Retain Home/Away identity on protobuf mode-only updates so HomeKit receives occupancy changes
 - Keep known protobuf structure-mode, reason and actor-method enums readable in support dumps while retaining identifier redaction
 
-## v0.4.4-beta.7 (2026/10/14)
+### Security
+
+- Redact credentials and personal details from API support dumps, retain consistent aliases for device/home references, and bound diagnostic collection and output
+
+## [0.4.4-beta.7] - 2026-10-14
 
 ### Changed
 
@@ -552,7 +622,7 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
 - Default to two simultaneous live viewers per camera; honour integer `maxStreams` counts from one to four consistently with the Homebridge UI, independently of HKSV recording
 - Exclude history tests and lint configuration from the packaged runtime, keep test discovery independent of generated files, and report measured and omitted production modules alongside coverage percentages
 
-## v0.4.4-beta.6 (2026/10/05)
+## [0.4.4-beta.6] - 2026-10-05
 
 ### Changed
 
@@ -583,7 +653,7 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
 - Awaited device updates and removals so asynchronous camera lifecycle work completes before processing continues
 - Corrected Google protobuf timestamps for fan and hot-water timer deadlines and derived their seconds and nanoseconds from one millisecond value
 
-## v0.4.4-beta.5 (2026/09/24)
+## [0.4.4-beta.5] - 2026-09-24
 
 ### Changed
 
@@ -595,7 +665,7 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
 
 - Correctly distinguished standalone `NeonQuartz` Nest Cam battery devices from floodlight cameras by checking for their related `Aziz` floodlight resource
 
-## v0.4.4-beta.4 (2026/09/17)
+## [0.4.4-beta.4] - 2026-09-17
 
 ### Changed
 
@@ -609,9 +679,9 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
 - Restored camera off/on control through the Home app recording-mode setting when a camera had been switched off in the Nest app, by representing the remotely reversible Nest state with `HomeKitCameraActive` instead of `ManuallyDisabled` [#345](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issues/345) [@go-faustino](https://github.com/go-faustino)
 - Prevented intermittent Raspberry Pi 4 HKSV recording timeouts by increasing the V4L2 encoder capture-buffer count for hardware-accelerated recordings [#344](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issues/344) [@pace8](https://github.com/pace8)
 
-## v0.4.4-beta.3 (2026/09/08)
+## [0.4.4-beta.3] - 2026-09-08
 
-### Compatibility Changes
+### Changed
 
 - Raised the minimum supported FFmpeg version from **6.1** to **7.1**
 - Camera and doorbell users running FFmpeg 6.x or 7.0 must upgrade to **7.1 or newer**; live streaming and HKSV recording are unavailable when the installed binary does not meet the minimum requirements
@@ -623,7 +693,7 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
 - Prevented Raspberry Pi graphics nodes from incorrectly qualifying NVENC, QSV or VAAPI ahead of the Pi V4L2 encoder [@pace8](https://github.com/pace8)
 - Updated live and HKSV transcoding arguments for `h264_v4l2m2m` to use numeric H264 profiles, omit the unsupported level control, and explicitly disable B-frames [@pace8](https://github.com/pace8)
 
-## v0.4.4-beta.2 (2026/09/05)
+## [0.4.4-beta.2] - 2026-09-05
 
 ### Changed
 
@@ -634,7 +704,7 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
 
 - Detect Raspberry Pi hardware H264 encoders by their sysfs device name and read/write access instead of requiring `/dev/video0`, without additional FFmpeg invocations [@pace8](https://github.com/pace8)
 
-## v0.4.4-beta.1 (2026/08/20)
+## [0.4.4-beta.1] - 2026-08-20
 
 ### Changed
 
@@ -660,7 +730,7 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
 - Added native Node.js regression tests for H264, media timelines, ring buffers, stream transport jitter ordering, translation, and utility helpers
 - Added test, coverage, and combined validation scripts and a continuous-integration workflow for supported Node.js versions
 
-## v0.4.3-beta.4 (2026/08/10)
+## [0.4.3-beta.4] - 2026-08-10
 
 ### Changed
 
@@ -673,7 +743,7 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
 - Updated `protobufjs` dependency version from `8.7.1` to `8.7.2`
 - Updated `werift` dependency version from `0.24.2` to `0.24.3`
 
-## v0.4.3-beta.3 (2026/08/04)
+## [0.4.3-beta.3] - 2026-08-04
 
 ### Changed
 
@@ -696,9 +766,9 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
 - Updated `chalk` dependency version from `5.6.2` to `6.0.0`
 - Updated `werift` dependency version from `0.23.0` to `0.24.3`, removing the legacy `werift-ice` and `ip` dependency chain
 
-## v0.4.3-beta.1 (2026/05/28)
+## [0.4.3-beta.1] - 2026-05-28
 
-## Changed
+### Changed
 
 - `utils.js`
   - Improved shared device description building so location names already present in a device label are not duplicated in the HomeKit display name
@@ -706,13 +776,7 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
 - `plugins/camera.js`
   - Renamed internal streaming backend registry terminology from `STREAMERS` to `TRANSPORTS` to better reflect the Streamer/transport split
 
-## v0.4.3-alpha.7 (2026/05/20)
-
-### Fixed
-
-- `webrtc.js`
-  - Fixed WebRTC streams becoming unstable or stalling after RTP timestamp changes or long-running sessions
-  - Fixed stale RTP timing state causing valid WebRTC media frames to be incorrectly dropped after reconnects or RTP timestamp wrap
+## [0.4.3-alpha.7] - 2026-05-20
 
 ### Changed
 
@@ -723,7 +787,13 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
 
 - Updated `protobufjs` dependency version from `8.2.0` to `8.4.0`
 
-## v0.4.3-alpha.6 (2026/05/19)
+### Fixed
+
+- `webrtc.js`
+  - Fixed WebRTC streams becoming unstable or stalling after RTP timestamp changes or long-running sessions
+  - Fixed stale RTP timing state causing valid WebRTC media frames to be incorrectly dropped after reconnects or RTP timestamp wrap
+
+## [0.4.3-alpha.6] - 2026-05-19
 
 ### Changed
 
@@ -768,7 +838,7 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
   - Added RingBuffer logical index helpers and iterable support for shared media and jitter queue handling
   - Simplified RingBuffer tail insertion while preserving configured maximum capacity limits
 
-## v0.4.3-alpha.5 (2026/05/16)
+## [0.4.3-alpha.5] - 2026-05-16
 
 ### Changed
 
@@ -786,7 +856,7 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
 - `nexustalk.js`
   - Fixed NexusTalk talkback stop handling by preserving the explicit empty audio payload field when encoding `AudioPayload`, allowing the backend to return `TALKBACK_END` instead of closing the stream socket
 
-## v0.4.3-alpha.4 (2026/05/xx)
+## [0.4.3-alpha.4] - 2026-05-15
 
 ### Changed
 
@@ -796,7 +866,7 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
   - Reduced WebRTC audio gap debug noise by suppressing isolated single-frame fills when the queued audio depth remains healthy
   - Deferred automatic WebRTC reconnect startup until teardown has fully cleared to avoid a reconnect attempt getting stuck at `transport-connecting`
 
-## v0.4.3-alpha.3 (2026/05/13)
+## [0.4.3-alpha.3] - 2026-05-13
 
 ### Changed
 
@@ -827,7 +897,7 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
   - Tightened the camera/streamer boundary so camera setup now centralises Streamer and transport construction
   - Awaited Streamer teardown when migration or streaming protocol changes require replacing the active streamer
 
-## v0.4.3-alpha.2 (2026/05/13)
+## [0.4.3-alpha.2] - 2026-05-13
 
 ### Changed
 
@@ -887,7 +957,9 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
   - Reserved prepared live-stream UDP ports until session cleanup to prevent local port reuse between simultaneous viewers and talkback paths
   - Improved migration handling when switching between Nest and Google Home streaming backends
 
-## v0.4.2-beta.4 (2026/05/11)
+## [0.4.2-beta.4] - 2026-05-11
+
+### Fixed
 
 - `plugins/protect.js`
   - Fixed Nest Protect `wired_or_battery` translation so `0` is treated as wired and `1` as battery
@@ -901,9 +973,11 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
   - Tightened account validation so blank Google/Nest credential fields are rejected
   - Ignored placeholder Home/Device override rows at runtime unless they include a home name or device serial number
 
-## v0.4.2-beta.3 (2026/05/10)
+## [0.4.2-beta.3] - 2026-05-10
 
 - Follow-up beta after `v0.4.2-beta.2` was unpublished.
+
+### Fixed
 
 - `HomeKitDevice`
   - Fixed partial `.UPDATE` payload handling so updates such as refreshed camera API credentials are merged with existing device data before validation
@@ -916,12 +990,11 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
 - `system.js`
   - Injected camera API auth details before initial camera/doorbell/floodlight accessory setup so streaming backends receive credentials during first construction
 
-## v0.4.2-beta.2 (2026/05/10)
+## [0.4.2-beta.2] - 2026-05-10 [YANKED]
 
 > This version was unpublished due to issues identified after release.
 
-- `plugins/heatlink.js`
-  - Fixed EveHome GET message handling for Heat Link history/status payloads
+### Changed
 
 - `connections.js`
   - Added a dedicated connection manager for Nest/Google account runtime state, authorisation, token refresh, retry scheduling, gRPC transport ownership, and snapshot waiter cleanup
@@ -935,12 +1008,36 @@ Live video still follows the configured copy/transcoding setting. HKSV continues
   - Tightened subscribe/observe loop rescheduling so stale in-flight requests cannot restart loops after shutdown
   - Quietened duplicate Google camera activity-history timeout logging by treating gRPC request timeouts as no recent events
 
-## v0.4.2-beta.1 (2026/05/09)
+### Fixed
+
+- `plugins/heatlink.js`
+  - Fixed EveHome GET message handling for Heat Link history/status payloads
+
+## [0.4.2-beta.1] - 2026-05-09
 
 This beta focuses on thermostat and Heat Link control-path fixes. Please test thermostat setpoint changes and any systems with optional fan, humidifier, dehumidifier, or hot water controls.
 
+> **Testing notes**
+>
+> - Recommended beta testing
+>   - Verify heat mode setpoint changes stick after HomeKit/Home app changes
+>   - Verify cool mode setpoint changes stick where cooling is supported
+>   - Verify range/auto heat and cool thresholds still behave correctly
+>   - Verify fan speed controls appear only where supported
+>   - Verify humidifier/dehumidifier threshold controls appear and disappear correctly
+>   - Verify Heat Link hot water temperature and boost controls appear only when supported
+
+### Changed
+
 - `plugins/*.js`
   - Aligned device plugins description/name generation with shared device naming handling
+
+- `plugins/heatlink.js`
+  - Added dynamic HomeKit service handling for hot water temperature and hot water boost capability changes
+  - Hot water temperature control now appears only when usable temperature data is available
+  - Newly-added hot water services now initialise from the incoming device state during update processing
+
+### Fixed
 
 - `plugins/thermostat.js`
   - Fixed HomeKit `TargetTemperature` writes so heat mode updates the Nest heating setpoint and cool mode updates the Nest cooling setpoint
@@ -949,20 +1046,9 @@ This beta focuses on thermostat and Heat Link control-path fixes. Please test th
   - Added/removes humidifier and dehumidifier threshold characteristics when capabilities change after startup
   - Updated humidity control valid values when humidifier/dehumidifier capabilities change
 
-- `plugins/heatlink.js`
-  - Added dynamic HomeKit service handling for hot water temperature and hot water boost capability changes
-  - Hot water temperature control now appears only when usable temperature data is available
-  - Newly-added hot water services now initialise from the incoming device state during update processing
+## [0.4.0-beta.16] - 2026-04-26
 
-- Recommended beta testing
-  - Verify heat mode setpoint changes stick after HomeKit/Home app changes
-  - Verify cool mode setpoint changes stick where cooling is supported
-  - Verify range/auto heat and cool thresholds still behave correctly
-  - Verify fan speed controls appear only where supported
-  - Verify humidifier/dehumidifier threshold controls appear and disappear correctly
-  - Verify Heat Link hot water temperature and boost controls appear only when supported
-
-## v0.4.0-beta.16 (2026/04/26)
+### Changed
 
 - Standardised device description and location handling across all device types for improved HomeKit naming consistency, resulting in cleaner and more user-friendly accessory names
 
@@ -983,7 +1069,9 @@ This beta focuses on thermostat and Heat Link control-path fixes. Please test th
   - Added consistent error propagation for decode, handler, and transport failures
   - Improved debug logging to include status, code, message, and frame counts for easier troubleshooting
 
-## v0.4.0-beta.15 (2026/04/24)
+## [0.4.0-beta.15] - 2026-04-24
+
+### Changed
 
 - Replaced `isNaN(...)` checks with `Number.isFinite(Number(...))` across the code base for stricter numeric validation
 
@@ -991,14 +1079,18 @@ This beta focuses on thermostat and Heat Link control-path fixes. Please test th
   - Added validation of restored cached accessories during startup
   - Invalid or incomplete accessories are now removed from cache to prevent stale state issues
 
+### Fixed
+
 - `plugins/camera.js`
   - Added back missing `Active` characteristic back to motion sensor, as got dropped during recoding (required for HKSV recording)
   - Fixes recordings not triggering after plugin restart
   - Refined camera online/offline transitions to ensure correct buffering and recording behaviour
 
-## v0.4.0-beta.14 (2026/04/22)
+## [0.4.0-beta.14] - 2026-04-22
 
 Perhaps 13 is an unlucky number? I broke some things :-( Thanks to [@marving11](https://github.com/marving11) for catching these.
+
+### Fixed
 
 - `webrtc.js`
   - Fixed WebRTC connection gating issues causing premature connect aborts
@@ -1010,7 +1102,22 @@ Perhaps 13 is an unlucky number? I broke some things :-( Thanks to [@marving11](
   - Improved handling of Nest <-> Google migration states
   - Minor translation logic refinements
 
-## v0.4.0-beta.13 (2026/04/21)
+## [0.4.0-beta.13] - 2026-04-21
+
+### Added
+
+- `plugins/homeaway.js`
+  - Added Home/Away accessory exposing structure occupancy as an OccupancySensor
+
+- `plugins/tempsensor.js`
+  - Added generation values to temperature sensors [@mtcislak-max](https://github.com/mtcislak-max)
+
+### Removed
+
+- `thermostat.js`
+  - Removed OccupancySensor service from thermostat devices
+
+### Fixed
 
 - `nexustalk.js`
   - Fixed re-authorisation handling (use reconnect flow instead of inline reauth)
@@ -1020,58 +1127,68 @@ Perhaps 13 is an unlucky number? I broke some things :-( Thanks to [@marving11](
   - Refinements to playout buffer
   - Prevented stale video frames from previous sessions affecting new stream state on reconnect
 
-- `thermostat.js`
-  - Removed OccupancySensor service from thermostat devices
-
-- `plugins/homeaway.js`
-  - Added Home/Away accessory exposing structure occupancy as an OccupancySensor
-
 - `system.js`
   - Minor code fixes
 
-- `plugins/tempsensor.js`
-  - Added generation values to temperature sensors [@mtcislak-max](https://github.com/mtcislak-max)
+## [0.4.0-alpha.24] - 2026-04-18
 
-## v0.4.0-alpha.24 (2026/04/18)
+### Changed
+
+- Implemented a playout smoothing buffer in `streamer.js`
+
+### Fixed
 
 - Fixed re-authorisation issues in `nexustalk.js`
-- Implemented a playout smoothing buffer in `streamer.js`
+
 - Fixed notification for authorisation token changes to camera devices
 
-## v0.4.0-alpha.23 (2026/04/16)
+## [0.4.0-alpha.23] - 2026-04-16
+
+### Changed
 
 - Refactored thermostat, temperature sensor, lock, camera, and protect data processing to use a unified field mapping structure
+
 - Simplified `processRawData()` across modules to align with updated implementation
+
 - Removed cross-device raw data mutation between thermostat and temperature sensor modules
+
 - Temperature sensor now derives associated thermostat directly from thermostat relationships during processing
+
 - Added `active_rcs_sensor_temperature` to thermostat data model and aligned behaviour across Google and Nest APIs
+
 - Thermostat `current_temperature` now consistently reflects the active remote sensor when selected
+
 - Improved handling of partial vs full updates using shared mapping logic
+
 - Reduced complexity and duplication in device processing pipelines
+
 - Improved consistency between Google and Nest data handling
+
 - Cleaner separation of responsibilities between device modules
+
 - More predictable and maintainable data flow
+
 - Relaxed live camera stream startup logic to improve compatibility with older Nest cameras (Hello, Indoor, Outdoor)
+
 - Live streams now attach directly to the buffer and begin output immediately instead of waiting for a recent keyframe
+
 - Improves stream startup time and resolves cases where live view would fail to start
+
 - Recording (HKSV) pipeline unchanged
 
-## v0.4.0-alpha.22 (2026/04/13)
+## [0.4.0-alpha.22] - 2026-04-13
 
 Due to the volume of changes in this release, versioning has been reverted to alpha
 
-- Reworked stream processing in `streamer.js` using a shared `RingBuffer` to eliminate O(n) buffer shifts and reduce latency
-- Added reusable `RingBuffer` implementation for media queueing
-- Improved live stream startup, catch-up, and playback responsiveness
-- Simplified and stabilised output loop timing for more consistent real-time playback
-- Improved fallback frame handling for missing or delayed video
-- Improved internal tracking of streaming, recording, and buffering state transitions
-- Fixed issue where stream startup details (resolution and FPS) were not always logged in `streamer.js`
+> **Testing notes**
+>
+> - _Testing_ direct local WebRTC stream path enabled by default for Google Home cameras (bypassing remote relay where available) in `webrtc.js`
+>
+> - _Testing_ 15fps default live transcoding output to better match source frame rate in `camera.js`
 
-- Refactored WebRTC pipeline in `webrtc.js`
-  - Improved H264 NAL unit handling and FU-A reassembly
-  - Improved RTP packet handling, ordering, and jitter tolerance
-  - Improved stream readiness and startup behaviour
+### Added
+
+- Added reusable `RingBuffer` implementation for media queueing
 
 - Added shared Google gRPC transport for protobuf-based API communication
   - Centralised HTTP/2 session pooling and lifecycle management
@@ -1079,10 +1196,35 @@ Due to the volume of changes in this release, versioning has been reverted to al
   - Improved request/response parsing and validation
   - Improved error handling and terminal state tracking
 
+### Changed
+
+- Reworked stream processing in `streamer.js` using a shared `RingBuffer` to eliminate O(n) buffer shifts and reduce latency
+
+- Improved live stream startup, catch-up, and playback responsiveness
+
+- Simplified and stabilised output loop timing for more consistent real-time playback
+
+- Improved fallback frame handling for missing or delayed video
+
+- Improved internal tracking of streaming, recording, and buffering state transitions
+
+- Refactored WebRTC pipeline in `webrtc.js`
+  - Improved H264 NAL unit handling and FU-A reassembly
+  - Improved RTP packet handling, ordering, and jitter tolerance
+  - Improved stream readiness and startup behaviour
+
 - Integrated gRPC transport into WebRTC (Google Foyer) signaling and control
+
 - Improved NexusTalk stability and buffering (aligned with new streamer model)
 
+### Removed
+
 - Removed `localAccess` device configuration option
+
+### Fixed
+
+- Fixed issue where stream startup details (resolution and FPS) were not always logged in `streamer.js`
+
 - Fixed configuration schema types (`fanDuration`, `hotwaterBoostTime`, `motionCooldown`, `doorbellCooldown`)  
   [@retuer-commits](https://github.com/retuer-commits)
 
@@ -1091,55 +1233,92 @@ Due to the volume of changes in this release, versioning has been reverted to al
 
 - Small fix in `thermostat.js` for eco mode temperature checks
 
-- _Testing_ direct local WebRTC stream path enabled by default for Google Home cameras (bypassing remote relay where available) in `webrtc.js`
-- _Testing_ 15fps default live transcoding output to better match source frame rate in `camera.js`
+## [0.4.0-beta.12] - 2026-04-09
 
-## v0.4.0-beta.12 (2026/04/09)
+### Added
+
+- Added `ffmpegTranscode` option (global and per-device, disabled by default) to enable optional video/audio transcoding for live streams
+
+### Changed
 
 - Updated project dependencies: `protobufjs` and `HomeKitDevice`
+
 - Refined streaming pipeline across `streamer.js`, `nexustalk.js`, and `webrtc.js`
+
 - Adjusted live streaming pacing to improve startup reliability and compatibility with WebRTC sources
+
 - Updated ffmpeg live stream startup in `camera.js` to wait up to 2000ms for the stream source to become ready
-- Added `ffmpegTranscode` option (global and per-device, disabled by default) to enable optional video/audio transcoding for live streams
+
 - Refactored snapshot handling to centralise caching and protobuf freshness logic in `system.js`
+
 - Removed per-camera snapshot caching from `camera.js` to simplify the pipeline and avoid duplicate logic
+
 - Improved snapshot responsiveness by prioritising recent cached images over immediate protobuf refreshing
 
-## v0.4.0-beta.11 (2026/04/02)
+## [0.4.0-beta.11] - 2026-04-02
+
+### Changed
 
 - Refactored streaming pipeline to use frame-based video/audio handling across WebRTC and NexusTalk
+
 - Updated Streamer to operate as a unified media output layer
+
 - Improved WebRTC RTP handling with basic jitter buffering for smoother playback
-- Fixed HomeKit talkback audio reliability issues
+
 - General stability and performance improvements for live streaming and HKSV
 
-## v0.4.0-beta.10 (2026/04/02)
+### Fixed
+
+- Fixed HomeKit talkback audio reliability issues
+
+## [0.4.0-beta.10] - 2026-04-02 [YANKED]
 
 > ⚠️ This release was pulled and is no longer available.
 
 - This version was unpublished due to issues identified after release.
 
-## v0.4.0-beta.9 (2026/04/01)
+## [0.4.0-beta.9] - 2026-04-01
 
-- Fixed memory leak introduced in `0.4.0-beta.8` affecting long-running camera streams
+### Changed
+
 - Standardised module header documentation across the codebase
 
-## v0.4.0-beta.8 (2026/03/31)
+### Fixed
+
+- Fixed memory leak introduced in `0.4.0-beta.8` affecting long-running camera streams
+
+## [0.4.0-beta.8] - 2026-03-31
+
+### Changed
 
 - Refactored NexusTalk and Streamer to use frame-based output instead of packet-based handling
+
 - Improved streaming performance and stability, especially under load (multiple active cameras)
+
 - Optimised output scheduling to skip inactive streamers and reduce CPU usage
+
 - General efficiency improvements across streaming pipeline
 
-## v0.4.0-beta.7 (2026/03/30)
+## [0.4.0-beta.7] - 2026-03-30
+
+### Added
 
 - Added support dump statistics when live streams end for improved troubleshooting
+
 - Introduced detailed streamer metrics (startup timing, packets, drops, outputs, last activity)
+
+### Changed
+
 - Refined video gating for more reliable keyframe handling and stream startup
+
 - Improved source state tracking and reconnect visibility
+
 - General streaming pipeline refinements and cleanup
 
-## v0.4.0-beta.6 (2026/03/28)
+## [0.4.0-beta.6] - 2026-03-28
+
+### Changed
 
 - Main changes are around the video/audio pipelines in `webrtc.js` and `streamer.js` to improve stability and recovery from packet loss, especially for video streams
+
 - Added logging and cleanup around talkback stream handling

@@ -137,4 +137,15 @@ CI is configured to run checks with the minimum Node.js 22.13.0 and Node.js 24 a
 
 Record meaningful alpha and beta changes under the current version in `PRERELEASE_NOTES.md`. Entries describe that pre-release only and are not cumulative.
 
+Follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) for new release entries in both files:
+
+- Use linked version headings such as `## [1.0.0-beta.1] - 2026-11-20`, with dates in `YYYY-MM-DD` format.
+- Define version reference links near the top of each file, pointing to the corresponding GitHub release.
+- Keep a `## [Unreleased]` section for changes not yet assigned to a release, linked to a comparison between the latest release covered by that file and `HEAD`. Move those entries into the assigned release when preparing it.
+- Group changes under `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` and `Security`, omitting empty sections.
+- Describe meaningful user-visible outcomes concisely, including compatibility changes and any action users must take.
+- Keep the newest release first and preserve historical entries and their formatting.
+
+Assign release versions according to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). From 1.0.0, treat documented configuration, exposed HomeKit services and characteristics, and supported runtime ranges as part of the compatibility contract: incompatible changes require a major release, compatible additions a minor release, and compatible fixes a patch release.
+
 For a final release, consolidate meaningful outcomes into `CHANGELOG.md`. Shared modules may maintain their own code-date changelogs. Update existing source code-date metadata when changing those files, without changing unrelated package or release versions.

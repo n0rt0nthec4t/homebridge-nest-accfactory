@@ -50,7 +50,7 @@
 // - Streamer owns retention and delivery pacing; source timestamps are not playout deadlines
 // - Incomplete keyframes and pathological access units are dropped/recovered locally rather than blocking the plugin process
 //
-// Code version 2026.11.17
+// Code version 2026.11.20
 // Mark Hulskamp
 'use strict';
 
@@ -85,7 +85,7 @@ const RTP_H264_VIDEO_PAYLOAD_TYPE = 98; // H.264 video payload type
 const RTP_H264_VIDEO_RTX_PAYLOAD_TYPE = 99; // H.264 RTX payload type for retransmissions
 const RTP_OPUS_AUDIO_PAYLOAD_TYPE = 111; // Opus audio payload type
 const GOOGLE_HOME_FOYER_PREFIX = 'google.internal.home.foyer.v1.';
-const KEYFRAME_MAX_ASSEMBLY_MS = 2500; // Expire incomplete keyframes during established playback
+const KEYFRAME_MAX_ASSEMBLY_MS = 2500; // Normal deadline for established playback without recent fragment progress
 const KEYFRAME_STARTUP_MAX_ASSEMBLY_MS = 4000; // First decodable keyframe may be slow while WebRTC starts
 const KEYFRAME_BLOCKING_MAX_ASSEMBLY_MS = 900; // Inactivity limit when an incomplete IDR blocks newer groups
 const KEYFRAME_DEFAULT_BYTES = 2 * 1024 * 1024; // Startup allowance before source resolution/bitrate is known
@@ -1187,7 +1187,12 @@ export default class WebRTC extends StreamTransport {
           return false;
         }
 
-        keyframeAssemblyLimitMs = this.ready === true ? KEYFRAME_MAX_ASSEMBLY_MS : KEYFRAME_STARTUP_MAX_ASSEMBLY_MS;
+        // Recent unique fragments earn startup's bounded grace period. Jitter
+        // insertion rejects duplicates before they can refresh lastReceivedAt.
+        keyframeAssemblyLimitMs =
+          this.ready === true && now - entry.lastReceivedAt >= KEYFRAME_BLOCKING_MAX_ASSEMBLY_MS
+            ? KEYFRAME_MAX_ASSEMBLY_MS
+            : KEYFRAME_STARTUP_MAX_ASSEMBLY_MS;
         keyframeTimedOut = entry?.hasKeyFrame === true && groupAgeMs >= keyframeAssemblyLimitMs;
 
         // Continuing fragment progress may outlive the shorter blocking deadline,
