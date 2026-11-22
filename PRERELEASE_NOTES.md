@@ -9,6 +9,11 @@ Historical validation notes preserve testing requests and limitations; they do n
 
 ## [Unreleased]
 
+### Fixed
+
+- Handle Windows CRLF workflow checkouts in release-note extraction tests so the validation job can run on Windows.
+- Align publish and test workflow matrices with supported Node.js 24/26 and Homebridge 2.x, removing Node.js 22 and Homebridge 1.x jobs.
+
 ## [1.0.0-beta.2] - 2026-11-23
 
 ### Breaking Changes

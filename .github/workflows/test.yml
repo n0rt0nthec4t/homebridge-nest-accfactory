@@ -15,13 +15,7 @@ jobs:
     strategy:
       matrix:
         include:
-          # Exercise the declared minimum; publish validation also checks latest Node 22.
-          - node: 22.13.0
-            homebridge: 1.11.4
-          - node: 22.13.0
-            homebridge: 2.4.0
-          - node: 24
-            homebridge: 1.11.4
+          # Exercise the supported Node.js majors with the minimum Homebridge version.
           - node: 24
             homebridge: 2.4.0
           - node: 26

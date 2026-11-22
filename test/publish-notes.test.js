@@ -8,10 +8,12 @@ import path from 'node:path';
 import test from 'node:test';
 
 const workflow = readFileSync(new URL('../.github/workflows/npm-publish.yml', import.meta.url), 'utf8');
-const extraction = workflow.slice(workflow.indexOf('      - name: Extract release notes'));
-const script = /          node <<'NODE'\n([\s\S]*?)\n          NODE/.exec(extraction)?.[1].replace(/^ {10}/gm, '');
-assert.equal(typeof script, 'string');
-function extract(context, content, version, prerelease = true) {
+function extract(context, content, version, prerelease = true, workflowText = workflow) {
+  // Git checkouts can use CRLF on Windows; normalise before locating the workflow heredoc.
+  const normalised = workflowText.replace(/\r\n/g, '\n');
+  const extraction = normalised.slice(normalised.indexOf('      - name: Extract release notes'));
+  const script = /          node <<'NODE'\n([\s\S]*?)\n          NODE/.exec(extraction)?.[1].replace(/^ {10}/gm, '');
+  assert.equal(typeof script, 'string');
   const directory = mkdtempSync(path.join(os.tmpdir(), 'nest-release-notes-'));
   context.after(() => rmSync(directory, { recursive: true, force: true }));
   writeFileSync(path.join(directory, prerelease === true ? 'PRERELEASE_NOTES.md' : 'CHANGELOG.md'), content);
@@ -23,6 +25,18 @@ function extract(context, content, version, prerelease = true) {
   });
   return { ...result, read: () => readFileSync(path.join(directory, 'RELEASE_NOTES.md'), 'utf8') };
 }
+for (const [label, newline] of [
+  ['LF', '\n'],
+  ['CRLF', '\r\n'],
+]) {
+  test('release extraction handles ' + label + ' workflow and changelog line endings', (context) => {
+    const content = ['## [1.2.3-beta.1] - 2026-11-23', '', '### Fixed', '', '- Intended change', ''].join(newline);
+    const result = extract(context, content, '1.2.3-beta.1', true, workflow.replace(/\r?\n/g, newline));
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.read(), '### Fixed\n\n- Intended change\n');
+  });
+}
+
 for (const heading of [
   '## [1.2.3-beta.1] - 2026-11-23',
   '## v1.2.3-beta.1 (2026/11/23)',

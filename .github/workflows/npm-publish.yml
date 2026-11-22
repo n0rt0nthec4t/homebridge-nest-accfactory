@@ -48,8 +48,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        # Include Node 26 only where the project's dependencies support it.
-        node: [22, 24, 26]
+        # Match the supported Node.js majors declared in package.json.
+        node: [24, 26]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
