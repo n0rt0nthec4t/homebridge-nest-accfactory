@@ -116,17 +116,18 @@ let nestCamera = {
   nexus_api_http_server_url: 'https://camera.invalid',
   properties: { 'cc2migration.overview_state': 'NORMAL' },
 };
-for (let name of ['camera', 'doorbell']) {
-  fixtures.push({
+export let retiredCameras = [];
+for (let name of ['camera', 'doorbell', 'floodlight']) {
+  retiredCameras.push({
     name,
-    type: name === 'camera' ? DEVICE_TYPE.CAMERA : DEVICE_TYPE.DOORBELL,
+    type: name === 'camera' ? DEVICE_TYPE.CAMERA : name === 'doorbell' ? DEVICE_TYPE.DOORBELL : DEVICE_TYPE.FLOODLIGHT,
     source: DATA_SOURCE.NEST,
     id: 'quartz.TEST',
     parents: { 'where.home': { value: { wheres: [{ where_id: 'ROOM', name: 'Kitchen' }] } } },
     value: { ...nestCamera, capabilities: name === 'doorbell' ? ['indoor_chime'] : [] },
   });
 }
-fixtures.push({
+export let retiredProtect = {
   name: 'protect',
   type: DEVICE_TYPE.PROTECT,
   source: DATA_SOURCE.NEST,
@@ -147,4 +148,4 @@ fixtures.push({
     co_status: 0,
     replace_by_date_utc_secs: 2000000000,
   },
-});
+};

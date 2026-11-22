@@ -5,7 +5,6 @@ import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { platformHarness } from './helpers/platform-harness.js';
-import { runtime } from './helpers/platform-runtime.js';
 import { getProtoType } from '../src/protobuf.js';
 import { DATA_SOURCE } from '../src/consts.js';
 
@@ -23,22 +22,20 @@ let weather = {
   display_city: 'Fixture City',
 };
 
-for (let source of [DATA_SOURCE.NEST, DATA_SOURCE.GOOGLE]) {
-  test('platform routes weather query parameters for ' + source + ' resources directly to Nest REST', async (context) => {
-    let id = source === DATA_SOURCE.NEST ? 'structure.home' : 'STRUCTURE_HOME';
-    let flow = await platformHarness(context, {
-      source,
-      id,
-      value: { fixture: {} },
-      fetch: async () => ({ json: async () => weather }),
-    });
-    let result = await flow.device.get({ uuid: id, location_weather: { location: { postal_code: '2000', country_code: 'AU' } } });
-    assert.equal(result.location_weather.current_temperature, weather.now.current_temperature);
-    assert.equal(result.location_weather.postal_code, '2000');
-    assert.equal(new URL(flow.requests.at(-1)[1]).pathname, '/api/0.1/weather/forecast/2000,AU');
-    assert.equal(flow.raw[id].value.weather, undefined, 'Query parameters must not change the committed resource');
+test('platform routes weather query parameters for ' + DATA_SOURCE.GOOGLE + ' resources through the protobuf client', async (context) => {
+  let id = 'STRUCTURE_HOME';
+  let flow = await platformHarness(context, {
+    source: DATA_SOURCE.GOOGLE,
+    id,
+    value: { fixture: {} },
+    fetch: async () => ({ json: async () => weather }),
   });
-}
+  let result = await flow.device.get({ uuid: id, location_weather: { location: { postal_code: '2000', country_code: 'AU' } } });
+  assert.equal(result.location_weather.current_temperature, weather.now.current_temperature);
+  assert.equal(result.location_weather.postal_code, '2000');
+  assert.equal(new URL(flow.requests.at(-1)[1]).pathname, '/api/0.1/weather/forecast/2000,AU');
+  assert.equal(flow.raw[id].value.weather, undefined, 'Query parameters must not change the committed resource');
+});
 
 for (let [label, response, expected] of [
   [
@@ -122,87 +119,6 @@ test('Google camera history normalises timestamps, zones and event enums and ord
     { id: 'newer', start_time: 20000, playback_time: 20000, end_time: 21000, zone_ids: [], types: [] },
     { id: 'older', start_time: 10500, playback_time: 10500, end_time: 11000, zone_ids: [2, 4], types: ['person', 'future-type'] },
   ]);
-});
-for (let [label, response] of [
-  ['empty zones', [{ id: 'a', start_time: 1, zone_ids: [] }]],
-  ['zone zero', [{ id: 'a', start_time: 1, zone_ids: [0, 2] }]],
-  ['missing zones', [{ id: 'a', start_time: 1 }]],
-  ['invalid JSON shape', { status_detail: 'Unavailable' }],
-]) {
-  test('retained REST camera history: ' + label, async (context) => {
-    let flow = await platformHarness(context, {
-      source: DATA_SOURCE.NEST,
-      id: 'quartz.TEST',
-      value: { nexus_api_http_server_url: 'https://nexus.invalid' },
-      fetch: async () => ({ json: async () => response }),
-    });
-    let events = (await flow.device.get({ uuid: 'quartz.TEST', camera_events: true })).camera_events;
-    assert.deepEqual(
-      events.map((event) => event.zone_ids),
-      Array.isArray(response) === true ? [label === 'zone zero' ? [1, 2] : [1]] : [],
-    );
-    assert.equal(flow.requests.at(-1)[2].retry, 1);
-  });
-}
-for (let code of ['UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UNEXPECTED']) {
-  test('REST camera history handles transport error ' + code, async (context) => {
-    let flow = await platformHarness(context, {
-      source: DATA_SOURCE.NEST,
-      id: 'quartz.TEST',
-      value: { nexus_api_http_server_url: 'https://nexus.invalid' },
-      fetch: async () => {
-        throw Object.assign(new Error(code), { code });
-      },
-    });
-    assert.deepEqual((await flow.device.get({ uuid: 'quartz.TEST', camera_events: true })).camera_events, []);
-  });
-}
-for (let [label, image, fail] of [
-  ['image', Buffer.from([1, 2, 3]), false],
-  ['empty', Buffer.alloc(0), false],
-  ['error', undefined, true],
-]) {
-  test('Nest snapshot GET handles ' + label, async (context) => {
-    let flow = await platformHarness(context, {
-      source: DATA_SOURCE.NEST,
-      id: 'quartz.TEST',
-      value: { nexus_api_http_server_url: 'https://nexus.invalid' },
-      fetch: async () => {
-        if (fail === true) {
-          throw new Error('Fixture snapshot fetch failed');
-        }
-        return { arrayBuffer: async () => image };
-      },
-    });
-    let timers = new Set(runtime.timers);
-    let result = (await flow.device.get({ uuid: 'quartz.TEST', camera_snapshot: true })).camera_snapshot;
-    assert.deepEqual(result, image?.length > 0 ? image : undefined);
-    assert.deepEqual(runtime.timers, timers, 'Completed snapshot queries must retire their deadline timer');
-  });
-}
-
-test('Nest snapshot retains the overall deadline for an image request that never completes', async (context) => {
-  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 100000 });
-  let pending = Promise.withResolvers();
-  let flow = await platformHarness(context, {
-    source: DATA_SOURCE.NEST,
-    id: 'quartz.TEST',
-    value: { nexus_api_http_server_url: 'https://nexus.invalid' },
-    fetch: () => pending.promise,
-  });
-  let settled = false;
-  let request = flow.connection.nestAPI.get('quartz.TEST', 'camera_snapshot');
-  let rejected = assert.rejects(request, /Snapshot request timeout/).then(() => {
-    settled = true;
-  });
-  context.mock.timers.tick(6999);
-  await setImmediate();
-  assert.equal(settled, false);
-  context.mock.timers.tick(1);
-  await rejected;
-  // Release the isolated image fetch after proving the caller's deadline still works.
-  pending.resolve({ arrayBuffer: async () => Buffer.from([1]) });
-  await setImmediate();
 });
 
 for (let [label, url] of [
@@ -586,7 +502,7 @@ test('Google snapshot fetches its accepted image even if a later cache update re
   assert.equal(flow.requests.at(-1)[1], 'https://image.invalid/new.jpg');
 });
 
-test('System enriches a newly discovered Google structure through Nest REST and refreshes its weather location', async (context) => {
+test('System enriches a new protobuf structure and refreshes its weather location', async (context) => {
   let location = { postalCode: { value: '2000' }, countryCode: { value: 'AU' } };
   let flow = await platformHarness(context, {
     id: 'STRUCTURE_HOME',
@@ -609,7 +525,6 @@ test('System enriches a newly discovered Google structure through Nest REST and 
   });
   assert.equal(flow.raw.STRUCTURE_HOME.value.weather.postal_code, '3000');
   assert.equal(new URL(forecasts().at(-1)[1]).pathname, '/api/0.1/weather/forecast/3000,AU');
-  context.mock.method(flow.connection.googleAPI, 'get', () => assert.fail('Weather must route directly to NestAPI'));
   let result = await flow.device.get({ uuid: 'STRUCTURE_HOME', location_weather: true });
   assert.equal(result.location_weather.postal_code, '3000');
 });
@@ -627,32 +542,6 @@ for (let [label, id, location] of [
       flow.requests.some((request) => String(request[1]).includes('/weather/forecast/') === true),
       false,
     );
-  });
-}
-
-for (let failure of ['backend', 'client', 'missing client']) {
-  test('weather enrichment preserves cached forecast and commits Google traits after ' + failure + ' failure', async (context) => {
-    let cached = { postal_code: '2000', country_code: 'AU', current_temperature: 17 };
-    let flow = await platformHarness(context, {
-      id: 'STRUCTURE_HOME',
-      value: { weather: cached },
-      fetch: async () => {
-        throw new Error('Fixture weather outage');
-      },
-    });
-    if (failure === 'client') {
-      context.mock.method(flow.connection.nestAPI, 'get', async () => {
-        throw new Error('Fixture unavailable account');
-      });
-    } else if (failure === 'missing client') {
-      let client = flow.connection.nestAPI;
-      flow.connection.nestAPI = undefined;
-      context.after(() => client.disconnect());
-    }
-    let location = { postalCode: { value: '3000' }, countryCode: { value: 'AU' } };
-    await flow.send('STRUCTURE_HOME', { structure_location: location });
-    assert.deepEqual(flow.raw.STRUCTURE_HOME.value.structure_location, location);
-    assert.deepEqual(flow.raw.STRUCTURE_HOME.value.weather, cached);
   });
 }
 
@@ -676,47 +565,6 @@ test('a retired Observe batch cannot commit location or weather after its REST q
   await update;
   assert.deepEqual(flow.raw.STRUCTURE_HOME.value, { fixture: { current: true } });
 });
-
-test('Nest camera event timeouts are silent and use one request attempt', async (context) => {
-  let timeout = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
-  let failure = new Error('GET failed after 1 attempt', { cause: timeout });
-  let flow = await platformHarness(context, {
-    source: DATA_SOURCE.NEST,
-    id: 'quartz.TEST',
-    value: { nexus_api_http_server_url: 'https://nexus.invalid' },
-    fetch: async () => {
-      throw failure;
-    },
-  });
-  assert.deepEqual((await flow.device.get({ uuid: 'quartz.TEST', camera_events: true })).camera_events, []);
-  assert.equal(flow.logs.filter((entry) => String(entry[1]).includes('activity notifications')).length, 0);
-  let requests = flow.requests.filter((request) => String(request[1]).includes('/cuepoint'));
-  assert.equal(requests.length, 1);
-  assert.equal(requests[0][2].retry, 1);
-});
-
-for (let [label, response, failure, expected] of [
-  ['HTTP failure', undefined, Object.assign(new Error('HTTP 401'), { status: 401 }), 'HTTP 401'],
-  ['malformed response', { status_detail: 'unexpected payload' }, undefined, 'unexpected payload'],
-]) {
-  test('Nest camera event errors remain visible: ' + label, async (context) => {
-    let flow = await platformHarness(context, {
-      source: DATA_SOURCE.NEST,
-      id: 'quartz.TEST',
-      value: { nexus_api_http_server_url: 'https://nexus.invalid' },
-      fetch: async () => {
-        if (failure !== undefined) {
-          throw failure;
-        }
-        return { json: async () => response };
-      },
-    });
-    assert.deepEqual((await flow.device.get({ uuid: 'quartz.TEST', camera_events: true })).camera_events, []);
-    let messages = flow.logs.filter((entry) => String(entry[1]).includes('activity notifications'));
-    assert.equal(messages.length, 1);
-    assert.equal(messages[0].at(-1), expected);
-  });
-}
 
 test('Google camera event types use Nest-compatible kebab-case names', async (context) => {
   let flow = await platformHarness(context);
@@ -771,40 +619,35 @@ test('Google camera event types use Nest-compatible kebab-case names', async (co
   ]);
 });
 
-for (let source of [DATA_SOURCE.NEST, DATA_SOURCE.GOOGLE]) {
-  test('platform quietly skips unavailable-account queries and resumes polling after recovery: ' + source, async (context) => {
-    let id = source === DATA_SOURCE.NEST ? 'quartz.TEST' : 'DEVICE_TEST';
-    let flow = await platformHarness(context, {
-      source,
-      id,
-      value: { nexus_api_http_server_url: 'https://nexus.invalid' },
-      fetch: async () => ({ json: async () => [] }),
-    });
-    let nestGet = context.mock.method(flow.connection.nestAPI, 'get');
-    let googleGet = context.mock.method(flow.connection.googleAPI, 'get');
-    let requests = flow.requests.length;
-    let commands = flow.commands.length;
-    let logs = flow.logs.length;
-    flow.connection.authorised = false;
-    for (let poll = 0; poll < 3; poll++) {
-      let result = await flow.device.get({ uuid: id, camera_events: true, camera_snapshot: true, location_weather: true });
-      assert.deepEqual(result, { uuid: id, camera_events: undefined, camera_snapshot: undefined, location_weather: undefined });
-    }
-    assert.equal(nestGet.mock.calls.length, 0);
-    assert.equal(googleGet.mock.calls.length, 0);
-    assert.equal(flow.requests.length, requests);
-    assert.equal(flow.commands.length, commands);
-    assert.equal(flow.logs.length, logs);
-
-    flow.connection.authorised = true;
-    assert.deepEqual((await flow.device.get({ uuid: id, camera_events: true })).camera_events, []);
-    let selectedGet = source === DATA_SOURCE.NEST ? nestGet : googleGet;
-    assert.equal(selectedGet.mock.calls.length, 1, 'The next poll must resume without recreating the accessory or API');
-    assert.equal(flow.registered.length, 1);
-    selectedGet.mock.mockImplementation(async () => {
-      throw new Error('Unexpected query failure');
-    });
-    assert.equal((await flow.device.get({ uuid: id, camera_events: true })).camera_events, undefined);
-    assert.equal(flow.logs.at(-1).at(-1), 'Unexpected query failure', 'Unexpected authorised failures must remain visible');
+test('platform quietly skips unavailable-account queries and resumes polling after recovery: ' + DATA_SOURCE.GOOGLE, async (context) => {
+  let id = 'DEVICE_TEST';
+  let flow = await platformHarness(context, {
+    source: DATA_SOURCE.GOOGLE,
+    id,
+    fetch: async () => ({ json: async () => [] }),
   });
-}
+  let googleGet = context.mock.method(flow.connection.googleAPI, 'get');
+  let requests = flow.requests.length;
+  let commands = flow.commands.length;
+  let logs = flow.logs.length;
+  flow.connection.authorised = false;
+  for (let poll = 0; poll < 3; poll++) {
+    let result = await flow.device.get({ uuid: id, camera_events: true, camera_snapshot: true, location_weather: true });
+    assert.deepEqual(result, { uuid: id, camera_events: undefined, camera_snapshot: undefined, location_weather: undefined });
+  }
+  assert.equal(googleGet.mock.calls.length, 0);
+  assert.equal(flow.requests.length, requests);
+  assert.equal(flow.commands.length, commands);
+  assert.equal(flow.logs.length, logs);
+
+  flow.connection.authorised = true;
+  assert.deepEqual((await flow.device.get({ uuid: id, camera_events: true })).camera_events, []);
+  let selectedGet = googleGet;
+  assert.equal(selectedGet.mock.calls.length, 1, 'The next poll must resume without recreating the accessory or API');
+  assert.equal(flow.registered.length, 1);
+  selectedGet.mock.mockImplementation(async () => {
+    throw new Error('Unexpected query failure');
+  });
+  assert.equal((await flow.device.get({ uuid: id, camera_events: true })).camera_events, undefined);
+  assert.equal(flow.logs.at(-1).at(-1), 'Unexpected query failure', 'Unexpected authorised failures must remain visible');
+});

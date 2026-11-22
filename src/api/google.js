@@ -25,7 +25,7 @@
 // - connect() starts ingestion without a consumer; onData optionally reports committed changes
 // - Google Home Foyer media signalling belongs to the WebRTC camera transport
 //
-// Code version 2026.11.18
+// Code version 2026.11.23
 // Mark Hulskamp
 
 // Define nodejs module requirements
@@ -36,7 +36,7 @@ import path from 'node:path';
 
 // Define our modules
 import { fetchWrapper } from '../fetchWrapper.js';
-import { isNumeric, scaleValue } from '../utils.js';
+import { isNumeric, scaleValue, adjustTemperature } from '../utils.js';
 import GrpcTransport from '../grpctransport.js';
 import { getProtoTypes } from '../protobuf.js';
 
@@ -950,7 +950,7 @@ export default class GoogleAPI {
 
     let resource = this.resources.get(resourceId);
 
-    if (typeof resource !== 'object' || resource === null) {
+    if ((typeof resource !== 'object' || resource === null) && (key !== 'location_weather' || typeof values.location !== 'object')) {
       throw new Error('GET requires an available resource');
     }
 
@@ -1000,7 +1000,101 @@ export default class GoogleAPI {
       }
     }
 
+    if (key === 'location_weather') {
+      // Weather remains an HTTP forecast query; device state and commands use Observe.
+      let location = values.location ??
+        resource?.value?.weather ?? {
+        postal_code: resource?.value?.structure_location?.postalCode?.value,
+        country_code: resource?.value?.structure_location?.countryCode?.value,
+      };
+      result = await this.#getWeather(resourceId, location?.postal_code, location?.country_code);
+    }
+
     return result;
+  }
+
+  async #getWeather(resourceId, postal_code, country_code) {
+    let account = this.#options.session?.account;
+
+    if (
+      account.authorised !== true ||
+      (account.referer ?? '') === '' ||
+      (account.token ?? '') === '' ||
+      (account.restAPIHost ?? '') === '' ||
+      (postal_code?.trim?.() ?? '') === '' ||
+      (country_code?.trim?.() ?? '') === ''
+    ) {
+      // Skip the query when the required account, credentials or request details are unavailable.
+      return;
+    }
+
+    try {
+      let response = await fetchWrapper(
+        fetchWrapper.GET,
+        new URL('/api/0.1/weather/forecast/' + postal_code + ',' + country_code, 'https://' + account.restAPIHost).href,
+        {
+          headers: {
+            Referer: 'https://' + account.referer,
+            Origin: 'https://' + account.referer,
+            Authorization: 'Basic ' + account.token,
+            'User-Agent': USER_AGENT,
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin',
+          },
+          retry: 3,
+          timeout: 4000,
+        },
+      );
+
+      let data = await response.json();
+
+      // If returned JSON has an error defined, throw it
+      if (data?.error !== undefined) {
+        throw new Error(data.error);
+      }
+
+      // Ensure we have valid data
+      if (
+        data?.now?.current_temperature === undefined ||
+        data?.now?.current_humidity === undefined ||
+        data?.now?.conditions === undefined ||
+        data?.now?.wind_direction === undefined ||
+        data?.now?.current_wind === undefined ||
+        data?.now?.sunrise === undefined ||
+        data?.now?.sunset === undefined ||
+        data?.forecast?.daily?.[0]?.conditions === undefined
+      ) {
+        throw new Error('Missing or invalid weather data');
+      }
+
+      let weather = {
+        // Retain the query location for subsequent weather refreshes.
+        postal_code: postal_code,
+        country_code: country_code,
+
+        // Return weather fields in the shared plugin format.
+        current_temperature: adjustTemperature(data.now.current_temperature, 'C', 'C', false),
+        current_humidity: data.now.current_humidity,
+        condition: data.now.conditions,
+        wind_direction: data.now.wind_direction,
+        wind_speed: data.now.current_wind,
+        sunrise: data.now.sunrise,
+        sunset: data.now.sunset,
+        station: data.display_city,
+        forecast: data.forecast.daily[0].conditions,
+      };
+
+      return weather;
+    } catch (error) {
+      // Log unexpected errors (excluding timeouts) for debugging
+      this.#options.log?.debug?.(
+        'Weather query failed to retrieve details for device uuid "%s". Error was "%s"',
+        resourceId,
+        typeof error?.message === 'string' ? error.message : String(error),
+      );
+
+      return; // Return undefined if error occurs getting weather data
+    }
   }
 
   // Upload and Observe share a cutoff that reserves download time; retries reuse it.

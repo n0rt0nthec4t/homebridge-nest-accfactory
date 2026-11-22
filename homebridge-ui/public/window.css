@@ -1,0 +1,12 @@
+/* Fill this settings popup while preserving Homebridge's dialog size. */
+.nest-settings-window .modal-content {
+  border: 0; overflow: hidden; background: #170a1c;
+}
+.nest-settings-window .modal-content .modal-header,
+.nest-settings-window .modal-content .modal-footer { display: none; }
+.nest-settings-window .modal-content .modal-body {
+  padding: 0 !important; background: #170a1c !important;
+}
+.nest-settings-window .plugin-iframe {
+  display: block; width: 100%; border: 0;
+}

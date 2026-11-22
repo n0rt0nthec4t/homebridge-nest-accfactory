@@ -28,7 +28,7 @@
 // - Imported throughout the codebase for consistency and reuse
 // - Changes here may affect multiple subsystems (devices, streaming, APIs)
 //
-// Code version 2026.11.18
+// Code version 2026.11.23
 // Mark Hulskamp
 'use strict';
 
@@ -254,3 +254,10 @@ export const NESTLABS_MAC_PREFIX = '18B430';
 export const MIN_ELEVATION = 0;
 
 export const MAX_ELEVATION = 8848;
+
+// Shared Foyer service routing for camera ID lookup and WebRTC signalling.
+export const GOOGLE_HOME_FOYER_PREFIX = 'google.internal.home.foyer.v1.';
+export const GOOGLE_HOME_FOYER_ENDPOINTS = {
+  PRODUCTION: 'https://googlehomefoyer-pa.googleapis.com',
+  FIELD_TEST: 'https://preprod-googlehomefoyer-pa.sandbox.googleapis.com',
+};

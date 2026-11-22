@@ -1,14 +1,14 @@
 // Accounts
 // Part of homebridge-nest-accfactory
 //
-// Registers configured accounts, each with one shared AccountSession and both
-// Nest REST and Google protobuf API clients. Account type selects the login
+// Registers configured accounts, each with one shared AccountSession and a
+// Google protobuf API client. Account type selects the login
 // flow; it does not select which API clients are available.
 //
 // Responsibilities:
 // - Assign runtime account identities and create their sessions and API clients
-// - Start both API clients and shut down their shared account sessions
-// - Serialize both clients' notifications to System through one queue per account
+// - Start the protobuf client and shut down their shared account sessions
+// - Serialize resource notifications to System through one queue per account
 // - Forward optional consumer notifications without owning either source cache
 //
 // Ownership:
@@ -17,7 +17,7 @@
 // - Each client owns its source cache; System owns the combined view and HomeKit devices
 // - Notification acknowledgement confirms System received a batch, independently of HomeKit delivery
 //
-// Code version 2026.10.29
+// Code version 2026.11.23
 // Mark Hulskamp
 'use strict';
 
@@ -26,7 +26,6 @@ import crypto from 'node:crypto';
 
 // Import our modules
 import AccountSession from './accountsession.js';
-import NestAPI from './api/nest.js';
 import GoogleAPI from './api/google.js';
 
 export default class Accounts {
@@ -78,7 +77,7 @@ export default class Accounts {
         },
       );
 
-      // Keep the same account object throughout refresh. Both API clients and
+      // Keep the same account object throughout refresh. The protobuf client and
       // camera credential updates must see the newly installed session details.
       let entry = session.account;
       entry.session = session;
@@ -91,7 +90,7 @@ export default class Accounts {
   }
 
   #createAPIClients(uuid, account, { onData }) {
-    let dataQueue = Promise.resolve(); // Serialize notifications to System across both sources.
+    let dataQueue = Promise.resolve(); // Serialize notifications to System for this account.
     let options = {
       uuid,
       session: account.session,
@@ -100,7 +99,7 @@ export default class Accounts {
         typeof onData !== 'function'
           ? undefined
           : (batch) => {
-              // Nest and Google share one account queue. Await System's cache commit,
+              // Await System's cache commit,
               // not HomeKit delivery, so ingestion can satisfy pending snapshot queries.
               let run = dataQueue.then(() => {
                 if (this.#accounts.get(uuid) === account && batch.isCurrent() === true) {
@@ -120,12 +119,10 @@ export default class Accounts {
     };
 
     // Clients survive session refresh; each owns its subscription identity and retry timer.
-    account.nestAPI = new NestAPI(options);
-
     account.googleAPI = new GoogleAPI(options);
   }
 
-  // Start background authentication and both APIs. Session and subscription retry
+  // Start background authentication and Observe. Session and subscription retry
   // loops own later attempts; startup must not wait for the first cloud data.
   start(uuid) {
     let account = this.#accounts.get(uuid);
@@ -135,7 +132,7 @@ export default class Accounts {
     }
 
     if (account.allowRetry !== false) {
-      for (let api of [account.nestAPI, account.googleAPI]) {
+      for (let api of [account.googleAPI]) {
         api.connect().catch((error) => {
           // Authentication already reports account failures. Log API startup failures separately.
           if (account.authorised === true) {

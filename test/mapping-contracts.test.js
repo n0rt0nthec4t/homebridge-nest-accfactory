@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { DATA_SOURCE, DEVICE_TYPE } from '../src/consts.js';
-import { config, fixtures } from './helpers/discovery-fixtures.js';
+import { config, fixtures, retiredCameras, retiredProtect } from './helpers/discovery-fixtures.js';
 import { importSource } from './helpers/import-source.js';
 
 let modules = {};
@@ -55,7 +55,7 @@ for (let fixture of fixtures) {
       assert.equal(mapped.eveHistory, false);
     });
   }
-  if (fixture.source !== DATA_SOURCE.NEST && fixture.name !== 'homeaway') {
+  if (fixture.name !== 'homeaway') {
     test('unready Google resource is not discovered: ' + label, () => {
       let flow = setup(fixture, { configuration_done: { deviceReady: false } });
       assert.deepEqual(flow.run(), {});
@@ -154,20 +154,18 @@ for (let [type, expected] of [
   });
 }
 
-let protectGoogle = fixtures.find((fixture) => fixture.name === 'protect' && fixture.source !== DATA_SOURCE.NEST);
-let protectNest = fixtures.find((fixture) => fixture.name === 'protect' && fixture.source === DATA_SOURCE.NEST);
-test('Protect preserves the reported replacement timestamp from both Google and Nest', () => {
+let protectGoogle = fixtures.find((fixture) => fixture.name === 'protect');
+
+test('Protect preserves the reported replacement timestamp from Google protobuf', () => {
   let timestamp = Date.UTC(2030, 9, 25) / 1000;
   let google = setup(protectGoogle, { legacy_protect_device_settings: { replaceByDate: { seconds: String(timestamp) } } });
-  let nest = setup(protectNest, { replace_by_date_utc_secs: timestamp });
-  for (let flow of [google, nest]) {
-    assert.equal(Object.values(flow.run())[0].data.replacement_date, timestamp);
-  }
+
+  assert.equal(Object.values(google.run())[0].data.replacement_date, timestamp);
 });
 
 for (let generation of [1, 2]) {
   for (let wired of [true, false]) {
-    test('Protect model identification across both APIs: generation=' + generation + ', wired=' + wired, () => {
+    test('Protect model identification from protobuf: generation=' + generation + ', wired=' + wired, () => {
       let google = setup(protectGoogle, {
         device_info: {
           ...protectGoogle.value.device_info,
@@ -175,20 +173,14 @@ for (let generation of [1, 2]) {
         },
         wall_power: { present: wired, status: wired === true ? 'POWER_SOURCE_STATUS_ACTIVE' : 'POWER_SOURCE_STATUS_INACTIVE' },
       });
-      let nest = setup(protectNest, {
-        serial_number: (generation === 1 ? '05' : '06') + 'TEST',
-        wired_or_battery: wired === true ? 0 : 1,
-        line_power_present: wired,
-      });
-      for (let flow of [google, nest]) {
-        let data = Object.values(flow.run())[0].data;
-        assert.equal(
-          data.model,
-          'Protect (' + generation + (generation === 1 ? 'st' : 'nd') + ' gen, ' + (wired === true ? 'wired' : 'battery') + ')',
-        );
-        assert.equal(data.wired_or_battery, wired === false);
-        assert.equal(data.line_power_present, wired);
-      }
+
+      let data = Object.values(google.run())[0].data;
+      assert.equal(
+        data.model,
+        'Protect (' + generation + (generation === 1 ? 'st' : 'nd') + ' gen, ' + (wired === true ? 'wired' : 'battery') + ')',
+      );
+      assert.equal(data.wired_or_battery, wired === false);
+      assert.equal(data.line_power_present, wired);
     });
   }
 }
@@ -228,32 +220,18 @@ for (let smoke of [false, true]) {
         safety_structure_settings: { structureHushKey: 'fixture-hush-key' },
         legacy_protect_device_info: { autoAway: false },
       });
-      let nest = setup(protectNest, {
-        smoke_status: smoke === true ? 1 : 0,
-        co_status: co === true ? 1 : 0,
-        heat_status: smoke === true ? 1 : 0,
+
+      let data = Object.values(google.run())[0].data;
+      assert.partialDeepStrictEqual(data, {
+        smoke_status: smoke,
+        co_status: co,
+        heat_status: smoke,
         hushed_state: smoke === true || co === true,
-        latest_manual_test_end_utc_secs: '100',
+        latest_alarm_test: 100,
+        self_test_in_progress: smoke === true || co === true,
         ntp_green_led_enable: true,
-        auto_away: false,
-        battery_level: 4950,
+        topaz_hush_key: 'fixture-hush-key',
       });
-      nest.raw['safety.home'].value.manual_self_test_in_progress = smoke === true || co === true;
-      nest.raw['structure.home'] = { source: DATA_SOURCE.NEST, value: { topaz_hush_key: 'fixture-hush-key' } };
-      for (let flow of [google, nest]) {
-        let data = Object.values(flow.run())[0].data;
-        assert.partialDeepStrictEqual(data, {
-          smoke_status: smoke,
-          co_status: co,
-          heat_status: smoke,
-          hushed_state: smoke === true || co === true,
-          latest_alarm_test: 100,
-          self_test_in_progress: smoke === true || co === true,
-          ntp_green_led_enable: true,
-          topaz_hush_key: 'fixture-hush-key',
-        });
-      }
-      assert.equal(Object.values(nest.run())[0].data.battery_level, 50);
     });
   }
 }
@@ -278,7 +256,7 @@ for (let list of ['criticalDevices', 'warningDevices']) {
   }
 }
 for (let passed of [false, true]) {
-  test('Protect sensor fault reports map consistently across APIs: passed=' + passed, () => {
+  test('Protect sensor fault reports map from protobuf: passed=' + passed, () => {
     let google = setup(protectGoogle, {
       smoke: {
         infraredLedFault: { type: passed === true ? 'SMOKE_FAULT_TYPE_NONE' : 'SMOKE_FAULT_TYPE_FAILURE' },
@@ -287,15 +265,9 @@ for (let passed of [false, true]) {
       temperature: { faultInformation: { type: passed === true ? 'TEMPERATURE_FAULT_TYPE_NONE' : 'TEMPERATURE_FAULT_TYPE_FAILURE' } },
       carbon_monoxide: { faultInformation: { type: passed === true ? 'CO_FAULT_TYPE_NONE' : 'CO_FAULT_TYPE_FAILURE' } },
     });
-    let nest = setup(protectNest, {
-      component_smoke_test_passed: passed,
-      component_temp_test_passed: passed,
-      component_co_test_passed: passed,
-    });
-    for (let flow of [google, nest]) {
-      let data = Object.values(flow.run())[0].data;
-      assert.partialDeepStrictEqual(data, { smoke_test_passed: passed, heat_test_passed: passed, co_test_passed: passed });
-    }
+
+    let data = Object.values(google.run())[0].data;
+    assert.partialDeepStrictEqual(data, { smoke_test_passed: passed, heat_test_passed: passed, co_test_passed: passed });
   });
 }
 
@@ -335,24 +307,105 @@ test('Protect battery-powered dump retains voltage percentage and explicit healt
   assert.equal(data.battery_low, false);
 });
 
-for (let [state, expected] of [
-  [0, false],
-  [1, true],
-  [2, true],
-  [3, true],
-  [undefined, undefined],
-  [null, undefined],
-  ['0', undefined],
-  ['bad', undefined],
-  [-1, undefined],
-  [0.5, undefined],
-  [NaN, undefined],
-  [Infinity, undefined],
+test('Protect ignores retired Nest REST data without changing it', () => {
+  const flow = setup(retiredProtect);
+  const before = structuredClone(flow.raw);
+  assert.deepEqual(flow.run(), {});
+  assert.deepEqual(flow.raw, before);
+});
+
+// Legacy Quartz models expose NexusTalk host information without deviceReady.
+// Exercise discovery only: no camera session or media process starts in these tests.
+for (const typeName of [
+  'nest.resource.NestCamIndoorResource',
+  'nest.resource.NestCamOutdoorResource',
+  'nest.resource.NestCamIQResource',
+  'nest.resource.NestCamIQOutdoorResource',
+  'nest.resource.NestHelloResource',
+  'google.resource.GoogleNewmanResource',
 ]) {
-  test('Nest Protect health maps independently of missing voltage: ' + String(state), () => {
-    let flow = setup(protectNest, { battery_health_state: state, battery_level: 0, wired_or_battery: 0 });
-    let data = Object.values(flow.run())[0].data;
-    assert.equal(data.battery_low, expected);
-    assert.equal(data.battery_level, null);
+  for (const readiness of [undefined, {}, { deviceReady: true }]) {
+    test('legacy Quartz protobuf discovery: ' + typeName + ', readiness=' + JSON.stringify(readiness), () => {
+      const doorbell = typeName === 'nest.resource.NestHelloResource';
+      const fixture = fixtures.find((entry) => entry.name === (doorbell === true ? 'doorbell' : 'camera'));
+      const flow = setup(fixture, {
+        device_info: { ...fixture.value.device_info, typeName, className: 'rquartz' },
+        configuration_done: readiness,
+        streaming_protocol: {
+          supportedProtocols: ['PROTOCOL_NEXUSTALK', 'PROTOCOL_RTSP', 'PROTOCOL_HLS'],
+          directHost: { value: 'camera.invalid' },
+        },
+      });
+      const before = structuredClone(flow.raw);
+      const result = Object.values(flow.run())[0];
+      assert.equal(result.full, true);
+      assert.equal(result.data.type, doorbell === true ? DEVICE_TYPE.DOORBELL : DEVICE_TYPE.CAMERA);
+      assert.equal(result.data.nexustalk_host, 'camera.invalid');
+      assert.deepEqual(result.data.streaming_protocols, ['PROTOCOL_NEXUSTALK', 'PROTOCOL_RTSP', 'PROTOCOL_HLS']);
+      assert.equal(result.data.nest_google_device_uuid, flow.id);
+      assert.deepEqual(flow.raw, before, 'Discovery must not fabricate deviceReady');
+    });
+  }
+}
+const legacyCamera = fixtures.find((entry) => entry.name === 'camera');
+for (const [label, overrides] of [
+  ['explicitly unready', { configuration_done: { deviceReady: false } }],
+  ['invalid readiness', { configuration_done: { deviceReady: null } }],
+  ['missing host', { streaming_protocol: { supportedProtocols: ['PROTOCOL_NEXUSTALK'] } }],
+  ['empty host', { streaming_protocol: { supportedProtocols: ['PROTOCOL_NEXUSTALK'], directHost: { value: ' ' } } }],
+  ['RTSP only', { streaming_protocol: { supportedProtocols: ['PROTOCOL_RTSP'], directHost: { value: 'camera.invalid' } } }],
+  ['WebRTC only', { streaming_protocol: { supportedProtocols: ['PROTOCOL_WEBRTC'], directHost: { value: 'camera.invalid' } } }],
+  [
+    'mixed WebRTC and NexusTalk',
+    { streaming_protocol: { supportedProtocols: ['PROTOCOL_WEBRTC', 'PROTOCOL_NEXUSTALK'], directHost: { value: 'camera.invalid' } } },
+  ],
+  ['unknown camera type', { device_info: { ...legacyCamera.value.device_info, typeName: 'unknown.resource.Camera' } }],
+]) {
+  test('legacy readiness exception rejects ' + label, () => {
+    const flow = setup(legacyCamera, {
+      device_info: { ...legacyCamera.value.device_info, typeName: 'nest.resource.NestCamIndoorResource' },
+      configuration_done: {},
+      streaming_protocol: { supportedProtocols: ['PROTOCOL_NEXUSTALK'], directHost: { value: 'camera.invalid' } },
+      ...overrides,
+    });
+    assert.deepEqual(flow.run(), {});
+  });
+}
+test('legacy Quartz discovery waits for required identity and parent but permits an offline camera', () => {
+  const flow = setup(legacyCamera, {
+    device_info: { ...legacyCamera.value.device_info, typeName: 'nest.resource.NestCamIndoorResource' },
+    configuration_done: {},
+    streaming_protocol: { supportedProtocols: ['PROTOCOL_NEXUSTALK'], directHost: { value: 'camera.invalid' } },
+    liveness: { status: 'LIVENESS_DEVICE_STATUS_OFFLINE' },
+  });
+  let result = Object.values(flow.run())[0];
+  assert.equal(result.full, true);
+  assert.equal(result.data.online, false);
+  flow.raw[flow.id].value.device_identity.softwareVersion = undefined;
+  assert.equal(Object.values(flow.run())[0].full, false);
+  delete flow.raw[flow.id].value.device_identity.serialNumber;
+  assert.deepEqual(flow.run(), {});
+  delete flow.raw.STRUCTURE_HOME;
+  assert.deepEqual(flow.run(), {});
+});
+
+for (let fixture of retiredCameras) {
+  test(fixture.name + ' ignores retired Nest REST camera data and updates', () => {
+    let flow = setup(fixture);
+    let before = structuredClone([flow.raw, flow.options]);
+    assert.deepEqual(flow.run(), {});
+    for (let id of [flow.id, 'where.home', 'structure.home']) {
+      assert.deepEqual(
+        modules[fixture.name].processRawData(
+          undefined,
+          flow.raw,
+          flow.options,
+          fixture.type,
+          new Map([[id, { fields: new Set(['streaming_state']) }]]),
+        ),
+        {},
+      );
+    }
+    assert.deepEqual([flow.raw, flow.options], before);
   });
 }

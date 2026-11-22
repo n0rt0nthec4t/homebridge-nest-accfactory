@@ -83,13 +83,9 @@ for (let fixture of fixtures) {
     test('parent-only naming changes update the same identity: ' + label, () => {
       let flow = setup(fixture);
       let initial = flow.run(flow.delta(flow.id, Object.keys(fixture.value)));
-      let key = fixture.source === DATA_SOURCE.NEST ? 'where.home' : 'STRUCTURE_HOME';
-      if (fixture.source === DATA_SOURCE.NEST) {
-        flow.raw[key].value.wheres[0].name = 'Hallway';
-      } else {
-        flow.raw[key].value.located_annotations.predefinedWheres.room.label.literal = 'Hallway';
-      }
-      let updated = flow.run(flow.delta(key, fixture.source === DATA_SOURCE.NEST ? ['wheres'] : ['located_annotations']));
+      let key = 'STRUCTURE_HOME';
+      flow.raw[key].value.located_annotations.predefinedWheres.room.label.literal = 'Hallway';
+      let updated = flow.run(flow.delta(key, ['located_annotations']));
       assert.deepEqual(Object.keys(updated), Object.keys(initial));
       assert.equal(Object.values(updated)[0].data.description, 'Device - Hallway');
     });

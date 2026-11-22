@@ -116,14 +116,10 @@ test('retired chime and Quiet Time switches are removed without adding services 
   assert.equal(doorbell.set.mock.callCount(), 0);
 });
 
-test('Quiet Time mappings retain Google and Nest expiry', () => {
+test('Quiet Time mapping retains protobuf expiry without a Nest REST mapping', () => {
   let map = processRawData();
   let raw = { value: { quiet_time_settings: { quietTimeEnds: { seconds: '12345' } } } };
   assert.equal(map.quiet_time_ends.google.translate({ raw }), 12345);
   assert.equal(map.quiet_time_ends.google.translate({ raw: { value: {} } }), 0);
-  let nestRaw = { value: { properties: { 'doorbell.quiet_time.enabled_until': '12345' } } };
-  assert.equal(map.quiet_time_ends.nest.translate({ raw: nestRaw }), 12345);
-  nestRaw.value.properties['doorbell.quiet_time.enabled_until'] = 0;
-  assert.equal(map.quiet_time_ends.nest.translate({ raw: nestRaw }), 0);
-  assert.equal(map.quiet_time_ends.nest.translate({ raw: { value: {} } }), 0);
+  assert.equal(map.quiet_time_ends.nest, undefined);
 });

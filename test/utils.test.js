@@ -167,3 +167,21 @@ test('isNumeric preserves command validation for types, bounds and coercion trap
   assert.equal(isNumeric(3, { max: 2 }), false);
   assert.equal(isNumeric(2, { type: 'unknown' }), false);
 });
+
+// The shared formatter still accepts legacy metadata independently of device discovery.
+test('device description resolves a legacy room without repeating its name', () => {
+  let rawData = {
+    'where.home': {
+      value: {
+        wheres: [
+          { where_id: 'OTHER', name: 'Other' },
+          { where_id: 'ROOM', name: 'Kitchen' },
+        ],
+      },
+    },
+  };
+  let raw = { value: { description: 'Camera', structure_id: 'home', where_id: 'ROOM' } };
+  assert.equal(buildDeviceDescription(rawData, raw), 'Camera - Kitchen');
+  raw.value.description = 'Kitchen Camera';
+  assert.equal(buildDeviceDescription(rawData, raw), 'Kitchen Camera');
+});

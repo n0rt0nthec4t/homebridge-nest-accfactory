@@ -33,7 +33,7 @@
 // - Optional external module hooks for custom HVAC automation
 //
 // Notes:
-// - Prefer usable protobuf data; retain Nest REST fallback for legacy-only devices
+// - Translate protobuf data for supported devices
 // - Eco modes are normalised to standard HomeKit-compatible mode presentation
 // - Some advanced thermostat behaviour is exposed through Eve Home custom payloads
 // - External module support is intended for advanced custom integrations
@@ -73,7 +73,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.THERMOSTAT;
-  static VERSION = '2026.11.18'; // Code version
+  static VERSION = '2026.11.23'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -1595,22 +1595,11 @@ const THERMOSTAT_FIELD_MAP = {
           ? raw.value.device_identity.serialNumber.trim().toUpperCase()
           : undefined,
     },
-    nest: {
-      fields: [],
-      translate: ({ raw }) =>
-        typeof raw?.value?.serial_number === 'string' && raw.value.serial_number.trim() !== ''
-          ? raw.value.serial_number.trim().toUpperCase()
-          : undefined,
-    },
   },
 
   nest_google_device_uuid: {
     required: true,
     google: {
-      fields: [],
-      translate: ({ objectKey }) => objectKey,
-    },
-    nest: {
       fields: [],
       translate: ({ objectKey }) => objectKey,
     },
@@ -1620,11 +1609,6 @@ const THERMOSTAT_FIELD_MAP = {
     google: {
       fields: ['device_info'],
       translate: ({ raw }) => raw?.value?.device_info?.pairerId?.resourceId,
-    },
-    nest: {
-      fields: ['serial_number'],
-      related: ['structure'],
-      translate: ({ rawData, raw }) => rawData?.['link.' + raw?.value?.serial_number]?.value?.structure,
     },
   },
 
@@ -1662,27 +1646,6 @@ const THERMOSTAT_FIELD_MAP = {
         return 'Thermostat (unknown)';
       },
     },
-    nest: {
-      fields: ['serial_number'],
-      translate: ({ raw }) => {
-        let serial = raw?.value?.serial_number ?? '';
-
-        if (serial.substring(0, 2) === '15') {
-          return 'Thermostat E (1st gen)';
-        }
-        if (serial.substring(0, 2) === '09' || serial.substring(0, 2) === '10') {
-          return 'Learning Thermostat (3rd gen)';
-        }
-        if (serial.substring(0, 2) === '02') {
-          return 'Learning Thermostat (2nd gen)';
-        }
-        if (serial.substring(0, 2) === '01') {
-          return 'Learning Thermostat (1st gen)';
-        }
-
-        return 'Thermostat (unknown)';
-      },
-    },
   },
 
   softwareVersion: {
@@ -1694,13 +1657,6 @@ const THERMOSTAT_FIELD_MAP = {
           ? processSoftwareVersion(raw.value.device_identity.softwareVersion)
           : undefined,
     },
-    nest: {
-      fields: ['current_version'],
-      translate: ({ raw }) =>
-        typeof raw?.value?.current_version === 'string' && raw.value.current_version.trim() !== ''
-          ? processSoftwareVersion(raw.value.current_version)
-          : undefined,
-    },
   },
 
   description: {
@@ -1708,11 +1664,6 @@ const THERMOSTAT_FIELD_MAP = {
     google: {
       fields: ['label', 'device_info', 'device_located_settings'],
       related: ['located_annotations'],
-      translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
-    },
-    nest: {
-      fields: ['serial_number', 'where_id'],
-      related: ['name', 'wheres', 'structure'],
       translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
     },
   },
@@ -1726,11 +1677,6 @@ const THERMOSTAT_FIELD_MAP = {
           ? Number(raw.value.current_humidity.humidityValue.humidity.value)
           : undefined,
     },
-    nest: {
-      fields: ['current_humidity'],
-      translate: ({ raw }) =>
-        Number.isFinite(Number(raw?.value?.current_humidity)) === true ? Number(raw.value.current_humidity) : undefined,
-    },
   },
 
   temperature_scale: {
@@ -1739,10 +1685,6 @@ const THERMOSTAT_FIELD_MAP = {
       fields: ['display_settings'],
       translate: ({ raw }) => (raw?.value?.display_settings?.temperatureScale === 'TEMPERATURE_SCALE_F' ? 'F' : 'C'),
     },
-    nest: {
-      fields: ['temperature_scale'],
-      translate: ({ raw }) => (raw?.value?.temperature_scale?.toUpperCase?.() === 'F' ? 'F' : 'C'),
-    },
   },
 
   removed_from_base: {
@@ -1750,10 +1692,6 @@ const THERMOSTAT_FIELD_MAP = {
       fields: ['display'],
       translate: ({ raw }) =>
         Array.isArray(raw?.value?.display?.thermostatState) === true && raw.value.display.thermostatState.includes('bpd') === true,
-    },
-    nest: {
-      fields: ['nlclient_state'],
-      translate: ({ raw }) => raw?.value?.nlclient_state?.toUpperCase?.() === 'BPD',
     },
   },
 
@@ -1765,13 +1703,6 @@ const THERMOSTAT_FIELD_MAP = {
           ? adjustTemperature(Number(raw.value.backplate_temperature.temperatureValue.temperature.value), 'C', 'C', true)
           : undefined,
     },
-    nest: {
-      fields: ['backplate_temperature'],
-      translate: ({ raw }) =>
-        Number.isFinite(Number(raw?.value?.backplate_temperature)) === true
-          ? adjustTemperature(Number(raw.value.backplate_temperature), 'C', 'C', true)
-          : undefined,
-    },
   },
 
   current_temperature: {
@@ -1780,13 +1711,6 @@ const THERMOSTAT_FIELD_MAP = {
       translate: ({ raw }) =>
         Number.isFinite(Number(raw?.value?.current_temperature?.temperatureValue?.temperature?.value)) === true
           ? adjustTemperature(Number(raw.value.current_temperature.temperatureValue.temperature.value), 'C', 'C', true)
-          : undefined,
-    },
-    nest: {
-      fields: ['backplate_temperature'],
-      translate: ({ raw }) =>
-        Number.isFinite(Number(raw?.value?.backplate_temperature)) === true
-          ? adjustTemperature(Number(raw.value.backplate_temperature), 'C', 'C', true)
           : undefined,
     },
   },
@@ -1811,13 +1735,6 @@ const THERMOSTAT_FIELD_MAP = {
         return Math.round(scaleValue(voltage, 3.6, 4.0, 0, 100));
       },
     },
-    nest: {
-      fields: ['battery_level'],
-      translate: ({ raw }) =>
-        Number.isFinite(Number(raw?.value?.battery_level)) === true
-          ? Math.round(scaleValue(Number(raw.value.battery_level), 3.6, 4.0, 0, 100))
-          : undefined,
-    },
   },
 
   online: {
@@ -1826,21 +1743,12 @@ const THERMOSTAT_FIELD_MAP = {
       fields: ['liveness'],
       translate: ({ raw }) => raw?.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
     },
-    nest: {
-      fields: ['serial_number'],
-      related: ['online'],
-      translate: ({ rawData, raw }) => rawData?.['track.' + raw?.value?.serial_number]?.value?.online === true,
-    },
   },
 
   leaf: {
     google: {
       fields: ['leaf'],
       translate: ({ raw }) => raw?.value?.leaf?.active === true,
-    },
-    nest: {
-      fields: ['leaf'],
-      translate: ({ raw }) => raw?.value?.leaf === true,
     },
   },
 
@@ -1852,11 +1760,6 @@ const THERMOSTAT_FIELD_MAP = {
         raw?.value?.hvac_equipment_capabilities?.hasStage2Cool === true ||
         raw?.value?.hvac_equipment_capabilities?.hasStage3Cool === true,
     },
-    nest: {
-      fields: ['serial_number'],
-      related: ['can_cool'],
-      translate: ({ rawData, raw }) => rawData?.['shared.' + raw?.value?.serial_number]?.value?.can_cool === true,
-    },
   },
 
   can_heat: {
@@ -1867,21 +1770,12 @@ const THERMOSTAT_FIELD_MAP = {
         raw?.value?.hvac_equipment_capabilities?.hasStage2Heat === true ||
         raw?.value?.hvac_equipment_capabilities?.hasStage3Heat === true,
     },
-    nest: {
-      fields: ['serial_number'],
-      related: ['can_heat'],
-      translate: ({ rawData, raw }) => rawData?.['shared.' + raw?.value?.serial_number]?.value?.can_heat === true,
-    },
   },
 
   temperature_lock: {
     google: {
       fields: ['temperature_lock_settings'],
       translate: ({ raw }) => raw?.value?.temperature_lock_settings?.enabled === true,
-    },
-    nest: {
-      fields: ['temperature_lock'],
-      translate: ({ raw }) => raw?.value?.temperature_lock === true,
     },
   },
 
@@ -1890,21 +1784,12 @@ const THERMOSTAT_FIELD_MAP = {
       fields: ['temperature_lock_settings'],
       translate: ({ raw }) => (raw?.value?.temperature_lock_settings?.enabled === true ? raw.value.temperature_lock_settings.pinHash : ''),
     },
-    nest: {
-      fields: ['temperature_lock_pin_hash'],
-      translate: ({ raw }) => (typeof raw?.value?.temperature_lock_pin_hash === 'string' ? raw.value.temperature_lock_pin_hash : ''),
-    },
   },
 
   away: {
     google: {
       fields: ['structure_mode'],
       translate: ({ raw }) => raw?.value?.structure_mode?.structureMode === 'STRUCTURE_MODE_AWAY',
-    },
-    nest: {
-      fields: ['serial_number'],
-      related: ['away'],
-      translate: ({ rawData, raw }) => rawData?.[rawData?.['link.' + raw?.value?.serial_number]?.value?.structure]?.value?.away === true,
     },
   },
 
@@ -1913,12 +1798,6 @@ const THERMOSTAT_FIELD_MAP = {
       fields: ['structure_mode'],
       translate: ({ raw }) => raw?.value?.structure_mode?.structureMode === 'STRUCTURE_MODE_VACATION',
     },
-    nest: {
-      fields: ['serial_number'],
-      related: ['vacation_mode'],
-      translate: ({ rawData, raw }) =>
-        rawData?.[rawData?.['link.' + raw?.value?.serial_number]?.value?.structure]?.value?.vacation_mode === true,
-    },
   },
 
   has_humidifier: {
@@ -1926,20 +1805,12 @@ const THERMOSTAT_FIELD_MAP = {
       fields: ['hvac_equipment_capabilities'],
       translate: ({ raw }) => raw?.value?.hvac_equipment_capabilities?.hasHumidifier === true,
     },
-    nest: {
-      fields: ['has_humidifier'],
-      translate: ({ raw }) => raw?.value?.has_humidifier === true,
-    },
   },
 
   has_dehumidifier: {
     google: {
       fields: ['hvac_equipment_capabilities'],
       translate: ({ raw }) => raw?.value?.hvac_equipment_capabilities?.hasDehumidifier === true,
-    },
-    nest: {
-      fields: ['has_dehumidifier'],
-      translate: ({ raw }) => raw?.value?.has_dehumidifier === true,
     },
   },
 
@@ -1950,10 +1821,6 @@ const THERMOSTAT_FIELD_MAP = {
         typeof raw?.value?.fan_control_capabilities?.maxAvailableSpeed === 'string' &&
         raw.value.fan_control_capabilities.maxAvailableSpeed !== 'FAN_SPEED_SETTING_OFF',
     },
-    nest: {
-      fields: ['has_fan'],
-      translate: ({ raw }) => raw?.value?.has_fan === true,
-    },
   },
 
   fan_state: {
@@ -1962,10 +1829,6 @@ const THERMOSTAT_FIELD_MAP = {
       translate: ({ raw }) =>
         Number.isFinite(Number(raw?.value?.fan_control_settings?.timerEnd?.seconds)) === true &&
         Number(raw.value.fan_control_settings.timerEnd.seconds) > 0,
-    },
-    nest: {
-      fields: ['fan_timer_timeout'],
-      translate: ({ raw }) => Number.isFinite(Number(raw?.value?.fan_timer_timeout)) === true && Number(raw.value.fan_timer_timeout) > 0,
     },
   },
 
@@ -1976,14 +1839,6 @@ const THERMOSTAT_FIELD_MAP = {
         raw?.value?.fan_control_settings?.timerSpeed?.includes?.('FAN_SPEED_SETTING_STAGE') === true &&
         Number.isFinite(Number(raw.value.fan_control_settings.timerSpeed.split('FAN_SPEED_SETTING_STAGE')[1])) === true
           ? Number(raw.value.fan_control_settings.timerSpeed.split('FAN_SPEED_SETTING_STAGE')[1])
-          : undefined,
-    },
-    nest: {
-      fields: ['fan_timer_speed'],
-      translate: ({ raw }) =>
-        raw?.value?.fan_timer_speed?.includes?.('stage') === true &&
-        Number.isFinite(Number(raw.value.fan_timer_speed.split('stage')[1])) === true
-          ? Number(raw.value.fan_timer_speed.split('stage')[1])
           : undefined,
     },
   },
@@ -1997,14 +1852,6 @@ const THERMOSTAT_FIELD_MAP = {
           ? Number(raw.value.fan_control_capabilities.maxAvailableSpeed.split('FAN_SPEED_SETTING_STAGE')[1])
           : undefined,
     },
-    nest: {
-      fields: ['fan_capabilities'],
-      translate: ({ raw }) =>
-        raw?.value?.fan_capabilities?.includes?.('stage') === true &&
-        Number.isFinite(Number(raw.value.fan_capabilities.split('stage')[1])) === true
-          ? Number(raw.value.fan_capabilities.split('stage')[1])
-          : undefined,
-    },
   },
 
   fan_duration: {
@@ -2014,10 +1861,6 @@ const THERMOSTAT_FIELD_MAP = {
         Number.isFinite(Number(raw?.value?.fan_control_settings?.timerDuration?.seconds)) === true
           ? Number(raw.value.fan_control_settings.timerDuration.seconds)
           : undefined,
-    },
-    nest: {
-      fields: ['fan_duration'],
-      translate: ({ raw }) => (Number.isFinite(Number(raw?.value?.fan_duration)) === true ? Number(raw.value.fan_duration) : undefined),
     },
   },
 
@@ -2029,11 +1872,6 @@ const THERMOSTAT_FIELD_MAP = {
           ? Number(raw.value.humidity_control_settings.humidifierTargetHumidity.value)
           : undefined,
     },
-    nest: {
-      fields: ['target_humidity'],
-      translate: ({ raw }) =>
-        Number.isFinite(Number(raw?.value?.target_humidity)) === true ? Number(raw.value.target_humidity) : undefined,
-    },
   },
 
   target_humidity_dehumidifier: {
@@ -2044,21 +1882,12 @@ const THERMOSTAT_FIELD_MAP = {
           ? Number(raw.value.humidity_control_settings.dehumidifierTargetHumidity.value)
           : undefined,
     },
-    nest: {
-      fields: ['target_humidity'],
-      translate: ({ raw }) =>
-        Number.isFinite(Number(raw?.value?.target_humidity)) === true ? Number(raw.value.target_humidity) : undefined,
-    },
   },
 
   humidifier_state: {
     google: {
       fields: ['hvac_control'],
       translate: ({ raw }) => raw?.value?.hvac_control?.hvacState?.humidifierActive === true,
-    },
-    nest: {
-      fields: ['humidifier_state'],
-      translate: ({ raw }) => raw?.value?.humidifier_state === true,
     },
   },
 
@@ -2067,20 +1896,12 @@ const THERMOSTAT_FIELD_MAP = {
       fields: ['hvac_control'],
       translate: ({ raw }) => raw?.value?.hvac_control?.hvacState?.dehumidifierActive === true,
     },
-    nest: {
-      fields: ['dehumidifier_state'],
-      translate: ({ raw }) => raw?.value?.dehumidifier_state === true,
-    },
   },
 
   has_air_filter: {
     google: {
       fields: ['hvac_equipment_capabilities'],
       translate: ({ raw }) => raw?.value?.hvac_equipment_capabilities?.hasAirFilter === true,
-    },
-    nest: {
-      fields: ['has_air_filter'],
-      translate: ({ raw }) => raw?.value?.has_air_filter === true,
     },
   },
 
@@ -2089,29 +1910,10 @@ const THERMOSTAT_FIELD_MAP = {
       fields: ['filter_reminder'],
       translate: ({ raw }) => raw?.value?.filter_reminder?.filterReplacementNeeded?.value === true,
     },
-    nest: {
-      fields: ['filter_replacement_needed'],
-      translate: ({ raw }) => raw?.value?.filter_replacement_needed === true,
-    },
   },
 
   // HVAC mode / setpoint fields
   eco_mode: {
-    nest: {
-      fields: ['eco'],
-      translate: ({ raw }) => {
-        switch (raw?.value?.eco?.mode?.toLowerCase?.()) {
-          case 'schedule':
-            return 'off';
-          case 'manual-eco':
-            return 'manual';
-          case 'auto-eco':
-            return 'auto';
-          default:
-            return 'unknown';
-        }
-      },
-    },
     google: {
       fields: ['eco_mode_state'],
       translate: ({ raw }) => {
@@ -2171,34 +1973,6 @@ const THERMOSTAT_FIELD_MAP = {
         return mode;
       },
     },
-    nest: {
-      fields: ['serial_number', 'eco', 'away_temperature_low_enabled', 'away_temperature_high_enabled'],
-      related: ['target_temperature_type'],
-      translate: ({ rawData, raw }) => {
-        let mode =
-          rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_type !== undefined
-            ? rawData['shared.' + raw.value.serial_number].value.target_temperature_type
-            : 'off';
-
-        if (raw?.value?.eco?.mode?.toUpperCase?.() === 'AUTO-ECO' || raw?.value?.eco?.mode?.toUpperCase?.() === 'MANUAL-ECO') {
-          if (raw?.value?.away_temperature_low_enabled === true && raw?.value?.away_temperature_high_enabled === false) {
-            return 'ecoheat';
-          }
-          if (raw?.value?.away_temperature_high_enabled === true && raw?.value?.away_temperature_low_enabled === false) {
-            return 'ecocool';
-          }
-          if (raw?.value?.away_temperature_high_enabled === true && raw?.value?.away_temperature_low_enabled === true) {
-            return 'ecorange';
-          }
-          // Nest REST has independent enable flags for its saved Eco limits too.
-          if (raw?.value?.away_temperature_low_enabled === false && raw?.value?.away_temperature_high_enabled === false) {
-            return 'off';
-          }
-        }
-
-        return mode;
-      },
-    },
   },
 
   target_temperature_low: {
@@ -2224,28 +1998,6 @@ const THERMOSTAT_FIELD_MAP = {
         return value !== undefined ? adjustTemperature(value, 'C', 'C', true) : undefined;
       },
     },
-    nest: {
-      fields: ['serial_number', 'eco', 'away_temperature_low', 'away_temperature_low_enabled'],
-      related: ['target_temperature_low'],
-      translate: ({ rawData, raw }) => {
-        let value = undefined;
-
-        if (Number.isFinite(Number(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_low)) === true) {
-          value = Number(rawData['shared.' + raw.value.serial_number].value.target_temperature_low);
-        }
-
-        if (
-          ['AUTO-ECO', 'MANUAL-ECO'].includes(raw?.value?.eco?.mode?.toUpperCase?.()) === true &&
-          raw?.value?.away_temperature_low_enabled === true
-        ) {
-          if (Number.isFinite(Number(raw?.value?.away_temperature_low)) === true) {
-            value = Number(raw.value.away_temperature_low);
-          }
-        }
-
-        return value !== undefined ? adjustTemperature(value, 'C', 'C', true) : undefined;
-      },
-    },
   },
 
   target_temperature_high: {
@@ -2264,28 +2016,6 @@ const THERMOSTAT_FIELD_MAP = {
         ) {
           if (Number.isFinite(Number(raw?.value?.eco_mode_settings?.ecoTemperatureCool?.value?.value)) === true) {
             value = Number(raw.value.eco_mode_settings.ecoTemperatureCool.value.value);
-          }
-        }
-
-        return value !== undefined ? adjustTemperature(value, 'C', 'C', true) : undefined;
-      },
-    },
-    nest: {
-      fields: ['serial_number', 'eco', 'away_temperature_high', 'away_temperature_high_enabled'],
-      related: ['target_temperature_high'],
-      translate: ({ rawData, raw }) => {
-        let value = undefined;
-
-        if (Number.isFinite(Number(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_high)) === true) {
-          value = Number(rawData['shared.' + raw.value.serial_number].value.target_temperature_high);
-        }
-
-        if (
-          ['AUTO-ECO', 'MANUAL-ECO'].includes(raw?.value?.eco?.mode?.toUpperCase?.()) === true &&
-          raw?.value?.away_temperature_high_enabled === true
-        ) {
-          if (Number.isFinite(Number(raw?.value?.away_temperature_high)) === true) {
-            value = Number(raw.value.away_temperature_high);
           }
         }
 
@@ -2357,76 +2087,6 @@ const THERMOSTAT_FIELD_MAP = {
         return value !== undefined ? adjustTemperature(value, 'C', 'C', true) : undefined;
       },
     },
-    nest: {
-      fields: [
-        'serial_number',
-        'eco',
-        'away_temperature_low_enabled',
-        'away_temperature_high_enabled',
-        'away_temperature_low',
-        'away_temperature_high',
-      ],
-      related: ['target_temperature', 'target_temperature_type', 'target_temperature_low', 'target_temperature_high'],
-      translate: ({ rawData, raw }) => {
-        let targetType = rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_type?.toUpperCase?.() ?? 'OFF';
-        let value = undefined;
-
-        if (Number.isFinite(Number(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature)) === true) {
-          value = Number(rawData['shared.' + raw.value.serial_number].value.target_temperature);
-        }
-
-        if (targetType === 'COOL') {
-          if (Number.isFinite(Number(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_high)) === true) {
-            value = Number(rawData['shared.' + raw.value.serial_number].value.target_temperature_high);
-          }
-        }
-
-        if (targetType === 'HEAT') {
-          if (Number.isFinite(Number(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_low)) === true) {
-            value = Number(rawData['shared.' + raw.value.serial_number].value.target_temperature_low);
-          }
-        }
-
-        if (targetType === 'RANGE') {
-          if (
-            Number.isFinite(Number(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_low)) === true &&
-            Number.isFinite(Number(rawData?.['shared.' + raw?.value?.serial_number]?.value?.target_temperature_high)) === true
-          ) {
-            value =
-              (Number(rawData['shared.' + raw.value.serial_number].value.target_temperature_low) +
-                Number(rawData['shared.' + raw.value.serial_number].value.target_temperature_high)) *
-              0.5;
-          }
-        }
-
-        if (raw?.value?.eco?.mode?.toUpperCase?.() === 'AUTO-ECO' || raw?.value?.eco?.mode?.toUpperCase?.() === 'MANUAL-ECO') {
-          if (
-            raw?.value?.away_temperature_low_enabled === true &&
-            raw?.value?.away_temperature_high_enabled === false &&
-            Number.isFinite(Number(raw?.value?.away_temperature_low)) === true
-          ) {
-            value = Number(raw.value.away_temperature_low);
-          }
-          if (
-            raw?.value?.away_temperature_high_enabled === true &&
-            raw?.value?.away_temperature_low_enabled === false &&
-            Number.isFinite(Number(raw?.value?.away_temperature_high)) === true
-          ) {
-            value = Number(raw.value.away_temperature_high);
-          }
-          if (
-            raw?.value?.away_temperature_high_enabled === true &&
-            raw?.value?.away_temperature_low_enabled === true &&
-            Number.isFinite(Number(raw?.value?.away_temperature_low)) === true &&
-            Number.isFinite(Number(raw?.value?.away_temperature_high)) === true
-          ) {
-            value = (Number(raw.value.away_temperature_low) + Number(raw.value.away_temperature_high)) * 0.5;
-          }
-        }
-
-        return value !== undefined ? adjustTemperature(value, 'C', 'C', true) : undefined;
-      },
-    },
   },
 
   hvac_state: {
@@ -2457,42 +2117,6 @@ const THERMOSTAT_FIELD_MAP = {
         return state;
       },
     },
-    nest: {
-      fields: ['serial_number'],
-      related: [
-        'hvac_heater_state',
-        'hvac_heat_x2_state',
-        'hvac_heat_x3_state',
-        'hvac_aux_heater_state',
-        'hvac_alt_heat_x2_state',
-        'hvac_emer_heat_state',
-        'hvac_alt_heat_state',
-        'hvac_ac_state',
-        'hvac_cool_x2_state',
-        'hvac_cool_x3_state',
-      ],
-      translate: ({ rawData, raw }) => {
-        let state = 'off';
-        let shared = rawData?.['shared.' + raw?.value?.serial_number]?.value;
-
-        if (
-          shared?.hvac_heater_state === true ||
-          shared?.hvac_heat_x2_state === true ||
-          shared?.hvac_heat_x3_state === true ||
-          shared?.hvac_aux_heater_state === true ||
-          shared?.hvac_alt_heat_x2_state === true ||
-          shared?.hvac_emer_heat_state === true ||
-          shared?.hvac_alt_heat_state === true
-        ) {
-          state = 'heating';
-        }
-        if (shared?.hvac_ac_state === true || shared?.hvac_cool_x2_state === true || shared?.hvac_cool_x3_state === true) {
-          state = 'cooling';
-        }
-
-        return state;
-      },
-    },
   },
 
   // RCS / remote comfort sensor fields
@@ -2503,26 +2127,6 @@ const THERMOSTAT_FIELD_MAP = {
         raw?.value?.remote_comfort_sensing_settings?.activeRcsSelection?.activeRcsSensor !== undefined
           ? raw.value.remote_comfort_sensing_settings.activeRcsSelection.activeRcsSensor.resourceId
           : undefined,
-    },
-    nest: {
-      fields: ['serial_number'],
-      related: ['associated_rcs_sensors', 'active_rcs_sensors'],
-      translate: ({ rawData, raw }) => {
-        let activeSensor = undefined;
-
-        if (rawData?.['rcs_settings.' + raw?.value?.serial_number]?.value?.associated_rcs_sensors !== undefined) {
-          rawData['rcs_settings.' + raw.value.serial_number].value.associated_rcs_sensors.forEach((sensor) => {
-            if (
-              typeof rawData?.[sensor]?.value === 'object' &&
-              rawData?.['rcs_settings.' + raw.value.serial_number]?.value?.active_rcs_sensors?.includes?.(sensor) === true
-            ) {
-              activeSensor = rawData[sensor].value.serial_number.toUpperCase();
-            }
-          });
-        }
-
-        return activeSensor;
-      },
     },
   },
 
@@ -2535,23 +2139,6 @@ const THERMOSTAT_FIELD_MAP = {
         if (Array.isArray(raw?.value?.remote_comfort_sensing_settings?.associatedRcsSensors) === true) {
           raw.value.remote_comfort_sensing_settings.associatedRcsSensors.forEach((sensor) => {
             sensors.push(sensor.deviceId.resourceId);
-          });
-        }
-
-        return sensors;
-      },
-    },
-    nest: {
-      fields: ['serial_number'],
-      related: ['associated_rcs_sensors'],
-      translate: ({ rawData, raw }) => {
-        let sensors = [];
-
-        if (rawData?.['rcs_settings.' + raw?.value?.serial_number]?.value?.associated_rcs_sensors !== undefined) {
-          rawData['rcs_settings.' + raw.value.serial_number].value.associated_rcs_sensors.forEach((sensor) => {
-            if (typeof rawData?.[sensor]?.value === 'object') {
-              sensors.push(rawData[sensor].value.serial_number.toUpperCase());
-            }
           });
         }
 
@@ -2577,26 +2164,6 @@ const THERMOSTAT_FIELD_MAP = {
         return undefined;
       },
     },
-    nest: {
-      fields: ['rcs_settings'],
-      translate: ({ raw: { value }, rawData }) => {
-        let rcs = rawData?.['rcs_settings.' + value?.serial_number]?.value;
-
-        if (Array.isArray(rcs?.associated_rcs_sensors) === true) {
-          for (let sensor of rcs.associated_rcs_sensors) {
-            if (
-              rcs?.active_rcs_sensors?.includes?.(sensor) === true &&
-              typeof rawData?.[sensor]?.value === 'object' &&
-              Number.isFinite(Number(rawData[sensor].value.current_temperature)) === true
-            ) {
-              return adjustTemperature(Number(rawData[sensor].value.current_temperature), 'C', 'C', true);
-            }
-          }
-        }
-
-        return undefined;
-      },
-    },
   },
 
   // Schedule fields
@@ -2608,11 +2175,6 @@ const THERMOSTAT_FIELD_MAP = {
         raw.value.target_temperature_settings.targetTemperature.setpointType.split('SET_POINT_TYPE_')[1].toLowerCase() !== 'off'
           ? raw.value.target_temperature_settings.targetTemperature.setpointType.split('SET_POINT_TYPE_')[1].toLowerCase()
           : '',
-    },
-    nest: {
-      fields: ['serial_number'],
-      related: ['schedule_mode'],
-      translate: ({ rawData, raw }) => rawData?.['schedule.' + raw?.value?.serial_number]?.value?.schedule_mode ?? '',
     },
   },
 
@@ -2653,28 +2215,10 @@ const THERMOSTAT_FIELD_MAP = {
         return schedules;
       },
     },
-    nest: {
-      fields: ['serial_number'],
-      related: ['days'],
-      translate: ({ rawData, raw }) => {
-        // Rounding schedule temperatures must not mutate the shared bucket cache.
-        let schedules = structuredClone(rawData['schedule.' + raw.value.serial_number]?.value?.days ?? {});
-        for (let day of Object.values(schedules)) {
-          for (let schedule of Object.values(day)) {
-            for (let key of ['temp', 'temp-min', 'temp-max']) {
-              if (Number.isFinite(Number(schedule[key])) === true) {
-                schedule[key] = adjustTemperature(Number(schedule[key]), 'C', 'C', true);
-              }
-            }
-          }
-        }
-        return schedules;
-      },
-    },
   },
 };
 
-// Process thermostat state with complete Google data preferred over Nest REST.
+// Process thermostat state from protobuf resources.
 export function processRawData(log, rawData, config, deviceType = undefined, changedData = undefined) {
   if (
     rawData === null ||
@@ -2692,58 +2236,24 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
   Object.entries(rawData)
     .filter(
       ([key, value]) =>
-        (key.startsWith('device.') === true && value?.source === DATA_SOURCE.NEST) ||
-        (key.startsWith('DEVICE_') === true &&
-          value?.source === DATA_SOURCE.GOOGLE &&
-          PROTOBUF_RESOURCES.THERMOSTAT.includes(value?.value?.device_info?.typeName) === true),
+        key.startsWith('DEVICE_') === true &&
+        value?.source === DATA_SOURCE.GOOGLE &&
+        PROTOBUF_RESOURCES.THERMOSTAT.includes(value?.value?.device_info?.typeName) === true,
     )
     .forEach(([object_key, value]) => {
       try {
-        let isNest = value.source === DATA_SOURCE.NEST;
-        let serial = value.value?.serial_number ?? value.value?.device_identity?.serialNumber;
-        let homeId = isNest === true ? rawData['link.' + serial]?.value?.structure : value.value?.device_info?.pairerId?.resourceId;
-        let relatedIds =
-          isNest === true
-            ? [
-                'shared.' + serial,
-                'track.' + serial,
-                'link.' + serial,
-                'rcs_settings.' + serial,
-                'schedule.' + serial,
-                homeId,
-                'where.' + homeId?.split?.('.')[1],
-                ...(rawData['rcs_settings.' + serial]?.value?.associated_rcs_sensors ?? []),
-              ]
-            : [
-                homeId,
-                'device.' + serial,
-                'shared.' + serial,
-                'track.' + serial,
-                'link.' + serial,
-                'rcs_settings.' + serial,
-                'schedule.' + serial,
-                rawData['link.' + serial]?.value?.structure,
-                'where.' + rawData['link.' + serial]?.value?.structure?.split?.('.')[1],
-                ...(rawData['rcs_settings.' + serial]?.value?.associated_rcs_sensors ?? []),
-                ...(value.value?.remote_comfort_sensing_settings?.associatedRcsSensors ?? []).map((sensor) => sensor?.deviceId?.resourceId),
-              ];
+        let homeId = value.value?.device_info?.pairerId?.resourceId;
+        let relatedIds = [
+          homeId,
+          ...(value.value?.remote_comfort_sensing_settings?.associatedRcsSensors ?? []).map((sensor) => sensor?.deviceId?.resourceId),
+        ];
 
-        // Nest state is split across buckets. Rebuild from committed values when
-        // any dependency changes, including a parent or sensor discovered later.
+        // Parent and sensor traits can arrive after the device's own state.
         if (changedData instanceof Map && [object_key, ...relatedIds].some((id) => changedData.has(id)) === false) {
           return;
         }
 
-        if (isNest === true) {
-          if (
-            typeof rawData['shared.' + serial]?.value !== 'object' ||
-            typeof rawData['track.' + serial]?.value !== 'object' ||
-            typeof rawData[homeId]?.value !== 'object' ||
-            typeof rawData['where.' + homeId?.split?.('.')[1]]?.value !== 'object'
-          ) {
-            return;
-          }
-        } else if (
+        if (
           value?.value?.configuration_done?.deviceReady !== true ||
           typeof rawData?.[value?.value?.device_info?.pairerId?.resourceId] !== 'object'
         ) {
@@ -2752,19 +2262,12 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
 
         let fields = new Set(Object.keys(value.value ?? {}));
         for (let id of relatedIds) {
-          if (typeof id === 'string') {
-            fields.add(id.split('.')[0]);
-          }
           for (let field of Object.keys(rawData[id]?.value ?? {})) {
             fields.add(field);
           }
         }
 
-        let mappedResult = buildMappedObject(
-          THERMOSTAT_FIELD_MAP,
-          createMappingContext(rawData, object_key, isNest === true ? { nest: value } : { google: value }),
-          fields,
-        );
+        let mappedResult = buildMappedObject(THERMOSTAT_FIELD_MAP, createMappingContext(rawData, object_key, { google: value }), fields);
 
         // Apply thermostat-specific post-map adjustments
         if (typeof mappedResult?.data === 'object' && mappedResult.data?.constructor === Object) {
@@ -2834,10 +2337,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
 
           // Store full device
           // Full always overrides partial if present
-          if (
-            existingDevice?.full !== true ||
-            (value.source === DATA_SOURCE.GOOGLE && rawData[existingDevice.data.nest_google_device_uuid]?.source !== DATA_SOURCE.GOOGLE)
-          ) {
+          if (existingDevice?.full !== true) {
             devices[tempDevice.serialNumber] = {
               full: true,
               data: tempDevice,

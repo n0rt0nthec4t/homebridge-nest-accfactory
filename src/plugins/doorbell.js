@@ -42,7 +42,7 @@ import { DEVICE_TYPE, TIMERS } from '../consts.js';
 
 export default class NestDoorbell extends NestCamera {
   static TYPE = DEVICE_TYPE.DOORBELL;
-  static VERSION = '2026.10.06'; // Code version
+  static VERSION = '2026.11.23'; // Code version
 
   // Internal data only for this class
   #doorbellCooldownActive = false; // Flag to track if doorbell cooldown is active
@@ -123,10 +123,6 @@ const EXTRA_FIELD_MAP = {
       fields: ['quiet_time_settings'],
       translate: ({ raw }) => Number(raw?.value?.quiet_time_settings?.quietTimeEnds?.seconds ?? 0),
     },
-    nest: {
-      fields: ['properties'],
-      translate: ({ raw }) => Number(raw?.value?.properties?.['doorbell.quiet_time.enabled_until'] ?? 0),
-    },
   },
 
   has_indoor_chime: {
@@ -137,10 +133,6 @@ const EXTRA_FIELD_MAP = {
         raw?.value?.doorbell_indoor_chime_settings?.chimeType === 'CHIME_TYPE_MECHANICAL' ||
         raw?.value?.doorbell_indoor_chime_settings?.chimeType === 'CHIME_TYPE_ELECTRONIC',
     },
-    nest: {
-      fields: ['capabilities'],
-      translate: ({ raw }) => raw?.value?.capabilities?.includes?.('indoor_chime') === true,
-    },
   },
 
   indoor_chime_enabled: {
@@ -148,10 +140,6 @@ const EXTRA_FIELD_MAP = {
     google: {
       fields: ['doorbell_indoor_chime_settings'],
       translate: ({ raw }) => raw?.value?.doorbell_indoor_chime_settings?.chimeEnabled === true,
-    },
-    nest: {
-      fields: ['properties'],
-      translate: ({ raw }) => raw?.value?.properties?.['doorbell.indoor_chime.enabled'] === true,
     },
   },
 };

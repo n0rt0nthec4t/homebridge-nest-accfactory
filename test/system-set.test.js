@@ -5,7 +5,7 @@ import { DATA_SOURCE } from '../src/consts.js';
 import { platformHarness } from './helpers/platform-harness.js';
 
 async function setup(context, source, response, options = {}) {
-  let id = options.id ?? (source === DATA_SOURCE.GOOGLE ? 'DEVICE_TEST' : 'topaz.TEST');
+  let id = options.id ?? 'DEVICE_TEST';
   let writes = [];
   let flow = await platformHarness(context, {
     source,
@@ -37,40 +37,6 @@ async function setup(context, source, response, options = {}) {
     return typeof response === 'function' ? response(...args) : response;
   };
   return { ...flow, id, writes };
-}
-
-for (let id of ['topaz.TEST', 'quartz.TEST']) {
-  test('REST failure rejects SET without committing requested values: ' + id, async (context) => {
-    let failure = new Error('HTTP 503');
-    let key = id.startsWith('topaz.') === true ? 'ntp_green_led_enable' : 'streaming_enabled';
-    let flow = await setup(
-      context,
-      DATA_SOURCE.NEST,
-      () => {
-        throw failure;
-      },
-      { id, initial: { [key]: false } },
-    );
-    await assert.rejects(flow.device.set({ uuid: id, [key]: true }), (error) => {
-      assert.ok(error instanceof AggregateError);
-      assert.deepEqual(error.errors, [failure]);
-      return true;
-    });
-    assert.equal(flow.writes.length, 1);
-    assert.equal(flow.device.deviceData[key], false);
-  });
-}
-
-for (let [id, response, key] of [
-  ['topaz.TEST', { objects: [] }, 'ntp_green_led_enable'],
-  ['quartz.TEST', { status: 1 }, 'streaming_enabled'],
-]) {
-  test('REST application rejection propagates: ' + id, async (context) => {
-    let flow = await setup(context, DATA_SOURCE.NEST, response, { id, initial: { [key]: false } });
-    await assert.rejects(flow.device.set({ uuid: id, [key]: true }), AggregateError);
-    assert.equal(flow.writes.length, 1, 'The supported setting must reach the application rejection');
-    assert.equal(flow.device.deviceData[key], false);
-  });
 }
 
 for (let command of [false, true]) {
@@ -182,12 +148,6 @@ for (let code of [undefined, 0]) {
   });
 }
 
-test('successful REST SET still commits', async (context) => {
-  let flow = await setup(context, DATA_SOURCE.NEST, { objects: [{}] }, { initial: { ntp_green_led_enable: false } });
-  await flow.device.set({ uuid: flow.id, ntp_green_led_enable: true });
-  assert.equal(flow.device.deviceData.ntp_green_led_enable, true);
-});
-
 for (let reason of ['missing resource', 'missing connection', 'unauthorised connection', 'missing transport']) {
   test('unavailable connection or transport rejects SET: ' + reason, async (context) => {
     let flow = await setup(context, DATA_SOURCE.GOOGLE, {});
@@ -205,170 +165,57 @@ for (let reason of ['missing resource', 'missing connection', 'unauthorised conn
   });
 }
 
-for (let source of [DATA_SOURCE.NEST, DATA_SOURCE.GOOGLE]) {
-  test('System removes HomeKit routing before ' + source + ' SET without mutating the request', async (context) => {
-    let flow = await setup(context, source, {});
-    let api = source === DATA_SOURCE.NEST ? flow.connection.nestAPI : flow.connection.googleAPI;
-    let send = context.mock.method(api, 'set', async () => undefined);
-    let values = { uuid: flow.id, temperature_scale: 'F' };
-    await flow.device.set(values);
-    assert.deepEqual(send.mock.calls[0].arguments, [flow.id, { temperature_scale: 'F' }]);
-    assert.deepEqual(values, { uuid: flow.id, temperature_scale: 'F' });
-  });
-}
-
-for (let [key, property, requested, encoded = requested] of [
-  ['indoor_chime_enabled', 'doorbell.indoor_chime.enabled', true],
-  ['streaming_enabled', 'streaming.enabled', false],
-  ['audio_enabled', 'audio.enabled', true],
-  ['statusled_brightness', 'statusled.brightness', 0],
-  ['statusled_brightness', 'statusled.brightness', 1],
-  ['statusled_brightness', 'statusled.brightness', '1'],
-  ['irled_enabled', 'irled.state', true, 'auto_on'],
-  ['irled_enabled', 'irled.state', false, 'always_off'],
-]) {
-  test('Nest camera setting reaches the property endpoint: ' + key + '=' + requested, async (context) => {
-    let flow = await setup(context, DATA_SOURCE.NEST, { status: 0 }, { id: 'quartz.TEST', initial: { [key]: null } });
-    let before = structuredClone(flow.raw[flow.id]);
-    await flow.device.set({ uuid: flow.id, [key]: requested });
-    assert.equal(flow.writes.length, 1);
-    let [method, url, options, body] = flow.writes[0];
-    assert.equal(method, 'post');
-    assert.equal(url, 'https://webapi.camera.invalid/api/dropcams.set_properties');
-    assert.equal(options.headers.Authorization, 'Basic fixture-token');
-    assert.equal(options.headers['Content-Type'], 'application/x-www-form-urlencoded');
-    assert.equal(options.retry, 3);
-    assert.equal(body, property + '=' + encoded + '&uuid=TEST');
-    assert.equal(flow.device.deviceData[key], requested);
-    assert.deepEqual(flow.raw[flow.id], before, 'A successful write must await subscription reconciliation of the source cache');
-  });
-}
-
-for (let [key, requested] of [
-  ['indoor_chime_enabled', 1],
-  ['streaming_enabled', 'true'],
-  ['audio_enabled', null],
-  ['statusled_brightness', 2],
-  ['statusled_brightness', 0.5],
-  ['irled_enabled', 'always_on'],
-  ['irled_enabled', 'auto_on'],
-  ['irled_enabled', 'always_off'],
-  ['irled_enabled', 'false'],
-  ['irled_enabled', 0],
-  ['temperature_scale', 'F'],
-  ['unknown_setting', true],
-]) {
-  test('Nest camera rejects unsupported property values before sending: ' + key + '=' + requested, async (context) => {
-    let flow = await setup(context, DATA_SOURCE.NEST, { status: 0 }, { id: 'quartz.TEST' });
-    let before = structuredClone(flow.device.deviceData);
-    await assert.rejects(flow.device.set({ uuid: flow.id, [key]: requested }), AggregateError);
-    assert.equal(flow.writes.length, 0);
-    assert.deepEqual(flow.device.deviceData, before);
-  });
-}
-
-test('a rejected Nest camera setting still attempts remaining fields without committing partial success', async (context) => {
-  let flow = await setup(context, DATA_SOURCE.NEST, { status: 0 }, { id: 'quartz.TEST', initial: { streaming_enabled: true } });
-  await assert.rejects(flow.device.set({ uuid: flow.id, statusled_brightness: 2, streaming_enabled: false }), (error) => {
-    assert.ok(error instanceof AggregateError);
-    assert.equal(error.errors.length, 1);
-    return true;
-  });
-  assert.equal(flow.writes.length, 1);
-  assert.equal(flow.writes[0][3], 'streaming.enabled=false&uuid=TEST');
-  assert.equal(flow.device.deviceData.streaming_enabled, true);
+test('System removes HomeKit routing before ' + DATA_SOURCE.GOOGLE + ' SET without mutating the request', async (context) => {
+  let flow = await setup(context, DATA_SOURCE.GOOGLE, {});
+  let api = flow.connection.googleAPI;
+  let send = context.mock.method(api, 'set', async () => undefined);
+  let values = { uuid: flow.id, temperature_scale: 'F' };
+  await flow.device.set(values);
+  assert.deepEqual(send.mock.calls[0].arguments, [flow.id, { temperature_scale: 'F' }]);
+  assert.deepEqual(values, { uuid: flow.id, temperature_scale: 'F' });
 });
 
-for (let source of [DATA_SOURCE.NEST, DATA_SOURCE.GOOGLE]) {
-  for (let failedStage of [0, 1]) {
-    test('compound thermostat write stops dependent fields after failure: ' + source + '/' + failedStage, async (context) => {
-      let attempt = 0;
-      let id = source === DATA_SOURCE.NEST ? 'device.TEST' : 'DEVICE_TEST';
-      let value =
-        source === DATA_SOURCE.NEST
-          ? { eco: { mode: 'manual-eco' } }
-          : {
-              eco_mode_state: { ecoMode: 'ECO_MODE_MANUAL_ECO' },
-              display_settings: {},
-              target_temperature_settings: {
-                enabled: { value: true },
-                targetTemperature: { setpointType: 'SET_POINT_TYPE_HEAT', heatingTarget: { value: 19 }, coolingTarget: { value: 25 } },
-              },
-            };
-      let flow = await setup(
-        context,
-        source,
-        () => {
-          let failed = attempt++ === failedStage;
-          return source === DATA_SOURCE.NEST
-            ? { objects: failed === true ? [] : [{}] }
-            : {
-                status: failed === true ? 4 : 0,
-                data: [{ traitOperations: [{ progress: 'COMPLETE', status: { code: 0 } }] }],
-              };
-        },
-        { id, value },
-      );
-      if (source === DATA_SOURCE.NEST) {
-        flow.connection.nestAPI.resources.set('shared.TEST', {
-          source,
-          value: { can_heat: true, can_cool: true, target_temperature_type: 'heat' },
-        });
-      }
-      // Property order must not send mode before Eco Off. Independent display
-      // units still get their existing partial-success attempt after a failure.
-      await assert.rejects(
-        flow.device.set({
-          uuid: id,
-          hvac_mode: 'cool',
-          target_temperature_high: 26,
-          eco_mode: 'off',
-          temperature_scale: 'F',
-        }),
-        AggregateError,
-      );
-      assert.equal(flow.writes.length, failedStage === 0 ? 2 : 3);
-      if (source === DATA_SOURCE.GOOGLE) {
-        assert.equal(flow.writes[0][2], 'SendCommand');
-        assert.equal(flow.writes[0][3].resourceCommands[0].traitLabel, 'eco_mode_state');
-        assert.equal(flow.writes.at(-1)[3].batchUpdateStateRequest[0].traitRequest.traitLabel, 'display_settings');
-      } else {
-        assert.deepEqual(JSON.parse(flow.writes[0][3]).objects[0].value, { eco: { mode: 'schedule' } });
-        assert.deepEqual(JSON.parse(flow.writes.at(-1)[3]).objects[0].value, { temperature_scale: 'F' });
-      }
-    });
-  }
-}
-
-for (let [mode, key] of [
-  ['heat', 'target_temperature_low'],
-  ['cool', 'target_temperature_high'],
-  ['range', 'target_temperature_low'],
-]) {
-  test('REST compound Eco exit applies a normal target before subscription echo: ' + mode, async (context) => {
+for (let failedStage of [0, 1]) {
+  test('compound thermostat write stops dependent fields after failure: ' + DATA_SOURCE.GOOGLE + '/' + failedStage, async (context) => {
+    let attempt = 0;
+    let id = 'DEVICE_TEST';
+    let value = {
+      eco_mode_state: { ecoMode: 'ECO_MODE_MANUAL_ECO' },
+      display_settings: {},
+      target_temperature_settings: {
+        enabled: { value: true },
+        targetTemperature: { setpointType: 'SET_POINT_TYPE_HEAT', heatingTarget: { value: 19 }, coolingTarget: { value: 25 } },
+      },
+    };
     let flow = await setup(
       context,
-      DATA_SOURCE.NEST,
-      { objects: [{}] },
-      {
-        id: 'device.TEST',
-        value: { eco: { mode: 'manual-eco' }, away_temperature_low: 12, away_temperature_high: 28 },
+      DATA_SOURCE.GOOGLE,
+      () => {
+        let failed = attempt++ === failedStage;
+        return {
+          status: failed === true ? 4 : 0,
+          data: [{ traitOperations: [{ progress: 'COMPLETE', status: { code: 0 } }] }],
+        };
       },
+      { id, value },
     );
-    flow.connection.nestAPI.resources.set('shared.TEST', {
-      source: DATA_SOURCE.NEST,
-      value: { can_heat: true, can_cool: true, target_temperature_type: 'heat' },
-    });
-    let before = structuredClone(flow.connection.nestAPI.resources.get('device.TEST'));
-    await flow.device.set({ uuid: 'device.TEST', eco_mode: 'off', hvac_mode: mode, [key]: 23 });
-    assert.deepEqual(
-      flow.writes.map((request) => JSON.parse(request[3]).objects[0]),
-      [
-        { object_key: 'device.TEST', op: 'MERGE', value: { eco: { mode: 'schedule' } } },
-        { object_key: 'shared.TEST', op: 'MERGE', value: { target_change_pending: true, target_temperature_type: mode } },
-        { object_key: 'shared.TEST', op: 'MERGE', value: { target_change_pending: true, [key]: 23 } },
-      ],
+
+    // Property order must not send mode before Eco Off. Independent display
+    // units still get their existing partial-success attempt after a failure.
+    await assert.rejects(
+      flow.device.set({
+        uuid: id,
+        hvac_mode: 'cool',
+        target_temperature_high: 26,
+        eco_mode: 'off',
+        temperature_scale: 'F',
+      }),
+      AggregateError,
     );
-    assert.deepEqual(flow.connection.nestAPI.resources.get('device.TEST'), before);
+    assert.equal(flow.writes.length, failedStage === 0 ? 2 : 3);
+
+    assert.equal(flow.writes[0][2], 'SendCommand');
+    assert.equal(flow.writes[0][3].resourceCommands[0].traitLabel, 'eco_mode_state');
+    assert.equal(flow.writes.at(-1)[3].batchUpdateStateRequest[0].traitRequest.traitLabel, 'display_settings');
   });
 }

@@ -60,7 +60,7 @@ function hasSafetySummaryFailure(raw, failureType) {
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.PROTECT;
-  static VERSION = '2026.11.08'; // Code version
+  static VERSION = '2026.11.23'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -332,22 +332,11 @@ const PROTECT_FIELD_MAP = {
           ? raw.value.device_identity.serialNumber.trim().toUpperCase()
           : undefined,
     },
-    nest: {
-      fields: [],
-      translate: ({ raw }) =>
-        typeof raw?.value?.serial_number === 'string' && raw.value.serial_number.trim() !== ''
-          ? raw.value.serial_number.trim().toUpperCase()
-          : undefined,
-    },
   },
 
   nest_google_device_uuid: {
     required: true,
     google: {
-      fields: [],
-      translate: ({ objectKey }) => objectKey,
-    },
-    nest: {
       fields: [],
       translate: ({ objectKey }) => objectKey,
     },
@@ -357,13 +346,6 @@ const PROTECT_FIELD_MAP = {
     google: {
       fields: ['device_info'],
       translate: ({ raw }) => raw?.value?.device_info?.pairerId?.resourceId,
-    },
-    nest: {
-      fields: ['structure_id'],
-      translate: ({ raw }) =>
-        typeof raw?.value?.structure_id === 'string' && raw.value.structure_id.trim() !== ''
-          ? 'structure.' + raw.value.structure_id.trim()
-          : undefined,
     },
   },
 
@@ -386,23 +368,6 @@ const PROTECT_FIELD_MAP = {
                 : 'Protect (unknown)';
       },
     },
-    nest: {
-      fields: ['serial_number', 'wired_or_battery'],
-      translate: ({ raw }) => {
-        let model =
-          raw?.value?.serial_number?.substring?.(0, 2) === '06'
-            ? 'Protect (2nd gen)'
-            : raw?.value?.serial_number?.substring?.(0, 2) === '05'
-              ? 'Protect (1st gen)'
-              : 'Protect (unknown)';
-
-        return raw?.value?.wired_or_battery === 1
-          ? model.replace(/\bgen\)/, 'gen, battery)')
-          : raw?.value?.wired_or_battery === 0
-            ? model.replace(/\bgen\)/, 'gen, wired)')
-            : model;
-      },
-    },
   },
 
   softwareVersion: {
@@ -414,13 +379,6 @@ const PROTECT_FIELD_MAP = {
           ? processSoftwareVersion(raw.value.device_identity.softwareVersion)
           : undefined,
     },
-    nest: {
-      fields: ['software_version'],
-      translate: ({ raw }) =>
-        typeof raw?.value?.software_version === 'string' && raw.value.software_version.trim() !== ''
-          ? processSoftwareVersion(raw.value.software_version)
-          : undefined,
-    },
   },
 
   description: {
@@ -428,11 +386,6 @@ const PROTECT_FIELD_MAP = {
     google: {
       fields: ['label', 'device_info', 'device_located_settings'],
       related: ['located_annotations'],
-      translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
-    },
-    nest: {
-      fields: ['description', 'structure_id', 'where_id'],
-      related: ['wheres'],
       translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
     },
   },
@@ -444,11 +397,6 @@ const PROTECT_FIELD_MAP = {
       fields: ['liveness'],
       translate: ({ raw }) => raw?.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
     },
-    nest: {
-      fields: ['thread_mac_address'],
-      related: ['online'],
-      translate: ({ rawData, raw }) => rawData?.['widget_track.' + raw?.value?.thread_mac_address?.toUpperCase?.()]?.value?.online === true,
-    },
   },
 
   line_power_present: {
@@ -456,20 +404,12 @@ const PROTECT_FIELD_MAP = {
       fields: ['wall_power'],
       translate: ({ raw }) => raw?.value?.wall_power?.status === 'POWER_SOURCE_STATUS_ACTIVE',
     },
-    nest: {
-      fields: ['line_power_present'],
-      translate: ({ raw }) => raw?.value?.line_power_present === true,
-    },
   },
 
   wired_or_battery: {
     google: {
       fields: ['wall_power'],
       translate: ({ raw }) => raw?.value?.wall_power?.present !== true,
-    },
-    nest: {
-      fields: ['wired_or_battery'],
-      translate: ({ raw }) => raw?.value?.wired_or_battery === 1,
     },
   },
 
@@ -483,13 +423,6 @@ const PROTECT_FIELD_MAP = {
           : ['BATTERY_REPLACEMENT_INDICATOR_SOON', 'BATTERY_REPLACEMENT_INDICATOR_IMMEDIATELY'].includes(indicator) === true
               ? true
               : undefined;
-      },
-    },
-    nest: {
-      fields: ['battery_health_state'],
-      translate: ({ raw }) => {
-        let state = raw?.value?.battery_health_state;
-        return Number.isInteger(state) === true && state >= 0 ? state !== 0 : undefined;
       },
     },
   },
@@ -522,13 +455,6 @@ const PROTECT_FIELD_MAP = {
         return Number.isFinite(voltage) === true ? Math.round(scaleValue(voltage, 4.5, 5.4, 0, 100)) : undefined;
       },
     },
-    nest: {
-      fields: ['battery_level'],
-      translate: ({ raw }) =>
-        Number.isFinite(Number(raw?.value?.battery_level)) === true && Number(raw.value.battery_level) > 0
-          ? Math.round(scaleValue(Number(raw.value.battery_level), 4500, 5400, 0, 100))
-          : undefined,
-    },
   },
 
   smoke_status: {
@@ -536,10 +462,6 @@ const PROTECT_FIELD_MAP = {
     google: {
       fields: ['safety_alarm_smoke'],
       translate: ({ raw }) => raw?.value?.safety_alarm_smoke?.alarmState === 'ALARM_STATE_ALARM',
-    },
-    nest: {
-      fields: ['smoke_status'],
-      translate: ({ raw }) => raw?.value?.smoke_status !== 0,
     },
   },
 
@@ -549,20 +471,12 @@ const PROTECT_FIELD_MAP = {
       fields: ['safety_alarm_co'],
       translate: ({ raw }) => raw?.value?.safety_alarm_co?.alarmState === 'ALARM_STATE_ALARM',
     },
-    nest: {
-      fields: ['co_status'],
-      translate: ({ raw }) => raw?.value?.co_status !== 0,
-    },
   },
 
   heat_status: {
     google: {
       fields: ['temperature'],
       translate: ({ raw }) => raw?.value?.temperature?.faultInformation?.type === 'TEMPERATURE_FAULT_TYPE_OUT_OF_NORMAL_RANGE',
-    },
-    nest: {
-      fields: ['heat_status'],
-      translate: ({ raw }) => raw?.value?.heat_status !== 0,
     },
   },
 
@@ -573,20 +487,12 @@ const PROTECT_FIELD_MAP = {
         raw?.value?.safety_alarm_smoke?.silenceState === 'SILENCE_STATE_SILENCED' ||
         raw?.value?.safety_alarm_co?.silenceState === 'SILENCE_STATE_SILENCED',
     },
-    nest: {
-      fields: ['hushed_state'],
-      translate: ({ raw }) => raw?.value?.hushed_state === true,
-    },
   },
 
   ntp_green_led_enable: {
     google: {
       fields: ['night_time_promise_settings'],
       translate: ({ raw }) => raw?.value?.night_time_promise_settings?.greenLedEnabled === true,
-    },
-    nest: {
-      fields: ['ntp_green_led_enable'],
-      translate: ({ raw }) => raw?.value?.ntp_green_led_enable === true,
     },
   },
 
@@ -603,10 +509,6 @@ const PROTECT_FIELD_MAP = {
               : raw?.value?.smoke?.infraredLedFault?.type === 'SMOKE_FAULT_TYPE_NONE' &&
                 raw?.value?.smoke?.blueLedFault?.type === 'SMOKE_FAULT_TYPE_NONE',
     },
-    nest: {
-      fields: ['component_smoke_test_passed'],
-      translate: ({ raw }) => raw?.value?.component_smoke_test_passed === true,
-    },
   },
 
   heat_test_passed: {
@@ -620,10 +522,6 @@ const PROTECT_FIELD_MAP = {
             : raw?.value?.temperature?.faultInformation === undefined
               ? true
               : raw?.value?.temperature?.faultInformation?.type === 'TEMPERATURE_FAULT_TYPE_NONE',
-    },
-    nest: {
-      fields: ['component_temp_test_passed'],
-      translate: ({ raw }) => raw?.value?.component_temp_test_passed === true,
     },
   },
 
@@ -639,10 +537,6 @@ const PROTECT_FIELD_MAP = {
               ? true
               : raw?.value?.carbon_monoxide?.faultInformation?.type === 'CO_FAULT_TYPE_NONE',
     },
-    nest: {
-      fields: ['component_co_test_passed'],
-      translate: ({ raw }) => raw?.value?.component_co_test_passed === true,
-    },
   },
 
   latest_alarm_test: {
@@ -653,13 +547,6 @@ const PROTECT_FIELD_MAP = {
           ? Number(raw.value.self_test.lastMstEnd.seconds)
           : undefined,
     },
-    nest: {
-      fields: ['latest_manual_test_end_utc_secs'],
-      translate: ({ raw }) =>
-        Number.isFinite(Number(raw?.value?.latest_manual_test_end_utc_secs)) === true
-          ? Number(raw.value.latest_manual_test_end_utc_secs)
-          : undefined,
-    },
   },
 
   self_test_in_progress: {
@@ -667,11 +554,6 @@ const PROTECT_FIELD_MAP = {
       fields: ['legacy_structure_self_test'],
       translate: ({ raw }) =>
         raw?.value?.legacy_structure_self_test?.mstInProgress === true || raw?.value?.legacy_structure_self_test?.astInProgress === true,
-    },
-    nest: {
-      fields: ['structure_id'],
-      related: ['manual_self_test_in_progress'],
-      translate: ({ rawData, raw }) => rawData?.['safety.' + raw?.value?.structure_id]?.value?.manual_self_test_in_progress === true,
     },
   },
 
@@ -684,11 +566,6 @@ const PROTECT_FIELD_MAP = {
           ? Number(raw.value.legacy_protect_device_settings.replaceByDate.seconds)
           : undefined,
     },
-    nest: {
-      fields: ['replace_by_date_utc_secs'],
-      translate: ({ raw }) =>
-        Number.isFinite(Number(raw?.value?.replace_by_date_utc_secs)) === true ? Number(raw.value.replace_by_date_utc_secs) : undefined,
-    },
   },
 
   topaz_hush_key: {
@@ -699,14 +576,6 @@ const PROTECT_FIELD_MAP = {
           ? raw.value.safety_structure_settings.structureHushKey
           : '',
     },
-    nest: {
-      fields: ['structure_id'],
-      related: ['topaz_hush_key'],
-      translate: ({ rawData, raw }) =>
-        typeof rawData?.['structure.' + raw?.value?.structure_id]?.value?.topaz_hush_key === 'string'
-          ? rawData['structure.' + raw.value.structure_id].value.topaz_hush_key
-          : '',
-    },
   },
 
   detected_motion: {
@@ -715,14 +584,10 @@ const PROTECT_FIELD_MAP = {
       translate: ({ raw }) =>
         typeof raw?.value?.legacy_protect_device_info === 'object' ? raw.value.legacy_protect_device_info.autoAway !== true : false,
     },
-    nest: {
-      fields: ['auto_away'],
-      translate: ({ raw }) => raw?.value?.auto_away === false,
-    },
   },
 };
 
-// Function to process our RAW Nest or Google data for protect devices
+// Process protobuf data for Protect devices
 export function processRawData(log, rawData, config, deviceType = undefined, changedData = undefined) {
   if (
     rawData === null ||
@@ -740,46 +605,31 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
   Object.entries(rawData)
     .filter(
       ([key, value]) =>
-        key.startsWith('topaz.') === true ||
-        (key.startsWith('DEVICE_') === true && PROTOBUF_RESOURCES.PROTECT.includes(value?.value?.device_info?.typeName) === true),
+        key.startsWith('DEVICE_') === true &&
+        value?.source === DATA_SOURCE.GOOGLE &&
+        PROTOBUF_RESOURCES.PROTECT.includes(value?.value?.device_info?.typeName) === true,
     )
     .forEach(([object_key, value]) => {
       try {
-        // REST state also depends on its home, location, self-test and connectivity buckets.
-        let resourceKeys =
-          value?.source === DATA_SOURCE.NEST
-            ? [
-                object_key,
-                'where.' + value?.value?.structure_id,
-                'safety.' + value?.value?.structure_id,
-                'structure.' + value?.value?.structure_id,
-                'widget_track.' + value?.value?.thread_mac_address?.toUpperCase?.(),
-              ]
-            : [object_key, value?.value?.device_info?.pairerId?.resourceId];
+        // Parent traits may arrive separately from device traits.
+        let resourceKeys = [object_key, value?.value?.device_info?.pairerId?.resourceId];
         if (changedData instanceof Map && resourceKeys.some((key) => changedData.has(key)) === false) {
           return;
         }
 
-        // Only process valid Google or Nest Protect resources
+        // Only publish configured protobuf devices with an available parent.
         if (
-          (value?.source !== DATA_SOURCE.GOOGLE && value?.source !== DATA_SOURCE.NEST) ||
-          (value?.source === DATA_SOURCE.GOOGLE &&
-            (value?.value?.configuration_done?.deviceReady !== true ||
-              rawData?.[value?.value?.device_info?.pairerId?.resourceId] === undefined)) ||
-          (value?.source === DATA_SOURCE.NEST &&
-            (rawData?.['where.' + value?.value?.structure_id] === undefined ||
-              rawData?.['safety.' + value?.value?.structure_id] === undefined ||
-              rawData?.['widget_track.' + value?.value?.thread_mac_address?.toUpperCase?.()] === undefined))
+          value?.value?.configuration_done?.deviceReady !== true ||
+          rawData?.[value?.value?.device_info?.pairerId?.resourceId] === undefined
         ) {
           return;
         }
 
-        // Build a complete candidate from cached fields for either source, including split startup data.
+        // Rebuild from committed traits so split startup data stays supported.
         let mappedResult = buildMappedObject(
           PROTECT_FIELD_MAP,
           createMappingContext(rawData, object_key, {
-            nest: value?.source === DATA_SOURCE.NEST ? value : undefined,
-            google: value?.source === DATA_SOURCE.GOOGLE ? value : undefined,
+            google: value,
           }),
           new Set(Object.keys(value?.value ?? {})),
         );

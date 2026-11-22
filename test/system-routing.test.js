@@ -2,7 +2,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { platformHarness } from './helpers/platform-harness.js';
-import { DATA_SOURCE } from '../src/consts.js';
 
 let traits = {
   eco_mode_state: { ecoMode: 'ECO_MODE_INACTIVE' },
@@ -111,25 +110,6 @@ for (let enabled of [true, false]) {
         ? { rcsSourceType: 'RCS_SOURCE_TYPE_SINGLE_SENSOR', activeRcsSensor: { resourceId: 'DEVICE_TEST' } }
         : { rcsSourceType: 'RCS_SOURCE_TYPE_BACKPLATE' },
     );
-  });
-}
-for (let [id, values, expected] of [
-  ['topaz.TEST', { ntp_green_led_enable: true }, 'ntp_green_led_enable'],
-  ['quartz.TEST', { indoor_chime_enabled: false }, 'doorbell.indoor_chime.enabled=false'],
-  ['quartz.TEST', { audio_enabled: false }, 'audio.enabled=false'],
-  ['quartz.TEST', { streaming_enabled: true }, 'streaming.enabled=true'],
-  ['quartz.TEST', { statusled_brightness: 1 }, 'statusled.brightness=1'],
-  ['quartz.TEST', { irled_enabled: true }, 'irled.state=auto_on'],
-  ['quartz.TEST', { irled_enabled: false }, 'irled.state=always_off'],
-]) {
-  test('retained REST SET ' + JSON.stringify(values) + ' on ' + id, async (context) => {
-    let flow = await platformHarness(context, { source: DATA_SOURCE.NEST, id, value: {} });
-    let before = flow.requests.length;
-    await flow.device.set({ uuid: id, ...values });
-    assert.equal(flow.requests.length, before + 1);
-    let request = flow.requests.at(-1);
-    assert.equal(request[3].includes(expected), true);
-    assert.equal(new URL(request[1]).hostname, id.startsWith('quartz.') === true ? 'webapi.camera.invalid' : 'transport.invalid');
   });
 }
 
@@ -336,25 +316,7 @@ for (let values of [
     assert.equal(state.timerSpeed, 'FAN_SPEED_SETTING_STAGE3');
   });
 }
-for (let [id, values] of [
-  ['quartz.TEST', { softwareVersion: 'changed' }],
-  ['quartz.TEST', { streaming_enabled: 'yes' }],
-  ['quartz.TEST', { audio_enabled: null }],
-  ['quartz.TEST', { indoor_chime_enabled: 1 }],
-  ['quartz.TEST', { statusled_brightness: 2 }],
-  ['quartz.TEST', { irled_enabled: 'invalid' }],
-  ['topaz.TEST', { ntp_green_led_enable: 'yes' }],
-  ['topaz.TEST', { audio_enabled: true }],
-]) {
-  test('unsupported REST SET rejects before HTTP: ' + JSON.stringify(values), async (context) => {
-    let flow = await platformHarness(context, { source: DATA_SOURCE.NEST, id, value: {} });
-    let requests = flow.requests.length;
-    let before = structuredClone(flow.device.deviceData);
-    await assert.rejects(flow.device.set({ uuid: id, ...values }), AggregateError);
-    assert.equal(flow.requests.length, requests);
-    assert.deepEqual(flow.device.deviceData, before);
-  });
-}
+
 test('a rejected field prevents local SET commit while other valid fields are still attempted', async (context) => {
   let flow = await platformHarness(context, { value: traits });
   flow.device.deviceData.hvac_mode = 'heat';
@@ -410,11 +372,3 @@ for (let [values, label, expected] of [
     assert.partialDeepStrictEqual(update.state.value, expected);
   });
 }
-test('REST rejects prototype property names instead of treating them as mapped settings', async (context) => {
-  let flow = await platformHarness(context, { source: DATA_SOURCE.NEST, id: 'quartz.TEST', value: {} });
-  let requests = flow.requests.length;
-  for (let key of ['toString', '__proto__']) {
-    await assert.rejects(flow.device.set({ uuid: 'quartz.TEST', [key]: true }));
-  }
-  assert.equal(flow.requests.length, requests);
-});

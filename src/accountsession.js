@@ -2,7 +2,7 @@
 // Part of homebridge-nest-accfactory
 //
 // Authenticates one legacy Nest or Google account and maintains the credential
-// record shared by its REST, protobuf and camera clients.
+// record shared by its protobuf and camera clients.
 //
 // Responsibilities:
 // - Select production or field-test endpoints and perform the account login flow
@@ -13,13 +13,13 @@
 // - Retire timers and late authentication replies on account shutdown
 //
 // Ownership:
-// - Accounts registers the account and coordinates its two API clients
+// - Accounts registers the account and coordinates its protobuf client
 // - API clients retire their own subscriptions and transports on session events
-// - Successful refresh preserves Nest polling and replaces Google Observe transport
+// - Successful refresh replaces the Observe transport
 // - Camera credential notification completes before clients resume ingestion
 // - This session does not own resource data, API transports or HomeKit accessories
 //
-// Code version 2026.11.16
+// Code version 2026.11.23
 // Mark Hulskamp
 'use strict';
 
@@ -40,14 +40,14 @@ export default class AccountSession extends EventEmitter {
   #account = undefined;
   #uuid = undefined;
   #active = true; // False permanently retires this session, including late login replies.
-  #pending = undefined; // Shared login/refresh promise for both API clients and the auth scheduler.
+  #pending = undefined; // Shared login/refresh promise for the protobuf client and the auth scheduler.
   #log = undefined;
   #onAuthorised = undefined;
 
   constructor(account, { uuid, log, onAuthorised } = {}) {
     super();
 
-    // Account type selects only the login exchange. Both clients use this
+    // Account type selects only the login exchange. The protobuf client uses this
     // resulting credential record, including field-test endpoint selection.
     let fieldTest = account.fieldTest === true;
     this.#account = {
@@ -190,7 +190,7 @@ export default class AccountSession extends EventEmitter {
       this.#log?.debug?.('Account "%s" marked unauthorised: %s', account.name, reason);
     }
 
-    // false means authentication was lost: both APIs stop, and Google releases
+    // false means authentication was lost: Observe stops and releases
     // its transport and pending image waiters before the account retries login.
     this.emit('disconnect', false);
 
@@ -272,7 +272,7 @@ export default class AccountSession extends EventEmitter {
 
   async #connectGoogle(account, signal) {
     // Google login has three steps: browser credentials -> OAuth token -> Nest JWT
-    // -> Nest session. The resulting session is shared by REST and protobuf.
+    // -> Nest session. The resulting session is used by protobuf and camera authentication.
     let tokenResponse = await fetchWrapper('get', account.issueToken, {
       signal,
       headers: {
@@ -353,7 +353,7 @@ export default class AccountSession extends EventEmitter {
 
   async #connectNest(account, signal) {
     // Legacy camera endpoints require a website session cookie. Obtain that
-    // separately; REST/protobuf use the token returned by the Nest session endpoint.
+    // separately; Protobuf uses the token returned by the Nest session endpoint.
     let loginResponse = await fetchWrapper(
       'post',
       new URL('/api/v1/login.login_nest', 'https://webapi.' + account.cameraAPIHost).href,
@@ -439,11 +439,10 @@ export default class AccountSession extends EventEmitter {
     );
 
     // true marks a credential replacement rather than lost authentication.
-    // Google closes the old Observe transport; Nest keeps polling and reads the
-    // refreshed token on its next request. Emit before replacing the credentials.
+    // Close the old Observe transport before replacing the credentials.
     this.emit('disconnect', true);
 
-    // Keep one credential record for both API clients and camera transports.
+    // Keep one credential record for the protobuf client and camera transports.
     Object.assign(account, {
       authorised: true,
       allowRetry: true,

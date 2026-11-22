@@ -2,7 +2,7 @@
     "name": "homebridge-nest-accfactory",
     "displayName": "Nest Accfactory",
     "type": "module",
-    "version": "1.0.0-beta.1",
+    "version": "1.0.0-beta.2",
     "description": "Your Nest devices. At home in Apple Home. A Homebridge plugin with HomeKit Secure Video support for cameras and doorbells.",
     "author": "n0rt0nthec4t",
     "license": "Apache-2.0",
@@ -39,20 +39,21 @@
     ],
     "main": "dist/index.js",
     "engines": {
-        "node": "^22.13.0 || ^24 || ^26",
-        "homebridge": "^1.11.4 || ^2.4.0"
+        "node": "^24 || ^26",
+        "homebridge": "^2.4.0"
     },
     "files": [
         "LICENSE",
         "dist/**/*",
+        "homebridge-ui/**/*",
         "config.schema.json",
         "README.md",
         "CHANGELOG.md"
     ],
     "scripts": {
         "clean": "node scripts/clean.js",
-        "format": "prettier --write \"{src,test,scripts}/**/*.{js,mjs}\" \"!src/{HomeKitDevice,HomeKitHistory,fetchWrapper}/**\" && eslint --fix \"src/**/*.{js,mjs}\" \"test/**/*.js\" \"scripts/**/*.js\" --ignore-pattern \"src/{HomeKitDevice,HomeKitHistory,fetchWrapper}/**\"",
-        "lint": "eslint \"src/**/*.{js,mjs}\" \"test/**/*.js\" \"scripts/**/*.js\" --max-warnings=20",
+        "format": "prettier --write \"{src,test,scripts,homebridge-ui}/**/*.{js,mjs}\" \"!src/{HomeKitDevice,HomeKitHistory,fetchWrapper}/**\" && eslint --fix \"src/**/*.{js,mjs}\" \"test/**/*.js\" \"scripts/**/*.js\" \"homebridge-ui/**/*.js\" --ignore-pattern \"src/{HomeKitDevice,HomeKitHistory,fetchWrapper}/**\"",
+        "lint": "eslint \"src/**/*.{js,mjs}\" \"test/**/*.js\" \"scripts/**/*.js\" \"homebridge-ui/**/*.js\" --max-warnings=20",
         "test": "node --test \"test/*.test.js\" \"src/HomeKitDevice/*.test.js\" \"src/HomeKitHistory/*.test.js\" \"src/fetchWrapper/*.test.js\"",
         "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=\"src/**\" --test-coverage-exclude=\"**/*.test.js\" --test-reporter=spec --test-reporter=./test/coverage-reporter.js --test-reporter-destination=stdout --test-reporter-destination=stdout \"test/*.test.js\" \"src/HomeKitDevice/*.test.js\" \"src/HomeKitHistory/*.test.js\" \"src/fetchWrapper/*.test.js\"",
         "check": "npm run lint && npm run test:coverage && npm run build",
@@ -61,12 +62,12 @@
     },
     "devDependencies": {
         "@eslint/js": "^10.0.1",
-        "@stylistic/eslint-plugin": "^6.0.0",
+        "@stylistic/eslint-plugin": "^6.0.1",
         "@types/node": "^26.6.6",
-        "@typescript-eslint/parser": "^8.72.2",
+        "@typescript-eslint/parser": "^8.73.0",
         "eslint": "^10.15.0",
         "globals": "^17.14.0",
-        "homebridge": "^1.11.4 || ^2.4.0",
+        "homebridge": "^2.4.0",
         "prettier": "^3.10.1",
         "prettier-eslint": "^17.1.3"
     },
@@ -74,8 +75,9 @@
         "minimatch": "11.0.1"
     },
     "dependencies": {
+        "@homebridge/plugin-ui-utils": "^2.3.0",
         "chalk": "^6.0.1",
         "protobufjs": "^8.8.1",
-        "werift": "^0.27.0"
+        "werift": "^0.28.0"
     }
 }

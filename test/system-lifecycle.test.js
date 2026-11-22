@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import hap from './helpers/homebridge-hap.js';
 import test from 'node:test';
 import HomeKitDevice from '../src/HomeKitDevice/HomeKitDevice.js';
-import { DATA_SOURCE, DEVICE_TYPE } from '../src/consts.js';
+import { DEVICE_TYPE } from '../src/consts.js';
 import { platformHarness } from './helpers/platform-harness.js';
 
 let data = {
@@ -52,28 +52,7 @@ for (let type of [DEVICE_TYPE.CAMERA, DEVICE_TYPE.WEATHER]) {
     );
   });
 }
-for (let type of [DEVICE_TYPE.CAMERA, DEVICE_TYPE.DOORBELL, DEVICE_TYPE.FLOODLIGHT, DEVICE_TYPE.THERMOSTAT]) {
-  test(type + ' source switching preserves identity and honours Nest fallback policy', async (context) => {
-    let selected = 'quartz.TEST';
-    let flow = await platformHarness(context, {
-      source: DATA_SOURCE.NEST,
-      id: selected,
-      value: { serial_number: 'FIXTURE' },
-      type,
-      map: (raw) => (raw[selected] === undefined ? {} : { FIXTURE: { full: true, data: { ...data, nest_google_device_uuid: selected } } }),
-    });
-    let accessory = flow.device.accessory;
-    assert.equal(flow.device.deviceData.nest_google_device_uuid, 'quartz.TEST');
-    selected = 'DEVICE_TEST';
-    await flow.send(selected, { fixture: {} });
-    assert.equal(flow.device.deviceData.nest_google_device_uuid, 'DEVICE_TEST');
-    selected = 'quartz.TEST';
-    await flow.send('DEVICE_TRIGGER', { fixture: {} });
-    assert.equal(flow.device.deviceData.nest_google_device_uuid, type === DEVICE_TYPE.THERMOSTAT ? 'DEVICE_TEST' : 'quartz.TEST');
-    assert.equal(flow.device.accessory, accessory);
-    assert.equal(flow.registered.length, 1);
-  });
-}
+
 for (let type of [DEVICE_TYPE.CAMERA, DEVICE_TYPE.DOORBELL, DEVICE_TYPE.FLOODLIGHT]) {
   test(type + ' account refresh changes credentials only for its selected resource owner', async (context) => {
     let flow = await platformHarness(context, { type });
@@ -125,5 +104,33 @@ for (let debug of [true, false]) {
         assert.equal(messages[0][0], 'info', 'configuration debug must work without Homebridge debug mode');
       }
     }
+  });
+}
+
+for (let type of [DEVICE_TYPE.CAMERA, DEVICE_TYPE.DOORBELL, DEVICE_TYPE.FLOODLIGHT, DEVICE_TYPE.THERMOSTAT]) {
+  test(type + ' protobuf resource replacement preserves accessory and service identity', async (context) => {
+    let selected = 'DEVICE_TEST';
+    let flow = await platformHarness(context, {
+      type,
+      map: (raw) =>
+        raw[selected] === undefined
+          ? {}
+          : {
+              FIXTURE: { full: true, data: { ...data, nest_google_device_uuid: selected } },
+            },
+    });
+    let accessory = flow.device.accessory;
+    let uuid = accessory.UUID;
+    let services = accessory.services.map((service) => [service.UUID, service.subtype]);
+    selected = 'DEVICE_REPLACEMENT';
+    await flow.send(selected, { fixture: { replacement: true } });
+    assert.equal(flow.device.accessory, accessory);
+    assert.equal(accessory.UUID, uuid);
+    assert.deepEqual(
+      accessory.services.map((service) => [service.UUID, service.subtype]),
+      services,
+    );
+    assert.equal(flow.device.deviceData.nest_google_device_uuid, selected);
+    assert.equal(flow.registered.length, 1);
   });
 }

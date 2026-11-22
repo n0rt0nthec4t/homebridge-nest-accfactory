@@ -8,7 +8,7 @@
 // - Initialise configuration, device modules and the Accounts registry
 // - Apply ordered API batches to the shared raw-data cache
 // - Merge partial resource updates and resolve configured home identifiers
-// - Enrich Google structure locations through the account's Nest REST weather query
+// - Enrich protobuf structure locations through the account's weather query
 // - Acknowledge cache commits independently of HomeKit accessory delivery
 // - Coalesce changed fields and reconcile devices through one delivery worker
 // - Discover, create, update and remove accessories without changing their identity
@@ -23,7 +23,7 @@
 // - Device modules interpret source data, apply source preference and configure HomeKit
 // - API clients own source caches; System owns the combined cache and HomeKit delivery
 //
-// Code version 2026.10.30
+// Code version 2026.11.23
 // Mark Hulskamp
 'use strict';
 
@@ -202,6 +202,9 @@ export default class NestAccfactory {
   // Ingestion: commit source changes before acknowledging the API batch.
   // HomeKit delivery runs separately so a slow accessory cannot block later commits.
   async #applyData(uuid, batch) {
+    if (batch.source !== DATA_SOURCE.GOOGLE) {
+      return false;
+    }
     let changedData = new Map();
 
     // Apply patches in source order. Retired subscription work must stop at the next boundary.
@@ -242,7 +245,7 @@ export default class NestAccfactory {
         let weather = undefined;
 
         try {
-          weather = await this.#accounts?.get(uuid)?.nestAPI?.get(resourceId, 'location_weather', {
+          weather = await this.#accounts?.get(uuid)?.googleAPI?.get(resourceId, 'location_weather', {
             location: { postal_code: location.postalCode.value, country_code: location.countryCode.value },
           });
         } catch (error) {
@@ -514,32 +517,20 @@ export default class NestAccfactory {
               let resourceData = this.#rawData?.[resourceId];
               let newSource = resourceData?.source;
 
-              if (newSource !== undefined && newSource !== trackedDevice.source) {
-                // Data source for this device has changed.
-                // Allow initial source assignment and Nest -> Google upgrades.
-                // Camera, doorbell, and floodlight devices may also move back
-                // from Google -> Nest because streaming can depend on Nest data.
-                if (
-                  trackedDevice.source === undefined ||
-                  (trackedDevice.source === DATA_SOURCE.NEST && newSource === DATA_SOURCE.GOOGLE) ||
-                  ((deviceModule.class.TYPE === DEVICE_TYPE.CAMERA ||
-                    deviceModule.class.TYPE === DEVICE_TYPE.DOORBELL ||
-                    deviceModule.class.TYPE === DEVICE_TYPE.FLOODLIGHT) &&
-                    trackedDevice.source === DATA_SOURCE.GOOGLE)
-                ) {
-                  this?.log?.debug?.(
-                    'Using %s API as data source for "%s" from account "%s"',
-                    newSource,
-                    deviceData.description,
-                    this.#accounts.get(resourceData.connection)?.name,
-                  );
-
-                  trackedDevice.source = newSource;
-                  trackedDevice.nest_google_device_uuid = resourceId;
-                } else {
-                  // Rejected sources must not overwrite accessory state or its cloud ID used for SET commands.
-                  continue;
-                }
+              if (newSource !== DATA_SOURCE.GOOGLE) {
+                continue;
+              }
+              if (trackedDevice.source !== newSource || trackedDevice.nest_google_device_uuid !== resourceId) {
+                this.log?.debug?.(
+                  'Using %s API as data source for "%s" from account "%s"',
+                  newSource,
+                  deviceData.description,
+                  this.#accounts.get(resourceData.connection)?.name,
+                );
+                // Account representations may change while the physical accessory keeps
+                // its serial/UUID. Refresh ownership as well as the HomeKit state.
+                trackedDevice.source = newSource;
+                trackedDevice.nest_google_device_uuid = resourceId;
               }
 
               // Send updated data onto HomeKit device for it to process
@@ -562,7 +553,7 @@ export default class NestAccfactory {
     }
 
     // Use the selected resource source; the API client validates and sends each setting.
-    let api = resource.source === DATA_SOURCE.GOOGLE ? account.googleAPI : account.nestAPI;
+    let api = account.googleAPI;
 
     // HomeKit's routing identifier belongs to this adapter, not the cloud API.
     let settings = { ...values };
@@ -578,18 +569,18 @@ export default class NestAccfactory {
       return;
     }
 
-    // Device queries follow the selected source, while weather always uses Nest REST.
+    // Device queries use the account's protobuf client.
     for (let key of Object.keys(values)) {
       if (key === 'uuid') {
         continue;
       }
 
-      let api = key === 'location_weather' || resource.source !== DATA_SOURCE.GOOGLE ? account?.nestAPI : account?.googleAPI;
+      let api = account?.googleAPI;
 
       // Object-valued queries supply API parameters; legacy true flags use defaults.
       let parameters = typeof values[key] === 'object' && values[key] !== null ? values[key] : undefined;
 
-      // Weather combines sources here. Nest must receive the location explicitly
+      // Weather queries must receive the location explicitly
       // when the selected resource belongs to Google's independent cache.
       if (key === 'location_weather' && parameters?.location === undefined && resource.value?.weather !== undefined) {
         parameters = { ...parameters, location: resource.value.weather };

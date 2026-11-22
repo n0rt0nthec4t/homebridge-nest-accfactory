@@ -24,9 +24,8 @@
 // - Eve Home history integration (5-minute interval recording)
 //
 // Notes:
-// - Prefer complete protobuf sensor data, retaining Nest REST for legacy-only sensors
-// - Sensors may exist in both APIs; select one source per physical serial number
-// - Serial number is used as the unique key across APIs
+// - Translate protobuf sensor data linked through thermostat settings
+// - Physical serial numbers preserve accessory identity across resource updates
 // - Temperature values are normalised before HomeKit presentation
 //
 // Data Translation:
@@ -48,7 +47,7 @@ import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE, CUSTOM
 
 export default class NestTemperatureSensor extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.TEMPSENSOR;
-  static VERSION = '2026.11.18'; // Code version
+  static VERSION = '2026.11.23'; // Code version
 
   batteryService = undefined;
   temperatureService = undefined;
@@ -166,16 +165,6 @@ const TEMPSENSOR_FIELD_MAP = {
           : undefined;
       },
     },
-    nest: {
-      fields: [],
-      translate: ({ raw }) => {
-        let value = raw?.value;
-
-        return typeof value?.serial_number === 'string' && value.serial_number.trim() !== ''
-          ? value.serial_number.trim().toUpperCase()
-          : undefined;
-      },
-    },
   },
 
   nest_google_device_uuid: {
@@ -184,18 +173,10 @@ const TEMPSENSOR_FIELD_MAP = {
       fields: [],
       translate: ({ sensorUUID }) => sensorUUID,
     },
-    nest: {
-      fields: [],
-      translate: ({ sensorUUID }) => sensorUUID,
-    },
   },
 
   nest_google_home_uuid: {
     google: {
-      fields: [],
-      translate: ({ homeUUID }) => homeUUID,
-    },
-    nest: {
       fields: [],
       translate: ({ homeUUID }) => homeUUID,
     },
@@ -218,18 +199,6 @@ const TEMPSENSOR_FIELD_MAP = {
             : 'Temperature Sensor (unknown)';
       },
     },
-    nest: {
-      fields: ['model'],
-      translate: ({ raw }) => {
-        let value = raw?.value;
-
-        return value?.model === 'KRX'
-          ? 'Temperature Sensor (2nd gen)'
-          : value?.model === 'KR1'
-            ? 'Temperature Sensor (1st gen)'
-            : 'Temperature Sensor (unknown)';
-      },
-    },
   },
 
   description: {
@@ -237,11 +206,6 @@ const TEMPSENSOR_FIELD_MAP = {
     google: {
       fields: ['label', 'device_info', 'device_located_settings'],
       related: ['located_annotations'],
-      translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
-    },
-    nest: {
-      fields: ['description', 'structure_id', 'where_id'],
-      related: ['wheres'],
       translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
     },
   },
@@ -258,16 +222,6 @@ const TEMPSENSOR_FIELD_MAP = {
           : undefined;
       },
     },
-    nest: {
-      fields: ['battery_level'],
-      translate: ({ raw }) => {
-        let value = raw?.value;
-
-        return Number.isFinite(Number(value?.battery_level)) === true
-          ? Math.round(scaleValue(Number(value.battery_level), 0, 100, 0, 100))
-          : undefined;
-      },
-    },
   },
 
   current_temperature: {
@@ -279,16 +233,6 @@ const TEMPSENSOR_FIELD_MAP = {
 
         return Number.isFinite(Number(value?.current_temperature?.temperatureValue?.temperature?.value)) === true
           ? adjustTemperature(Number(value.current_temperature.temperatureValue.temperature.value), 'C', 'C', true)
-          : undefined;
-      },
-    },
-    nest: {
-      fields: ['current_temperature'],
-      translate: ({ raw }) => {
-        let value = raw?.value;
-
-        return Number.isFinite(Number(value?.current_temperature)) === true
-          ? adjustTemperature(Number(value.current_temperature), 'C', 'C', true)
           : undefined;
       },
     },
@@ -307,25 +251,10 @@ const TEMPSENSOR_FIELD_MAP = {
         );
       },
     },
-    nest: {
-      fields: ['last_updated_at'],
-      translate: ({ raw }) => {
-        let value = raw?.value;
-
-        return (
-          Number.isFinite(Number(value?.last_updated_at)) === true &&
-          Math.floor(Date.now() / 1000) - Number(value.last_updated_at) < 3600 * 4
-        );
-      },
-    },
   },
 
   associated_thermostat: {
     google: {
-      fields: [],
-      translate: ({ parentUUID }) => parentUUID,
-    },
-    nest: {
       fields: [],
       translate: ({ parentUUID }) => parentUUID,
     },
@@ -336,14 +265,10 @@ const TEMPSENSOR_FIELD_MAP = {
       fields: [],
       translate: ({ active_sensor }) => active_sensor === true,
     },
-    nest: {
-      fields: [],
-      translate: ({ active_sensor }) => active_sensor === true,
-    },
   },
 };
 
-// Prefer complete protobuf sensors, with REST fallback through thermostat RCS buckets.
+// Process protobuf sensors linked through thermostat RCS settings.
 export function processRawData(log, rawData, config, deviceType = undefined, changedData = undefined) {
   if (
     rawData === null ||
@@ -368,14 +293,6 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
       mappedResult.data?.constructor !== Object ||
       typeof serialNumber !== 'string' ||
       serialNumber.trim() === ''
-    ) {
-      return;
-    }
-
-    if (
-      candidates[serialNumber] !== undefined &&
-      rawData[candidates[serialNumber].nest_google_device_uuid]?.source === DATA_SOURCE.GOOGLE &&
-      rawData[mappedResult.data.nest_google_device_uuid]?.source !== DATA_SOURCE.GOOGLE
     ) {
       return;
     }
@@ -424,20 +341,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
             return;
           }
           let pairerUUID = sensorValue?.device_info?.pairerId?.resourceId;
-          if (
-            changedData instanceof Map &&
-            [
-              sensorUUID,
-              object_key,
-              homeUUID,
-              pairerUUID,
-              'kryptonite.' + sensorValue.device_identity?.serialNumber,
-              'device.' + value.value?.device_identity?.serialNumber,
-              'rcs_settings.' + value.value?.device_identity?.serialNumber,
-              'structure.' + rawData['kryptonite.' + sensorValue.device_identity?.serialNumber]?.value?.structure_id,
-              'where.' + rawData['kryptonite.' + sensorValue.device_identity?.serialNumber]?.value?.structure_id,
-            ].some((id) => changedData.has(id)) === false
-          ) {
+          if (changedData instanceof Map && [sensorUUID, object_key, homeUUID, pairerUUID].some((id) => changedData.has(id)) === false) {
             return;
           }
 
@@ -467,53 +371,6 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
         log?.error?.('Error processing temperature sensor data for "%s": %s', object_key, String(error));
       }
     });
-
-  // REST sensors are linked through the thermostat's RCS settings bucket, not
-  // through protobuf pairer traits. Never mutate raw sensor records to add links.
-  for (let [parentUUID, parent] of Object.entries(rawData)) {
-    if (parent.source !== DATA_SOURCE.NEST || parentUUID.startsWith('device.') !== true) {
-      continue;
-    }
-    let rcsId = 'rcs_settings.' + parent.value?.serial_number;
-    let settings = rawData[rcsId]?.value;
-    if (Array.isArray(settings?.associated_rcs_sensors) !== true) {
-      continue;
-    }
-    for (let sensorUUID of settings.associated_rcs_sensors) {
-      let sensorRaw = rawData[sensorUUID];
-      let structure = sensorRaw?.value?.structure_id;
-      let homeUUID = 'structure.' + structure;
-      let whereId = 'where.' + structure;
-      if (
-        sensorRaw?.source !== DATA_SOURCE.NEST ||
-        typeof rawData[homeUUID]?.value !== 'object' ||
-        typeof rawData[whereId]?.value !== 'object'
-      ) {
-        continue;
-      }
-      if (changedData instanceof Map && [parentUUID, rcsId, sensorUUID, homeUUID, whereId].some((id) => changedData.has(id)) === false) {
-        continue;
-      }
-      storeCandidate(
-        buildMappedObject(
-          TEMPSENSOR_FIELD_MAP,
-          createMappingContext(
-            rawData,
-            sensorUUID,
-            { nest: sensorRaw },
-            {
-              sensorUUID,
-              homeUUID,
-              parentUUID,
-              active_sensor: settings.active_rcs_sensors?.includes(sensorUUID) === true,
-            },
-          ),
-          new Set(Object.keys(sensorRaw.value)),
-        ),
-        parentUUID,
-      );
-    }
-  }
 
   Object.values(candidates).forEach((candidate) => {
     if (deviceType !== undefined && (typeof deviceType !== 'string' || deviceType === '' || candidate.type !== deviceType)) {

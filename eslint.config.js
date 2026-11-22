@@ -3,7 +3,7 @@ import stylistic from '@stylistic/eslint-plugin';
 import parserTs from '@typescript-eslint/parser';
 import globals from 'globals';
 
-export default [{
+export default [{ files: ['homebridge-ui/public/**/*.js'], languageOptions: { globals: globals.browser } }, {
   ignores: ['dist'],
   plugins: {
     '@stylistic': stylistic,

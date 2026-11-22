@@ -1,0 +1,98 @@
+<link rel="stylesheet" href="style.css">
+<main class="nest-ui">
+  <header class="project-header">
+    <img src="logo-transparent.png" class="project-logo" width="104" height="104" alt="Nest Accfactory project logo">
+    <div class="project-title"><h1>Nest Accfactory</h1><p><a class="project-website" href="https://n0rt0nthec4t.dev/homebridge-nest-accfactory" target="_blank" rel="noopener noreferrer" aria-label="Your Nest devices. In Apple Home. Project website (opens in a new tab)">Your Nest devices. In Apple Home.</a></p></div>
+  </header>
+  <p id="settings-status" role="status" aria-live="polite"></p>
+  <section id="settings-form" aria-label="Plugin settings">
+    <fieldset id="settings-fields">
+      <details class="settings-card" open>
+        <summary><span>Accounts</span></summary>
+        <div class="card-content">
+          <div id="connection-toolbar" class="section-actions">
+            <button id="add-manual-account" type="button" class="btn btn-secondary">Manual setup</button>
+            <button id="open-connection" type="button" class="btn btn-primary">+ Connect Account</button>
+          </div>
+          <div id="accounts-list"></div>
+          <div id="manual-account-editor" class="editor-panel" hidden></div>
+        </div>
+      </details>
+      <details class="settings-card">
+        <summary><span>Home Settings</span></summary>
+        <div class="card-content">
+          <p class="section-description">Enter the home name as it appears in Nest or Google Home.</p>
+          <div id="homes-list"></div>
+          <div class="section-actions"><button id="add-home" type="button" class="btn btn-secondary">+ Add home</button></div>
+        </div>
+      </details>
+      <details class="settings-card">
+        <summary><span>Device Settings</span></summary>
+        <div class="card-content">
+          <p class="section-description">Global settings apply unless overridden below.</p>
+          <div id="global-device-settings" class="field-grid"></div>
+          <hr><h3>Device Overrides</h3>
+          <p class="section-description">Enter a device serial number to configure its overrides.</p>
+          <div id="devices-list"></div>
+          <div class="section-actions"><button id="add-device" type="button" class="btn btn-secondary">+ Add device override</button></div>
+        </div>
+      </details>
+      <details class="settings-card" open>
+        <summary><span>Options</span></summary>
+        <div id="options-fields" class="card-content"></div>
+      </details>
+      <footer class="settings-footer">
+        <p>Changes apply after saving and restarting Homebridge.</p>
+        <div class="button-row">
+          <button id="cancel-settings" type="button" class="btn btn-secondary">Cancel settings</button>
+          <button id="save-settings" type="button" class="btn btn-primary">Save settings</button>
+        </div>
+      </footer>
+    </fieldset>
+  </section>
+  <section id="connection-panel" class="card mb-3" aria-labelledby="connection-heading" hidden>
+    <div class="card-body">
+      <h3 id="connection-heading">Connect an account</h3>
+      <p class="text-muted">Check the sign-in details for a Google or Nest account.</p>
+      <div id="setup-inputs">
+        <label for="account-target" class="form-label">Account</label>
+        <select id="account-target" class="form-control"></select>
+        <label for="account-type" class="form-label">Account type</label>
+        <select id="account-type" class="form-control">
+          <option value="google">Google</option><option value="nest">Nest</option>
+        </select>
+        <label class="checkbox-label" for="field-test">
+          <input id="field-test" type="checkbox"><span>Use Field Test API</span>
+        </label>
+        <p class="form-text text-muted">Enable only if your account uses Google's field-test environment.</p>
+        <div id="google-fields">
+          <h4>Google sign-in</h4>
+          <p>Use the Issue Token URL and Cookie header from Google sign-in in the Nest website.
+            <a href="https://github.com/n0rt0nthec4t/homebridge-nest-accfactory#google-account" target="_blank" rel="noopener noreferrer">Sign-in instructions</a></p>
+          <label for="issue-token" class="form-label">Issue Token URL</label>
+          <input id="issue-token" type="password" class="form-control" autocomplete="off" spellcheck="false">
+          <label for="account-cookie" class="form-label">Cookie</label>
+          <input id="account-cookie" type="password" class="form-control" autocomplete="off" spellcheck="false">
+        </div>
+        <div id="nest-fields" hidden>
+          <h4>Nest sign-in</h4>
+          <p>For an unmigrated Nest account, enter its existing Nest access token.</p>
+          <label for="access-token" class="form-label">Access Token</label>
+          <input id="access-token" type="password" class="form-control" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+      <div id="connection-review" hidden>
+        <label for="account-name" class="form-label">Account name</label>
+        <input id="account-name" class="form-control" maxlength="128" autocomplete="off" value="Google">
+        <p>Use Add or Update account, then Save settings to apply the change.</p>
+      </div>
+      <p id="connection-status" role="status" aria-live="polite"></p>
+      <div class="button-row">
+        <button id="cancel-connection" type="button" class="btn btn-secondary">Cancel connection</button>
+        <button id="connect" type="button" class="btn btn-primary">Check connection</button>
+        <button id="use-account" type="button" class="btn btn-primary" hidden>Add to Accounts</button>
+      </div>
+    </div>
+  </section>
+</main>
+<script type="module" src="app.js"></script>

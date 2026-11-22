@@ -1,8 +1,7 @@
-// Verify preferred protobuf and fallback REST HVAC discovery, controls and related-state updates.
+// Verify protobuf HVAC discovery, controls, related-state updates and rejection of retired REST data.
 import assert from 'node:assert/strict';
 import { importSource } from './helpers/import-source.js';
 import test from 'node:test';
-import { platformHarness } from './helpers/platform-harness.js';
 import { DATA_SOURCE } from '../src/consts.js';
 
 let { processRawData: heatlink } = await importSource(new URL('../src/plugins/heatlink.js', import.meta.url));
@@ -112,43 +111,6 @@ test('temperature sensors use protobuf identities and react to parent-only selec
   assert.equal(result.SENSOR_SERIAL.data.current_temperature, 23);
   delete raw.DEVICE_THERMOSTAT;
   assert.deepEqual(tempsensor(undefined, raw, { options: {} }), {});
-});
-
-test('protobuf commands retain their routing and incomplete REST devices reject unsupported controls', async (context) => {
-  let raw = rawData();
-  raw.DEVICE_THERMOSTAT.value.eco_mode_state = { ecoMode: 'ECO_MODE_INACTIVE' };
-  raw.DEVICE_THERMOSTAT.value.target_temperature_settings = {
-    targetTemperature: { setpointType: 'SET_POINT_TYPE_HEAT', heatingTarget: { value: 20 } },
-  };
-  // This sensor has no parent relationship, so selecting it cannot form a valid REST write.
-  delete raw['rcs_settings.LEGACY'];
-  raw['topaz.PROTECT'] = { source: DATA_SOURCE.NEST, value: {} };
-  let flow = await platformHarness(context, { id: 'DEVICE_THERMOSTAT', value: raw.DEVICE_THERMOSTAT.value });
-  await flow.sendNest(
-    Object.entries(raw)
-      .filter(([id]) => id.startsWith('DEVICE_') === false && id.startsWith('STRUCTURE_') === false)
-      .map(([object_key, resource]) => ({ object_key, value: resource.value })),
-  );
-  await flow.device.set({ uuid: 'DEVICE_THERMOSTAT', target_temperature: 22, hot_water_boost_active: { state: true, time: 1800 } });
-  assert.equal(flow.commands.length, 2);
-  let temperature = flow.commands[0][3].batchUpdateStateRequest[0];
-  assert.equal(temperature.traitRequest.resourceId, 'DEVICE_THERMOSTAT');
-  assert.equal(temperature.state.value.targetTemperature.heatingTarget.value, 22);
-  assert.equal(flow.commands[1][3].batchUpdateStateRequest[0].traitRequest.traitLabel, 'hot_water_settings');
-  let failures = () => flow.logs.filter((entry) => String(entry[1]).includes('Failed processing set request'));
-  let writes = () => flow.requests.filter((request) => new URL(request[1]).pathname === '/v5/put');
-  assert.deepEqual(failures(), []);
-  await assert.rejects(
-    flow.device.set({ uuid: 'device.LEGACY', target_temperature: 22, hot_water_boost_active: { state: true, time: 1800 } }),
-    AggregateError,
-  );
-  await assert.rejects(flow.device.set({ uuid: 'kryptonite.LEGACY_SENSOR', active_sensor: true }), AggregateError);
-  assert.equal(failures().length, 3, 'Each unsupported setting is rejected without sending an invalid REST request');
-  assert.equal(writes().length, 0);
-  assert.equal(flow.commands.length, 2);
-  await flow.device.set({ uuid: 'topaz.PROTECT', ntp_green_led_enable: true });
-  assert.equal(writes().length, 1);
-  assert.equal(JSON.parse(writes()[0][3]).objects[0].object_key, 'topaz.PROTECT');
 });
 
 for (let [product, model] of [
@@ -301,59 +263,33 @@ function nestData() {
   };
 }
 
-for (let [mode, expected] of [
-  ['schedule', 'off'],
-  ['manual-eco', 'manual'],
-  ['auto-eco', 'auto'],
-  ['MANUAL-ECO', 'manual'],
-  ['unexpected', 'unknown'],
-  [undefined, 'unknown'],
-]) {
-  test('Nest thermostat translates reported Eco mode ' + String(mode), () => {
-    let raw = nestData();
-    raw['device.LEGACY'].value.eco = mode === undefined ? undefined : { mode };
-    let result = thermostat(undefined, raw, { options: {} });
-    assert.equal(result.LEGACY.data.eco_mode, expected);
-  });
-}
-
-test('REST-only thermostat, sensor and Heat Link produce complete candidates using committed related buckets', () => {
-  let raw = nestData();
-  let before = structuredClone(raw);
-  for (let [mapper, serial] of [
-    [thermostat, 'LEGACY'],
-    [tempsensor, 'SENSOR_SERIAL'],
-    [heatlink, 'HEATLINK_SERIAL'],
-  ]) {
-    let result = mapper(undefined, raw, { options: {} });
-    assert.equal(result[serial]?.full, true, JSON.stringify(result));
-    assert.equal(result[serial].data.nest_google_home_uuid, 'structure.HOME');
-    assert.equal(result[serial].data.nest_google_device_uuid, serial === 'SENSOR_SERIAL' ? 'kryptonite.SENSOR_SERIAL' : 'device.LEGACY');
+test('thermostat, sensor and Heat Link reject complete retired REST resources', () => {
+  const raw = nestData();
+  const before = structuredClone(raw);
+  for (const mapper of [thermostat, tempsensor, heatlink]) {
+    assert.deepEqual(mapper(undefined, raw, { options: {} }), {});
   }
-  assert.equal(thermostat(undefined, raw, { options: {} }).LEGACY.data.current_temperature, 19);
-  assert.equal(thermostat(undefined, raw, { options: {} }).LEGACY.data.eco_mode, 'off');
-  assert.equal(tempsensor(undefined, raw, { options: {} }).SENSOR_SERIAL.data.active_sensor, true);
-  assert.deepEqual(raw, before, 'translation must not inject parent links or alter source data');
+  assert.deepEqual(raw, before);
 });
 
-for (let [id, changes, mapper, serial, field, expected] of [
-  ['shared.LEGACY', { target_temperature_low: 23 }, thermostat, 'LEGACY', 'target_temperature_low', 23],
-  ['track.LEGACY', { online: false }, thermostat, 'LEGACY', 'online', false],
-  ['kryptonite.SENSOR_SERIAL', { current_temperature: 17 }, thermostat, 'LEGACY', 'current_temperature', 17],
-  ['rcs_settings.LEGACY', { active_rcs_sensors: [] }, tempsensor, 'SENSOR_SERIAL', 'active_sensor', false],
-  ['device.LEGACY', { hot_water_temperature: 60 }, heatlink, 'HEATLINK_SERIAL', 'hot_water_temperature', 60],
-  ['where.HOME', { wheres: [{ where_id: 'room', name: 'Bedroom' }] }, thermostat, 'LEGACY', 'description', 'Bedroom'],
+for (let [id, changes, mapper] of [
+  ['shared.LEGACY', { target_temperature_low: 23 }, thermostat],
+  ['track.LEGACY', { online: false }, thermostat],
+  ['kryptonite.SENSOR_SERIAL', { current_temperature: 17 }, thermostat],
+  ['rcs_settings.LEGACY', { active_rcs_sensors: [] }, tempsensor],
+  ['device.LEGACY', { hot_water_temperature: 60 }, heatlink],
+  ['where.HOME', { wheres: [{ where_id: 'room', name: 'Bedroom' }] }, thermostat],
 ]) {
-  test('REST related update ' + id + ' refreshes ' + serial + '.' + field, () => {
+  test('retired REST related update ' + id + ' is ignored', () => {
     let raw = nestData();
     Object.assign(raw[id].value, changes);
     let result = mapper(undefined, raw, { options: {} }, undefined, new Map([[id, { fields: new Set(Object.keys(changes)) }]]));
-    assert.equal(result[serial]?.data[field], expected, JSON.stringify(result));
+    assert.deepEqual(result, {});
   });
 }
 
 for (let reverse of [false, true]) {
-  test('protobuf candidates remain preferred over complete REST candidates; reverse=' + reverse, () => {
+  test('protobuf ignores retired REST regardless of resource order; reverse=' + reverse, () => {
     let google = rawData();
     delete google['device.LEGACY'];
     delete google['rcs_settings.LEGACY'];
@@ -374,110 +310,17 @@ for (let reverse of [false, true]) {
           undefined,
           new Map([[changed, { fields: new Set(Object.keys(raw[changed].value)) }]]),
         );
-        assert.equal(result[serial]?.data.nest_google_device_uuid, id, 'REST delta ' + changed + ' must not replace usable protobuf');
+        assert.deepEqual(result, {}, 'REST delta ' + changed + ' must not trigger protobuf reconciliation');
       }
     }
   });
 }
 
-// Feed the complete REST discovery reply through the same platform path as protobuf commands.
-async function restPlatform(context, raw) {
-  return await platformHarness(context, {
-    source: DATA_SOURCE.NEST,
-    id: 'device.LEGACY',
-    subscribe: async () => ({
-      json: async () => ({
-        updated_buckets: Object.entries(raw).map(([object_key, resource]) => ({ object_key, value: resource.value })),
-      }),
-    }),
-  });
-}
-
-for (let [values, bucket, expected] of [
-  [{ target_temperature: 22 }, 'shared.LEGACY', { target_change_pending: true, target_temperature: 22 }],
-  [{ target_temperature_low: 18 }, 'shared.LEGACY', { target_change_pending: true, target_temperature_low: 18 }],
-  [{ target_temperature_high: 26 }, 'shared.LEGACY', { target_change_pending: true, target_temperature_high: 26 }],
-  [{ hvac_mode: 'RANGE' }, 'shared.LEGACY', { target_change_pending: true, target_temperature_type: 'range' }],
-  [{ hvac_mode: 'off' }, 'shared.LEGACY', { target_change_pending: true, target_temperature_type: 'off' }],
-  [{ fan_timer_speed: 2 }, 'device.LEGACY', { fan_timer_speed: 'stage2' }],
-  [
-    { fan_timer_speed: 0, fan_duration: 60, fan_state: false },
-    'device.LEGACY',
-    { fan_state: false, fan_timer_timeout: 0, fan_timer_speed: 'stage1' },
-  ],
-  [{ temperature_lock: true }, 'device.LEGACY', { temperature_lock: true }],
-  [{ temperature_scale: 'f' }, 'device.LEGACY', { temperature_scale: 'F' }],
-  [{ hot_water_boost_active: { state: false } }, 'device.LEGACY', { hot_water_boost_time_to_end: 0 }],
-  [{ hot_water_temperature: 60 }, 'device.LEGACY', { hot_water_temperature: 60 }],
-  [{ target_humidity_humidifier: 50, humidifier_state: true }, 'device.LEGACY', { target_humidity_enabled: true, target_humidity: 50 }],
-  [
-    { dehumidifier_state: false, target_humidity_dehumidifier: 40 },
-    'device.LEGACY',
-    { target_humidity_enabled: false, target_humidity: 40 },
-  ],
-  [{ target_humidity_humidifier: 50 }, 'device.LEGACY', { target_humidity: 50 }],
-  [{ target_humidity_dehumidifier: 40 }, 'device.LEGACY', { target_humidity: 40 }],
-  [{ vacation_mode: true }, 'structure.HOME', { vacation_mode: true }],
-]) {
-  test('REST control ' + JSON.stringify(values) + ' uses the correct bucket without changing cached state', async (context) => {
-    let flow = await restPlatform(context, nestData());
-    let before = structuredClone(flow.raw);
-    await flow.device.set({ uuid: 'device.LEGACY', ...values });
-    let requests = flow.requests.filter((request) => new URL(request[1]).pathname === '/v5/put');
-    assert.equal(requests.length, 1);
-    assert.equal(requests[0][1], 'https://transport.invalid/v5/put');
-    assert.deepEqual(JSON.parse(requests[0][3]).objects, [{ object_key: bucket, op: 'MERGE', value: expected }]);
-    assert.deepEqual(flow.raw, before);
-  });
-}
-
-for (let mode of ['heat', 'cool']) {
-  test('REST ' + mode + ' setpoints wait for source-confirmed Eco Off', async (context) => {
-    let raw = nestData();
-    raw['device.LEGACY'].value.eco.mode = 'manual-eco';
-    raw['shared.LEGACY'].value.target_temperature_type = mode;
-    let flow = await restPlatform(context, raw);
-    await assert.rejects(
-      flow.device.set({ uuid: 'device.LEGACY', target_temperature: 22 }),
-      (error) => error instanceof AggregateError && error.errors[0].code === 'ERR_ECO_TEMPERATURE_READ_ONLY',
-    );
-    assert.equal(flow.requests.filter((request) => new URL(request[1]).pathname === '/v5/put').length, 0);
-    await flow.device.set({ uuid: 'device.LEGACY', eco_mode: 'off' });
-    await assert.rejects(flow.device.set({ uuid: 'device.LEGACY', target_temperature: 22 }), AggregateError);
-    assert.equal(flow.requests.filter((request) => new URL(request[1]).pathname === '/v5/put').length, 1);
-    assert.equal(flow.connection.nestAPI.resources.get('device.LEGACY').value.eco.mode, 'manual-eco');
-  });
-}
-
-for (let values of [
-  { hvac_mode: 'invalid' },
-  { target_temperature: 'invalid' },
-  { fan_state: true, fan_duration: -1 },
-  { fan_state: true, fan_duration: 60, fan_timer_speed: 4 },
-  { temperature_scale: 'K' },
-  { hot_water_boost_active: { state: true, time: -1 } },
-  { target_humidity_humidifier: 101 },
-  { humidifier_state: true, target_humidity_humidifier: 'bad' },
-  { eco_mode: true },
-]) {
-  test('REST invalid setting rejects before network: ' + JSON.stringify(values), async (context) => {
-    let flow = await restPlatform(context, nestData());
-    let requests = flow.requests.length;
-    await assert.rejects(flow.device.set({ uuid: 'device.LEGACY', ...values }), AggregateError);
-    assert.equal(flow.requests.length, requests);
-  });
-}
-
-test('incomplete protobuf leaves complete REST fallback available for thermostat, sensor and Heat Link', () => {
+test('unready protobuf does not fall back to retired REST thermostat, sensor or Heat Link state', () => {
   let raw = { ...rawData(), ...nestData() };
   raw.DEVICE_THERMOSTAT.value.configuration_done.deviceReady = false;
-  for (let [mapper, serial] of [
-    [thermostat, 'LEGACY'],
-    [tempsensor, 'SENSOR_SERIAL'],
-    [heatlink, 'HEATLINK_SERIAL'],
-  ]) {
+  for (let mapper of [thermostat, tempsensor, heatlink]) {
     let result = mapper(undefined, raw, { options: {} });
-    assert.equal(result[serial]?.full, true);
-    assert.match(result[serial].data.nest_google_device_uuid, /^(device|kryptonite)\./);
+    assert.deepEqual(result, {});
   }
 });

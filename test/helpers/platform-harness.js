@@ -1,11 +1,10 @@
 // Start the real platform against injected account/discovery/HTTP boundaries.
-// Tests feed Observe/subscribe messages and exercise public device SET/GET routes without exposing private methods.
+// Tests feed Observe messages and exercise public device SET/GET routes without exposing private methods.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import hap from './homebridge-hap.js';
 import { setImmediate } from 'node:timers/promises';
 import HomeKitDevice from '../../src/HomeKitDevice/HomeKitDevice.js';
-import { DATA_SOURCE } from '../../src/consts.js';
 import { importSource } from './import-source.js';
 import { runtime, resetRuntime, clearTimers } from './platform-runtime.js';
 
@@ -16,15 +15,12 @@ let source = (await readFile(location, 'utf8'))
   .replace('from \'./fetchWrapper.js\'', 'from ' + JSON.stringify(boundary))
   .replace('from \'node:timers\'', 'from ' + JSON.stringify(boundary));
 // Ingestion classes retain their real code; redirect only HTTP and timer boundaries.
-let apiClasses = {};
-for (let name of ['nest', 'google']) {
-  let apiLocation = new URL('../../src/api/' + name + '.js', import.meta.url);
-  let apiSource = (await readFile(apiLocation, 'utf8'))
-    .replace('from \'../fetchWrapper.js\'', 'from ' + JSON.stringify(boundary))
-    .replace('from \'node:timers\'', 'from ' + JSON.stringify(boundary))
-    .replace('from \'../grpctransport.js\'', 'from ' + JSON.stringify(boundary));
-  apiClasses[name] = (await importSource(apiLocation, apiSource)).default;
-}
+let apiLocation = new URL('../../src/api/google.js', import.meta.url);
+let apiSource = (await readFile(apiLocation, 'utf8'))
+  .replace('from \'../fetchWrapper.js\'', 'from ' + JSON.stringify(boundary))
+  .replace('from \'node:timers\'', 'from ' + JSON.stringify(boundary))
+  .replace('from \'../grpctransport.js\'', 'from ' + JSON.stringify(boundary));
+let { default: GoogleAPI } = await importSource(apiLocation, apiSource);
 let { default: Platform } = await importSource(location, source);
 let { default: Accounts } = await importSource(new URL('../../src/accounts.js', import.meta.url));
 HomeKitDevice.PLUGIN_NAME = 'platform-harness';
@@ -50,7 +46,6 @@ export async function platformHarness(context, options = {}) {
     referer: 'home.invalid',
     restAPIHost: 'rest.invalid',
     cameraAPIHost: 'camera.invalid',
-    transport_url: 'https://transport.invalid',
     token: 'fixture-token',
     userID: 'fixture-user',
     cameraAuth: { key: 'Authorization', value: 'Basic ', token: 'fixture-token' },
@@ -70,14 +65,12 @@ export async function platformHarness(context, options = {}) {
   accounts.start = () => {};
   accounts.shutdown = () => {
     for (let account of accounts.values()) {
-      account.nestAPI?.disconnect();
       account.googleAPI?.disconnect();
       account.authorised = false;
     }
     pending.resolve({ status: 0 });
   };
   let markUnauthorised = (...args) => {
-    connection.nestAPI?.disconnect();
     connection.googleAPI?.disconnect();
     connection.authorised = false;
     logs.push(['unauthorised', ...args]);
@@ -107,36 +100,14 @@ export async function platformHarness(context, options = {}) {
           return run;
         },
       };
-      account.nestAPI ??= new apiClasses.nest(options);
-      account.googleAPI ??= new apiClasses.google(options);
+      account.googleAPI ??= new GoogleAPI(options);
       await supplied.onAuthorised(uuid, account, details);
-      if (details.wasAuthorised !== true) {
-        account.nestAPI.connect();
-      }
       account.googleAPI.connect();
     };
     return accounts;
   });
-  let subscription = Promise.withResolvers();
-  // Resolve the live REST request rather than injecting data into either cache.
-  // Each reply prepares the next poll; tests can advance its timer explicitly.
-  let sendNest = async (objects) => {
-    let request = subscription;
-    subscription = Promise.withResolvers();
-    request.resolve({ json: async () => ({ updated_buckets: objects }) });
-    await setImmediate();
-  };
   runtime.fetch = async (...args) => {
     requests.push(args);
-    if (String(args[1]).includes('/app_launch') === true || String(args[1]).includes('/v5/subscribe') === true) {
-      if (typeof options.subscribe === 'function') {
-        return options.subscribe(...args);
-      }
-      return subscription.promise;
-    }
-    if (String(args[1]).includes('cameras.get_with_properties') === true) {
-      return { json: async () => ({ items: [{ properties: {} }] }) };
-    }
     if (typeof options.fetch === 'function') {
       return options.fetch(...args);
     }
@@ -169,7 +140,6 @@ export async function platformHarness(context, options = {}) {
     for (let callback of callbacks.get('shutdown') ?? []) {
       await callback();
     }
-    subscription.resolve({ json: async () => ({ objects: [] }) });
     await setImmediate();
     clearTimers();
   });
@@ -189,11 +159,7 @@ export async function platformHarness(context, options = {}) {
     await setImmediate();
   };
   let id = options.id ?? 'DEVICE_TEST';
-  if (options.source === DATA_SOURCE.NEST) {
-    await sendNest([{ object_key: id, value: options.value ?? {} }]);
-  } else {
-    await send(id, options.value ?? { fixture: {} });
-  }
+  await send(id, options.value ?? { fixture: {} });
   return {
     platform,
     connection,
@@ -205,7 +171,6 @@ export async function platformHarness(context, options = {}) {
     observations,
     logs,
     send,
-    sendNest,
     consume,
     pending,
     authorise,

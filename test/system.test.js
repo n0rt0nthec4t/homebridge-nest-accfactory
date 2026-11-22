@@ -1,5 +1,5 @@
 // Exercise account ownership, source selection and diagnostics through the real platform lifecycle.
-// Network and device mapping remain fixture boundaries; System and both API clients retain their source bodies.
+// Network and device mapping remain fixture boundaries; System and the protobuf client retain their source bodies.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate } from 'node:timers/promises';
@@ -35,7 +35,6 @@ for (let type of [DEVICE_TYPE.CAMERA, DEVICE_TYPE.DOORBELL, DEVICE_TYPE.FLOODLIG
     });
     let other = {
       ...flow.connection,
-      nestAPI: undefined,
       googleAPI: undefined,
       dataQueue: Promise.resolve(),
       grpcTransport: { ...flow.connection.grpcTransport },
@@ -61,10 +60,10 @@ for (let type of [DEVICE_TYPE.CAMERA, DEVICE_TYPE.DOORBELL, DEVICE_TYPE.FLOODLIG
   });
 }
 
-test('camera credential refresh follows the resource owner across Nest/Google source switches', async (context) => {
-  let selected = 'quartz.TEST';
+test('camera credential refresh follows the resource owner across protobuf resource switches', async (context) => {
+  let selected = 'DEVICE_OLD';
   let flow = await platformHarness(context, {
-    source: DATA_SOURCE.NEST,
+    source: DATA_SOURCE.GOOGLE,
     id: selected,
     type: DEVICE_TYPE.CAMERA,
     map: (raw) => (raw[selected] === undefined ? {} : { FIXTURE: { full: true, data: { ...data, nest_google_device_uuid: selected } } }),
@@ -72,7 +71,6 @@ test('camera credential refresh follows the resource owner across Nest/Google so
   let accessory = flow.device.accessory;
   let other = {
     ...flow.connection,
-    nestAPI: undefined,
     googleAPI: undefined,
     dataQueue: Promise.resolve(),
     grpcTransport: { ...flow.connection.grpcTransport },
@@ -81,9 +79,9 @@ test('camera credential refresh follows the resource owner across Nest/Google so
   flow.accounts.set('other', other);
   await flow.authorise('other', other);
   for (let [resource, owner] of [
-    ['quartz.TEST', 'account'],
+    ['DEVICE_OLD', 'account'],
     ['DEVICE_GOOGLE', 'other'],
-    ['quartz.TEST', 'account'],
+    ['DEVICE_OLD', 'account'],
   ]) {
     selected = resource;
     await flow.send('DEVICE_GOOGLE', { fixture: { selected: resource } });
@@ -105,16 +103,12 @@ test('camera credential refresh follows the resource owner across Nest/Google so
 test('credential refresh skips a tracked camera after its selected resource disappears', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'] });
   let flow = await platformHarness(context, {
-    source: DATA_SOURCE.NEST,
-    id: 'quartz.TEST',
+    source: DATA_SOURCE.GOOGLE,
+    id: 'DEVICE_OLD',
     type: DEVICE_TYPE.CAMERA,
   });
-  // Structure membership removes a REST resource without recreating its accessory.
-  context.mock.timers.tick(1000);
-  await flow.sendNest([{ object_key: 'structure.HOME', value: { swarm: ['quartz.TEST'] } }]);
-  context.mock.timers.tick(1000);
-  await flow.sendNest([{ object_key: 'structure.HOME', value: { swarm: [] } }]);
-  assert.equal(flow.raw['quartz.TEST'], undefined);
+  await flow.consume({ resourceMetas: [{ resourceId: 'DEVICE_OLD', status: 'REMOVED' }] });
+  assert.equal(flow.raw['DEVICE_OLD'], undefined);
   runtime.messages.length = 0;
   await flow.authorise('account', flow.connection, { wasAuthorised: true });
   assert.deepEqual(runtime.messages, []);
@@ -154,70 +148,3 @@ test('enabled support dumps redact secrets without changing raw or accessory dat
   assert.equal(flow.raw.DEVICE_TEST.value.fixture.access_token, 'Private Account Token');
   assert.equal(flow.device.deviceData.nest_google_device_uuid, 'DEVICE_TEST');
 });
-
-// Both resources map to one accessory. Drive source selection through actual ingestion,
-// then verify SET dispatch reaches the selected API rather than only checking mapped state.
-for (let type of [
-  DEVICE_TYPE.THERMOSTAT,
-  DEVICE_TYPE.PROTECT,
-  DEVICE_TYPE.TEMPSENSOR,
-  DEVICE_TYPE.CAMERA,
-  DEVICE_TYPE.DOORBELL,
-  DEVICE_TYPE.FLOODLIGHT,
-]) {
-  for (let initialSource of [DATA_SOURCE.NEST, DATA_SOURCE.GOOGLE]) {
-    test(type + ' source preference and SET routing, first source=' + initialSource, async (context) => {
-      context.mock.timers.enable({ apis: ['setTimeout'] });
-      let selected = initialSource === DATA_SOURCE.NEST ? 'quartz.TEST' : 'DEVICE_TEST';
-      let full = true;
-      let flow = await platformHarness(context, {
-        type,
-        source: initialSource,
-        id: selected,
-        value: initialSource === DATA_SOURCE.NEST ? { temperature: 20 } : { fixture: { temperature: 20 } },
-        map: (raw) =>
-          raw[selected] === undefined
-            ? {}
-            : {
-                FIXTURE: {
-                  full,
-                  data: {
-                    ...data,
-                    nest_google_device_uuid: selected,
-                    current_temperature: raw[selected].value.fixture?.temperature ?? raw[selected].value.temperature,
-                  },
-                },
-              },
-      });
-      let accessory = flow.device.accessory;
-      if (initialSource === DATA_SOURCE.GOOGLE) {
-        await flow.sendNest([{ object_key: 'quartz.TEST', value: { temperature: 19 } }]);
-      }
-      full = false;
-      selected = 'DEVICE_TEST';
-      await flow.send(selected, { fixture: { temperature: 21 } });
-      let before = runtime.messages.length;
-      selected = 'quartz.TEST';
-      context.mock.timers.tick(1000);
-      await flow.sendNest([{ object_key: selected, value: { temperature: 19 } }]);
-      let camera = [DEVICE_TYPE.CAMERA, DEVICE_TYPE.DOORBELL, DEVICE_TYPE.FLOODLIGHT].includes(type);
-      assert.equal(flow.device.deviceData.current_temperature, camera === true ? 19 : 21);
-      assert.equal(runtime.messages.length, before + (camera === true ? 1 : 0));
-      assert.equal(flow.device.deviceData.nest_google_device_uuid, camera === true ? 'quartz.TEST' : 'DEVICE_TEST');
-      let nestSet = context.mock.method(flow.connection.nestAPI, 'set', async () => {});
-      let googleSet = context.mock.method(flow.connection.googleAPI, 'set', async () => {});
-      await flow.device.set({ uuid: flow.device.deviceData.nest_google_device_uuid, target_temperature: 23 });
-      assert.equal(nestSet.mock.calls.length, camera === true ? 1 : 0);
-      assert.equal(googleSet.mock.calls.length, camera === true ? 0 : 1);
-      assert.equal((camera === true ? nestSet : googleSet).mock.calls[0].arguments[0], camera === true ? 'quartz.TEST' : 'DEVICE_TEST');
-      selected = 'DEVICE_TEST';
-      await flow.send(selected, { fixture: { temperature: 22 } });
-      assert.equal(flow.device.deviceData.current_temperature, 22);
-      assert.equal(flow.device.deviceData.nest_google_device_uuid, 'DEVICE_TEST');
-      await flow.device.set({ uuid: 'DEVICE_TEST', target_temperature: 24 });
-      assert.equal(googleSet.mock.calls.at(-1).arguments[0], 'DEVICE_TEST');
-      assert.equal(flow.device.accessory, accessory);
-      assert.equal(flow.registered.length, 1);
-    });
-  }
-}

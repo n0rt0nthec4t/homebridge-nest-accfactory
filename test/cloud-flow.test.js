@@ -7,7 +7,6 @@ import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
 import { importSource } from './helpers/import-source.js';
 import HomeKitDevice from '../src/HomeKitDevice/HomeKitDevice.js';
-let { default: NestAPI } = await importSource(new URL('../src/api/nest.js', import.meta.url));
 let transportModule =
   'data:text/javascript,' +
   encodeURIComponent(
@@ -33,7 +32,7 @@ function trait(resourceId, traitLabel, values, state = 'ACCEPTED') {
   return { traitId: { resourceId, traitLabel }, stateTypes: [state], patch: { values: structuredClone(values) } };
 }
 async function setup(context, options = {}) {
-  // Both API clients run; isolate REST polling unless this test supplies its own cloud fixture.
+  // Keep unexpected HTTP requests isolated; device state arrives through Observe.
   if (globalThis.fetch.mock === undefined) {
     context.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ objects: [] })));
   }
@@ -49,7 +48,6 @@ async function setup(context, options = {}) {
     name: 'Test',
     referer: 'home.invalid',
     restAPIHost: 'rest.invalid',
-    transport_url: 'https://transport.invalid',
     token: 'fixture-token',
     userID: 'fixture-user',
     type: 'Google',
@@ -68,7 +66,6 @@ async function setup(context, options = {}) {
   let accounts = new Map([['account', connection]]);
   accounts.start = () => {};
   accounts.shutdown = () => {
-    connection.nestAPI?.disconnect();
     connection.googleAPI?.disconnect();
     connection.authorised = false;
     pending.resolve({ status: 0 });
@@ -85,7 +82,6 @@ async function setup(context, options = {}) {
           on() {},
           markUnauthorised: () => {
             account.authorised = false;
-            account.nestAPI.disconnect();
             account.googleAPI.disconnect();
           },
         },
@@ -95,11 +91,9 @@ async function setup(context, options = {}) {
           return run;
         },
       };
-      account.nestAPI = new NestAPI(options);
       grpcRuntime.transport = account.grpcTransport;
       account.googleAPI = new GoogleAPI(options);
       await supplied.onAuthorised(uuid, account);
-      await account.nestAPI.connect();
       await account.googleAPI.connect();
     };
     return accounts;
@@ -279,57 +273,6 @@ test('HomeKit SET completes the real command route and rejects failed cloud writ
   assert.equal(flow.device.deviceData.temperature_scale, 'C');
   await setImmediate();
   assert.equal(flow.registered.length, 1);
-});
-
-test('Nest REST ingestion creates Protect and withholds incomplete thermostat/sensor buckets', { timeout: 2000 }, async (context) => {
-  let { default: Protect } = await importSource(new URL('../src/plugins/protect.js', import.meta.url));
-  let protect;
-  let ready = Promise.withResolvers();
-  let original = Protect.prototype.onUpdate;
-  context.mock.method(Protect.prototype, 'onUpdate', function (data) {
-    protect = this;
-    let result = original.call(this, data);
-    ready.resolve();
-    return result;
-  });
-  let requests = [];
-  let buckets = [
-    ['where.home', { wheres: [{ where_id: 'ROOM', name: 'Kitchen' }] }],
-    ['safety.home', { manual_self_test_in_progress: false }],
-    ['widget_track.AABB', { online: true }],
-    [
-      'topaz.REST',
-      {
-        serial_number: 'REST_PROTECT',
-        structure_id: 'home',
-        where_id: 'ROOM',
-        software_version: '1.0.0',
-        description: 'Protect',
-        thread_mac_address: 'aabb',
-        smoke_status: 0,
-        co_status: 0,
-        replace_by_date_utc_secs: 2000000000,
-        component_smoke_test_passed: true,
-        component_co_test_passed: true,
-      },
-    ],
-    ['device.RETIRED', { serial_number: 'RETIRED', hvac_mode: 'heat' }],
-    ['kryptonite.RETIRED', { serial_number: 'RETIRED_SENSOR' }],
-  ];
-  context.mock.method(globalThis, 'fetch', async (url) => {
-    requests.push(String(url));
-    return new Response(JSON.stringify({ updated_buckets: buckets.map(([object_key, value]) => ({ object_key, value })) }));
-  });
-  // The test account supplies only fixture credentials and never opens a real remote connection.
-  let flow = await setup(context, { options: { eveHistory: false } });
-  context.after(() => protect?.remove());
-  await ready.promise;
-  assert.equal(requests.length, 1);
-  assert.equal(new URL(requests[0]).hostname, 'rest.invalid');
-  assert.equal(flow.registered.length, 1);
-  assert.equal(protect.deviceData.serialNumber, 'REST_PROTECT');
-  assert.equal(protect.smokeService.getCharacteristic(hap.Characteristic.SmokeDetected).value, 0);
-  assert.equal(protect.smokeService.getCharacteristic(hap.Characteristic.StatusActive).value, true);
 });
 
 for (let mode of ['ECO_MODE_MANUAL_ECO', 'ECO_MODE_AUTO_ECO']) {

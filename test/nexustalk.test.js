@@ -10,6 +10,7 @@ import { sequenceParameterSet } from './helpers/h264-fixtures.js';
 import { setImmediate } from 'node:timers/promises';
 import { getProtoRoot, getProtoType } from '../src/protobuf.js';
 import RTPMuxer from '../src/plugins/camera/rtpmuxer.js';
+import GrpcTransport from '../src/grpctransport.js';
 import { adts } from './helpers/aac-fixtures.js';
 import { nexusPacket as packet, nexusSocket } from './helpers/nexustalk-fixtures.js';
 
@@ -75,6 +76,7 @@ function setup(t, options = {}) {
   t.after(async () => {
     active = false;
     await transport.close();
+    await transport.shutdown();
     for (let socket of sockets) {
       socket.emit('close');
     }
@@ -1192,3 +1194,201 @@ for (let [codec, rate] of [
     );
   });
 }
+
+for (let [uuid, expected] of [
+  ['quartz.12345678-abcd-4321-abcd-123456789abc', '12345678-abcd-4321-abcd-123456789abc'],
+  ['12345678-abcd-4321-abcd-123456789abc', '12345678-abcd-4321-abcd-123456789abc'],
+]) {
+  for (let google of [false, true]) {
+    test('NexusTalk Hello strips resource prefixes with preserved credentials: ' + uuid + ', Google=' + google, async (context) => {
+      let apiAccess = { token: 'camera-token-fixture', ...(google === true ? { oauth2: 'oauth-fixture' } : {}) };
+      let flow = setup(context, { uuid, apiAccess });
+      let socket = await open(flow);
+      let hello = root.lookupType('nest.nexustalk.v1.Hello').decode(socket.writes[1]);
+      let auth = root.lookupType('nest.nexustalk.v1.AuthoriseRequest').decode(hello.authoriseRequest);
+      assert.equal(hello.uuid, expected);
+      assert.equal(flow.transport.uuid, uuid, 'resource identity stays intact for routing and updates');
+      assert.equal(google === true ? auth.oliveToken : auth.sessionToken, apiAccess.token);
+      assert.equal(google === true ? auth.sessionToken : auth.oliveToken, '');
+    });
+  }
+}
+
+function graph(deviceId = 'DEVICE_FABRICATED', cameraId = 'quartz.original-camera') {
+  return {
+    data: [
+      {
+        homes: [
+          {
+            devices: [
+              {
+                otherIds: {
+                  otherThirdPartyId: [
+                    { idType: 'PHX', id: 'DEVICE_OTHER' },
+                    { idType: 'CAMERA', id: 'quartz.wrong-camera' },
+                  ],
+                },
+              },
+              {
+                otherIds: {
+                  otherThirdPartyId: [
+                    { idType: 'PHX', id: deviceId },
+                    { idType: 'CAMERA', id: cameraId },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function foyer(context, response = graph()) {
+  let requests = [];
+  let releases = context.mock.method(GrpcTransport.prototype, 'release', () => {});
+  context.mock.method(GrpcTransport.prototype, 'command', (...args) => {
+    requests.push(args);
+    return typeof response === 'function' ? response() : Promise.resolve(response);
+  });
+  let flow = setup(context, { uuid: 'DEVICE_FABRICATED', apiAccess: { token: 'existing-camera-token', oauth2: 'oauth-fixture' } });
+  return { ...flow, requests, releases };
+}
+
+test('NexusTalk constructor resolves the CAMERA alias on the matching PHX device before Hello', async (context) => {
+  let flow = foyer(context);
+  assert.equal(flow.requests.length, 1);
+  assert.deepEqual(flow.requests[0].slice(0, 3), ['google.internal.home.foyer.v1.', 'StructuresService', 'GetHomeGraph']);
+  let opening = flow.transport.open();
+  assert.equal(flow.sockets.length, 0);
+  await setImmediate();
+  let socket = flow.sockets.at(-1);
+  socket.handshake();
+  await opening;
+  let hello = root.lookupType('nest.nexustalk.v1.Hello').decode(socket.writes[1]);
+  let auth = root.lookupType('nest.nexustalk.v1.AuthoriseRequest').decode(hello.authoriseRequest);
+  assert.equal(hello.uuid, 'original-camera');
+  assert.equal(flow.transport.uuid, 'DEVICE_FABRICATED');
+  assert.equal(auth.oliveToken, 'existing-camera-token');
+  assert.equal(flow.requests.length, 1);
+  assert.equal(flow.releases.mock.callCount(), 1);
+  begin(socket);
+  assert.equal(flow.transport.connected, true);
+  await flow.transport.open();
+  assert.equal(flow.transport.connected, true, 'a repeated open preserves the active connection state');
+  assert.equal(flow.sockets.length, 1);
+  await flow.transport.update({ host: 'camera.example' });
+  assert.equal(flow.requests.length, 1);
+});
+
+for (let [label, response] of [
+  ['unmatched PHX', graph('DEVICE_OTHER')],
+  ['invalid CAMERA alias', graph('DEVICE_FABRICATED', 'DEVICE_NOT_QUARTZ')],
+  ['empty CAMERA alias', graph('DEVICE_FABRICATED', 'quartz.')],
+  ['missing graph', {}],
+  ['request failure', () => Promise.reject(new Error('Bearer fabricated-secret'))],
+]) {
+  test('NexusTalk does not guess a camera ID after ' + label, async (context) => {
+    let flow = foyer(context, response);
+    await flow.transport.open();
+    assert.equal(flow.sockets.length, 0);
+    assert.equal(flow.transport.closed, true);
+    assert.equal(flow.releases.mock.callCount(), 1);
+  });
+}
+
+test('NexusTalk protobuf IDs without OAuth do not start Foyer or TLS', async (context) => {
+  let request = context.mock.method(GrpcTransport.prototype, 'command', () => assert.fail('Unexpected Foyer request'));
+  let flow = setup(context, { uuid: 'DEVICE_FABRICATED' });
+  await flow.transport.open();
+  assert.equal(flow.sockets.length, 0);
+  assert.equal(request.mock.callCount(), 0);
+});
+
+for (let action of ['close', 'shutdown']) {
+  test('NexusTalk pending lookup cannot open TLS after ' + action, async (context) => {
+    let resolve;
+    let flow = foyer(
+      context,
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    let opening = flow.transport.open();
+    let stopping = flow.transport[action]();
+    resolve(graph());
+    await Promise.all([opening, stopping]);
+    assert.equal(flow.sockets.length, 0);
+    assert.equal(flow.releases.mock.callCount(), 1);
+  });
+}
+
+test('NexusTalk ignores a superseded credential lookup and resolves with current credentials', async (context) => {
+  let resolvers = [];
+  let flow = foyer(context, () => new Promise((resolve) => resolvers.push(resolve)));
+  let oldOpen = flow.transport.open();
+  await flow.transport.update({ uuid: 'DEVICE_REPLACEMENT', apiAccess: { token: 'replacement-token', oauth2: 'replacement-oauth' } });
+  assert.equal(flow.requests.length, 2);
+  resolvers[0](graph());
+  await oldOpen;
+  assert.equal(flow.sockets.length, 0);
+  let opening = flow.transport.open();
+  resolvers[1](graph('DEVICE_REPLACEMENT', 'quartz.replacement-camera'));
+  await setImmediate();
+  let socket = flow.sockets.at(-1);
+  socket.handshake();
+  await opening;
+  let hello = root.lookupType('nest.nexustalk.v1.Hello').decode(socket.writes[1]);
+  assert.equal(hello.uuid, 'replacement-camera');
+  let auth = root.lookupType('nest.nexustalk.v1.AuthoriseRequest').decode(hello.authoriseRequest);
+  assert.equal(auth.oliveToken, 'replacement-token');
+  assert.equal(flow.releases.mock.callCount(), 2);
+});
+
+test('NexusTalk retries shared lookup on open after constructor prefetch failed', async (context) => {
+  let requests = 0;
+  let flow = foyer(context, () => (++requests === 1 ? Promise.reject(new Error('fixture unavailable')) : Promise.resolve(graph())));
+  await setImmediate();
+  let opening = flow.transport.open();
+  await setImmediate();
+  let socket = flow.sockets.at(-1);
+  socket.handshake();
+  await opening;
+  let hello = root.lookupType('nest.nexustalk.v1.Hello').decode(socket.writes[1]);
+  assert.equal(hello.uuid, 'original-camera');
+  assert.equal(requests, 2);
+  assert.equal(flow.releases.mock.callCount(), 2);
+});
+
+test('NexusTalk changing field-test mode does not let an older open close its replacement', async (context) => {
+  let resolvers = [];
+  let flow = foyer(context, () => new Promise((resolve) => resolvers.push(resolve)));
+  let previous = flow.transport.open();
+  await flow.transport.update({ fieldTest: true });
+  let replacement = flow.transport.open();
+  resolvers[0](graph());
+  await previous;
+  assert.equal(flow.transport.connecting, true);
+  assert.equal(flow.sockets.length, 0);
+  resolvers[1](graph());
+  await setImmediate();
+  flow.sockets.at(-1).handshake();
+  await replacement;
+  assert.equal(flow.sockets.length, 1);
+});
+
+test('NexusTalk superseded lookup releases its client after replacement shutdown without adopting its result', async (context) => {
+  let resolvers = [];
+  let flow = foyer(context, () => new Promise((resolve) => resolvers.push(resolve)));
+  await flow.transport.update({ uuid: 'DEVICE_REPLACEMENT', apiAccess: { token: 'replacement-token', oauth2: 'replacement-oauth' } });
+  resolvers[1](graph('DEVICE_REPLACEMENT', 'quartz.replacement-camera'));
+  await setImmediate();
+  await flow.transport.shutdown();
+  resolvers[0](graph());
+  await setImmediate();
+  await flow.transport.open();
+  assert.equal(flow.sockets.length, 0);
+  assert.equal(flow.releases.mock.callCount(), 2);
+});

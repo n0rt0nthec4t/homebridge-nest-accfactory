@@ -1,5 +1,5 @@
 // Verify camera cleanup uses managed FFmpeg completion without Homebridge, media backends or network sockets.
-// Code version 2026.11.19
+// Code version 2026.11.23
 import assert from 'node:assert/strict';
 import { importSource } from './helpers/import-source.js';
 import { Buffer } from 'node:buffer';
@@ -48,69 +48,52 @@ source = source.replace(/from '([^']+)'/g, (match, specifier) => {
 });
 let { default: Camera, processRawData } = await importSource(location, source);
 
-test('Nest and Google cameras default to two live viewers and forward configured counts independently of HKSV', (t) => {
+test('Protobuf cameras default to two live viewers and forward configured counts independently of HKSV', (t) => {
   t.mock.method(child_process, 'spawnSync', () => ({ error: new Error('Mock probe') }));
   let log = { warn() {}, info() {}, debug() {} };
   let hap = { H264Profile: {}, H264Level: {}, VideoCodecType: { H264: 0 }, SRTPCryptoSuites: { NONE: 0 } };
-  for (let source of [DATA_SOURCE.NEST, DATA_SOURCE.GOOGLE]) {
-    let resource = source === DATA_SOURCE.NEST ? 'quartz.camera' : 'DEVICE_CAMERA';
-    let value =
-      source === DATA_SOURCE.NEST
-        ? {
-            serial_number: 'CAMERA',
-            structure_id: 'home',
-            model: 'Nest Cam',
-            software_version: '1.0.0',
-            description: 'Camera',
-            streaming_state: 'enabled',
-            audio_input_enabled: false,
-            capabilities: [],
-            nexus_api_http_server_url: 'https://camera.invalid',
-            properties: { 'cc2migration.overview_state': 'NORMAL' },
-          }
-        : {
-            device_identity: { serialNumber: 'CAMERA', softwareVersion: '1.0.0' },
-            device_info: { typeName: 'google.resource.SpencerResource', pairerId: { resourceId: 'STRUCTURE_HOME' } },
-            configuration_done: { deviceReady: true },
-            streaming_protocol: { supportedProtocols: ['PROTOCOL_WEBRTC'] },
-            label: { label: 'Camera' },
-            microphone_settings: {},
-            speaker_volume: {},
-            observation_trigger_capabilities: {},
-            liveness: {},
-            recording_toggle: {},
-          };
-    let raw = { [resource]: { source, value }, 'where.home': { value: { wheres: [] } }, STRUCTURE_HOME: { value: {} } };
-    let changed = new Map([[resource, { fields: new Set(Object.keys(value)) }]]);
-    for (let maxStreams of [undefined, 1, 2, 3, 4]) {
-      for (let hksv of [false, true]) {
-        let config = processConfig({ options: { maxStreams, hksv }, devices: [{ serialNumber: 'CAMERA', hksv }] }, log, {});
-        let result = processRawData(log, raw, config, undefined, changed).CAMERA;
-        assert.equal(result?.full, true, source + ' fixture must produce a complete camera');
-        assert.equal(result.data.maxStreams, maxStreams ?? 2);
-        let camera = new Camera(undefined, { hap }, result.data);
-        assert.equal(camera.generateControllerOptions().cameraStreamCount, maxStreams ?? 2);
-      }
+  let source = DATA_SOURCE.GOOGLE;
+  let resource = 'DEVICE_CAMERA';
+  let value = {
+    device_identity: { serialNumber: 'CAMERA', softwareVersion: '1.0.0' },
+    device_info: { typeName: 'google.resource.SpencerResource', pairerId: { resourceId: 'STRUCTURE_HOME' } },
+    configuration_done: { deviceReady: true },
+    streaming_protocol: { supportedProtocols: ['PROTOCOL_WEBRTC'] },
+    label: { label: 'Camera' },
+    microphone_settings: {},
+    speaker_volume: {},
+    observation_trigger_capabilities: {},
+    liveness: {},
+    recording_toggle: {},
+  };
+  let raw = { [resource]: { source, value }, STRUCTURE_HOME: { value: {} } };
+  let changed = new Map([[resource, { fields: new Set(Object.keys(value)) }]]);
+  for (let maxStreams of [undefined, 1, 2, 3, 4]) {
+    for (let hksv of [false, true]) {
+      let config = processConfig({ options: { maxStreams, hksv }, devices: [{ serialNumber: 'CAMERA', hksv }] }, log, {});
+      let result = processRawData(log, raw, config, undefined, changed).CAMERA;
+      assert.equal(result?.full, true, source + ' fixture must produce a complete camera');
+      assert.equal(result.data.maxStreams, maxStreams ?? 2);
+      let camera = new Camera(undefined, { hap }, result.data);
+      assert.equal(camera.generateControllerOptions().cameraStreamCount, maxStreams ?? 2);
     }
-    // Both source schemas must produce the same ratio without inventing a value when metadata is absent or invalid.
-    for (let [width, height, expected] of [[4, 3, 4 / 3], [16, 9, 16 / 9], [0, 3, undefined], [4, 0, undefined], [-4, 3, undefined]]) {
-      if (source === DATA_SOURCE.NEST) {
-        value.capabilities = ['aspect_ratio_' + width + 'x' + height];
-      } else {
-        value.aspect_ratio = { widthRelative: width, heightRelative: height };
-      }
-      let config = processConfig({}, log, {});
-      let fields = new Set([source === DATA_SOURCE.NEST ? 'capabilities' : 'aspect_ratio']);
-      let result = processRawData(log, raw, config, undefined, new Map([[resource, { fields }]])).CAMERA;
-      assert.equal(result.data.aspect_ratio, expected);
-    }
-    if (source === DATA_SOURCE.NEST) {
-      value.capabilities = [];
-    } else {
-      delete value.aspect_ratio;
-    }
-    assert.equal(processRawData(log, raw, processConfig({}, log, {})).CAMERA.data.aspect_ratio, undefined);
   }
+  // Protobuf ratios must not invent a value when metadata is absent or invalid.
+  for (let [width, height, expected] of [
+    [4, 3, 4 / 3],
+    [16, 9, 16 / 9],
+    [0, 3, undefined],
+    [4, 0, undefined],
+    [-4, 3, undefined],
+  ]) {
+    value.aspect_ratio = { widthRelative: width, heightRelative: height };
+    let config = processConfig({}, log, {});
+    let fields = new Set(['aspect_ratio']);
+    let result = processRawData(log, raw, config, undefined, new Map([[resource, { fields }]])).CAMERA;
+    assert.equal(result.data.aspect_ratio, expected);
+  }
+  delete value.aspect_ratio;
+  assert.equal(processRawData(log, raw, processConfig({}, log, {})).CAMERA.data.aspect_ratio, undefined);
 });
 
 function setup(t) {
@@ -300,22 +283,53 @@ for (let ratio of [4 / 3, 16 / 9, undefined, 1, 3 / 4, 0, NaN, 100]) {
     let expectedRatio = [4 / 3, 16 / 9, 1, 3 / 4].includes(ratio) === true ? ratio : 16 / 9;
     assert.equal(setupDetail.mock.callCount(), 0, 'Controller options must not emit setup details');
     assert.ok(recording.length > 0);
-    assert.equal(recording.every(([width, height]) => width <= 1920 && height <= 1080 && width % 2 === 0), true);
+    assert.equal(
+      recording.every(([width, height]) => width <= 1920 && height <= 1080 && width % 2 === 0),
+      true,
+    );
     assert.deepEqual(recording[0], [Math.round((1080 * expectedRatio) / 2) * 2, 1080, 30]);
-    assert.equal(recording.every(([width, height, fps]) => Math.abs(width - height * expectedRatio) <= 1 && fps === 30), true);
-    assert.equal(live.every(([width, height]) => width <= 2560 && height <= 1440 && width % 2 === 0), true);
-    assert.equal(live.some(([width, height, fps]) => width === 320 && height === 240 && fps === 15), true);
+    assert.equal(
+      recording.every(([width, height, fps]) => Math.abs(width - height * expectedRatio) <= 1 && fps === 30),
+      true,
+    );
+    assert.equal(
+      live.every(([width, height]) => width <= 2560 && height <= 1440 && width % 2 === 0),
+      true,
+    );
+    assert.equal(
+      live.some(([width, height, fps]) => width === 320 && height === 240 && fps === 15),
+      true,
+    );
     assert.deepEqual(live[0], [Math.round((1440 * expectedRatio) / 2) * 2, 1440, 30]);
-    assert.equal(live.every(([width, height, fps]) =>
-      Math.abs(width - height * expectedRatio) <= 1 || (width === 320 && height === 240 && fps === 15)), true);
+    assert.equal(
+      live.every(
+        ([width, height, fps]) => Math.abs(width - height * expectedRatio) <= 1 || (width === 320 && height === 240 && fps === 15),
+      ),
+      true,
+    );
     for (let fps of [15, 30]) {
-      assert.equal(live.some(([width, height, rate]) => width === 1152 && height === 864 && rate === fps), ratio === 4 / 3);
-      assert.equal(live.some(([width, height, rate]) => width === 512 && height === 384 && rate === fps), ratio === 4 / 3);
+      assert.equal(
+        live.some(([width, height, rate]) => width === 1152 && height === 864 && rate === fps),
+        ratio === 4 / 3,
+      );
+      assert.equal(
+        live.some(([width, height, rate]) => width === 512 && height === 384 && rate === fps),
+        ratio === 4 / 3,
+      );
     }
     if (ratio === 4 / 3) {
-      assert.equal(live.some(([width, height]) => width === 1600 && height === 1200), true);
-      assert.equal(recording.some(([width, height]) => width === 1152 && height === 864), true);
-      assert.equal(recording.some(([width, height]) => width === 512 && height === 384), true);
+      assert.equal(
+        live.some(([width, height]) => width === 1600 && height === 1200),
+        true,
+      );
+      assert.equal(
+        recording.some(([width, height]) => width === 1152 && height === 864),
+        true,
+      );
+      assert.equal(
+        recording.some(([width, height]) => width === 512 && height === 384),
+        true,
+      );
     }
     // Exercise the installed HAP API, not just the shape of our options object.
     assert.doesNotThrow(() => new hap.CameraController(options));
@@ -451,8 +465,10 @@ for (let codec of ['libx264', 'h264_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_v4l2
       assert.equal(args[args.indexOf('-codec:v') + 1], codec);
       assert.equal(
         args[args.indexOf('-filter:v') + 1],
-        (index === 0 ? '' : 'scale=w=1280:h=720:flags=bilinear:force_original_aspect_ratio=decrease:force_divisible_by=2,' +
-          'pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,') + encoding.filter,
+        (index === 0
+          ? ''
+          : 'scale=w=1280:h=720:flags=bilinear:force_original_aspect_ratio=decrease:force_divisible_by=2,' +
+            'pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,') + encoding.filter,
       );
       if (encoding.inputArguments.length > 0) {
         let position = args.indexOf(encoding.inputArguments[0]);

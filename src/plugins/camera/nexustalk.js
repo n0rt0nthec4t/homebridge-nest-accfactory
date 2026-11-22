@@ -44,7 +44,7 @@
 //
 // Note: Based on foundational work from https://github.com/Brandawg93/homebridge-nest-cam
 //
-// Code version 2026.11.07
+// Code version 2026.11.23
 // Mark Hulskamp
 'use strict';
 
@@ -59,6 +59,7 @@ import crypto from 'crypto';
 import Streamer from './streamer.js';
 import StreamTransport from './streamtransport.js';
 import RingBuffer from '../../ringbuffer.js';
+import { setupGoogleHomeFoyer } from './foyer.js';
 import H264 from './h264.js';
 import { getProtoType } from '../../protobuf.js';
 
@@ -110,8 +111,7 @@ const MAX_PENDING_VIDEO_BYTES = 4 * 1024 * 1024;
 // NexusTalk object
 export default class NexusTalk extends StreamTransport {
   nexustalk_host = undefined; // Main NexusTalk streaming host
-  token = undefined;
-  useGoogleAuth = false; // Nest vs Google auth
+  apiAccess = {}; // Current camera credentials and field-test selection
 
   // Internal protobuf message types for this transport
   #protobufTypes = {
@@ -126,6 +126,10 @@ export default class NexusTalk extends StreamTransport {
     PlaybackEnd: undefined,
     Error: undefined,
   };
+
+  #legacyDeviceId = undefined; // Quartz ID resolved from the same HomeGraph device as the protobuf ID
+  #legacyDeviceIdPromise = undefined;
+  #grpcTransport = undefined; // Foyer client used to resolve the original Quartz camera ID
 
   #socket = undefined; // TCP socket object
   #packetBuffer = undefined; // Incoming packet buffer
@@ -196,8 +200,46 @@ export default class NexusTalk extends StreamTransport {
     this.update(options);
   }
 
+  get token() {
+    return this.apiAccess.token;
+  }
+
+  get useGoogleAuth() {
+    return typeof this.apiAccess.oauth2 === 'string' && this.apiAccess.oauth2 !== '';
+  }
+
+  async shutdown() {
+    let lookup = this.#legacyDeviceIdPromise;
+    this.#legacyDeviceIdPromise = undefined;
+    this.#legacyDeviceId = undefined;
+    this.apiAccess = {};
+    await this.close();
+    // Each lookup releases its captured client, including superseded requests.
+    await lookup;
+    this.#grpcTransport = undefined;
+  }
+
   // Class functions
   async doOpen(options = {}) {
+    if (this.#socket !== undefined && this.#socket.destroyed === false) {
+      return;
+    }
+    if (this.uuid?.startsWith('DEVICE_') === true) {
+      this.setState(StreamTransport.STATE.CONNECTING, { reason: 'camera-id-lookup' });
+      this.#setupGoogleHomeFoyer();
+      let uuid = this.uuid;
+      let oauth2 = this.apiAccess.oauth2;
+      let fieldTest = this.apiAccess.fieldTest;
+      await this.#legacyDeviceIdPromise;
+      // Do not start TLS if lookup outlived a stop or a credential/device update.
+      if (this.connecting !== true || this.uuid !== uuid || this.apiAccess.oauth2 !== oauth2 || this.apiAccess.fieldTest !== fieldTest) {
+        return;
+      }
+      if (this.#legacyDeviceId === undefined) {
+        this.setState(StreamTransport.STATE.CLOSED, { reason: 'camera-id-missing' });
+        return;
+      }
+    }
     let connectHost = typeof options?.host === 'string' && options.host !== '' ? options.host : this.nexustalk_host;
 
     if (typeof connectHost !== 'string' || connectHost === '') {
@@ -394,10 +436,12 @@ export default class NexusTalk extends StreamTransport {
   }
 
   async doUpdate(options = {}) {
+    let oldUuid = this.uuid;
+    let oldOAuth2 = this.apiAccess.oauth2;
+    let oldFieldTest = this.apiAccess.fieldTest;
     let newToken = undefined;
     let newHost = undefined;
     let newUuid = undefined;
-    let newGoogleAuth = undefined;
     let hadToken = typeof this.token === 'string' && this.token !== '';
     let hadHost = typeof this.nexustalk_host === 'string' && this.nexustalk_host !== '';
 
@@ -422,30 +466,34 @@ export default class NexusTalk extends StreamTransport {
     newUuid = typeof options?.uuid === 'string' && options.uuid !== '' ? options.uuid : undefined;
     newHost = typeof options?.host === 'string' && options.host !== '' ? options.host : undefined;
     newToken = typeof options?.apiAccess?.token === 'string' && options.apiAccess.token !== '' ? options.apiAccess.token : undefined;
+    let apiAccess = { ...this.apiAccess };
     if (typeof options?.apiAccess === 'object' && options.apiAccess !== null) {
-      newGoogleAuth = typeof options.apiAccess.oauth2 === 'string' && options.apiAccess.oauth2 !== '';
+      apiAccess.oauth2 =
+        typeof options.apiAccess.oauth2 === 'string' && options.apiAccess.oauth2 !== '' ? options.apiAccess.oauth2 : undefined;
+      if (newToken !== undefined) {
+        apiAccess.token = newToken;
+      }
     }
+    if (typeof options.fieldTest === 'boolean') {
+      apiAccess.fieldTest = options.fieldTest;
+    } else if (typeof options.apiAccess?.fieldTest === 'boolean') {
+      apiAccess.fieldTest = options.apiAccess.fieldTest;
+    }
+    if (typeof newToken === 'string' && newToken !== this.token && hadToken === true && this.hasConsumers() === true) {
+      this.log?.debug?.('Access token has changed for uuid "%s" while NexusTalk session is active. Updating stored token.', this.uuid);
+    }
+    this.apiAccess = apiAccess;
 
     // Update device UUID if supplied. Used for logging, reconnects and transport identity.
     if (typeof newUuid === 'string') {
       this.uuid = newUuid;
     }
 
-    // Update access token if changed.
-    // Active sessions continue until reconnect; new requests use the updated token.
-    if (typeof newToken === 'string' && newToken !== this.token) {
-      if (hadToken === true && this.hasConsumers() === true) {
-        this?.log?.debug?.('Access token has changed for uuid "%s" while NexusTalk session is active. Updating stored token.', this.uuid);
-      }
-
-      this.token = newToken;
-    }
-
-    // Update authentication mode.
-    // Google OAuth availability determines whether Google auth is used.
-    // Partial identity/host updates leave the existing authentication mode intact.
-    if (typeof newGoogleAuth === 'boolean' && this.useGoogleAuth !== newGoogleAuth) {
-      this.useGoogleAuth = newGoogleAuth;
+    if (oldUuid !== this.uuid || oldOAuth2 !== this.apiAccess.oauth2 || oldFieldTest !== this.apiAccess.fieldTest) {
+      this.#legacyDeviceId = undefined;
+      this.#legacyDeviceIdPromise = undefined;
+      this.#grpcTransport = undefined;
+      this.#setupGoogleHomeFoyer();
     }
 
     // Host changes require reconnecting the active NexusTalk session.
@@ -705,7 +753,13 @@ export default class NexusTalk extends StreamTransport {
       encodedData = Hello.encode(
         Hello.fromObject({
           protocolVersion: 'VERSION_3',
-          uuid: typeof this.uuid === 'string' && this.uuid.includes('.') === true ? this.uuid.split(/[.]+/)[1] : this.uuid,
+          // Protobuf IDs require HomeGraph resolution; only legacy bucket IDs can be stripped directly.
+          uuid:
+            typeof this.uuid === 'string' && this.uuid.startsWith('DEVICE_') === true
+              ? this.#legacyDeviceId
+              : typeof this.uuid === 'string' && this.uuid.includes('.') === true
+                ? this.uuid.split(/[.]+/)[1]
+                : this.uuid,
           requireConnectedCamera: false,
           userAgent: USER_AGENT,
           deviceId: crypto.randomUUID(),
@@ -1480,5 +1534,56 @@ export default class NexusTalk extends StreamTransport {
     this.#channels.audio.startOffset = 0;
     this.#channels.audio.timestampBase = undefined;
     this.#channels.audio.timestampTicks = undefined;
+  }
+
+  // Look up only this camera's CAMERA alias, using its account's OAuth credentials.
+  // Prefetch the ID and reuse the client for lazy retries; each request releases its session when complete.
+  #setupGoogleHomeFoyer() {
+    if (
+      this.#legacyDeviceId !== undefined ||
+      this.#legacyDeviceIdPromise !== undefined ||
+      this.uuid?.startsWith('DEVICE_') !== true ||
+      typeof this.apiAccess.oauth2 !== 'string'
+    ) {
+      return;
+    }
+    let uuid = this.uuid;
+    let oauth2 = this.apiAccess.oauth2;
+    let { transport, promise } = setupGoogleHomeFoyer(
+      {
+        log: this.log,
+        uuid,
+        fieldTest: this.apiAccess.fieldTest,
+        getAuthHeader: () => 'Bearer ' + oauth2,
+      },
+      this.#grpcTransport,
+    );
+    this.#grpcTransport = transport;
+    let lookup = promise
+      .then(({ legacyDeviceId }) => {
+        // Discard results from superseded credentials, identities or shutdown.
+        if (this.#legacyDeviceIdPromise !== lookup) {
+          return;
+        }
+        if (legacyDeviceId !== undefined) {
+          this.#legacyDeviceId = legacyDeviceId;
+          this.log?.debug?.('Resolved NexusTalk camera ID from HomeGraph for "%s" as "%s"', uuid, 'quartz.' + legacyDeviceId);
+        } else {
+          this.log?.debug?.('No matching NexusTalk camera ID in HomeGraph for "%s"', uuid);
+        }
+      })
+      .catch(() => {
+        // Transport errors can contain request details; do not log OAuth credentials.
+        if (this.#legacyDeviceIdPromise === lookup) {
+          this.log?.debug?.('Unable to resolve NexusTalk camera ID from HomeGraph for "%s"', uuid);
+        }
+      })
+      .finally(() => {
+        transport.release();
+        if (this.#legacyDeviceIdPromise === lookup) {
+          this.#legacyDeviceIdPromise = undefined;
+        }
+      });
+    this.#legacyDeviceIdPromise = lookup;
   }
 }

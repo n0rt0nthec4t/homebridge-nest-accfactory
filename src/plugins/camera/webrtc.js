@@ -50,7 +50,7 @@
 // - Streamer owns retention and delivery pacing; source timestamps are not playout deadlines
 // - Incomplete keyframes and pathological access units are dropped/recovered locally rather than blocking the plugin process
 //
-// Code version 2026.11.20
+// Code version 2026.11.23
 // Mark Hulskamp
 'use strict';
 
@@ -60,22 +60,17 @@ import * as werift from 'werift';
 // Define nodejs module requirements
 import { Buffer } from 'node:buffer';
 import { setInterval, clearInterval, setTimeout, clearTimeout } from 'node:timers';
-import path from 'node:path';
-import crypto from 'node:crypto';
 
 // Define our modules
 import Streamer from './streamer.js';
 import StreamTransport from './streamtransport.js';
-import GrpcTransport from '../../grpctransport.js';
+import { setupGoogleHomeFoyer } from './foyer.js';
 import H264 from './h264.js';
 
 // Define constants
-import { USER_AGENT, __dirname } from '../../consts.js';
+import { GOOGLE_HOME_FOYER_PREFIX } from '../../consts.js';
 
 const EXTEND_INTERVAL = 30000; // Send extend command to Google Home Foyer every this period for active streams
-const GOOGLE_HOME_FOYER_REQUEST_TIMEOUT = 15000; // Client-side timeout for Google Home Foyer gRPC requests
-const GOOGLE_HOME_FOYER_BUFFER_INITIAL = 8 * 1024; // Initial 8KB buffer for gRPC responses
-const GOOGLE_HOME_FOYER_BUFFER_MAX = 10 * 1024 * 1024; // Maximum 10MB buffer limit
 const RTP_SEQUENCE_WRAP = 0x10000; // For wrapping sequence calculations
 const RTP_SEQUENCE_MASK = 0xffff; // 16-bit RTP sequence number mask
 const RTP_TIMESTAMP_MASK = 0x100000000; // 32-bit RTP timestamp wrap mask
@@ -84,8 +79,7 @@ const RTP_PACKET_HEADER_SIZE = 12; // RTP packet header size in bytes
 const RTP_H264_VIDEO_PAYLOAD_TYPE = 98; // H.264 video payload type
 const RTP_H264_VIDEO_RTX_PAYLOAD_TYPE = 99; // H.264 RTX payload type for retransmissions
 const RTP_OPUS_AUDIO_PAYLOAD_TYPE = 111; // Opus audio payload type
-const GOOGLE_HOME_FOYER_PREFIX = 'google.internal.home.foyer.v1.';
-const KEYFRAME_MAX_ASSEMBLY_MS = 2500; // Normal deadline for established playback without recent fragment progress
+const KEYFRAME_MAX_ASSEMBLY_MS = 2500; // Expire incomplete keyframes during established playback
 const KEYFRAME_STARTUP_MAX_ASSEMBLY_MS = 4000; // First decodable keyframe may be slow while WebRTC starts
 const KEYFRAME_BLOCKING_MAX_ASSEMBLY_MS = 900; // Inactivity limit when an incomplete IDR blocks newer groups
 const KEYFRAME_DEFAULT_BYTES = 2 * 1024 * 1024; // Startup allowance before source resolution/bitrate is known
@@ -1187,12 +1181,7 @@ export default class WebRTC extends StreamTransport {
           return false;
         }
 
-        // Recent unique fragments earn startup's bounded grace period. Jitter
-        // insertion rejects duplicates before they can refresh lastReceivedAt.
-        keyframeAssemblyLimitMs =
-          this.ready === true && now - entry.lastReceivedAt >= KEYFRAME_BLOCKING_MAX_ASSEMBLY_MS
-            ? KEYFRAME_MAX_ASSEMBLY_MS
-            : KEYFRAME_STARTUP_MAX_ASSEMBLY_MS;
+        keyframeAssemblyLimitMs = this.ready === true ? KEYFRAME_MAX_ASSEMBLY_MS : KEYFRAME_STARTUP_MAX_ASSEMBLY_MS;
         keyframeTimedOut = entry?.hasKeyFrame === true && groupAgeMs >= keyframeAssemblyLimitMs;
 
         // Continuing fragment progress may outlive the shorter blocking deadline,
@@ -2018,54 +2007,27 @@ export default class WebRTC extends StreamTransport {
       return;
     }
 
-    // Create/recreate the Google Home Foyer transport when needed.
-    // This also allows fieldTest/uuid/token updates to be reflected after update().
-    if (this.#grpcTransport === undefined) {
-      this.#grpcTransport = new GrpcTransport({
+    // Shared setup creates or reuses this transport's authenticated Foyer client.
+    let { transport, promise } = setupGoogleHomeFoyer(
+      {
         log: this.log,
-        protoPath: path.resolve(__dirname + '/protobuf/googlehome/foyer.proto'),
-        endpointHost:
-          this.fieldTest === true
-            ? 'https://preprod-googlehomefoyer-pa.sandbox.googleapis.com'
-            : 'https://googlehomefoyer-pa.googleapis.com',
         uuid: this.uuid,
-        userAgent: USER_AGENT,
-        requestTimeout: GOOGLE_HOME_FOYER_REQUEST_TIMEOUT,
-        bufferInitial: GOOGLE_HOME_FOYER_BUFFER_INITIAL,
-        bufferMax: GOOGLE_HOME_FOYER_BUFFER_MAX,
+        fieldTest: this.fieldTest,
         getAuthHeader: () => (typeof this.token === 'string' && this.token.trim() !== '' ? 'Bearer ' + this.token : ''),
-      });
-    }
+      },
+      this.#grpcTransport,
+    );
+    this.#grpcTransport = transport;
 
-    // Start resolving the Google Home Foyer device UUID in the background so the
-    // first live stream does not always pay the full HomeGraph lookup cost.
-    this.#googleHomeDeviceUUIDPromise = this.#grpcTransport
-      .command(
-        GOOGLE_HOME_FOYER_PREFIX,
-        'StructuresService',
-        'GetHomeGraph',
-        {
-          requestId: crypto.randomUUID(),
-        },
-        {
-          retry: 2,
-        },
-      )
-      .then((homeFoyerResponse) => {
-        if (homeFoyerResponse?.data?.[0]?.homes !== undefined) {
-          Object.values(homeFoyerResponse.data[0].homes || {}).forEach((home) => {
-            Object.values(home?.devices || {}).forEach((device) => {
-              if (device?.id?.googleUuid !== undefined && device?.otherIds?.otherThirdPartyId !== undefined) {
-                Object.values(device.otherIds.otherThirdPartyId || {}).forEach((other) => {
-                  if (other?.id === this.uuid) {
-                    this.#googleHomeDeviceUUID = device.id.googleUuid;
-                  }
-                });
-              }
-            });
-          });
+    let uuid = this.uuid;
+    let token = this.token;
+    let lookup = promise
+      .then(({ googleDeviceId }) => {
+        // The shared lookup captures its source ID; a superseded response cannot update its replacement.
+        if (this.#googleHomeDeviceUUIDPromise !== lookup || this.uuid !== uuid || this.token !== token) {
+          return undefined;
         }
-
+        this.#googleHomeDeviceUUID = googleDeviceId;
         return this.#googleHomeDeviceUUID;
       })
       .catch((error) => {
@@ -2078,7 +2040,10 @@ export default class WebRTC extends StreamTransport {
         return undefined;
       })
       .finally(() => {
-        this.#googleHomeDeviceUUIDPromise = undefined;
+        if (this.#googleHomeDeviceUUIDPromise === lookup) {
+          this.#googleHomeDeviceUUIDPromise = undefined;
+        }
       });
+    this.#googleHomeDeviceUUIDPromise = lookup;
   }
 }
