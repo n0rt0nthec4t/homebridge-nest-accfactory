@@ -21,6 +21,7 @@
 // Mark Hulskamp
 
 // Define our modules
+import { ACCOUNT_TYPE } from './constants.js';
 import { startSetup } from './main.js';
 
 // Define popup lifecycle state. The fallback form must restore the host layout.
@@ -96,6 +97,16 @@ export async function startSettings(homebridge, document) {
 
   const accounts = () => block().accounts ?? [];
 
+  // Compare only this plugin's draft. Missing and false account exclusion both mean enabled.
+  const settingsSnapshot = () =>
+    JSON.stringify({ ...block(), accounts: accounts().map(({ exclude, ...account }) => ({ ...account, exclude: exclude === true })) });
+  let savedSnapshot = settingsSnapshot();
+  let saving = false;
+  const updateSaveState = () => {
+    get('save-settings').disabled = saving === true || settingsSnapshot() === savedSnapshot;
+  };
+  updateSaveState();
+
   // Connection status belongs to this settings session, never the saved configuration.
   let writes = Promise.resolve();
   let writeFailed = false;
@@ -116,6 +127,7 @@ export async function startSettings(homebridge, document) {
     // Snapshot each edit before queuing it so slower host updates cannot write
     // older values over newer edits. Saving waits for this same queue to settle.
     const next = structuredClone(configs);
+    updateSaveState();
 
     writes = writes.then(async () => {
       try {
@@ -134,11 +146,7 @@ export async function startSettings(homebridge, document) {
     return writes;
   };
 
-  const changed = () => {
-    message('Unsaved changes.');
-
-    return queueDraft();
-  };
+  const changed = () => queueDraft();
 
   // Identify the credentials checked. Cache keys are private comparisons only, never
   // displayed or logged; changing credentials immediately invalidates old results.
@@ -191,7 +199,7 @@ export async function startSettings(homebridge, document) {
       if (Array.isArray(definition.enum) === true) {
         input = node('select');
         for (const entry of definition.enum) {
-          option(input, entry, key === 'type' ? ({ google: 'Google', nest: 'Nest' }[entry] ?? entry) : entry);
+          option(input, entry, key === 'type' ? ({ [ACCOUNT_TYPE.GOOGLE]: 'Google', [ACCOUNT_TYPE.NEST]: 'Nest' }[entry] ?? entry) : entry);
         }
         input.value = value ?? definition.default ?? '';
       } else {
@@ -229,7 +237,7 @@ export async function startSettings(homebridge, document) {
 
     input.id = id;
 
-    input.addEventListener('change', () => {
+    const updateField = () => {
       // Convert DOM strings and checkbox state back to configuration types.
       let next =
         definition.type === 'boolean'
@@ -241,7 +249,12 @@ export async function startSettings(homebridge, document) {
                 : input.value;
 
       set(next);
-    });
+    };
+    input.addEventListener('change', updateField);
+    // Text and number edits update the draft while typing, so Save need not wait for blur.
+    if (definition.type !== 'boolean' && Array.isArray(definition.enum) !== true) {
+      input.addEventListener('input', updateField);
+    }
 
     parent.append(wrapper);
 
@@ -448,21 +461,21 @@ export async function startSettings(homebridge, document) {
     panel.replaceChildren();
     panel.hidden = false;
 
-    let draft = structuredClone(accounts()[accountIndex] ?? { name: '', type: 'google' });
+    let draft = structuredClone(accounts()[accountIndex] ?? { name: '', type: ACCOUNT_TYPE.GOOGLE });
 
     const render = () => {
       panel.replaceChildren();
       panel.append(node('h3', undefined, 'Account settings'));
       const definitions = schema.schema.properties.accounts.items.properties;
 
-      field(panel, 'type', 'Account type', { type: 'string', enum: ['google', 'nest'] }, draft.type, (value) => {
+      field(panel, 'type', 'Account type', { type: 'string', enum: [ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST] }, draft.type, (value) => {
         draft.type = value;
         for (const key of ['issueToken', 'cookie', 'access_token']) {
           delete draft[key];
         }
         render();
       });
-      for (const key of ['name', ...(draft.type === 'google' ? ['issueToken', 'cookie'] : ['access_token'])]) {
+      for (const key of ['name', ...(draft.type === ACCOUNT_TYPE.GOOGLE ? ['issueToken', 'cookie'] : ['access_token'])]) {
         field(
           panel,
           key,
@@ -482,10 +495,6 @@ export async function startSettings(homebridge, document) {
         draft.fieldTest = value;
       });
 
-      field(panel, 'exclude', 'Exclude account', definitions.exclude, draft.exclude, (value) => {
-        draft.exclude = value;
-      });
-
       const feedback = node('p', 'text-danger');
 
       panel.append(feedback);
@@ -497,7 +506,7 @@ export async function startSettings(homebridge, document) {
         button(
           'Apply account',
           () => {
-            const required = ['name', ...(draft.type === 'google' ? ['issueToken', 'cookie'] : ['access_token'])];
+            const required = ['name', ...(draft.type === ACCOUNT_TYPE.GOOGLE ? ['issueToken', 'cookie'] : ['access_token'])];
 
             if (
               required.some(
@@ -520,6 +529,10 @@ export async function startSettings(homebridge, document) {
 
             // Apply commits only this editor into the surrounding unsaved draft.
             // Connection status is invalidated when the sign-in fields change.
+            // Enable/disable belongs to the card and may have changed while this editor was open.
+            if (accountIndex !== undefined) {
+              draft.exclude = accounts()[accountIndex].exclude;
+            }
             block().accounts[accountIndex ?? block().accounts.length] = draft;
             changed();
             renderAccounts();
@@ -554,7 +567,7 @@ export async function startSettings(homebridge, document) {
 
     const account = accounts()[accountIndex];
 
-    if (['google', 'nest'].includes(account?.type) === false) {
+    if ([ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST].includes(account?.type) === false) {
       return;
     }
 
@@ -570,7 +583,7 @@ export async function startSettings(homebridge, document) {
     try {
       const result = await homebridge.request('/accounts/test', {
         type: account.type,
-        ...(account.type === 'google'
+        ...(account.type === ACCOUNT_TYPE.GOOGLE
           ? { issueToken: account.issueToken, cookie: account.cookie }
           : { access_token: account.access_token }),
         fieldTest: account.fieldTest === true,
@@ -600,8 +613,8 @@ export async function startSettings(homebridge, document) {
   }
 
   function renderAccounts() {
-    // Report only what this settings session has verified. Exclusion takes
-    // precedence over previous connection checks and does not delete credentials.
+    // Enable/disable edits the unsaved configuration; connection status independently
+    // reports what this settings session has verified and never changes exclusion.
     const list = get('accounts-list');
 
     list.replaceChildren();
@@ -615,41 +628,52 @@ export async function startSettings(homebridge, document) {
 
       const info = node('div', 'account-info');
 
-      info.append(node('div', 'account-name', account.name ?? 'Unnamed account'));
-      // Account cards show their sign-in method
-      // to distinguish Google and Nest authentication paths.
-      if (['google', 'nest'].includes(account.type) === true) {
-        info.append(node('p', 'account-meta', { google: 'Google', nest: 'Nest' }[account.type] ?? account.type));
-      }
-
+      const heading = node('div', 'account-heading');
+      const enabledLabel = node('label', 'account-enabled');
+      const enabled = node('input');
+      enabled.id = 'enabled-account-' + accountIndex;
+      enabled.type = 'checkbox';
+      enabled.checked = account.exclude !== true;
+      enabled.setAttribute('role', 'switch');
+      enabled.setAttribute('aria-label', 'Enable account ' + (account.name ?? 'Unnamed account'));
+      enabledLabel.htmlFor = enabled.id;
+      enabledLabel.append(enabled, node('span', undefined, 'Enabled'));
+      enabled.addEventListener('change', () => {
+        // Preserve the existing configuration key; the control presents its inverse.
+        account.exclude = enabled.checked !== true;
+        changed();
+        renderAccounts();
+        get(enabled.id).focus();
+      });
+      heading.append(node('div', 'account-name', account.name ?? 'Unnamed account'), enabledLabel);
+      info.append(heading);
       // Pending/error state takes precedence over previous connection checks.
       // Fingerprint checks prevent account-index reuse from showing stale results.
       const savedState = connectionStates.get(accountIndex);
       const state = savedState?.fingerprint === fingerprint(account) ? savedState.state : undefined;
 
-      // The disabled action button conveys progress; reserve the status line
-      // for completed results and errors rather than repeating the same message.
-      if (state !== 'pending') {
-        const status = node(
-          'p',
-          state === 'success'
-            ? 'account-status text-success'
-            : ['failed', 'timeout'].includes(state) === true
-                ? 'account-status text-danger'
-                : 'account-status',
-          state === 'success'
+      // Keep the status row during checks so progress never shrinks the card.
+      // The action button already says Checking; the reserved status line stays empty.
+      const status = node(
+        'p',
+        state === 'success'
+          ? 'account-status text-success'
+          : ['failed', 'timeout'].includes(state) === true
+              ? 'account-status text-danger'
+              : 'account-status',
+        state === 'pending'
+          ? ''
+          : state === 'success'
             ? 'Connection successful'
             : state === 'timeout'
               ? 'Connection timed out'
               : state === 'failed'
                 ? 'Connection failed. Check the sign-in fields.'
                 : 'Not checked',
-        );
-
-        status.setAttribute('role', 'status');
-        status.setAttribute('aria-live', 'polite');
-        info.append(status);
-      }
+      );
+      status.setAttribute('role', 'status');
+      status.setAttribute('aria-live', 'polite');
+      info.append(status);
 
       const actions = node('div', 'button-row');
       const actionGroups = node('div', 'account-actions');
@@ -657,7 +681,7 @@ export async function startSettings(homebridge, document) {
 
       edit.id = 'edit-account-' + accountIndex;
       actions.append(edit);
-      if (['google', 'nest'].includes(account.type) === true) {
+      if ([ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST].includes(account.type) === true) {
         actions.append(
           button('Reconnect', async () => {
             if (connectionBusy === true) {
@@ -671,7 +695,7 @@ export async function startSettings(homebridge, document) {
             const select = get('account-target');
             const position = accounts()
               .slice(0, accountIndex + 1)
-              .filter((entry) => ['google', 'nest'].includes(entry.type) === true).length;
+              .filter((entry) => [ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST].includes(entry.type) === true).length;
 
             select.value = String(position);
             select.dispatchEvent(new Event('change'));
@@ -713,7 +737,7 @@ export async function startSettings(homebridge, document) {
         }),
       );
       actionGroups.append(actions);
-      if (['google', 'nest'].includes(account.type) === true) {
+      if ([ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST].includes(account.type) === true) {
         const connection = node('div', 'account-connection');
         const check = button(state === 'pending' ? 'Checking…' : 'Check connection', () => checkConnection(accountIndex));
         check.disabled = connectionBusy;
@@ -761,6 +785,10 @@ export async function startSettings(homebridge, document) {
   });
 
   get('save-settings').addEventListener('click', async () => {
+    if (saving === true || settingsSnapshot() === savedSnapshot) {
+      return;
+    }
+
     // Finish validation before disabling edits, then flush every staged change
     // before asking Homebridge to persist. A failed save leaves the draft open.
     if (get('manual-account-editor').hidden !== true) {
@@ -784,6 +812,8 @@ export async function startSettings(homebridge, document) {
       }
     }
 
+    saving = true;
+    updateSaveState();
     get('settings-fields').disabled = true;
     try {
       await queueDraft();
@@ -807,12 +837,15 @@ export async function startSettings(homebridge, document) {
       }
 
       await homebridge.savePluginConfig();
+      savedSnapshot = settingsSnapshot();
       homebridge.toast?.info?.('Settings saved. Restart Homebridge to apply changes.');
       homebridge.closeSettings();
     } catch {
       message('Unable to save settings. Your draft is retained; retry saving.', true);
     } finally {
       get('settings-fields').disabled = false;
+      saving = false;
+      updateSaveState();
     }
   });
 
@@ -828,6 +861,7 @@ export async function startSettings(homebridge, document) {
       configs = next;
       if ((await queueDraft()) !== true) {
         configs = previous;
+        updateSaveState();
         throw new Error('Unable to stage account');
       }
 
@@ -869,7 +903,7 @@ export async function startSettings(homebridge, document) {
   // Check each enabled account once when settings opens. No device subscriptions
   // or background polling are started by this UI.
   for (const [accountIndex, account] of accounts().entries()) {
-    if (['google', 'nest'].includes(account.type) === true && account.exclude !== true) {
+    if ([ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST].includes(account.type) === true && account.exclude !== true) {
       await checkConnection(accountIndex);
     }
   }

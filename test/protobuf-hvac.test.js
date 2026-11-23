@@ -9,9 +9,9 @@ let { processRawData: tempsensor } = await importSource(new URL('../src/plugins/
 
 function rawData() {
   return {
-    STRUCTURE_HOME: { source: DATA_SOURCE.GOOGLE, value: {} },
+    STRUCTURE_HOME: { source: DATA_SOURCE.PROTOBUF, value: {} },
     DEVICE_THERMOSTAT: {
-      source: DATA_SOURCE.GOOGLE,
+      source: DATA_SOURCE.PROTOBUF,
       value: {
         device_info: { typeName: 'nest.resource.NestLearningThermostat3Resource', pairerId: { resourceId: 'STRUCTURE_HOME' } },
         configuration_done: { deviceReady: true },
@@ -34,7 +34,7 @@ function rawData() {
       },
     },
     DEVICE_SENSOR: {
-      source: DATA_SOURCE.GOOGLE,
+      source: DATA_SOURCE.PROTOBUF,
       value: {
         device_identity: { serialNumber: 'SENSOR_SERIAL', productIdDescription: { literal: 'KRX' } },
         device_info: { typeName: 'nest.resource.NestKryptoniteResource', pairerId: { resourceId: 'STRUCTURE_HOME' } },
@@ -45,11 +45,11 @@ function rawData() {
       },
     },
     'device.LEGACY': {
-      source: DATA_SOURCE.NEST,
+      source: 'Nest',
       value: { serial_number: 'LEGACY', heat_link_serial_number: 'LEGACY_HEATLINK' },
     },
     'rcs_settings.LEGACY': { value: { associated_rcs_sensors: ['kryptonite.LEGACY_SENSOR'] } },
-    'kryptonite.LEGACY_SENSOR': { source: DATA_SOURCE.NEST, value: { serial_number: 'LEGACY_SENSOR' } },
+    'kryptonite.LEGACY_SENSOR': { source: 'Nest', value: { serial_number: 'LEGACY_SENSOR' } },
   };
 }
 
@@ -189,7 +189,7 @@ for (let association of [null, {}, { deviceId: { resourceId: '' } }, { deviceId:
 let { processRawData: thermostat } = await importSource(new URL('../src/plugins/thermostat.js', import.meta.url));
 
 function nestData() {
-  let source = DATA_SOURCE.NEST;
+  let source = 'Nest';
   return {
     'structure.HOME': { source, value: { name: 'Home' } },
     'where.HOME': { source, value: { wheres: [{ where_id: 'room', name: 'Kitchen' }] } },

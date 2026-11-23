@@ -19,6 +19,7 @@
 // Mark Hulskamp
 
 // Define our modules
+import { ACCOUNT_TYPE } from './constants.js';
 import { stageAccount } from './config.js';
 
 export async function startSetup(homebridge, document) {
@@ -72,7 +73,7 @@ export async function startSetup(homebridge, document) {
 
       targets = (block?.accounts ?? [])
         .map((account, index) => ({ account, index }))
-        .filter((entry) => ['google', 'nest'].includes(entry.account.type) === true);
+        .filter((entry) => [ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST].includes(entry.account.type) === true);
 
       const select = element('account-target');
 
@@ -89,7 +90,7 @@ export async function startSetup(homebridge, document) {
       element('settings-status').textContent = '';
       element('account-name').value = 'Google';
       element('field-test').checked = false;
-      element('account-type').value = 'google';
+      element('account-type').value = ACCOUNT_TYPE.GOOGLE;
       element('account-type').disabled = false;
       element('google-fields').hidden = false;
       element('nest-fields').hidden = true;
@@ -103,8 +104,8 @@ export async function startSetup(homebridge, document) {
   };
 
   element('account-type').addEventListener('change', () => {
-    element('google-fields').hidden = element('account-type').value !== 'google';
-    element('nest-fields').hidden = element('account-type').value !== 'nest';
+    element('google-fields').hidden = element('account-type').value !== ACCOUNT_TYPE.GOOGLE;
+    element('nest-fields').hidden = element('account-type').value !== ACCOUNT_TYPE.NEST;
   });
 
   element('open-connection').addEventListener('click', open);
@@ -117,7 +118,7 @@ export async function startSetup(homebridge, document) {
     target = selected === undefined ? undefined : { index: selected.index, expected: JSON.stringify(selected.account) };
     element('account-name').value = selected?.account.name ?? 'Google';
     element('field-test').checked = selected?.account.fieldTest === true;
-    element('account-type').value = selected?.account.type ?? 'google';
+    element('account-type').value = selected?.account.type ?? ACCOUNT_TYPE.GOOGLE;
     element('account-type').disabled = selected !== undefined;
     element('account-type').dispatchEvent(new Event('change'));
   });
@@ -134,7 +135,7 @@ export async function startSetup(homebridge, document) {
 
     const type = element('account-type').value;
     const credentials =
-      type === 'google'
+      type === ACCOUNT_TYPE.GOOGLE
         ? { issueToken: element('issue-token').value.trim(), cookie: element('account-cookie').value.trim() }
         : { access_token: element('access-token').value.trim() };
     if (Object.values(credentials).some((value) => value === '')) {
@@ -234,7 +235,7 @@ export async function startSetup(homebridge, document) {
       // settings Save action still owns persistence of the complete configuration.
       close();
       element('settings-status').textContent =
-        (target === undefined ? 'Account added' : 'Account updated') + ' in settings. Use Save settings below to apply your changes.';
+        (target === undefined ? 'Account added' : 'Account updated') + ' in settings. Use Save below to apply your changes.';
     } catch {
       status('Unable to update settings. The account may have changed; cancel and reopen setup to retry.', true);
     } finally {

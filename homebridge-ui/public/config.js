@@ -18,8 +18,11 @@
 // Code version 2026.11.23
 // Mark Hulskamp
 
+// Define constants
+import { ACCOUNT_TYPE } from './constants.js';
+
 export function stageAccount(configs, { name, type, credentials, target, fieldTest } = {}) {
-  const fields = type === 'google' ? ['issueToken', 'cookie'] : type === 'nest' ? ['access_token'] : undefined;
+  const fields = type === ACCOUNT_TYPE.GOOGLE ? ['issueToken', 'cookie'] : type === ACCOUNT_TYPE.NEST ? ['access_token'] : undefined;
   if (
     Array.isArray(configs) !== true ||
     typeof name !== 'string' ||
@@ -30,7 +33,7 @@ export function stageAccount(configs, { name, type, credentials, target, fieldTe
   ) {
     throw new Error('Invalid account connection');
   }
-  if (type === 'google') {
+  if (type === ACCOUNT_TYPE.GOOGLE) {
     const url = URL.parse(credentials.issueToken);
     if (url?.origin !== 'https://accounts.google.com' || url.username !== '' || url.password !== '') {
       throw new Error('Invalid Google sign-in URL');

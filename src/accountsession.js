@@ -23,7 +23,7 @@
 // Mark Hulskamp
 'use strict';
 
-// Define nodejs module requirements
+// Define node.js modules
 import { Buffer } from 'node:buffer';
 import { EventEmitter } from 'node:events';
 import { setTimeout, clearTimeout } from 'node:timers';
@@ -52,7 +52,7 @@ export default class AccountSession extends EventEmitter {
     let fieldTest = account.fieldTest === true;
     this.#account = {
       ...account,
-      type: account.type === 'google' || account.type === ACCOUNT_TYPE.GOOGLE ? ACCOUNT_TYPE.GOOGLE : ACCOUNT_TYPE.NEST,
+      type: account.type,
       authorised: false,
       allowRetry: undefined,
       timer: undefined,
@@ -79,12 +79,13 @@ export default class AccountSession extends EventEmitter {
   static async testConnection(account) {
     // Static so supplied credentials are checked in a fresh session, without reusing or changing a running session.
     // Validate credentials before testing; Google cookies must only be sent to its HTTPS account endpoint.
-    let fields = account?.type === 'google' ? ['issueToken', 'cookie'] : account?.type === 'nest' ? ['access_token'] : undefined;
+    let fields =
+      account?.type === ACCOUNT_TYPE.GOOGLE ? ['issueToken', 'cookie'] : account?.type === ACCOUNT_TYPE.NEST ? ['access_token'] : undefined;
     if (fields === undefined || fields.some((field) => typeof account[field] !== 'string' || account[field].trim() === '')) {
       return 'failed';
     }
     let credentials = Object.fromEntries(fields.map((field) => [field, account[field].trim()]));
-    if (account.type === 'google') {
+    if (account.type === ACCOUNT_TYPE.GOOGLE) {
       let url = URL.parse(credentials.issueToken);
       if (url?.origin !== 'https://accounts.google.com' || url.username !== '' || url.password !== '') {
         return 'failed';

@@ -11,17 +11,24 @@ for (let name of new Set(fixtures.map((fixture) => fixture.name))) {
 }
 function setup(fixture, overrides = {}) {
   let id = fixture.id ?? 'DEVICE_TEST';
-  let parents = structuredClone(fixture.parents ?? { STRUCTURE_HOME: { source: DATA_SOURCE.GOOGLE, value: {} } });
+  let parents = structuredClone(fixture.parents ?? { STRUCTURE_HOME: { source: DATA_SOURCE.PROTOBUF, value: {} } });
   let raw = {
     ...parents,
-    [id]: { source: fixture.source ?? DATA_SOURCE.GOOGLE, value: { ...structuredClone(fixture.value), ...overrides } },
+    [id]: { source: fixture.source ?? DATA_SOURCE.PROTOBUF, value: { ...structuredClone(fixture.value), ...overrides } },
   };
   let options = structuredClone(config);
   let run = (type = fixture.type) => modules[fixture.name].processRawData(undefined, raw, options, type);
   return { id, raw, options, run };
 }
 for (let fixture of fixtures) {
-  let label = fixture.name + ' / ' + (fixture.source ?? DATA_SOURCE.GOOGLE);
+  let label = fixture.name + ' / ' + (fixture.source ?? DATA_SOURCE.PROTOBUF);
+  test('protobuf mapper does not accept HomeGraph state: ' + fixture.name, () => {
+    let flow = setup(fixture);
+    flow.raw[flow.id].source = DATA_SOURCE.HOMEGRAPH;
+    let before = structuredClone([flow.raw, flow.options]);
+    assert.deepEqual(flow.run(), {});
+    assert.deepEqual([flow.raw, flow.options], before);
+  });
   test('mapper preserves cloud/configuration inputs: ' + label, () => {
     let flow = setup(fixture);
     let before = structuredClone([flow.raw, flow.options]);

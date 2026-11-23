@@ -32,11 +32,11 @@
 // - Protocol signalling, packet reordering and frame assembly remain in the source
 // - FFmpeg owns command construction and the bounded MP4 fragment reader
 //
-// Code version 2026.11.13
+// Code version 2026.11.23
 // Mark Hulskamp
 'use strict';
 
-// Define nodejs module requirements
+// Define node.js modules
 import { Buffer } from 'node:buffer';
 import { performance } from 'node:perf_hooks';
 import { setTimeout, clearTimeout } from 'node:timers';

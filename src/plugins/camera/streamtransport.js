@@ -35,11 +35,11 @@
 // Lifecycle states:
 // - CONNECTING, CONNECTED, READY, RECONNECTING, CLOSING and CLOSED
 //
-// Code version 2026.10.29
+// Code version 2026.11.23
 // Mark Hulskamp
 'use strict';
 
-// Define nodejs module requirements
+// Define node.js modules
 import { Buffer } from 'node:buffer';
 
 // Define our modules

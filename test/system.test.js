@@ -35,7 +35,7 @@ for (let type of [DEVICE_TYPE.CAMERA, DEVICE_TYPE.DOORBELL, DEVICE_TYPE.FLOODLIG
     });
     let other = {
       ...flow.connection,
-      googleAPI: undefined,
+      googleProtobufAPI: undefined,
       dataQueue: Promise.resolve(),
       grpcTransport: { ...flow.connection.grpcTransport },
       cameraAuth: { token: 'other-token' },
@@ -63,7 +63,7 @@ for (let type of [DEVICE_TYPE.CAMERA, DEVICE_TYPE.DOORBELL, DEVICE_TYPE.FLOODLIG
 test('camera credential refresh follows the resource owner across protobuf resource switches', async (context) => {
   let selected = 'DEVICE_OLD';
   let flow = await platformHarness(context, {
-    source: DATA_SOURCE.GOOGLE,
+    source: DATA_SOURCE.PROTOBUF,
     id: selected,
     type: DEVICE_TYPE.CAMERA,
     map: (raw) => (raw[selected] === undefined ? {} : { FIXTURE: { full: true, data: { ...data, nest_google_device_uuid: selected } } }),
@@ -71,7 +71,7 @@ test('camera credential refresh follows the resource owner across protobuf resou
   let accessory = flow.device.accessory;
   let other = {
     ...flow.connection,
-    googleAPI: undefined,
+    googleProtobufAPI: undefined,
     dataQueue: Promise.resolve(),
     grpcTransport: { ...flow.connection.grpcTransport },
     cameraAuth: { token: 'google-token' },
@@ -103,7 +103,7 @@ test('camera credential refresh follows the resource owner across protobuf resou
 test('credential refresh skips a tracked camera after its selected resource disappears', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'] });
   let flow = await platformHarness(context, {
-    source: DATA_SOURCE.GOOGLE,
+    source: DATA_SOURCE.PROTOBUF,
     id: 'DEVICE_OLD',
     type: DEVICE_TYPE.CAMERA,
   });

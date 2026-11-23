@@ -1,15 +1,15 @@
 // Support Dump Writer
 // Part of homebridge-nest-accfactory
 //
-// Prepares Nest and Google API data for support logging without exposing
+// Prepares Protobuf and HomeGraph data for support logging without exposing
 // credentials, personal details, or the original device and home identifiers.
 // Keeps the raw API cache available for normal device processing and commands.
 //
 // Responsibilities:
 // - Select full resource data or changed fields for the requested connection
-// - Apply the redaction dictionary to Nest and Google field names
+// - Apply redaction rules across legacy and current device field names
 // - Replace identifiers in object keys, values, and references with aliases
-// - Format redacted data into separate Nest and Google support-dump blocks
+// - Format redacted data into separate Protobuf and HomeGraph support-dump blocks
 // - Bound identifier storage, traversal, and diagnostic output
 //
 // Features:
@@ -26,15 +26,15 @@
 // - Aliases remain private to the writer and are released on platform shutdown
 // - Normal plugin logs and streaming debug messages are outside this module
 //
-// Code version 2026.10.28
+// Code version 2026.11.23
 // Mark Hulskamp
 'use strict';
 
-// Define nodejs module requirements
+// Define node.js modules
 import { isIP } from 'node:net';
 
 // Define constants
-import { DATA_SOURCE, NEST_API_BUCKETS, REDACTED } from './consts.js';
+import { DATA_SOURCE, REDACTED } from './consts.js';
 
 // Bound each field traversal and output block separately so a large startup batch
 // does not discard otherwise safe device data. Also cap total work/output per call.
@@ -51,9 +51,10 @@ const MAX_DUMP_CHARACTERS = 1048576;
 // Retain retired REST prefixes for private references even though they are no longer requested.
 // A prefixed resource and its bare serial must still share an alias.
 const RESOURCE_PREFIX = new RegExp(
-  '^(?:' +
-    [...NEST_API_BUCKETS, 'device', 'shared', 'track', 'link', 'rcs_settings', 'kryptonite', 'schedule'].join('|') +
-    ')\\.|^(?:DEVICE|STRUCTURE|SERVICE|USER|RESOURCE)_',
+  '^(?:buckets|delayed_topaz|demand_response|device|device_alert_dialog|geofence_info|kryptonite|link|' +
+    'message|message_center|metadata|occupancy|quartz|safety|rcs_settings|safety_summary|schedule|shared|' +
+    'structure|structure_metadata|topaz|topaz_resource|track|trip|tuneups|user|user_settings|where|widget_track)' +
+    '\\.|^(?:DEVICE|STRUCTURE|SERVICE|USER|RESOURCE)_',
 );
 
 // Structure-mode enums share the resource prefix but describe state, not private identifiers.
@@ -330,7 +331,7 @@ function createSupportDump(log) {
         let data = rawData[objectKey];
         if (
           data?.connection !== connectionId ||
-          [DATA_SOURCE.NEST, DATA_SOURCE.GOOGLE].includes(data?.source) === false ||
+          [DATA_SOURCE.HOMEGRAPH, DATA_SOURCE.PROTOBUF].includes(data?.source) === false ||
           data?.value === null ||
           typeof data?.value !== 'object'
         ) {
@@ -485,8 +486,8 @@ function createSupportDump(log) {
           );
         }
       }
-      // Emit only the completed redacted blocks, grouping the two API sources under their existing headings.
-      for (let source of [DATA_SOURCE.NEST, DATA_SOURCE.GOOGLE]) {
+      // Emit only the completed redacted blocks, grouping blocks by their data source.
+      for (let source of [DATA_SOURCE.HOMEGRAPH, DATA_SOURCE.PROTOBUF]) {
         let entries = output.filter((entry) => entry.source === source);
         if (entries.length === 0) {
           continue;

@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { setImmediate } from 'node:timers/promises';
 import { URL } from 'node:url';
 import test from 'node:test';
+import { ACCOUNT_TYPE, DATA_SOURCE } from '../src/consts.js';
 
 let networkModule =
   'data:text/javascript,' +
@@ -54,7 +55,7 @@ let sessionSource = (await readFile(sessionLocation, 'utf8'))
 let { default: AccountSession } = await importSource(sessionLocation, sessionSource);
 // Authentication and protocol classes share the same isolated HTTP/timer boundary.
 
-let apiLocation = new URL('../src/api/google.js', import.meta.url);
+let apiLocation = new URL('../src/api/protobuf.js', import.meta.url);
 let apiSource = (await readFile(apiLocation, 'utf8'))
   .replace('from \'../fetchWrapper.js\'', 'from ' + JSON.stringify(networkModule))
   .replace('from \'node:timers\'', 'from ' + JSON.stringify(timerModule))
@@ -81,6 +82,20 @@ function setup(t, accounts = [account], options = {}, runtimeOptions = {}) {
   }
   return { manager, uuid, connection };
 }
+
+test('Account startup leaves HomeGraph discovery and preferences on demand', async (context) => {
+  let { manager, uuid, connection } = setup(context, [
+    { name: 'Google', type: ACCOUNT_TYPE.GOOGLE, issueToken: 'https://accounts.example/token', cookie: 'fixture-cookie' },
+  ]);
+  let protobuf = context.mock.method(connection.googleProtobufAPI, 'connect', async () => undefined);
+  let discovery = context.mock.method(connection.homegraphAPI, 'get');
+  let preferences = context.mock.method(connection.homegraphAPI, 'getUserPreferences');
+  assert.equal(manager.start(uuid), true);
+  await setImmediate();
+  assert.equal(protobuf.mock.callCount(), 1);
+  assert.equal(discovery.mock.callCount(), 0);
+  assert.equal(preferences.mock.callCount(), 0);
+});
 
 // Startup is the registry's only connection entry point. Tests explicitly await
 // the shared session, requesting a refresh when exercising a second login.
@@ -123,7 +138,7 @@ test('Accounts authenticates Nest and refreshes the same entry while releasing o
   assert.equal(requests.mock.calls[1].arguments[2].headers.Authorization, 'Basic access-token');
   let released = 0;
   if (transportFor(connection) === undefined) {
-    await connection.googleAPI.connect();
+    await connection.googleProtobufAPI.connect();
   }
   t.mock.method(transportFor(connection), 'release', function () {
     this.released = true;
@@ -248,7 +263,7 @@ test('Accounts invalidation releases its API transport and shutdown cancels sche
   let released = 0;
   connection.authorised = true;
   if (transportFor(connection) === undefined) {
-    await connection.googleAPI.connect();
+    await connection.googleProtobufAPI.connect();
   }
   t.mock.method(transportFor(connection), 'release', function () {
     this.released = true;
@@ -543,13 +558,13 @@ test('invalidation logs its reason, replaces the refresh timer and releases pend
   let timer = setTimeout(() => scheduled++, 20000);
   connection.session.on('disconnect', (refreshing) => {
     if (refreshing !== true) {
-      stopped.push('googleAPI');
+      stopped.push('googleProtobufAPI');
       clearTimeout(timer);
     }
   });
   assert.equal(connection.session.markUnauthorised('fixture-expired'), true);
   assert.notEqual(connection.timer, oldTimer);
-  assert.deepEqual(stopped, ['googleAPI']);
+  assert.deepEqual(stopped, ['googleProtobufAPI']);
   assert.equal(logs.at(-1)[2], 'fixture-expired');
   context.mock.timers.tick(14999);
   await setImmediate();
@@ -671,15 +686,15 @@ test('API startup failures remain visible without invalidating account auth: goo
   );
 });
 
-test('googleAPI disconnect during account login prevents late API startup', async (context) => {
+test('googleProtobufAPI disconnect during account login prevents late API startup', async (context) => {
   let { connection } = setup(context);
   let login = Promise.withResolvers();
   context.mock.method(network, 'request', async (method, url) => {
     await login.promise;
     return response(url.endsWith('/session') === true ? session : { items: [{ session_token: 'cookie' }] });
   });
-  let connecting = connection['googleAPI'].connect();
-  connection['googleAPI'].disconnect();
+  let connecting = connection['googleProtobufAPI'].connect();
+  connection['googleProtobufAPI'].disconnect();
   login.resolve();
   await connecting;
   await setImmediate();
@@ -688,7 +703,7 @@ test('googleAPI disconnect during account login prevents late API startup', asyn
   assert.equal(transportFor(connection), undefined);
 });
 
-test('googleAPI remains disconnected through shared refresh until explicitly reconnected', async (context) => {
+test('googleProtobufAPI remains disconnected through shared refresh until explicitly reconnected', async (context) => {
   let { manager, uuid, connection } = setup(context, [account], { onData: async () => true });
   let subscriptions = 0;
   let beforeObserve = grpcRuntime.observations.length;
@@ -703,18 +718,18 @@ test('googleAPI remains disconnected through shared refresh until explicitly rec
   await setImmediate();
   assert.equal(subscriptions, 0);
   assert.equal(grpcRuntime.observations.length - beforeObserve, 1);
-  connection['googleAPI'].disconnect();
+  connection['googleProtobufAPI'].disconnect();
   await connection.session.connect(true);
   await setImmediate();
   assert.equal(subscriptions, 0, 'Observe refresh must not start REST device polling');
   assert.equal(grpcRuntime.observations.length - beforeObserve, 1);
-  assert.equal(transportFor(connection) === undefined, 'googleAPI' === 'googleAPI');
-  await connection['googleAPI'].connect();
+  assert.equal(transportFor(connection) === undefined, 'googleProtobufAPI' === 'googleProtobufAPI');
+  await connection['googleProtobufAPI'].connect();
   await setImmediate();
   assert.equal(subscriptions, 0);
   assert.equal(grpcRuntime.observations.length - beforeObserve, 2);
 });
-test('googleAPI reconnect during pending login retires the earlier connection request', async (context) => {
+test('googleProtobufAPI reconnect during pending login retires the earlier connection request', async (context) => {
   let { connection } = setup(context, [account], { onData: async () => true });
   let login = Promise.withResolvers();
   let subscriptions = 0;
@@ -727,15 +742,15 @@ test('googleAPI reconnect during pending login retires the earlier connection re
     await login.promise;
     return response(url.endsWith('/session') === true ? session : { items: [{ session_token: 'cookie' }] });
   });
-  let first = connection['googleAPI'].connect();
-  connection['googleAPI'].disconnect();
-  let second = connection['googleAPI'].connect();
+  let first = connection['googleProtobufAPI'].connect();
+  connection['googleProtobufAPI'].disconnect();
+  let second = connection['googleProtobufAPI'].connect();
   login.resolve();
   await Promise.all([first, second]);
   await setImmediate();
   assert.equal(subscriptions, 0);
   assert.equal(grpcRuntime.observations.length - beforeObserve, 1);
-  connection['googleAPI'].disconnect();
+  connection['googleProtobufAPI'].disconnect();
   await connection.session.connect(true);
   await setImmediate();
   assert.equal(subscriptions, 0);
@@ -849,7 +864,7 @@ for (let outcome of ['success', 'failure', 'retired']) {
     let { manager, uuid, connection } = setup(context, [account], {
       onData: async (owner, batch) => {
         assert.equal(owner, uuid);
-        if (batch.source !== 'Google') {
+        if (batch.source !== DATA_SOURCE.PROTOBUF) {
           return true;
         }
         batches.push(batch);
@@ -867,7 +882,9 @@ for (let outcome of ['success', 'failure', 'retired']) {
     );
     await startAndAuthenticate(manager, uuid);
     assert.equal(Object.hasOwn(connection, 'nestAPI'), false);
-    assert.equal(typeof connection.googleAPI.set, 'function');
+    assert.equal(typeof connection.googleProtobufAPI.set, 'function');
+    assert.equal(typeof connection.homegraphAPI.get, 'function');
+    assert.equal(Object.hasOwn(connection, 'googleAPI'), false);
     assert.equal(grpcRuntime.observations.length, 1);
     let consume = grpcRuntime.observations[0][4];
     let first = consume({ observeResponse: [] });
@@ -881,13 +898,40 @@ for (let outcome of ['success', 'failure', 'retired']) {
     await setImmediate();
     assert.equal(batches.length, 1);
     if (outcome === 'retired') {
-      connection.googleAPI.disconnect();
+      connection.googleProtobufAPI.disconnect();
     }
     release.resolve();
     let error = await firstOutcome;
     await second;
     assert.equal(error instanceof Error, outcome === 'failure');
     assert.equal(batches.length, outcome === 'retired' ? 1 : 2);
-    assert.equal(batches[0].source, 'Google');
+    assert.equal(batches[0].source, DATA_SOURCE.PROTOBUF);
   });
 }
+
+for (let [type, expected, credentials] of [
+  ['Google', ACCOUNT_TYPE.GOOGLE, { issueToken: 'https://accounts.google.com/token', cookie: 'fixture-cookie' }],
+  [' NEST ', ACCOUNT_TYPE.NEST, { access_token: 'fixture-token' }],
+]) {
+  test('account configuration boundary canonicalises type ' + type, (context) => {
+    let input = { name: 'Fixture', type, ...credentials };
+    let { manager, connection } = setup(context, [input]);
+    assert.equal(manager.size, 1);
+    assert.equal(connection.type, expected);
+    assert.equal(input.type, type, 'runtime setup does not mutate saved configuration');
+  });
+}
+
+test('Google Home remains an inactive account login type', (context) => {
+  let { manager } = setup(context, [
+    {
+      name: 'Future',
+      type: ACCOUNT_TYPE.GOOGLE_HOME,
+      issueToken: 'https://accounts.google.com/token',
+      cookie: 'fixture-cookie',
+      access_token: 'fixture-token',
+    },
+  ]);
+  assert.equal(manager.size, 0);
+});
+

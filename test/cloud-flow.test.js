@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import hap from './helpers/homebridge-hap.js';
 import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
+import { ACCOUNT_TYPE } from '../src/consts.js';
 import { importSource } from './helpers/import-source.js';
 import HomeKitDevice from '../src/HomeKitDevice/HomeKitDevice.js';
 let transportModule =
@@ -14,12 +15,12 @@ let transportModule =
       'constructor() { return runtime.transport; } }',
   );
 let { runtime: grpcRuntime } = await import(transportModule);
-let googleLocation = new URL('../src/api/google.js', import.meta.url);
+let googleLocation = new URL('../src/api/protobuf.js', import.meta.url);
 let googleSource = (await readFile(googleLocation, 'utf8')).replace(
   'from \'../grpctransport.js\'',
   'from ' + JSON.stringify(transportModule),
 );
-let { default: GoogleAPI } = await importSource(googleLocation, googleSource);
+let { default: GoogleProtobufAPI } = await importSource(googleLocation, googleSource);
 
 let { default: Platform } = await importSource(new URL('../src/system.js', import.meta.url));
 let { default: Accounts } = await importSource(new URL('../src/accounts.js', import.meta.url));
@@ -50,7 +51,7 @@ async function setup(context, options = {}) {
     restAPIHost: 'rest.invalid',
     token: 'fixture-token',
     userID: 'fixture-user',
-    type: 'Google',
+    type: ACCOUNT_TYPE.GOOGLE,
     authorised: true,
     grpcTransport: {
       observe: (...args) => {
@@ -66,7 +67,7 @@ async function setup(context, options = {}) {
   let accounts = new Map([['account', connection]]);
   accounts.start = () => {};
   accounts.shutdown = () => {
-    connection.googleAPI?.disconnect();
+    connection.googleProtobufAPI?.disconnect();
     connection.authorised = false;
     pending.resolve({ status: 0 });
   };
@@ -82,7 +83,7 @@ async function setup(context, options = {}) {
           on() {},
           markUnauthorised: () => {
             account.authorised = false;
-            account.googleAPI.disconnect();
+            account.googleProtobufAPI.disconnect();
           },
         },
         onData: (batch) => {
@@ -92,9 +93,9 @@ async function setup(context, options = {}) {
         },
       };
       grpcRuntime.transport = account.grpcTransport;
-      account.googleAPI = new GoogleAPI(options);
+      account.googleProtobufAPI = new GoogleProtobufAPI(options);
       await supplied.onAuthorised(uuid, account);
-      await account.googleAPI.connect();
+      await account.googleProtobufAPI.connect();
     };
     return accounts;
   });
@@ -302,7 +303,7 @@ for (let mode of ['ECO_MODE_MANUAL_ECO', 'ECO_MODE_AUTO_ECO']) {
     assert.equal(flow.device.deviceData.target_temperature_high, 25);
     assert.equal(await service.getCharacteristic(hap.Characteristic.TargetTemperature).handleGetRequest(), 25);
     assert.deepEqual(
-      flow.connection.googleAPI.resources.get('DEVICE_THERMOSTAT').value.target_temperature_settings,
+      flow.connection.googleProtobufAPI.resources.get('DEVICE_THERMOSTAT').value.target_temperature_settings,
       flow.values.target_temperature_settings,
     );
 
@@ -599,11 +600,11 @@ for (let ecoMode of ['ECO_MODE_MANUAL_ECO', 'ECO_MODE_AUTO_ECO']) {
         assert.equal(target.state.value.targetTemperature.setpointType, 'SET_POINT_TYPE_' + mode.toUpperCase());
         assert.equal(target.state.value.targetTemperature[key === 'target_temperature_low' ? 'heatingTarget' : 'coolingTarget'].value, 23);
         assert.deepEqual(
-          flow.connection.googleAPI.resources.get('DEVICE_THERMOSTAT').value.eco_mode_settings,
+          flow.connection.googleProtobufAPI.resources.get('DEVICE_THERMOSTAT').value.eco_mode_settings,
           flow.values.eco_mode_settings,
         );
         assert.equal(
-          flow.connection.googleAPI.resources.get('DEVICE_THERMOSTAT').value.eco_mode_state.ecoMode,
+          flow.connection.googleProtobufAPI.resources.get('DEVICE_THERMOSTAT').value.eco_mode_state.ecoMode,
           ecoMode,
           'An accepted SET does not replace the authoritative source cache',
         );

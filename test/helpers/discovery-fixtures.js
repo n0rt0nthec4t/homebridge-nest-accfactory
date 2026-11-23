@@ -3,7 +3,7 @@ import { DATA_SOURCE, DEVICE_TYPE } from '../../src/consts.js';
 
 export let config = { options: { ffmpeg: {}, eveHistory: true }, devices: [], homes: [] };
 export let home = {
-  source: DATA_SOURCE.GOOGLE,
+  source: DATA_SOURCE.PROTOBUF,
   value: { located_annotations: { predefinedWheres: { room: { whereId: { resourceId: 'ROOM' }, label: { literal: 'Kitchen' } } } } },
 };
 let common = {
@@ -121,7 +121,7 @@ for (let name of ['camera', 'doorbell', 'floodlight']) {
   retiredCameras.push({
     name,
     type: name === 'camera' ? DEVICE_TYPE.CAMERA : name === 'doorbell' ? DEVICE_TYPE.DOORBELL : DEVICE_TYPE.FLOODLIGHT,
-    source: DATA_SOURCE.NEST,
+    source: 'Nest',
     id: 'quartz.TEST',
     parents: { 'where.home': { value: { wheres: [{ where_id: 'ROOM', name: 'Kitchen' }] } } },
     value: { ...nestCamera, capabilities: name === 'doorbell' ? ['indoor_chime'] : [] },
@@ -130,7 +130,7 @@ for (let name of ['camera', 'doorbell', 'floodlight']) {
 export let retiredProtect = {
   name: 'protect',
   type: DEVICE_TYPE.PROTECT,
-  source: DATA_SOURCE.NEST,
+  source: 'Nest',
   id: 'topaz.TEST',
   parents: {
     'where.home': { value: { wheres: [{ where_id: 'ROOM', name: 'Kitchen' }] } },

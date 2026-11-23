@@ -6,7 +6,7 @@
 //
 // Responsibilities:
 // - Create or reuse the camera transport's account-authenticated Foyer client
-// - Apply shared endpoint, timeout and response-buffer settings
+// - Apply shared endpoint, browser headers, timeout and response-buffer settings
 // - Request HomeGraph and return the client with its pending ID lookup
 // - Match the source device ID and resolve aliases from that same device
 // - Return googleDeviceId and legacyDeviceId without the quartz. prefix
@@ -20,7 +20,7 @@
 // Code version 2026.11.23
 'use strict';
 
-// Define nodejs module requirements
+// Define node.js modules
 import crypto from 'node:crypto';
 import path from 'node:path';
 
@@ -28,7 +28,13 @@ import path from 'node:path';
 import GrpcTransport from '../../grpctransport.js';
 
 // Define constants
-import { GOOGLE_HOME_FOYER_PREFIX, GOOGLE_HOME_FOYER_ENDPOINTS, USER_AGENT, __dirname } from '../../consts.js';
+import {
+  GOOGLE_HOME_FOYER_PREFIX,
+  GOOGLE_HOME_FOYER_ENDPOINTS,
+  GOOGLE_HOME_REFERER,
+  GOOGLE_HOME_USER_AGENT,
+  __dirname,
+} from '../../consts.js';
 
 // Callers supply log, uuid, fieldTest and getAuthHeader; an existing client is reused.
 // The returned transport remains caller-owned, alongside its pending lookup promise.
@@ -39,7 +45,9 @@ function setupGoogleHomeFoyer(options, transport = undefined) {
       protoPath: path.join(__dirname, 'protobuf/googlehome/foyer.proto'),
       endpointHost: options.fieldTest === true ? GOOGLE_HOME_FOYER_ENDPOINTS.FIELD_TEST : GOOGLE_HOME_FOYER_ENDPOINTS.PRODUCTION,
       uuid: options.uuid,
-      userAgent: USER_AGENT,
+      userAgent: GOOGLE_HOME_USER_AGENT,
+      referer: GOOGLE_HOME_REFERER,
+      origin: GOOGLE_HOME_REFERER,
       requestTimeout: 15000,
       bufferInitial: 8 * 1024,
       bufferMax: 10 * 1024 * 1024,

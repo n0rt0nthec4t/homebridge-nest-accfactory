@@ -27,11 +27,11 @@
 // type. After prepare, ports exposes the internal audioControl and talkback ports
 // for FFmpeg arguments. FFmpeg retains SRTP and codec handling.
 //
-// Code version 2026.11.13
+// Code version 2026.11.23
 // Mark Hulskamp
 'use strict';
 
-// Define nodejs module requirements
+// Define node.js modules
 import { randomBytes } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import net from 'node:net';

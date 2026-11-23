@@ -1,8 +1,9 @@
 // Copy the distributable, including API classes and nested camera modules, preserving resource paths
 // and flattening the shared HomeKit modules.
-import { copyFileSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ACCOUNT_TYPE } from '../src/consts.js';
 
 let root = fileURLToPath(new URL('../', import.meta.url));
 for (let [source, target, extensions, recursive] of [
@@ -27,3 +28,14 @@ for (let [source, target, extensions, recursive] of [
 for (let name of ['HomeKitDevice', 'HomeKitHistory', 'fetchWrapper']) {
   copyFileSync(join(root, 'src', name, name + '.js'), join(root, 'dist', name + '.js'));
 }
+
+// Keep the browser's account types generated from the runtime source of truth.
+writeFileSync(
+  join(root, 'homebridge-ui/public/constants.js'),
+  '// Generated from src/consts.js by scripts/build.js. Do not edit directly.\n' +
+    'const ACCOUNT_TYPE = {\n' +
+    Object.entries(ACCOUNT_TYPE)
+      .map(([key, value]) => '  ' + key + ': \'' + value + '\',')
+      .join('\n') +
+    '\n};\n\nexport { ACCOUNT_TYPE };\n',
+);

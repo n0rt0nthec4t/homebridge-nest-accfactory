@@ -50,7 +50,7 @@ import { DATA_SOURCE, DEVICE_TYPE, MAX_ELEVATION, MIN_ELEVATION, NESTLABS_MAC_PR
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.WEATHER;
-  static VERSION = '2026.11.09'; // Code version
+  static VERSION = '2026.11.23'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -314,18 +314,20 @@ const WEATHER_FIELD_MAP = {
       fields: [],
       translate: ({ raw }) => {
         // Observe labels can vary; identify TimezoneTrait by its schema field on this home only.
-        let zones = new Set(Object.values(raw?.value ?? {}).flatMap((trait) => {
-          let zone = trait?.timezoneName?.value ?? trait?.timezoneName;
-          if (typeof zone !== 'string' || zone.trim() === '' || /^[+-]/.test(zone.trim()) === true) {
-            return [];
-          }
-          try {
-            return [new Intl.DateTimeFormat(undefined, { timeZone: zone.trim() }).resolvedOptions().timeZone];
-          } catch {
-            // Ignore invalid upstream names without blocking other valid timezone traits.
-            return [];
-          }
-        }));
+        let zones = new Set(
+          Object.values(raw?.value ?? {}).flatMap((trait) => {
+            let zone = trait?.timezoneName?.value ?? trait?.timezoneName;
+            if (typeof zone !== 'string' || zone.trim() === '' || /^[+-]/.test(zone.trim()) === true) {
+              return [];
+            }
+            try {
+              return [new Intl.DateTimeFormat(undefined, { timeZone: zone.trim() }).resolvedOptions().timeZone];
+            } catch {
+              // Ignore invalid upstream names without blocking other valid timezone traits.
+              return [];
+            }
+          }),
+        );
         return zones.size === 1 ? zones.values().next().value : undefined;
       },
     },
@@ -403,7 +405,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
   let devices = {};
 
   Object.entries(rawData)
-    .filter(([key, value]) => key.startsWith('STRUCTURE_') === true && value?.source === DATA_SOURCE.GOOGLE)
+    .filter(([key, value]) => key.startsWith('STRUCTURE_') === true && value?.source === DATA_SOURCE.PROTOBUF)
     .forEach(([object_key, value]) => {
       try {
         if (changedData instanceof Map) {

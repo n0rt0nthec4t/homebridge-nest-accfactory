@@ -47,7 +47,7 @@
 // Mark Hulskamp
 'use strict';
 
-// Define nodejs module requirements
+// Define node.js modules
 import { Buffer } from 'node:buffer';
 import dgram from 'node:dgram';
 import fs from 'node:fs';
@@ -1681,7 +1681,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
   Object.entries(rawData)
     .filter(
       ([key, value]) =>
-        value?.source === DATA_SOURCE.GOOGLE &&
+        value?.source === DATA_SOURCE.PROTOBUF &&
         key.startsWith('DEVICE_') === true &&
         (PROTOBUF_RESOURCES.CAMERA.includes(value?.value?.device_info?.typeName) === true ||
           PROTOBUF_RESOURCES.DOORBELL.includes(value?.value?.device_info?.typeName) === true ||
@@ -1710,7 +1710,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
 
         // Process Google API camera/doorbell/floodlight data
         if (
-          value?.source === DATA_SOURCE.GOOGLE &&
+          value?.source === DATA_SOURCE.PROTOBUF &&
           rawData?.[value?.value?.device_info?.pairerId?.resourceId] !== undefined &&
           Array.isArray(protocols) === true &&
           ((protocols.includes(STREAMING_PROTOCOL.WEBRTC) === true &&

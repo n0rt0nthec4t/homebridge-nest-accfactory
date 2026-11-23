@@ -40,11 +40,22 @@ body { margin: 0; }
 .nest-ui .account-row { display: flex; align-items: center; gap: 12px 18px; flex-wrap: wrap; padding: 14px 16px; }
 .account-info { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
 .account-name { font-weight: 650; }
+.account-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px 18px; flex-wrap: wrap; }
+/* The native checkbox keeps keyboard handling; switch styling makes account state visible. */
+.nest-ui .account-enabled { display: inline-flex; align-items: center; gap: 8px; margin: 0; color: var(--text); cursor: pointer; font-size: 13px; }
+.nest-ui .account-enabled input[type=checkbox] { appearance: none; position: relative; width: 36px; height: 21px; margin: 0;
+  border: 1px solid #ad8db7; border-radius: 12px; background: #43294a; cursor: pointer; }
+.nest-ui .account-enabled input[type=checkbox]::before { content: ""; position: absolute; top: 3px; left: 3px;
+  width: 13px; height: 13px; border-radius: 50%; background: var(--text); }
+.nest-ui .account-enabled input[type=checkbox]:checked { background: var(--accent); border-color: var(--accent); }
+.nest-ui .account-enabled input[type=checkbox]:checked::before { left: 18px; background: #170a1c; }
+
 .account-meta, .device-meta { font-size: 13px; margin: 4px 0 0; overflow-wrap: anywhere; }
-.nest-ui .account-status { color: var(--muted); font-size: 13px; margin: 4px 0 0; }
+.nest-ui .account-status { min-height: 1.5em; color: var(--muted); font-size: 13px; margin: 4px 0 0; }
 /* Muting only account information keeps management controls readable and usable. */
 .nest-ui .account-excluded { --muted: #b6a6bd; background: #201026; border-color: #43294a; }
 .nest-ui .account-excluded .account-info { color: var(--muted); }
+.nest-ui .account-excluded .account-enabled span { color: var(--muted); }
 .account-actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .account-connection { border-left: 1px solid var(--border); padding-left: 16px; }
 .account-removal { margin-left: auto; border-left: 1px solid var(--border); padding-left: 16px; }
@@ -89,9 +100,8 @@ body { margin: 0; }
 .nest-ui .text-danger { color: #ffb5b5 !important; }
 .nest-ui .text-success { color: #93e6a5 !important; }
 .nest-ui hr { border: 0; border-top: 1px solid var(--border); opacity: 1; margin: 18px 0; }
-.settings-footer { display: flex; justify-content: space-between; align-items: center; gap: 20px;
+.settings-footer { display: flex; justify-content: flex-end; align-items: center; gap: 20px;
   padding: 18px 0 0; border-top: 1px solid var(--border); margin-top: 22px; }
-.settings-footer p { color: var(--muted); font-size: 12px; margin: 0; }
 .nest-ui #connection-panel .card-body { padding: 20px; }
 .nest-ui #connection-panel summary { cursor: pointer; }
 .nest-ui #connection-panel ol { padding-left: 22px; }

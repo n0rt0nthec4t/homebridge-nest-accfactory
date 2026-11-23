@@ -22,10 +22,10 @@ let weather = {
   display_city: 'Fixture City',
 };
 
-test('platform routes weather query parameters for ' + DATA_SOURCE.GOOGLE + ' resources through the protobuf client', async (context) => {
+test('platform routes weather query parameters for ' + DATA_SOURCE.PROTOBUF + ' resources through the protobuf client', async (context) => {
   let id = 'STRUCTURE_HOME';
   let flow = await platformHarness(context, {
-    source: DATA_SOURCE.GOOGLE,
+    source: DATA_SOURCE.PROTOBUF,
     id,
     value: { fixture: {} },
     fetch: async () => ({ json: async () => weather }),
@@ -346,10 +346,10 @@ test('snapshot expiry removes only its own waiter while an overlapping request c
     return command.promise;
   };
   // Exercise the account client directly: HomeKitDevice serialises GETs for one accessory.
-  let first = flow.connection.googleAPI.get('DEVICE_TEST', 'camera_snapshot').catch(() => undefined);
+  let first = flow.connection.googleProtobufAPI.get('DEVICE_TEST', 'camera_snapshot').catch(() => undefined);
   await setImmediate();
   context.mock.timers.tick(1000);
-  let second = flow.connection.googleAPI.get('DEVICE_TEST', 'camera_snapshot');
+  let second = flow.connection.googleProtobufAPI.get('DEVICE_TEST', 'camera_snapshot');
   await setImmediate();
   context.mock.timers.tick(3000);
   commands[0].resolve({ status: 4, code: 'REQUEST_TIMEOUT' });
@@ -477,7 +477,7 @@ test('connection cleanup can release a snapshot freshness waiter without an imag
   };
   let request = flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true });
   await started.promise;
-  flow.connection.googleAPI.disconnect();
+  flow.connection.googleProtobufAPI.disconnect();
   assert.deepEqual((await request).camera_snapshot, image);
 });
 
@@ -560,7 +560,7 @@ test('a retired Observe batch cannot commit location or weather after its REST q
     flow.requests.some((request) => String(request[1]).includes('/weather/forecast/') === true),
     true,
   );
-  flow.connection.googleAPI.disconnect();
+  flow.connection.googleProtobufAPI.disconnect();
   pending.resolve({ json: async () => weather });
   await update;
   assert.deepEqual(flow.raw.STRUCTURE_HOME.value, { fixture: { current: true } });
@@ -619,14 +619,14 @@ test('Google camera event types use Nest-compatible kebab-case names', async (co
   ]);
 });
 
-test('platform quietly skips unavailable-account queries and resumes polling after recovery: ' + DATA_SOURCE.GOOGLE, async (context) => {
+test('platform quietly skips unavailable-account queries and resumes polling after recovery: ' + DATA_SOURCE.PROTOBUF, async (context) => {
   let id = 'DEVICE_TEST';
   let flow = await platformHarness(context, {
-    source: DATA_SOURCE.GOOGLE,
+    source: DATA_SOURCE.PROTOBUF,
     id,
     fetch: async () => ({ json: async () => [] }),
   });
-  let googleGet = context.mock.method(flow.connection.googleAPI, 'get');
+  let googleGet = context.mock.method(flow.connection.googleProtobufAPI, 'get');
   let requests = flow.requests.length;
   let commands = flow.commands.length;
   let logs = flow.logs.length;

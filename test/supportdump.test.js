@@ -1,4 +1,5 @@
 // Verify redaction at the log boundary, stable aliases, delta selection, and diagnostic limits.
+// Fabricated payloads retain legacy secret and alias field names to check redaction under both current source labels.
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { format } from 'node:util';
@@ -13,11 +14,11 @@ function capture() {
   return { dump, lines, warnings };
 }
 
-test('full Nest and Google dumps redact private values and retain state and cross-references', () => {
+test('full HomeGraph and Protobuf dumps redact private values and retain state and cross-references', () => {
   let fixture = {
     'device.SERIAL00000001': {
       connection: 'account',
-      source: DATA_SOURCE.NEST,
+      source: DATA_SOURCE.HOMEGRAPH,
       value: {
         serial_number: 'SERIAL00000001',
         structure_id: 'HOME00000001',
@@ -39,7 +40,7 @@ test('full Nest and Google dumps redact private values and retain state and cros
     },
     DEVICE_GOOGLE00001: {
       connection: 'account',
-      source: DATA_SOURCE.GOOGLE,
+      source: DATA_SOURCE.PROTOBUF,
       value: {
         device_identity: { serialNumber: 'SERIAL00000001', softwareVersion: '1.2.3.4' },
         pairer: { resourceId: 'STRUCTURE_HOME00000001' },
@@ -52,7 +53,11 @@ test('full Nest and Google dumps redact private values and retain state and cros
         sensorSerialNumber: 'SENSOR000001',
       },
     },
-    'device.OTHER00000001': { connection: 'other', source: DATA_SOURCE.NEST, value: { temperature: 100, secret: 'Other Account Secret' } },
+    'device.OTHER00000001': {
+      connection: 'other',
+      source: DATA_SOURCE.HOMEGRAPH,
+      value: { temperature: 100, secret: 'Other Account Secret' },
+    },
   };
   let before = JSON.stringify(fixture);
   let output = capture();
@@ -98,7 +103,7 @@ test('structure-mode enums remain readable while structure references and privat
     {
       STRUCTURE_PRIVATEHOME: {
         connection: 'account',
-        source: DATA_SOURCE.GOOGLE,
+        source: DATA_SOURCE.PROTOBUF,
         value: {
           structure_mode: {
             structureMode: 'STRUCTURE_MODE_HOME',
@@ -136,14 +141,14 @@ test('delta dumps select changed fields and keep aliases stable as resources are
   let raw = {
     'device.SERIAL00000002': {
       connection: 'account',
-      source: DATA_SOURCE.NEST,
+      source: DATA_SOURCE.HOMEGRAPH,
       value: { serial_number: 'SERIAL00000002', temperature: 20, humidity: 40 },
     },
   };
   output.dump(raw, 'account');
   let alias = output.lines.join('\n').match(/"serial_number": "([^"]+)"/)[1];
   output.lines.length = 0;
-  raw['device.SERIAL00000001'] = { connection: 'account', source: DATA_SOURCE.NEST, value: { serial_number: 'SERIAL00000001' } };
+  raw['device.SERIAL00000001'] = { connection: 'account', source: DATA_SOURCE.HOMEGRAPH, value: { serial_number: 'SERIAL00000001' } };
   output.dump(raw, 'account');
   assert.equal(output.lines.join('\n').includes('"device.' + alias + '"'), true);
   output.lines.length = 0;
@@ -165,7 +170,7 @@ test('network values, nested resource keys and wrapped identifiers are redacted'
     {
       DEVICE_MAIN000001: {
         connection: 'account',
-        source: DATA_SOURCE.GOOGLE,
+        source: DATA_SOURCE.PROTOBUF,
         value: {
           wrapped: { resourceId: { value: 'PRIVATE000001' } },
           links: { 'device.NEST00000001': { peer: 'device.NEST00000001' } },
@@ -198,8 +203,8 @@ test('network values, nested resource keys and wrapped identifiers are redacted'
 test('alias state belongs to each platform instance', () => {
   let first = capture();
   let second = capture();
-  first.dump({ 'device.FIRST0000001': { connection: 'account', source: DATA_SOURCE.NEST, value: { online: true } } }, 'account');
-  second.dump({ 'device.SECOND000001': { connection: 'account', source: DATA_SOURCE.NEST, value: { online: true } } }, 'account');
+  first.dump({ 'device.FIRST0000001': { connection: 'account', source: DATA_SOURCE.HOMEGRAPH, value: { online: true } } }, 'account');
+  second.dump({ 'device.SECOND000001': { connection: 'account', source: DATA_SOURCE.HOMEGRAPH, value: { online: true } } }, 'account');
   assert.equal(first.lines.join('\n').includes('device.**REDACTED_1**'), true);
   assert.equal(second.lines.join('\n').includes('device.**REDACTED_1**'), true);
 });
@@ -233,7 +238,7 @@ for (let failure of ['cycle', 'depth', 'nodes', 'string', 'output', 'identifiers
     }
     let output = capture();
     assert.doesNotThrow(() =>
-      output.dump({ 'device.SERIAL00000001': { connection: 'account', source: DATA_SOURCE.NEST, value } }, 'account'),
+      output.dump({ 'device.SERIAL00000001': { connection: 'account', source: DATA_SOURCE.HOMEGRAPH, value } }, 'account'),
     );
     assert.deepEqual(output.lines, []);
     assert.equal(output.warnings.length, 1);
@@ -248,7 +253,7 @@ test('serialization cannot invoke a copied toJSON method that bypasses redaction
     {
       'device.SERIAL00000001': {
         connection: 'account',
-        source: DATA_SOURCE.NEST,
+        source: DATA_SOURCE.HOMEGRAPH,
         value: {
           settings: {
             token: 'Secret Token',
@@ -267,13 +272,13 @@ test('serialization cannot invoke a copied toJSON method that bypasses redaction
 });
 
 for (let delta of [false, true]) {
-  test('large Google startup dump splits resource traits without losing data; delta=' + delta, () => {
+  test('large Protobuf startup dump splits resource traits without losing data; delta=' + delta, () => {
     let output = capture();
     let value = { access_token: 'PRIVATE_TOKEN', serialNumber: 'PRIVATE_SERIAL' };
     for (let index = 0; index < 80; index++) {
       value['trait_' + index] = { reading: index, payload: 'x'.repeat(1100) };
     }
-    let raw = { DEVICE_PRIVATE_SERIAL: { connection: 'account', source: DATA_SOURCE.GOOGLE, value } };
+    let raw = { DEVICE_PRIVATE_SERIAL: { connection: 'account', source: DATA_SOURCE.PROTOBUF, value } };
     let before = structuredClone(raw);
     output.dump(raw, 'account', delta === true ? new Map([['DEVICE_PRIVATE_SERIAL', { fields: new Set(Object.keys(value)) }]]) : undefined);
     let blocks = output.lines
@@ -295,17 +300,17 @@ for (let delta of [false, true]) {
   });
 }
 
-test('node and output limits apply to blocks rather than the combined Nest and Google startup batch', () => {
+test('node and output limits apply to blocks rather than the combined HomeGraph and Protobuf startup batch', () => {
   let output = capture();
   let raw = {};
   for (let index = 0; index < 40; index++) {
     raw['DEVICE_PRIVATE_' + index] = {
       connection: 'account',
-      source: index % 2 === 0 ? DATA_SOURCE.NEST : DATA_SOURCE.GOOGLE,
+      source: index % 2 === 0 ? DATA_SOURCE.HOMEGRAPH : DATA_SOURCE.PROTOBUF,
       value: { sample: index, readings: Array.from({ length: 300 }, (_, reading) => reading) },
     };
   }
-  raw.DEVICE_OTHER = { connection: 'other', source: DATA_SOURCE.GOOGLE, value: { wrongAccount: true } };
+  raw.DEVICE_OTHER = { connection: 'other', source: DATA_SOURCE.PROTOBUF, value: { wrongAccount: true } };
   output.dump(raw, 'account');
   let text = output.lines.join('\n');
   assert.ok(text.length > 65536);
@@ -317,7 +322,7 @@ test('node and output limits apply to blocks rather than the combined Nest and G
 });
 
 for (let stage of ['collection', 'serialization']) {
-  test('unsafe resource during ' + stage + ' does not discard a healthy Google device', () => {
+  test('unsafe resource during ' + stage + ' does not discard a healthy Protobuf device', () => {
     let output = capture();
     let bad =
       stage === 'collection'
@@ -325,17 +330,17 @@ for (let stage of ['collection', 'serialization']) {
         : { readings: Array.from({ length: 100 }, () => 'x'.repeat(1000)) };
     output.dump(
       {
-        'topaz.PRIVATE_BAD': { connection: 'account', source: DATA_SOURCE.NEST, value: { access_token: 'SECRET', ...bad } },
+        'topaz.PRIVATE_BAD': { connection: 'account', source: DATA_SOURCE.HOMEGRAPH, value: { access_token: 'SECRET', ...bad } },
         DEVICE_PRIVATE_GOOD: {
           connection: 'account',
-          source: DATA_SOURCE.GOOGLE,
+          source: DATA_SOURCE.PROTOBUF,
           value: { wall_power: { present: true }, battery_voltage_bank0: {} },
         },
       },
       'account',
     );
     let text = output.lines.join('\n');
-    assert.equal(text.includes('Google API'), true);
+    assert.equal(text.includes('Protobuf API'), true);
     assert.equal(text.includes('wall_power'), true);
     assert.equal(text.includes('battery_voltage_bank0'), true);
     assert.equal(text.includes('SECRET'), false);
@@ -348,9 +353,35 @@ for (let stage of ['collection', 'serialization']) {
 test('top-level resource keys remain private when output is split into fields', () => {
   let output = capture();
   output.dump(
-    { DEVICE_PRIVATE: { connection: 'account', source: DATA_SOURCE.GOOGLE, value: { DEVICE_OTHER_PRIVATE: { reading: 1 } } } },
+    { DEVICE_PRIVATE: { connection: 'account', source: DATA_SOURCE.PROTOBUF, value: { DEVICE_OTHER_PRIVATE: { reading: 1 } } } },
     'account',
   );
   assert.equal(output.lines.join('\n').includes('PRIVATE'), false);
+  assert.deepEqual(output.warnings, []);
+});
+
+test('HomeGraph legacy camera aliases remain redacted without REST bucket constants', () => {
+  let output = capture();
+  output.dump(
+    {
+      DEVICE_PRIVATE: {
+        connection: 'account',
+        source: DATA_SOURCE.HOMEGRAPH,
+        value: {
+          otherIds: { otherThirdPartyId: [{ idType: 'CAMERA', id: 'quartz.PRIVATE_CAMERA_ID' }] },
+          reference: 'quartz.PRIVATE_CAMERA_ID',
+          parent: 'structure.PRIVATE_HOME_ID',
+          alarm: 'topaz.PRIVATE_ALARM_ID',
+        },
+      },
+    },
+    'account',
+  );
+  let text = output.lines.join('\n');
+  for (let secret of ['PRIVATE', 'PRIVATE_CAMERA_ID', 'PRIVATE_HOME_ID', 'PRIVATE_ALARM_ID']) {
+    assert.equal(text.includes(secret), false);
+  }
+  assert.equal(text.includes('"idType": "CAMERA"'), true);
+  assert.equal(text.includes('quartz.'), true);
   assert.deepEqual(output.warnings, []);
 });

@@ -46,7 +46,7 @@ import { DATA_SOURCE, DEVICE_TYPE, NESTLABS_MAC_PREFIX } from '../consts.js';
 
 export default class NestHomeAway extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.HOMEAWAY;
-  static VERSION = '2026.10.18'; // Code version
+  static VERSION = '2026.11.23'; // Code version
 
   occupancyService = undefined;
 
@@ -171,7 +171,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
   let devices = {};
 
   Object.entries(rawData)
-    .filter(([key, value]) => key.startsWith('STRUCTURE_') === true && value?.source === DATA_SOURCE.GOOGLE)
+    .filter(([key, value]) => key.startsWith('STRUCTURE_') === true && value?.source === DATA_SOURCE.PROTOBUF)
     .forEach(([object_key, value]) => {
       try {
         if (changedData instanceof Map && changedData.has(object_key) === false) {

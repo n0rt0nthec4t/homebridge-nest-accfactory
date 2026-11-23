@@ -52,7 +52,7 @@ for (let command of [false, true]) {
       async (context) => {
         let initial = command === true ? { bolt_lock: false } : { temperature_scale: 'C' };
         let requested = command === true ? { bolt_lock: true } : { temperature_scale: 'F' };
-        let flow = await setup(context, DATA_SOURCE.GOOGLE, response, { initial });
+        let flow = await setup(context, DATA_SOURCE.PROTOBUF, response, { initial });
         await assert.rejects(flow.device.set({ uuid: flow.id, ...requested }), AggregateError);
         assert.equal(flow.writes.length, 1);
         for (let [key, value] of Object.entries(initial)) {
@@ -69,7 +69,7 @@ for (let kind of ['humidifier', 'dehumidifier']) {
       let trait = kind + 'TargetHumidity';
       let flow = await setup(
         context,
-        DATA_SOURCE.GOOGLE,
+        DATA_SOURCE.PROTOBUF,
         { status: 0, data: [{ traitOperations: [{ progress: 'COMPLETE' }] }] },
         {
           value: {
@@ -94,7 +94,7 @@ test('rejected Google trait changes do not leak into a later setting in the same
   let attempts = 0;
   let flow = await setup(
     context,
-    DATA_SOURCE.GOOGLE,
+    DATA_SOURCE.PROTOBUF,
     () => ({
       status: attempts++ === 0 ? 14 : 0,
       data: [{ traitOperations: [{ progress: 'COMPLETE' }] }],
@@ -115,7 +115,7 @@ test('mixed Google outcomes attempt remaining fields and reject the whole local 
   let attempts = 0;
   let flow = await setup(
     context,
-    DATA_SOURCE.GOOGLE,
+    DATA_SOURCE.PROTOBUF,
     () => ({
       status: attempts++ === 0 ? 14 : 0,
       data: [{ traitOperations: [{ progress: 'COMPLETE' }] }],
@@ -136,7 +136,7 @@ for (let code of [undefined, 0]) {
   test('successful Google SET commits and accepts omitted protobuf zero status: ' + code, async (context) => {
     let flow = await setup(
       context,
-      DATA_SOURCE.GOOGLE,
+      DATA_SOURCE.PROTOBUF,
       {
         status: 0,
         data: [{ traitOperations: [{ progress: 'COMPLETE', status: { code } }] }],
@@ -150,7 +150,7 @@ for (let code of [undefined, 0]) {
 
 for (let reason of ['missing resource', 'missing connection', 'unauthorised connection', 'missing transport']) {
   test('unavailable connection or transport rejects SET: ' + reason, async (context) => {
-    let flow = await setup(context, DATA_SOURCE.GOOGLE, {});
+    let flow = await setup(context, DATA_SOURCE.PROTOBUF, {});
     if (reason === 'missing resource') {
       delete flow.raw[flow.id];
     } else if (reason === 'missing connection') {
@@ -158,16 +158,16 @@ for (let reason of ['missing resource', 'missing connection', 'unauthorised conn
     } else if (reason === 'unauthorised connection') {
       flow.connection.authorised = false;
     } else {
-      flow.connection.googleAPI.disconnect();
+      flow.connection.googleProtobufAPI.disconnect();
     }
     await assert.rejects(flow.device.set({ uuid: flow.id, temperature_scale: 'F' }));
     assert.equal(flow.writes.length, 0);
   });
 }
 
-test('System removes HomeKit routing before ' + DATA_SOURCE.GOOGLE + ' SET without mutating the request', async (context) => {
-  let flow = await setup(context, DATA_SOURCE.GOOGLE, {});
-  let api = flow.connection.googleAPI;
+test('System removes HomeKit routing before ' + DATA_SOURCE.PROTOBUF + ' SET without mutating the request', async (context) => {
+  let flow = await setup(context, DATA_SOURCE.PROTOBUF, {});
+  let api = flow.connection.googleProtobufAPI;
   let send = context.mock.method(api, 'set', async () => undefined);
   let values = { uuid: flow.id, temperature_scale: 'F' };
   await flow.device.set(values);
@@ -176,7 +176,7 @@ test('System removes HomeKit routing before ' + DATA_SOURCE.GOOGLE + ' SET witho
 });
 
 for (let failedStage of [0, 1]) {
-  test('compound thermostat write stops dependent fields after failure: ' + DATA_SOURCE.GOOGLE + '/' + failedStage, async (context) => {
+  test('compound thermostat write stops dependent fields after failure: ' + DATA_SOURCE.PROTOBUF + '/' + failedStage, async (context) => {
     let attempt = 0;
     let id = 'DEVICE_TEST';
     let value = {
@@ -189,7 +189,7 @@ for (let failedStage of [0, 1]) {
     };
     let flow = await setup(
       context,
-      DATA_SOURCE.GOOGLE,
+      DATA_SOURCE.PROTOBUF,
       () => {
         let failed = attempt++ === failedStage;
         return {

@@ -22,11 +22,11 @@
 //   - endpoint + auth identity, when uuid is not supplied
 // - Different logical connections must not accidentally share the same session
 //
-// Code version 2026.09.28
+// Code version 2026.11.23
 // Mark Hulskamp
 'use strict';
 
-// Define nodejs module requirements
+// Define node.js modules
 import EventEmitter from 'node:events';
 import http2 from 'node:http2';
 import { Buffer } from 'node:buffer';
@@ -81,6 +81,8 @@ export default class GrpcTransport {
 
   #endpointHost = '';
   #userAgent = '';
+  #referer = '';
+  #origin = '';
   #requestTimeout = 15000;
 
   #bufferInitial = 8 * 1024;
@@ -95,6 +97,8 @@ export default class GrpcTransport {
     // Protobuf schema is loaded once here and reused for all later requests.
     this.log = options?.log;
     this.#userAgent = typeof options?.userAgent === 'string' ? options.userAgent : '';
+    this.#referer = typeof options?.referer === 'string' ? options.referer : '';
+    this.#origin = typeof options?.origin === 'string' ? options.origin : '';
     this.#getAuthHeader = typeof options?.getAuthHeader === 'function' ? options.getAuthHeader : undefined;
     this.#uuid = typeof options?.uuid === 'string' ? options.uuid.trim() : '';
 
@@ -441,6 +445,14 @@ export default class GrpcTransport {
         te: 'trailers',
         'request-id': crypto.randomUUID(),
       };
+
+      // Browser-facing services supply referer/origin headers; native gateway clients omit them.
+      if (this.#referer !== '') {
+        requestHeaders.referer = this.#referer;
+      }
+      if (this.#origin !== '') {
+        requestHeaders.origin = this.#origin;
+      }
 
       if (timeout > 0) {
         requestHeaders['grpc-timeout'] = Math.ceil(timeout / 1000) + 'S';

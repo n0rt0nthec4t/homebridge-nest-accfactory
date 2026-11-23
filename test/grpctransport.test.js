@@ -102,7 +102,9 @@ test('gRPC response buffering and terminal status handling', async (t) => {
         session.destroyed = true;
         session.emit('close');
       };
-      session.request = () => {
+      session.request = (headers) => {
+        assert.equal(Object.hasOwn(headers, 'referer'), false, 'native requests do not acquire the Google Home referer');
+        assert.equal(Object.hasOwn(headers, 'origin'), false, 'native requests do not acquire the Google Home origin');
         let request = new EventEmitter();
         request.cork = request.uncork = request.write = request.destroy = () => {};
         request.close = () => {

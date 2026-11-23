@@ -1,4 +1,4 @@
-// GoogleAPI
+// GoogleProtobufAPI
 // Part of homebridge-nest-accfactory
 //
 // Handles protobuf Observe, queries and device commands for one account, using
@@ -28,7 +28,7 @@
 // Code version 2026.11.23
 // Mark Hulskamp
 
-// Define nodejs module requirements
+// Define node.js modules
 import { setTimeout, clearTimeout } from 'node:timers';
 import { Buffer } from 'node:buffer';
 import crypto from 'node:crypto';
@@ -51,7 +51,7 @@ const API_STREAM_LOOP_INTERVAL = 1000;
 const API_STREAM_RETRY_INITIAL = 5000;
 const API_STREAM_RETRY_MAX = 60000;
 
-export default class GoogleAPI {
+export default class GoogleProtobufAPI {
   resources = new Map(); // Source resource records maintained by this client.
   #options = {}; // Shared authentication, logging and optional change notification
   #snapshotWaiters = new Map(); // Pending image refreshes owned by this client.
@@ -67,7 +67,7 @@ export default class GoogleAPI {
 
     options.session?.on('authorised', () => {
       if (this.#observation !== undefined) {
-        this.connect().catch((error) => options.log?.debug?.('Unable to connect google API: %s', String(error)));
+        this.connect().catch((error) => options.log?.debug?.('Unable to connect Google protobuf API: %s', String(error)));
       }
     });
     options.session?.on('disconnect', () => {
@@ -292,7 +292,7 @@ export default class GoogleAPI {
               this.resources.delete(change.resourceId);
             } else {
               this.resources.set(change.resourceId, {
-                source: DATA_SOURCE.GOOGLE,
+                source: DATA_SOURCE.PROTOBUF,
                 value: { ...this.resources.get(change.resourceId)?.value, ...change.value },
               });
             }
@@ -315,7 +315,7 @@ export default class GoogleAPI {
 
           // A failed consumer keeps one notification for retry, independently
           // of the source cache and image requests that already accepted it.
-          let notification = { source: DATA_SOURCE.GOOGLE, changes, isCurrent };
+          let notification = { source: DATA_SOURCE.PROTOBUF, changes, isCurrent };
           try {
             let committed = await this.#options.onData?.(notification);
             if (committed === false && changes.length > 0) {
@@ -399,7 +399,7 @@ export default class GoogleAPI {
 
     let resource = this.resources.get(resourceId);
 
-    if (typeof resource !== 'object' || resource === null || resource.source !== DATA_SOURCE.GOOGLE) {
+    if (typeof resource !== 'object' || resource === null || resource.source !== DATA_SOURCE.PROTOBUF) {
       throw new Error('SET requires an available authorised device account');
     }
 
@@ -432,7 +432,7 @@ export default class GoogleAPI {
         // An awaited write can allow Observe to change the selected resource.
         let currentResource = this.resources.get(resourceId);
 
-        if (currentResource?.source === DATA_SOURCE.GOOGLE && this.#observation?.transport !== undefined) {
+        if (currentResource?.source === DATA_SOURCE.PROTOBUF && this.#observation?.transport !== undefined) {
           // The fan-state command consumes these fields together, regardless of
           // property order. Invalid companions prevent that command being built.
           if (['fan_duration', 'fan_timer_speed'].includes(key) === true && Object.hasOwn(values, 'fan_state') === true) {
@@ -773,7 +773,7 @@ export default class GoogleAPI {
             ? [resourceId, resource]
             : [...this.resources].find(
                 ([, candidate]) =>
-                  candidate.source === DATA_SOURCE.GOOGLE &&
+                  candidate.source === DATA_SOURCE.PROTOBUF &&
                   candidate.value?.remote_comfort_sensing_settings?.associatedRcsSensors?.some(
                     (sensor) => sensor.deviceId?.resourceId === resourceId,
                   ) === true,

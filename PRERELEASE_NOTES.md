@@ -5,14 +5,23 @@ Entries describe each alpha or beta release individually and are not cumulative.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-Historical validation notes preserve testing requests and limitations; they do not imply successful verification. Where a release tag is unavailable, version links point to its recorded notes.
 
 ## [Unreleased]
 
+## [1.0.0-beta.3] - 2026-11-23
+
+### Added
+
+- Add an OAuth-ready HomeGraph client for discovery, state polling and supported device commands. Normal device integration remains on protobuf while HomeGraph mappings are developed.
+
+### Changed
+
+- Simplify account settings with an Enabled switch on each card, stable connection-status spacing and Save available only when settings change.
+- Route device requests through their owning account and data-source client, with updated Foyer definitions for Google Home integration.
+
 ### Fixed
 
-- Handle Windows CRLF workflow checkouts in release-note extraction tests so the validation job can run on Windows.
-- Align publish and test workflow matrices with supported Node.js 24/26 and Homebridge 2.x, removing Node.js 22 and Homebridge 1.x jobs.
+- Align CI with Node.js 24/26 and Homebridge 2.x, and fix release-note validation on Windows.
 
 ## [1.0.0-beta.2] - 2026-11-23
 
@@ -37,7 +46,6 @@ Please test the following areas in this beta and report any issues, including th
 - **New custom Homebridge UI:** Verify Google and Nest account setup, reconnection and connection checks, including failed connection attempts and manually checking excluded accounts. Test saving and reopening account, home and device settings, along with account/device exclusions, Eve History options and general plugin settings. Confirm that existing configuration values are preserved when upgrading and making changes through the new UI.
 
 When reporting issues, please include your Homebridge and Node.js versions, relevant logs and the steps needed to reproduce the problem. Remove any credentials, tokens or personal information before sharing logs.
-
 
 ### Added
 
@@ -1375,7 +1383,8 @@ Due to the volume of changes in this release, versioning has been reverted to al
 
 - Main changes are around the video/audio pipelines in `webrtc.js` and `streamer.js` to improve stability and recovery from packet loss, especially for video streams
 
-[Unreleased]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/compare/v1.0.0-beta.2...HEAD
+[Unreleased]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/compare/v1.0.0-beta.3...HEAD
+[1.0.0-beta.3]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/compare/v1.0.0-beta.2...v1.0.0-beta.3
 [1.0.0-beta.2]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/compare/v1.0.0-beta.1...v1.0.0-beta.2
 [1.0.0-beta.1]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/tree/v1.0.0-beta.1
 [0.4.5-beta.7]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/tree/v0.4.5-beta.7

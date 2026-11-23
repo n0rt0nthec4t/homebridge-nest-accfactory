@@ -1,4 +1,4 @@
-// Exercise retained Nest subscriptions and Google Observe restarts through the real platform cache and lifecycle.
+// Exercise protobuf Observe restarts through the real platform cache and lifecycle.
 import assert from 'node:assert/strict';
 import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';

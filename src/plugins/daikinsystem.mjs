@@ -31,14 +31,14 @@
 // - default(logger, [url, deviceDescription])
 // - default(logger, [url, deviceDescription, 'modes=cool,fan,off'])
 //
-// Code version 2026.10.14
+// Code version 2026.11.23
 // Mark Hulskamp
 'use strict';
 
-// Define nodejs module requirements
+// Define node.js modules
 import { URL, URLSearchParams } from 'node:url';
 
-// Import our modules
+// Define our modules
 import { fetchWrapper } from '../fetchWrapper.js';
 
 // Define constants

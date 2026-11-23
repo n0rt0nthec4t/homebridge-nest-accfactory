@@ -1,6 +1,9 @@
 // Fabricated credentials exercise draft preservation, review and cancellation without network access.
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { setImmediate } from 'node:timers/promises';
+import { ACCOUNT_TYPE } from '../src/consts.js';
+import { ACCOUNT_TYPE as UI_ACCOUNT_TYPE } from '../homebridge-ui/public/constants.js';
 import { stageAccount } from '../homebridge-ui/public/config.js';
 import { startSetup } from '../homebridge-ui/public/main.js';
 
@@ -195,6 +198,9 @@ test('settings host checks both account types and edits Nest credentials using t
   const get = document.getElementById;
   get('manual-account-editor').hidden = true;
   let requests = [];
+  let saves = 0;
+  let failSave = false;
+  let closes = 0;
   let checkedStatus = 'success';
   let deferredCheck;
   let current = [
@@ -210,6 +216,15 @@ test('settings host checks both account types and edits Nest credentials using t
     },
   ];
   let bridge = {
+    savePluginConfig: async () => {
+      saves += 1;
+      if (failSave === true) {
+        throw new Error('fabricated save failure');
+      }
+    },
+    closeSettings: () => {
+      closes += 1;
+    },
     getPluginConfig: async () => structuredClone(current),
     getPluginConfigSchema: async () => schema,
     updatePluginConfig: async (next) => {
@@ -223,6 +238,9 @@ test('settings host checks both account types and edits Nest credentials using t
     },
   };
   await startSettings(bridge, document);
+  assert.equal(get('save-settings').disabled, true);
+  await get('save-settings').handlers.get('click')();
+  assert.equal(saves, 0);
   assert.deepEqual(
     requests.map((request) => request.payload.type),
     ['google', 'nest'],
@@ -232,6 +250,12 @@ test('settings host checks both account types and edits Nest credentials using t
     true,
   );
   assert.equal(get('accounts-list').children.length, 3);
+  assert.deepEqual(
+    get('accounts-list').children.map((card) => card.querySelector('input').checked),
+    [true, true, false],
+  );
+  assert.equal(get('accounts-list').children[2].querySelector('input').role, 'switch');
+
   assert.equal(get('accounts-list').children[2].querySelector('.account-status').textContent, 'Not checked');
   for (let card of get('accounts-list').children.slice(0, 2)) {
     const status = card.querySelector('.account-status');
@@ -254,6 +278,45 @@ test('settings host checks both account types and edits Nest credentials using t
     assert.equal(status.className.includes(result === 'success' ? 'text-success' : 'text-danger'), true);
     assert.equal(current[0].accounts[2].exclude, true);
   }
+  assert.equal(get('save-settings').disabled, true, 'Connection checks do not change configuration');
+  // Card toggles stage only exclude, preserving credentials and checked status.
+  const beforeToggle = structuredClone(current[0].accounts[2]);
+  const requestCount = requests.length;
+  let enabled = get('accounts-list').children[2].querySelector('input');
+  enabled.checked = true;
+  await enabled.handlers.get('change')();
+  await setImmediate();
+  assert.deepEqual(current[0].accounts[2], { ...beforeToggle, exclude: false });
+  assert.equal(get('save-settings').disabled, false);
+  assert.equal(get('accounts-list').children[2].className.includes('account-excluded'), false);
+  assert.equal(get('accounts-list').children[2].querySelector('.account-status').textContent, 'Connection successful');
+  enabled = get('accounts-list').children[2].querySelector('input');
+  enabled.checked = false;
+  await enabled.handlers.get('change')();
+  await setImmediate();
+  assert.deepEqual(current[0].accounts[2], beforeToggle);
+  assert.equal(get('save-settings').disabled, true, 'Reverting the toggle restores the saved draft');
+  // Accounts without an explicit exclude:false also return to the same enabled state.
+  let defaultEnabled = get('accounts-list').children[1].querySelector('input');
+  defaultEnabled.checked = false;
+  await defaultEnabled.handlers.get('change')();
+  await setImmediate();
+  assert.equal(get('save-settings').disabled, false);
+  defaultEnabled = get('accounts-list').children[1].querySelector('input');
+  defaultEnabled.checked = true;
+  await defaultEnabled.handlers.get('change')();
+  await setImmediate();
+  assert.equal(get('save-settings').disabled, true);
+  assert.equal(get('accounts-list').children[2].className.includes('account-excluded'), true);
+  assert.equal(requests.length, requestCount);
+  assert.equal(saves, 0);
+  assert.equal(
+    get('accounts-list')
+      .children[2].querySelectorAll('button')
+      .filter((button) => button.disabled === true).length,
+    0,
+  );
+
   for (let status of ['failed', 'timeout']) {
     checkedStatus = status;
     const check = get('accounts-list')
@@ -271,6 +334,8 @@ test('settings host checks both account types and edits Nest credentials using t
     .find((button) => button.textContent === 'Check connection');
   const checking = check.handlers.get('click')();
   let nestCard = get('accounts-list').children[1];
+  assert.equal(nestCard.querySelector('.account-status').textContent, '', 'Pending checks retain an empty status row');
+  assert.equal(get('save-settings').disabled, true);
   let edit = nestCard.querySelectorAll('button').find((button) => button.textContent === 'Edit');
   await edit.handlers.get('click')({ currentTarget: edit });
   let labels = get('manual-account-editor')
@@ -278,7 +343,13 @@ test('settings host checks both account types and edits Nest credentials using t
     .map((label) => label.textContent);
   assert.equal(labels.includes('Access Token'), true);
   assert.equal(labels.includes('Master Token'), false);
+  assert.equal(labels.includes('Exclude account'), false);
   assert.equal(current[0].accounts[1].access_token, 'fabricated-nest-token');
+  // A card change made while editing cannot be undone by Apply account.
+  enabled = get('accounts-list').children[1].querySelector('input');
+  enabled.checked = false;
+  await enabled.handlers.get('change')();
+  await setImmediate();
   const editor = get('manual-account-editor');
   const label = editor.querySelectorAll('label').find((entry) => entry.textContent === 'Access Token');
   const input = editor.querySelectorAll('input').find((entry) => entry.id === label.htmlFor);
@@ -294,6 +365,19 @@ test('settings host checks both account types and edits Nest credentials using t
   assert.equal(status.textContent, 'Not checked');
   assert.equal(status.className.includes('text-success'), false);
   assert.equal(current[0].accounts[1].access_token, 'replacement-nest-token');
+  assert.equal(current[0].accounts[1].exclude, true);
+  assert.equal(saves, 0);
+  assert.equal(get('save-settings').disabled, false);
+  failSave = true;
+  await get('save-settings').handlers.get('click')();
+  assert.equal(saves, 1);
+  assert.equal(closes, 0);
+  assert.equal(get('save-settings').disabled, false, 'Failed saves remain retryable');
+  failSave = false;
+  await get('save-settings').handlers.get('click')();
+  assert.equal(saves, 2);
+  assert.equal(closes, 1);
+  assert.equal(get('save-settings').disabled, true);
 });
 
 for (let status of ['failed', 'timeout', 'unexpected']) {
@@ -307,3 +391,11 @@ for (let status of ['failed', 'timeout', 'unexpected']) {
     assert.equal(flow.updates.length, 0);
   });
 }
+
+test('browser account type constants match runtime values and keep Google Home login disabled', () => {
+  assert.deepEqual(UI_ACCOUNT_TYPE, ACCOUNT_TYPE);
+  assert.throws(
+    () => stageAccount(configs, { name: 'Future', type: UI_ACCOUNT_TYPE.GOOGLE_HOME, credentials }),
+    /Invalid account connection/,
+  );
+});

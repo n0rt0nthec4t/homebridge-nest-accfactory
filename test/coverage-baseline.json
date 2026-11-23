@@ -1,7 +1,8 @@
 {
+  "src/api/homegraph.js": { "lines": 95, "branches": 90, "functions": 100 },
   "src/plugins/camera/foyer.js": { "lines": 100, "branches": 95, "functions": 100 },
   "src/accountsession.js": { "lines": 94, "branches": 93, "functions": 95 },
-  "src/api/google.js": { "lines": 90, "branches": 80, "functions": 85 },
+  "src/api/protobuf.js": { "lines": 90, "branches": 80, "functions": 85 },
   "src/HomeKitDevice/HomeKitDevice.js": {
     "lines": 94,
     "branches": 93,

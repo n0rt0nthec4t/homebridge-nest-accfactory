@@ -22,8 +22,8 @@ let traits = {
 };
 
 test('weather ignores REST structures and preserves legacy identity regardless of source arrival order', () => {
-  let rest = ['structure.home', { source: DATA_SOURCE.NEST, value: { name: 'Home', weather: traits.weather } }];
-  let google = ['STRUCTURE_HOME', { source: DATA_SOURCE.GOOGLE, value: traits }];
+  let rest = ['structure.home', { source: 'Nest', value: { name: 'Home', weather: traits.weather } }];
+  let google = ['STRUCTURE_HOME', { source: DATA_SOURCE.PROTOBUF, value: traits }];
   assert.deepEqual(processRawData(undefined, Object.fromEntries([rest]), config), {});
   for (let entries of [
     [rest, google],
@@ -44,7 +44,7 @@ for (let order of [
   ['weather', 'structure_info', 'structure_location'],
 ]) {
   test('weather initialises from separately arriving traits: ' + order.join(', '), () => {
-    let raw = { STRUCTURE_HOME: { source: DATA_SOURCE.GOOGLE, value: {} } };
+    let raw = { STRUCTURE_HOME: { source: DATA_SOURCE.PROTOBUF, value: {} } };
     let devices;
     for (let field of order) {
       raw.STRUCTURE_HOME.value[field] = traits[field];
@@ -67,9 +67,9 @@ for (let order of [
 
 test('weather resolves timezone-only changes from its own home and clears unusable zones', () => {
   let raw = {
-    STRUCTURE_HOME: { source: DATA_SOURCE.GOOGLE, value: structuredClone(traits) },
+    STRUCTURE_HOME: { source: DATA_SOURCE.PROTOBUF, value: structuredClone(traits) },
     STRUCTURE_OTHER: {
-      source: DATA_SOURCE.GOOGLE,
+      source: DATA_SOURCE.PROTOBUF,
       value: {
         ...structuredClone(traits),
         structure_info: { rtsStructureId: 'structure.other' },
@@ -107,7 +107,7 @@ test('weather resolves timezone-only changes from its own home and clears unusab
 test('weather does not choose arbitrarily between conflicting home timezone traits', () => {
   let raw = {
     STRUCTURE_HOME: {
-      source: DATA_SOURCE.GOOGLE,
+      source: DATA_SOURCE.PROTOBUF,
       value: {
         ...structuredClone(traits),
         time_zone: { timezoneName: { value: 'Australia/Sydney' } },

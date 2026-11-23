@@ -22,8 +22,7 @@ message GetHomeGraphRequest {
 }
 
 message GetHomeGraphResponse {
-  // Catalogue fields follow the reference HomeGraph schema; unknown numbered
-  // placeholders are deliberately left unmapped until their purpose is established.
+  // Unidentified catalogue fields remain unmapped until their purpose is established.
   message SpaceType {
     string code = 1;
     string name = 2;
@@ -37,6 +36,7 @@ message GetHomeGraphResponse {
   message Agent {
     string apiProjectId = 1;
     string name = 2;
+    string iconUrl = 3;
     string appStoreUrl = 4;
     string playStoreUrl = 5;
   }
@@ -51,7 +51,14 @@ message GetHomeGraphResponse {
   }
 
   message LinkableApplication {
+    string knowledgeGraphId = 1;
     string name = 2;
+    // Retain numeric field names until their enum meanings are established.
+    uint32 field3 = 3;
+    uint32 field4 = 4;
+    uint32 field5 = 5;
+    uint32 field6 = 6;
+    string iconUrl = 7;
   }
 
   uint64 responseTimestamp = 1; // Epoch in ms for this response
@@ -67,6 +74,37 @@ message GetHomeGraphResponse {
 }
 
 message Home {
+  // Numbered flags retain unidentified meanings.
+  message AgentMetadata {
+    uint32 field1 = 1;
+    string apiProjectId = 2;
+  }
+
+  message Entitlement {
+    message Metadata {
+      uint32 field1 = 1;
+    }
+    uint32 field2 = 2;
+    uint32 field4 = 4;
+    string emailAddress = 5;
+    uint32 field7 = 7;
+    string name = 8;
+    Metadata metadata = 11;
+  }
+
+  message Favorites {
+    message Item {
+      message DeviceTarget {
+        Device.Id id = 1;
+        uint32 field3 = 3;
+      }
+      DeviceTarget device = 1;
+    }
+    string name = 1;
+    uint32 field3 = 3;
+    repeated Item items = 4;
+  }
+
   message Trait {
     string name = 1;
     map<string, google.protobuf.Value> fields = 2;
@@ -78,7 +116,11 @@ message Home {
   repeated EmailAddress linked_users = 4;
   repeated Room rooms = 6;
   repeated Device devices = 7;
+  AgentMetadata agentMetadata = 11;
+  Entitlement entitlement = 12;
+  Favorites favorites = 16;
   repeated Trait traits = 21;
+  map<string, Favorites> favoritesByName = 23;
 }
 
 message Address {
@@ -90,11 +132,41 @@ message Address {
   Coordinates coordinates = 2;
   uint64 timeCreated = 5;
   string timezone = 6;
+  message AddressComponents {
+    string countryCode = 1;
+    string countryName = 2;
+    string state = 3;
+    string city = 5;
+    string street = 6;
+    string number = 11;
+    string postalCode = 12;
+    string unparsableStreetAddress = 14;
+    string buildingName = 15;
+    string apt = 16;
+    string languageCode = 26;
+  }
+  AddressComponents addressComponents = 7;
+  // StructureLocationInfo.addressLines uses wire tag 74. Preserve its structured layout.
+  message AddressLines {
+    message TwoLineAddress {
+      string line1 = 1;
+      string line2 = 2;
+    }
+    message ThreeLineAddress {
+      string aptLine = 1;
+      string line1 = 2;
+      string line2 = 3;
+    }
+    TwoLineAddress twoLineAddress = 1;
+    ThreeLineAddress threeLineAddress = 2;
+  }
+  AddressLines addressLines = 9;
 }
 
 message EmailAddress {
   string value = 1;
-  // field #4 has an unknown varint (1)
+  // Unidentified numeric user metadata.
+  uint32 field4 = 4;
 }
 
 message Room {
@@ -108,15 +180,17 @@ message Room {
 }
 
 message Device {
-  // Metadata field numbers cross-checked against KapJI/ghome-foyer-api HomeGraph.Device.
   // Keep existing identity fields intact; metadata does not determine accessory identity.
   message Hardware {
     string manufacturer = 1;
     string model = 2;
+    string hardwareVersion = 3;
     string softwareVersion = 4;
   }
 
   message Names {
+    // OtherNames.nameFromGHApp in the supplied reference encoder.
+    string nameFromGoogleHome = 1;
     string name = 2;
     repeated string defaultNames = 3;
     repeated string nicknames = 4;
@@ -136,6 +210,14 @@ message Device {
     repeated ThirdPartyId otherThirdPartyId = 1;
   }
 
+  // Field 30 groups state and attributes by trait category, independently of
+  // the capability names in field 7.
+  message TraitState {
+    string name = 1;
+    map<string, google.protobuf.Value> state = 2;
+    google.protobuf.Struct attributes = 3;
+  }
+
   Id id = 1;
   string displayName = 4;
   string type = 6;
@@ -143,8 +225,94 @@ message Device {
   repeated string defaultNames = 16;
   Hardware hardware = 17;
   Names names = 18;
+  // Milliseconds since Unix epoch; the event this timestamp denotes is unknown.
+  uint64 timestamp19 = 19;
   google.protobuf.Struct attributes = 20;
+  repeated EmailAddress linkedUsers = 26;
+  string localAuthToken = 28;
+  repeated TraitState traitStates = 30;
+  ThirdPartyId additionalThirdPartyId = 32;
+  // The reference calls this deviceSource; its numeric meanings are unverified.
+  int32 deviceSource = 37;
   OtherThirdPartyIds otherIds = 39;
+  // Other observed numbered fields remain unmapped while their meaning is unknown.
+}
+
+// Trait reads include recursive values and per-category attributes.
+message GetTraitsRequest {
+  message DeviceReference {
+    string uuid = 1;
+  }
+  repeated DeviceReference deviceIds = 1;
+}
+
+message GetTraitsResponse {
+  message ScalarValue {
+    oneof kind {
+      int32 nullValue = 1;
+      double number = 2;
+      string text = 3;
+      bool boolean = 4;
+      Properties properties = 5;
+      PropertyArray array = 6;
+    }
+  }
+  message Properties {
+    repeated Property properties = 1;
+  }
+  message PropertyArray {
+    repeated ScalarValue values = 1;
+  }
+  message Property {
+    string name = 1;
+    ScalarValue value = 2;
+  }
+  message Category {
+    string name = 1;
+    repeated Property traits = 2;
+    Properties attributes = 3;
+  }
+  message DeviceState {
+    google.protobuf.StringValue uuid = 1;
+    repeated Category category = 2;
+  }
+  repeated DeviceState device = 1;
+}
+
+// Partial preferences schema for Technical Information pages and their item tree.
+message GetUserPreferencesRequest {
+  string structureId = 1;
+  repeated uint32 pageCode = 2;
+  google.protobuf.StringValue uuid = 3;
+  string unknown5 = 5;
+}
+message GetUserPreferencesResponse {
+  // Wire definitions verified against the supplied reference encoder.
+  // Selection state is numeric; do not infer an on/off meaning from its name.
+  message PrefsItemSelected {
+    int32 state = 1;
+  }
+  message PrefsPageLink {
+    uint32 pageCode = 1;
+    string structureId = 2;
+    google.protobuf.StringValue uuid = 3;
+  }
+  message ItemRef {
+    uint32 id = 2;
+    google.protobuf.StringValue associatedId = 3;
+  }
+  message PrefsItem {
+    ItemRef itemRef = 1;
+    PrefsItemSelected selected = 2;
+    string name = 3;
+    string subtitle = 4;
+    repeated PrefsItem subitems = 6;
+    int32 type = 7;
+    string iconUrl = 9;
+    string appLink = 15;
+    PrefsPageLink prefsPageLink = 26;
+  }
+  PrefsItem item = 1;
 }
 
 message SendTalkbackRequest {
@@ -160,7 +328,7 @@ message SendTalkbackRequest {
 }
 
 message SendTalkbackResponse {
-  // Reported by the Foyer client schema; status values have no established meaning here.
+  // Status values have no established meaning here.
   int32 status = 1;
 }
 
@@ -237,47 +405,64 @@ message JoinStreamResponse {
   StreamExtensionStatus streamExtensionStatus = 5;
 }
 
+// UpdateTraits uses the same category/property wire format as GetTraits.
 message UpdateTraitsRequest {
-  message Request {
-    TargetDevice device = 1;
-    TraitToUpdate trait = 2;
-  }
-
   message TargetDevice {
-    string googleDeviceId = 1;
-    google.protobuf.StringValue service = 2;
+    message InternalId {
+      string source = 1;
+    }
+    string uuid = 1;
+    InternalId internalId = 2;
   }
-
-  message TraitToUpdate {
-    string category = 1;
-    UpdateTrait updateTrait = 2;
+  message Request {
+    TargetDevice deviceId = 1;
+    repeated GetTraitsResponse.Category categories = 2;
   }
-
-  message UpdateTrait {
-    string name = 1;
-    TraitValue value = 2;
-  }
-
-  message TraitValue {
-    string string = 3;
-    int32 intValue = 4;
-    Properties properties = 5;
-    PropertyArray array = 6;
-  }
-
-  message PropertyArray {
-    repeated TraitValue values = 1;
-  }
-
-  message Properties {
-    repeated UpdateTrait properties = 1;
-  }
-
-  Request request = 1;
+  repeated Request request = 1;
 }
 
 message UpdateTraitsResponse {
+  repeated GetTraitsResponse.DeviceState device = 1;
+}
 
+// Nest-backed thermostat writes use EnergyService, not generic setpoint traits.
+// Tags and enum values were checked against the supplied compiled Foyer schema;
+// unknown numbered fields retain their names.
+enum ThermostatMode {
+  unspecified = 0;
+  heat = 1;
+  cool = 2;
+  heatcool = 3;
+  off = 4;
+  eco = 5;
+}
+message UpdateThermostatModeRequest {
+  string deviceId = 1;
+  ThermostatMode mode = 2;
+  uint32 unknown3 = 3;
+}
+message UpdateTargetTemperatureRequest {
+  string deviceId = 1;
+  ThermostatMode mode = 2;
+  google.protobuf.FloatValue temperature = 3;
+  uint32 unknown4 = 4;
+}
+message UpdateTargetTemperatureRangeRequest {
+  string deviceId = 1;
+  google.protobuf.FloatValue tempLow = 2;
+  google.protobuf.FloatValue tempHigh = 3;
+  uint32 unknown4 = 4;
+}
+message UpdateThermostatFanModeRequest {
+  string deviceId = 1;
+  google.protobuf.UInt32Value runTimeSeconds = 2;
+}
+message EnergyCommandResponse {}
+service EnergyService {
+  rpc UpdateThermostatMode(UpdateThermostatModeRequest) returns (EnergyCommandResponse);
+  rpc UpdateTargetTemperature(UpdateTargetTemperatureRequest) returns (EnergyCommandResponse);
+  rpc UpdateTargetTemperatureRange(UpdateTargetTemperatureRangeRequest) returns (EnergyCommandResponse);
+  rpc UpdateThermostatFanMode(UpdateThermostatFanModeRequest) returns (EnergyCommandResponse);
 }
 
 service StructuresService {
@@ -290,6 +475,11 @@ service CameraService {
   rpc JoinStream(JoinStreamRequest) returns (JoinStreamResponse);
 }
 
+service UsersService {
+  rpc GetUserPreferences(GetUserPreferencesRequest) returns (GetUserPreferencesResponse);
+}
+
 service HomeControlService {
+  rpc GetTraits(GetTraitsRequest) returns (GetTraitsResponse);
   rpc UpdateTraits(UpdateTraitsRequest) returns (UpdateTraitsResponse);
 }

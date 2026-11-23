@@ -29,7 +29,7 @@ function setup() {
 }
 test('settings server exposes only the account test route, without discovery clients', () => {
   assert.deepEqual([...fake.server.routes.keys()], ['/accounts/test']);
-  assert.doesNotMatch(source, /GoogleAPI|loadDeviceModules/);
+  assert.doesNotMatch(source, /GoogleProtobufAPI|HomeGraphAPI|loadDeviceModules/);
 });
 for (let type of ['google', 'nest']) {
   for (let status of ['success', 'failed', 'timeout']) {

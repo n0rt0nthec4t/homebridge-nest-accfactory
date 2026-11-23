@@ -26,16 +26,16 @@
 // - Additional named exports are attached to the module entry when present
 // - Used by the main system module to create and manage device instances
 //
-// Code version 2026.10.24
+// Code version 2026.11.23
 // Mark Hulskamp
 'use strict';
 
-// Define nodejs module requirements
+// Define node.js modules
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import url from 'node:url';
 
-// Import our modules
+// Define our modules
 import HomeKitDevice from './HomeKitDevice.js';
 
 // Define constants

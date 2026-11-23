@@ -1,6 +1,8 @@
 // Cover complete platform command routing without extracting or copying private methods.
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { DATA_SOURCE } from '../src/consts.js';
+import HomeGraphAPI from '../src/api/homegraph.js';
 import { platformHarness } from './helpers/platform-harness.js';
 
 let traits = {
@@ -189,7 +191,7 @@ for (let unavailable of ['account', 'authorisation', 'transport', 'resource']) {
       flow.connection.authorised = false;
     }
     if (unavailable === 'transport') {
-      flow.connection.googleAPI.disconnect();
+      flow.connection.googleProtobufAPI.disconnect();
     }
     if (unavailable === 'resource') {
       delete flow.raw.DEVICE_TEST;
@@ -370,5 +372,99 @@ for (let [values, label, expected] of [
     let update = flow.commands[0][3].batchUpdateStateRequest[0];
     assert.equal(update.traitRequest.traitLabel, label);
     assert.partialDeepStrictEqual(update.state.value, expected);
+  });
+}
+
+for (let source of [DATA_SOURCE.PROTOBUF, DATA_SOURCE.HOMEGRAPH]) {
+  test('System dispatches GET and SET to the selected source: ' + source, async (context) => {
+    let flow = await platformHarness(context);
+    let protobuf = {
+      get: context.mock.method(flow.connection.googleProtobufAPI, 'get', async () => 'protobuf-reading'),
+      set: context.mock.method(flow.connection.googleProtobufAPI, 'set', async () => undefined),
+    };
+    let homegraph = {
+      get: context.mock.fn(async () => 'homegraph-reading'),
+      set: context.mock.fn(async () => undefined),
+    };
+    flow.connection.homegraphAPI = homegraph;
+    flow.raw.DEVICE_TEST.source = source;
+    let values = { uuid: 'DEVICE_TEST', target_temperature: 21 };
+    await flow.device.set(values);
+    assert.deepEqual(values, { uuid: 'DEVICE_TEST', target_temperature: 21 });
+    let selected = source === DATA_SOURCE.PROTOBUF ? protobuf : homegraph;
+    let other = source === DATA_SOURCE.PROTOBUF ? homegraph : protobuf;
+    assert.deepEqual(selected.set.mock.calls[0].arguments, ['DEVICE_TEST', { target_temperature: 21 }]);
+    let result = await flow.device.get({ uuid: 'DEVICE_TEST', sample: { selector: 1 }, second: true });
+    assert.equal(result.sample, source === DATA_SOURCE.PROTOBUF ? 'protobuf-reading' : 'homegraph-reading');
+    assert.deepEqual(
+      selected.get.mock.calls.map((call) => call.arguments),
+      [
+        ['DEVICE_TEST', 'sample', { selector: 1 }],
+        ['DEVICE_TEST', 'second', undefined],
+      ],
+    );
+    assert.equal(other.get.mock.callCount(), 0);
+    assert.equal(other.set.mock.callCount(), 0);
+  });
+}
+
+test('System rejects unknown source operations instead of falling back to protobuf', async (context) => {
+  let flow = await platformHarness(context);
+  flow.raw.DEVICE_TEST.source = 'unknown';
+  let get = context.mock.method(flow.connection.googleProtobufAPI, 'get', () => assert.fail('Unexpected protobuf fallback'));
+  let set = context.mock.method(flow.connection.googleProtobufAPI, 'set', () => assert.fail('Unexpected protobuf fallback'));
+  await assert.rejects(flow.device.set({ uuid: 'DEVICE_TEST', target_temperature: 21 }), /SET is not supported/);
+  assert.deepEqual(await flow.device.get({ uuid: 'DEVICE_TEST', sample: true }), { uuid: 'DEVICE_TEST', sample: undefined });
+  assert.equal(get.mock.callCount(), 0);
+  assert.equal(set.mock.callCount(), 0);
+  assert.equal(
+    flow.logs.some((entry) => String(entry.at(-1)).includes('GET is not supported')),
+    true,
+  );
+});
+
+test('HomeGraph device requests cannot trigger account discovery or protobuf fallback', async (context) => {
+  let flow = await platformHarness(context);
+  flow.raw.DEVICE_TEST.source = DATA_SOURCE.HOMEGRAPH;
+  flow.connection.homegraphAPI = new HomeGraphAPI();
+  context.mock.method(flow.connection.homegraphAPI, 'connect', () => assert.fail('Device GET triggered discovery'));
+  context.mock.method(flow.connection.googleProtobufAPI, 'get', () => assert.fail('Unexpected protobuf fallback'));
+  context.mock.method(flow.connection.googleProtobufAPI, 'set', () => assert.fail('Unexpected protobuf fallback'));
+  await assert.rejects(
+    flow.device.set({ uuid: 'DEVICE_TEST', target_temperature: 21 }),
+    /SET requires valid parameters and an authorised device account/,
+  );
+  assert.deepEqual(await flow.device.get({ uuid: 'DEVICE_TEST', sample: true }), { uuid: 'DEVICE_TEST', sample: undefined });
+  assert.equal(
+    flow.logs.some((entry) => String(entry.at(-1)).includes('HomeGraph device GET requires a discovered device')),
+    true,
+  );
+});
+
+for (let sameAccount of [true, false]) {
+  test('related resource access stays within the accessory account: sameAccount=' + sameAccount, async (context) => {
+    let flow = await platformHarness(context);
+    let get = context.mock.method(flow.connection.googleProtobufAPI, 'get', async () => 'owned-reading');
+    let set = context.mock.method(flow.connection.googleProtobufAPI, 'set', async () => undefined);
+    let other = {
+      get: context.mock.fn(() => assert.fail('Cross-account read')),
+      set: context.mock.fn(() => assert.fail('Cross-account write')),
+      disconnect() {},
+    };
+    flow.accounts.set('other-account', { authorised: true, googleProtobufAPI: other });
+    flow.raw.DEVICE_RELATED = { connection: sameAccount === true ? 'account' : 'other-account', source: DATA_SOURCE.PROTOBUF, value: {} };
+    if (sameAccount === true) {
+      await flow.device.set({ uuid: 'DEVICE_RELATED', target_temperature: 21 });
+      assert.equal((await flow.device.get({ uuid: 'DEVICE_RELATED', sample: true })).sample, 'owned-reading');
+      assert.equal(get.mock.callCount(), 1);
+      assert.equal(set.mock.callCount(), 1);
+    } else {
+      await assert.rejects(flow.device.set({ uuid: 'DEVICE_RELATED', target_temperature: 21 }), /authorised device account/);
+      assert.equal(await flow.device.get({ uuid: 'DEVICE_RELATED', sample: true }), undefined);
+      assert.equal(get.mock.callCount(), 0);
+      assert.equal(set.mock.callCount(), 0);
+    }
+    assert.equal(other.get.mock.callCount(), 0);
+    assert.equal(other.set.mock.callCount(), 0);
   });
 }

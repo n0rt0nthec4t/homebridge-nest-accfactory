@@ -54,7 +54,7 @@ import { DATA_SOURCE, DEVICE_TYPE, PROTOBUF_RESOURCES, LOW_BATTERY_LEVEL } from 
 
 export default class NestLock extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.LOCK;
-  static VERSION = '2026.10.29'; // Code version
+  static VERSION = '2026.11.23'; // Code version
 
   // Define lock bolt states
   static STATE = {
@@ -503,7 +503,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
 
         // Only process valid Google lock devices that are ready and linked to a known home object
         if (
-          value?.source !== DATA_SOURCE.GOOGLE ||
+          value?.source !== DATA_SOURCE.PROTOBUF ||
           value?.value?.configuration_done?.deviceReady !== true ||
           rawData?.[value?.value?.device_info?.pairerId?.resourceId] === undefined
         ) {

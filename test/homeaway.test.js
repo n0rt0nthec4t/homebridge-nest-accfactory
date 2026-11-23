@@ -17,7 +17,7 @@ let changed = new Map([['STRUCTURE_HOME', { fields: new Set(['structure_info', '
 
 function structure(mode) {
   return {
-    source: DATA_SOURCE.GOOGLE,
+    source: DATA_SOURCE.PROTOBUF,
     value: {
       structure_info: { rtsStructureId: 'structure.home', name: 'Home' },
       structure_mode: { structureMode: mode },
@@ -26,7 +26,7 @@ function structure(mode) {
 }
 
 test('Home/Away ignores REST structures regardless of arrival order and preserves existing identity', () => {
-  let rest = ['structure.home', { source: DATA_SOURCE.NEST, value: { name: 'Home', away: false } }];
+  let rest = ['structure.home', { source: 'Nest', value: { name: 'Home', away: false } }];
   let google = ['STRUCTURE_HOME', structure('STRUCTURE_MODE_AWAY')];
   let serial = NESTLABS_MAC_PREFIX + crc24(DEVICE_TYPE.HOMEAWAY.toUpperCase() + ':STRUCTURE.HOME').toUpperCase();
   assert.deepEqual(processRawData(undefined, Object.fromEntries([rest]), { options: {} }, undefined, changed), {});

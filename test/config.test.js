@@ -9,6 +9,7 @@ import process from 'node:process';
 import test from 'node:test';
 import { URL } from 'node:url';
 import { processConfig } from '../src/config.js';
+import { ACCOUNT_TYPE } from '../src/consts.js';
 
 for (let mode of [0o600, 0o640, 0o400]) {
   for (let existing of [false, true]) {
@@ -170,10 +171,21 @@ for (let [label, version, missing, valid] of [
             .join('\n'),
           '-decoders': missing === 'libspeex' ? '' : ' A..... libspeex',
           '-muxers': '',
-          '-demuxers': ['rtsp', 'sdp'].filter((name) => name !== missing).map((name) => ' D ' + name).join('\n'),
-          '-protocols': 'Input:\n' +
-            ['tcp', 'pipe', 'udp', 'rtp'].filter((name) => name !== missing).map((name) => '  ' + name).join('\n') +
-            '\nOutput:\n' + ['pipe', 'udp', 'rtp', 'srtp'].filter((name) => name !== missing).map((name) => '  ' + name).join('\n'),
+          '-demuxers': ['rtsp', 'sdp']
+            .filter((name) => name !== missing)
+            .map((name) => ' D ' + name)
+            .join('\n'),
+          '-protocols':
+            'Input:\n' +
+            ['tcp', 'pipe', 'udp', 'rtp']
+              .filter((name) => name !== missing)
+              .map((name) => '  ' + name)
+              .join('\n') +
+            '\nOutput:\n' +
+            ['pipe', 'udp', 'rtp', 'srtp']
+              .filter((name) => name !== missing)
+              .map((name) => '  ' + name)
+              .join('\n'),
         }[args[0]] ?? '',
     }));
     let warnings = [];
@@ -181,18 +193,32 @@ for (let [label, version, missing, valid] of [
     let config = processConfig({ options: { ffmpegPath: 'fixture-ffmpeg', debug: true } }, log, {});
     assert.equal(config.options.ffmpeg.valid, valid);
     for (let demuxer of ['rtsp', 'sdp']) {
-      assert.equal(warnings.some((entry) =>
-        entry[0] === 'Missing %s %s in ffmpeg' && entry[1] === demuxer && entry[2] === 'demuxer'), missing === demuxer);
+      assert.equal(
+        warnings.some((entry) => entry[0] === 'Missing %s %s in ffmpeg' && entry[1] === demuxer && entry[2] === 'demuxer'),
+        missing === demuxer,
+      );
     }
-    for (let [direction, protocols] of [['input', ['tcp', 'pipe', 'udp', 'rtp']], ['output', ['pipe', 'udp', 'rtp', 'srtp']]]) {
+    for (let [direction, protocols] of [
+      ['input', ['tcp', 'pipe', 'udp', 'rtp']],
+      ['output', ['pipe', 'udp', 'rtp', 'srtp']],
+    ]) {
       for (let protocol of protocols) {
-        assert.equal(warnings.some((entry) =>
-          entry[0] === 'Missing %s %s in ffmpeg' && entry[1] === protocol && entry[2] === direction + ' protocol'), missing === protocol);
+        assert.equal(
+          warnings.some((entry) => entry[0] === 'Missing %s %s in ffmpeg' && entry[1] === protocol && entry[2] === direction + ' protocol'),
+          missing === protocol,
+        );
       }
     }
-    for (let [name, kind] of [['libspeex', 'decoder'], ['libx264', 'encoder'], ['libfdk_aac', 'encoder'], ['libopus', 'encoder']]) {
-      assert.equal(warnings.some((entry) =>
-        entry[0] === 'Missing %s %s in ffmpeg' && entry[1] === name && entry[2] === kind), missing === name);
+    for (let [name, kind] of [
+      ['libspeex', 'decoder'],
+      ['libx264', 'encoder'],
+      ['libfdk_aac', 'encoder'],
+      ['libopus', 'encoder'],
+    ]) {
+      assert.equal(
+        warnings.some((entry) => entry[0] === 'Missing %s %s in ffmpeg' && entry[1] === name && entry[2] === kind),
+        missing === name,
+      );
     }
     if (valid === true) {
       assert.equal(config.options.ffmpeg.version, version);
@@ -412,4 +438,23 @@ test('configuration publishes a successfully probed hardware encoder and debug d
   let quiet = { info: () => assert.fail('disabled debug must stay silent'), warn() {} };
   processConfig({ options: { debug: false } }, quiet, {});
   quiet.debug('Fixture message');
+});
+
+test('configuration normalises recognised account types without changing credentials or unknown types', (context) => {
+  context.mock.method(child_process, 'spawnSync', () => ({ error: new Error('Mock probe') }));
+  let config = {
+    accounts: [
+      { name: 'Google', type: ' Google ', issueToken: 'fixture-url', cookie: 'fixture-cookie' },
+      { name: 'Nest', type: 'NEST', access_token: 'fixture-token' },
+      { name: 'Future', type: 'GoogleHome' },
+      { name: 'Unknown', type: 'Other' },
+    ],
+  };
+  processConfig(config, { warn() {}, info() {}, debug() {} }, {});
+  assert.deepEqual(
+    config.accounts.map((account) => account.type),
+    [ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST, ACCOUNT_TYPE.GOOGLE_HOME, 'Other'],
+  );
+  assert.equal(config.accounts[0].cookie, 'fixture-cookie');
+  assert.equal(config.accounts[1].access_token, 'fixture-token');
 });

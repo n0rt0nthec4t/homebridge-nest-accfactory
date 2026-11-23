@@ -42,10 +42,9 @@
         <div id="options-fields" class="card-content"></div>
       </details>
       <footer class="settings-footer">
-        <p>Changes apply after saving and restarting Homebridge.</p>
         <div class="button-row">
-          <button id="cancel-settings" type="button" class="btn btn-secondary">Cancel settings</button>
-          <button id="save-settings" type="button" class="btn btn-primary">Save settings</button>
+          <button id="cancel-settings" type="button" class="btn btn-secondary">Cancel</button>
+          <button id="save-settings" type="button" class="btn btn-primary" disabled>Save</button>
         </div>
       </footer>
     </fieldset>
@@ -84,7 +83,7 @@
       <div id="connection-review" hidden>
         <label for="account-name" class="form-label">Account name</label>
         <input id="account-name" class="form-control" maxlength="128" autocomplete="off" value="Google">
-        <p>Use Add or Update account, then Save settings to apply the change.</p>
+        <p>Use Add or Update account, then Save to apply the change.</p>
       </div>
       <p id="connection-status" role="status" aria-live="polite"></p>
       <div class="button-row">

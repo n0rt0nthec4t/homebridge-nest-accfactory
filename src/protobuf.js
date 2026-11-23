@@ -20,14 +20,14 @@
 // - Callers decide which protobuf file and type names they need
 // - protobufjs Long support is disabled to preserve existing plain number/object behaviour
 //
-// Code version 2026.05.07
+// Code version 2026.11.23
 // Mark Hulskamp
 'use strict';
 
 // Define external module requirements
 import protobuf from 'protobufjs';
 
-// Define nodejs module requirements
+// Define node.js modules
 import fs from 'node:fs';
 import path from 'node:path';
 

@@ -17,7 +17,7 @@ let boundary =
       'export default class Transport { static STATUS = { UNAUTHENTICATED: 16 }; constructor() { return runtime.transport(); } }',
   );
 let { runtime } = await import(boundary);
-let location = new URL('../src/api/google.js', import.meta.url);
+let location = new URL('../src/api/protobuf.js', import.meta.url);
 let source = (await readFile(location, 'utf8')).replace(
   /from '([^']+)'/g,
   (match, specifier) =>
@@ -26,7 +26,7 @@ let source = (await readFile(location, 'utf8')).replace(
       ['node:timers', '../fetchWrapper.js', '../protobuf.js', '../grpctransport.js'].includes(specifier) === true ? boundary : specifier,
     ),
 );
-let { default: GoogleAPI } = await importSource(location, source);
+let { default: GoogleProtobufAPI } = await importSource(location, source);
 
 function setup(context, overrides = {}) {
   context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 100000 });
@@ -71,7 +71,7 @@ function setup(context, overrides = {}) {
     log: { debug: (...args) => logs.push(args), warn: (...args) => logs.push(args) },
     ...overrides,
   };
-  let api = new GoogleAPI({ ...options, onData: (...args) => options.onData?.(...args) });
+  let api = new GoogleProtobufAPI({ ...options, onData: (...args) => options.onData?.(...args) });
   context.after(() => api.disconnect());
   return {
     api,
@@ -126,7 +126,7 @@ test('google API does not start without authorisation', async (context) => {
 });
 test('google API cannot restart a disconnected shared session', async (context) => {
   let flow = setup(context);
-  let client = new GoogleAPI({
+  let client = new GoogleProtobufAPI({
     session: {
       account: flow.connection,
       on() {},
@@ -195,7 +195,7 @@ test('Google Observe with no schemas does not open or schedule a subscription', 
 });
 
 test('Google Observe favours ACCEPTED patches and removes resources through the platform boundary', async (context) => {
-  let callerCache = { DEVICE_OLD: { source: DATA_SOURCE.GOOGLE, value: {} } };
+  let callerCache = { DEVICE_OLD: { source: DATA_SOURCE.PROTOBUF, value: {} } };
   let flow = setup(context, { rawData: callerCache });
   flow.api.resources.set('DEVICE_OLD', structuredClone(callerCache.DEVICE_OLD));
   await flow.api.connect();
@@ -269,7 +269,7 @@ for (let [label, resourceId, values] of [
     assert.equal(flow.requests.length, 0);
   });
 }
-for (let resource of [undefined, null, {}, { source: 'other' }]) {
+for (let resource of [undefined, null, {}, { source: 'other' }, { source: 'Nest' }, { source: DATA_SOURCE.HOMEGRAPH }]) {
   test('google SET rejects unavailable/wrong-source resource: ' + JSON.stringify(resource), async (context) => {
     let flow = setup(context);
     flow.api.resources.set('DEVICE_TEST', resource);
@@ -389,7 +389,7 @@ test('google client connects, stores data, reads values and sends settings witho
     commands.push(args);
     return { status: 0, data: [{ traitOperations: [{ progress: 'COMPLETE' }] }] };
   };
-  let client = new GoogleAPI({
+  let client = new GoogleProtobufAPI({
     session: {
       account: flow.connection,
       connect: async () => true,
@@ -479,7 +479,7 @@ for (let mode of ['RCS_CONTROL_MODE_HOLD', 'RCS_CONTROL_MODE_SCHEDULE', 'RCS_CON
       associatedRcsSensors: [{ deviceId: { resourceId: 'DEVICE_SENSOR' } }],
       rcsControlSchedule: { fixture: true },
     };
-    flow.api.resources.set('DEVICE_PARENT', { source: DATA_SOURCE.GOOGLE, value: { remote_comfort_sensing_settings: settings } });
+    flow.api.resources.set('DEVICE_PARENT', { source: DATA_SOURCE.PROTOBUF, value: { remote_comfort_sensing_settings: settings } });
     await flow.api.set('DEVICE_PARENT', { active_sensor: true });
     let update = commands[0][3].batchUpdateStateRequest[0];
     assert.equal(update.traitRequest.resourceId, 'DEVICE_PARENT');
@@ -507,9 +507,9 @@ test('google rejects stale remote deselection without clearing the replacement',
     commands.push(args);
   };
   await flow.api.connect();
-  flow.api.resources.set('DEVICE_SENSOR', { source: DATA_SOURCE.GOOGLE, value: {} });
+  flow.api.resources.set('DEVICE_SENSOR', { source: DATA_SOURCE.PROTOBUF, value: {} });
   flow.api.resources.set('DEVICE_PARENT', {
-    source: DATA_SOURCE.GOOGLE,
+    source: DATA_SOURCE.PROTOBUF,
     value: {
       remote_comfort_sensing_settings: {
         associatedRcsSensors: [{ deviceId: { resourceId: 'DEVICE_SENSOR' } }],
@@ -524,7 +524,7 @@ test('google rejects stale remote deselection without clearing the replacement',
   assert.equal(commands.length, 0);
   assert.equal(flow.requests.length, 0);
   // A related resource from the other source cannot authorise a parent write.
-  flow.api.resources.get('DEVICE_PARENT').source = DATA_SOURCE.NEST;
+  flow.api.resources.get('DEVICE_PARENT').source = DATA_SOURCE.HOMEGRAPH;
   await assert.rejects(flow.api.set('DEVICE_SENSOR', { active_sensor: true }), AggregateError);
   assert.equal(commands.length, 0);
   assert.equal(flow.requests.length, 0);
@@ -548,7 +548,7 @@ test('Google snapshots complete from the client cache while a consumer notificat
     ],
   });
   flow.api.resources.set('DEVICE_TEST', {
-    source: DATA_SOURCE.GOOGLE,
+    source: DATA_SOURCE.PROTOBUF,
     value: {
       device_info: { typeName: 'google.resource.SpencerResource' },
     },
@@ -609,7 +609,7 @@ test('google retries a rejected removal notification after its own cache already
 
 test('google accepts authentication only through its session', async (context) => {
   let flow = setup(context);
-  let client = new GoogleAPI({ account: flow.connection });
+  let client = new GoogleProtobufAPI({ account: flow.connection });
   context.after(() => client.disconnect());
   await assert.rejects(client.connect(), /Unable to authenticate/);
   await assert.rejects(client.get('DEVICE_TEST', 'fixture'), /authorised account/);
@@ -619,7 +619,7 @@ test('google accepts authentication only through its session', async (context) =
 test('google reads the current session account instead of retaining a parallel credential record', async (context) => {
   let flow = setup(context);
   let session = { account: { authorised: false }, on() {} };
-  let client = new GoogleAPI({ session });
+  let client = new GoogleProtobufAPI({ session });
   context.after(() => client.disconnect());
   client.resources.set('DEVICE_TEST', { value: { fixture: { enabled: true } } });
   await assert.rejects(client.get('DEVICE_TEST', 'fixture'), /authorised account/);
@@ -631,7 +631,7 @@ test('google reads the current session account instead of retaining a parallel c
 test('google does not silently accept a HomeKit routing field as an API setting', async (context) => {
   let flow = setup(context);
   let id = 'DEVICE_TEST';
-  flow.api.resources.set(id, { source: DATA_SOURCE.GOOGLE, value: {} });
+  flow.api.resources.set(id, { source: DATA_SOURCE.PROTOBUF, value: {} });
 
   await flow.api.connect();
 
@@ -642,7 +642,7 @@ test('google does not silently accept a HomeKit routing field as an API setting'
 test('Google settings require explicit connection startup before using the command transport', async (context) => {
   let flow = setup(context);
   let value = { display_settings: { temperatureScale: 'TEMPERATURE_SCALE_C' } };
-  flow.api.resources.set('DEVICE_TEST', { source: DATA_SOURCE.GOOGLE, value: structuredClone(value) });
+  flow.api.resources.set('DEVICE_TEST', { source: DATA_SOURCE.PROTOBUF, value: structuredClone(value) });
   let command = context.mock.fn(async () => ({ status: 0, data: [{ traitOperations: [{ progress: 'COMPLETE' }] }] }));
   flow.connection.grpcTransport.command = command;
   await assert.rejects(flow.api.set('DEVICE_TEST', { temperature_scale: 'F' }), /command transport is unavailable/);

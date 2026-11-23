@@ -1,9 +1,11 @@
 // Verify shared HomeGraph lookup matches one device without mixing aliases or owning transports.
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { EventEmitter } from 'node:events';
+import http2 from 'node:http2';
 import GrpcTransport from '../src/grpctransport.js';
 import { resolveCameraIds, setupGoogleHomeFoyer } from '../src/plugins/camera/foyer.js';
-import { GOOGLE_HOME_FOYER_PREFIX, GOOGLE_HOME_FOYER_ENDPOINTS } from '../src/consts.js';
+import { GOOGLE_HOME_FOYER_PREFIX, GOOGLE_HOME_FOYER_ENDPOINTS, GOOGLE_HOME_REFERER, GOOGLE_HOME_USER_AGENT } from '../src/consts.js';
 
 function graph(devices) {
   return { data: [{ homes: [{ devices }] }] };
@@ -121,5 +123,56 @@ for (let fieldTest of [false, true]) {
     assert.equal(command.mock.callCount(), 2);
     assert.equal(command.mock.calls[0].this, first.transport);
     first.transport.release();
+  });
+}
+
+for (let fieldTest of [false, true]) {
+  test('Foyer lookup and signalling send browser headers: fieldTest=' + fieldTest, async (context) => {
+    let requests = [];
+    let hosts = [];
+    context.mock.method(http2, 'connect', (host) => {
+      hosts.push(host);
+      let session = new EventEmitter();
+      session.ping = () => {};
+      session.destroy = () => {
+        session.destroyed = true;
+        session.emit('close');
+      };
+      session.request = (headers) => {
+        requests.push(headers);
+        let request = new EventEmitter();
+        request.cork = request.uncork = request.write = () => {};
+        request.close = request.destroy = () => {
+          request.closed = true;
+          request.emit('close');
+        };
+        request.end = () =>
+          queueMicrotask(() => {
+            request.emit('response', { ':status': 200, 'content-type': 'application/grpc' });
+            request.emit('trailers', { 'grpc-status': '0' });
+            request.close();
+          });
+        return request;
+      };
+      return session;
+    });
+    let setup = setupGoogleHomeFoyer({ uuid: 'DEVICE_FIXTURE_HEADERS', fieldTest, getAuthHeader: () => 'Bearer fabricated-oauth' });
+    context.after(() => setup.transport.release());
+    await setup.promise;
+    let result = await setup.transport.command(GOOGLE_HOME_FOYER_PREFIX, 'CameraService', 'JoinStream', {});
+    assert.equal(result.status, 0);
+    assert.deepEqual(hosts, [fieldTest === true ? GOOGLE_HOME_FOYER_ENDPOINTS.FIELD_TEST : GOOGLE_HOME_FOYER_ENDPOINTS.PRODUCTION]);
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0][':path'].endsWith('/GetHomeGraph'), true);
+    assert.equal(requests[1][':path'].endsWith('/JoinStream'), true);
+    for (let headers of requests) {
+      assert.equal(headers.referer, 'https://home.google.com');
+      assert.equal(headers.referer, GOOGLE_HOME_REFERER);
+      assert.equal(headers.origin, GOOGLE_HOME_REFERER);
+      assert.equal(headers.origin, headers.referer);
+      assert.equal(headers['user-agent'], GOOGLE_HOME_USER_AGENT);
+      assert.match(headers['user-agent'], /Version\/27\.2 Safari\/605\.1\.15$/);
+      assert.equal(headers.authorization, 'Bearer fabricated-oauth');
+    }
   });
 }

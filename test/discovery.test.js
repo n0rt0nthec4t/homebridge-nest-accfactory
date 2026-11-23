@@ -30,7 +30,7 @@ for (let name of ['camera', 'doorbell', 'floodlight', 'thermostat', 'heatlink', 
 function setup(fixture) {
   let id = fixture.id ?? 'DEVICE_TEST';
   let parents = structuredClone(fixture.parents ?? { STRUCTURE_HOME: home });
-  let raw = { ...parents, [id]: { source: fixture.source ?? DATA_SOURCE.GOOGLE, value: structuredClone(fixture.value) } };
+  let raw = { ...parents, [id]: { source: fixture.source ?? DATA_SOURCE.PROTOBUF, value: structuredClone(fixture.value) } };
   let run = (changed) =>
     modules.get(fixture.name).processRawData({ error: (...args) => assert.fail(args.join(' ')) }, raw, config, fixture.type, changed);
   let delta = (key, fields = []) => new Map([[key, { fields: new Set(fields) }]]);
@@ -38,7 +38,7 @@ function setup(fixture) {
 }
 
 for (let fixture of fixtures) {
-  let label = fixture.name + ' / ' + (fixture.source ?? DATA_SOURCE.GOOGLE);
+  let label = fixture.name + ' / ' + (fixture.source ?? DATA_SOURCE.PROTOBUF);
   for (let reverse of [false, true]) {
     test('discovery combines separately arriving cached fields: ' + label + ', reversed=' + reverse, () => {
       let flow = setup(fixture);

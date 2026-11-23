@@ -1,7 +1,7 @@
 // System - cloud data and HomeKit device management
 // Part of homebridge-nest-accfactory
 //
-// Coordinates configured accounts, committed Nest/Google resource data and
+// Coordinates configured accounts, committed device resource data and
 // HomeKit device modules throughout platform startup and shutdown.
 //
 // Responsibilities:
@@ -27,11 +27,11 @@
 // Mark Hulskamp
 'use strict';
 
-// Define nodejs module requirements
+// Define node.js modules
 import process from 'node:process';
 import os from 'node:os';
 
-// Import our modules
+// Define our modules
 import HomeKitDevice from './HomeKitDevice.js';
 import Accounts from './accounts.js';
 import { loadDeviceModules, getDeviceHKCategory } from './devices.js';
@@ -202,7 +202,7 @@ export default class NestAccfactory {
   // Ingestion: commit source changes before acknowledging the API batch.
   // HomeKit delivery runs separately so a slow accessory cannot block later commits.
   async #applyData(uuid, batch) {
-    if (batch.source !== DATA_SOURCE.GOOGLE) {
+    if ([DATA_SOURCE.PROTOBUF, DATA_SOURCE.HOMEGRAPH].includes(batch.source) !== true) {
       return false;
     }
     let changedData = new Map();
@@ -234,7 +234,7 @@ export default class NestAccfactory {
       let location = incomingValue?.structure_location;
 
       if (
-        batch.source === DATA_SOURCE.GOOGLE &&
+        batch.source === DATA_SOURCE.PROTOBUF &&
         resourceId.startsWith('STRUCTURE_') === true &&
         (location?.postalCode?.value?.trim?.() ?? '') !== '' &&
         (location?.countryCode?.value?.trim?.() ?? '') !== ''
@@ -245,7 +245,7 @@ export default class NestAccfactory {
         let weather = undefined;
 
         try {
-          weather = await this.#accounts?.get(uuid)?.googleAPI?.get(resourceId, 'location_weather', {
+          weather = await this.#accounts?.get(uuid)?.googleProtobufAPI?.get(resourceId, 'location_weather', {
             location: { postal_code: location.postalCode.value, country_code: location.countryCode.value },
           });
         } catch (error) {
@@ -482,13 +482,22 @@ export default class NestAccfactory {
                   continue;
                 }
 
-                // Register per-device set/get handlers
+                // Resolve credentials from the accessory's current owner, not the requested target ID.
+                // Plugins may address related resources, but those resources must belong to the same account.
                 HomeKitDevice.message(tempDevice.uuid, HomeKitDevice.SET, async (values) => {
-                  await this.#set(this.#rawData?.[values?.uuid]?.connection, values?.uuid, values);
+                  await this.#set(
+                    this.#rawData?.[this.#trackedDevices.get(serialNumber)?.nest_google_device_uuid]?.connection,
+                    values?.uuid,
+                    values,
+                  );
                 });
 
                 HomeKitDevice.message(tempDevice.uuid, HomeKitDevice.GET, async (values) => {
-                  return await this.#get(this.#rawData?.[values?.uuid]?.connection, values?.uuid, values);
+                  return await this.#get(
+                    this.#rawData?.[this.#trackedDevices.get(serialNumber)?.nest_google_device_uuid]?.connection,
+                    values?.uuid,
+                    values,
+                  );
                 });
 
                 // Track this device once created
@@ -517,7 +526,7 @@ export default class NestAccfactory {
               let resourceData = this.#rawData?.[resourceId];
               let newSource = resourceData?.source;
 
-              if (newSource !== DATA_SOURCE.GOOGLE) {
+              if (newSource !== DATA_SOURCE.PROTOBUF) {
                 continue;
               }
               if (trackedDevice.source !== newSource || trackedDevice.nest_google_device_uuid !== resourceId) {
@@ -548,12 +557,26 @@ export default class NestAccfactory {
     let account = this.#accounts?.get(uuid);
     let resource = this.#rawData[resourceId];
 
-    if (typeof values !== 'object' || values === null || resource === undefined || account?.authorised !== true) {
+    if (
+      typeof values !== 'object' ||
+      values === null ||
+      resource === undefined ||
+      resource.connection !== uuid ||
+      account?.authorised !== true
+    ) {
       throw new Error('SET requires an available authorised device account');
     }
 
     // Use the selected resource source; the API client validates and sends each setting.
-    let api = account.googleAPI;
+    let api =
+      resource.source === DATA_SOURCE.PROTOBUF
+        ? account.googleProtobufAPI
+        : resource.source === DATA_SOURCE.HOMEGRAPH
+          ? account.homegraphAPI
+          : undefined;
+    if (typeof api?.set !== 'function') {
+      throw new Error('SET is not supported for the selected device data source');
+    }
 
     // HomeKit's routing identifier belongs to this adapter, not the cloud API.
     let settings = { ...values };
@@ -565,24 +588,34 @@ export default class NestAccfactory {
     let account = this.#accounts?.get(uuid);
     let resource = this.#rawData[resourceId];
 
-    if (typeof values !== 'object' || values === null || resource === undefined) {
+    if (typeof values !== 'object' || values === null || resource === undefined || resource.connection !== uuid) {
       return;
     }
 
-    // Device queries use the account's protobuf client.
+    let api =
+      resource.source === DATA_SOURCE.PROTOBUF
+        ? account?.googleProtobufAPI
+        : resource.source === DATA_SOURCE.HOMEGRAPH
+          ? account?.homegraphAPI
+          : undefined;
+
+    // Dispatch each query to the selected source without falling back to another API.
     for (let key of Object.keys(values)) {
       if (key === 'uuid') {
         continue;
       }
 
-      let api = account?.googleAPI;
-
       // Object-valued queries supply API parameters; legacy true flags use defaults.
       let parameters = typeof values[key] === 'object' && values[key] !== null ? values[key] : undefined;
 
       // Weather queries must receive the location explicitly
-      // when the selected resource belongs to Google's independent cache.
-      if (key === 'location_weather' && parameters?.location === undefined && resource.value?.weather !== undefined) {
+      // when the selected resource belongs to the protobuf client cache.
+      if (
+        resource.source === DATA_SOURCE.PROTOBUF &&
+        key === 'location_weather' &&
+        parameters?.location === undefined &&
+        resource.value?.weather !== undefined
+      ) {
         parameters = { ...parameters, location: resource.value.weather };
       }
 
@@ -596,7 +629,10 @@ export default class NestAccfactory {
       }
 
       try {
-        values[key] = await api?.get(resourceId, key, parameters);
+        if (typeof api?.get !== 'function') {
+          throw new Error('GET is not supported for the selected device data source');
+        }
+        values[key] = await api.get(resourceId, key, parameters);
       } catch (error) {
         let request = { camera_snapshot: 'Camera snapshot', location_weather: 'Weather', camera_events: 'Camera events' }[key] ?? key;
         this.log?.debug?.(

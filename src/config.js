@@ -26,21 +26,21 @@
 // - FFmpeg validation determines availability of camera streaming and HKSV recording
 // - Used during plugin startup before any device initialisation
 //
-// Code version 2026.11.19
+// Code version 2026.11.23
 // Mark Hulskamp
 'use strict';
 
-// Define nodejs module requirements
+// Define node.js modules
 import fs from 'node:fs';
 
 // Define external library requirements
 import chalk from 'chalk';
 
-// Import our modules
+// Define our modules
 import FFmpeg from './plugins/camera/ffmpeg.js';
 
 // Define constants
-import { FFMPEG_VERSION } from './consts.js';
+import { ACCOUNT_TYPE, FFMPEG_VERSION } from './consts.js';
 
 function processConfig(config, log, api) {
   let migratedAccounts = false;
@@ -59,7 +59,7 @@ function processConfig(config, log, api) {
     if (typeof config?.nest === 'object' && typeof config.nest?.access_token === 'string' && config.nest.access_token.trim() !== '') {
       newAccounts.push({
         name: 'Nest',
-        type: 'nest',
+        type: ACCOUNT_TYPE.NEST,
         access_token: config.nest.access_token.trim(),
         fieldTest: config.nest.fieldTest === true,
       });
@@ -75,7 +75,7 @@ function processConfig(config, log, api) {
     ) {
       newAccounts.push({
         name: 'Google',
-        type: 'google',
+        type: ACCOUNT_TYPE.GOOGLE,
         issueToken: config.google.issuetoken.trim(),
         cookie: config.google.cookie.trim(),
         fieldTest: config.google.fieldTest === true,
@@ -84,6 +84,15 @@ function processConfig(config, log, api) {
 
     if (newAccounts.length > 0) {
       config.accounts = newAccounts;
+      migratedAccounts = true;
+    }
+  }
+
+  // Accept older capitalised account types at configuration input, then use canonical values everywhere else.
+  for (let account of config.accounts) {
+    let type = typeof account?.type === 'string' ? account.type.trim().toLowerCase() : undefined;
+    if (Object.values(ACCOUNT_TYPE).includes(type) === true && account.type !== type) {
+      account.type = type;
       migratedAccounts = true;
     }
   }

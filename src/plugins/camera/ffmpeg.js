@@ -28,11 +28,11 @@
 // - Drain complete output after exit; requested stop may discard an incomplete tail
 // - Camera retains the HomeKit generator adapter and isLast workaround
 //
-// Code version 2026.11.19
+// Code version 2026.11.23
 // Mark Hulskamp
 'use strict';
 
-// Define nodejs module requirements
+// Define node.js modules
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';

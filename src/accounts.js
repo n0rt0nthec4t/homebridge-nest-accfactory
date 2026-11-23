@@ -2,7 +2,7 @@
 // Part of homebridge-nest-accfactory
 //
 // Registers configured accounts, each with one shared AccountSession and a
-// Google protobuf API client. Account type selects the login
+// Google protobuf API client and an on-demand HomeGraph client. Account type selects the login
 // flow; it does not select which API clients are available.
 //
 // Responsibilities:
@@ -21,12 +21,16 @@
 // Mark Hulskamp
 'use strict';
 
-// Define nodejs module requirements
+// Define node.js modules
 import crypto from 'node:crypto';
 
-// Import our modules
+// Define our modules
 import AccountSession from './accountsession.js';
-import GoogleAPI from './api/google.js';
+import GoogleProtobufAPI from './api/protobuf.js';
+import HomeGraphAPI from './api/homegraph.js';
+
+// Define constants
+import { ACCOUNT_TYPE } from './consts.js';
 
 export default class Accounts {
   #accounts = new Map(); // Stable account objects, keyed by their runtime UUID.
@@ -56,7 +60,8 @@ export default class Accounts {
 
       // Keep configured credentials separate from the short-lived session token
       // installed after login. Refresh must repeat the original account's auth flow.
-      let fields = account.type === 'nest' ? ['access_token'] : account.type === 'google' ? ['issueToken', 'cookie'] : undefined;
+      let type = typeof account.type === 'string' ? account.type.trim().toLowerCase() : undefined;
+      let fields = type === ACCOUNT_TYPE.NEST ? ['access_token'] : type === ACCOUNT_TYPE.GOOGLE ? ['issueToken', 'cookie'] : undefined;
 
       if (fields === undefined || fields.some((field) => typeof account[field] !== 'string' || account[field].trim() === '')) {
         continue;
@@ -66,7 +71,7 @@ export default class Accounts {
       let session = new AccountSession(
         {
           name: account.name.trim(),
-          type: account.type,
+          type,
           fieldTest: account.fieldTest === true,
           ...Object.fromEntries(fields.map((field) => [field, account[field].trim()])),
         },
@@ -119,7 +124,9 @@ export default class Accounts {
     };
 
     // Clients survive session refresh; each owns its subscription identity and retry timer.
-    account.googleAPI = new GoogleAPI(options);
+    account.googleProtobufAPI = new GoogleProtobufAPI(options);
+    // HomeGraph is available on demand; automatic startup awaits device-state mappings.
+    account.homegraphAPI = new HomeGraphAPI(options);
   }
 
   // Start background authentication and Observe. Session and subscription retry
@@ -132,7 +139,7 @@ export default class Accounts {
     }
 
     if (account.allowRetry !== false) {
-      for (let api of [account.googleAPI]) {
+      for (let api of [account.googleProtobufAPI]) {
         api.connect().catch((error) => {
           // Authentication already reports account failures. Log API startup failures separately.
           if (account.authorised === true) {

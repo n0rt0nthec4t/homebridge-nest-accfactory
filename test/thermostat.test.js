@@ -8,7 +8,7 @@ let { processRawData } = await importSource(new URL('../src/plugins/thermostat.j
 
 for (let eco of ['manual', 'auto']) {
   for (let normalMode of ['off', 'heat', 'cool', 'range']) {
-    test('Eco with both limits disabled maps to Off: ' + DATA_SOURCE.GOOGLE + '/' + eco + '/' + normalMode, () => {
+    test('Eco with both limits disabled maps to Off: ' + DATA_SOURCE.PROTOBUF + '/' + eco + '/' + normalMode, () => {
       let id = 'DEVICE_GOOGLE';
       let value = {
         device_identity: { serialNumber: 'SERIAL' },
@@ -29,7 +29,7 @@ for (let eco of ['manual', 'auto']) {
         },
       };
       let raw = {
-        [id]: { source: DATA_SOURCE.GOOGLE, value },
+        [id]: { source: DATA_SOURCE.PROTOBUF, value },
         STRUCTURE_HOME: { value: {} },
       };
       let field = 'eco_mode_state';
@@ -90,13 +90,13 @@ for (let eco of ['manual', 'auto']) {
   }
 }
 
-for (let firstSource of [DATA_SOURCE.NEST, DATA_SOURCE.GOOGLE]) {
+for (let firstSource of ['Nest', DATA_SOURCE.PROTOBUF]) {
   test('thermostat mapper ignores retired REST arriving first from ' + firstSource, () => {
-    let nest = ['device.nest', { source: DATA_SOURCE.NEST, value: { serial_number: 'SERIAL', backplate_temperature: 19 } }];
+    let nest = ['device.nest', { source: 'Nest', value: { serial_number: 'SERIAL', backplate_temperature: 19 } }];
     let google = [
       'DEVICE_GOOGLE',
       {
-        source: DATA_SOURCE.GOOGLE,
+        source: DATA_SOURCE.PROTOBUF,
         value: {
           device_identity: { serialNumber: 'SERIAL' },
           device_info: { typeName: 'nest.resource.NestLearningThermostat3Resource', pairerId: { resourceId: 'STRUCTURE_HOME' } },
@@ -106,7 +106,7 @@ for (let firstSource of [DATA_SOURCE.NEST, DATA_SOURCE.GOOGLE]) {
       },
     ];
     let raw = {
-      ...Object.fromEntries(firstSource === DATA_SOURCE.NEST ? [nest, google] : [google, nest]),
+      ...Object.fromEntries(firstSource === 'Nest' ? [nest, google] : [google, nest]),
       'track.SERIAL': { value: {} },
       'shared.SERIAL': { value: {} },
       'link.SERIAL': { value: { structure: 'structure.home' } },

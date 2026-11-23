@@ -16,11 +16,11 @@
 // - Device lifecycle and shared HomeKit helpers are provided by HomeKitDevice.js
 // - Eve Home integration is provided via HomeKitHistory.js
 //
-// Code version 2026.11.09
+// Code version 2026.11.23
 // Mark Hulskamp
 'use strict';
 
-// Import our modules
+// Define our modules
 import NestAccfactory from './system.js';
 import HomeKitDevice from './HomeKitDevice.js';
 HomeKitDevice.PLUGIN_NAME = 'homebridge-nest-accfactory';

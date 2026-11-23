@@ -25,11 +25,11 @@
 // - Data helpers return undefined for invalid inputs where appropriate
 // - UDP allocation rejects socket failures; owners release reservations on teardown
 //
-// Code version 2026.10.26
+// Code version 2026.11.23
 // Mark Hulskamp
 'use strict';
 
-// Define nodejs module requirements
+// Define node.js modules
 import { Buffer } from 'node:buffer';
 import dgram from 'node:dgram';
 

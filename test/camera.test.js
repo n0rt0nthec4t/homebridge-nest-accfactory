@@ -52,7 +52,7 @@ test('Protobuf cameras default to two live viewers and forward configured counts
   t.mock.method(child_process, 'spawnSync', () => ({ error: new Error('Mock probe') }));
   let log = { warn() {}, info() {}, debug() {} };
   let hap = { H264Profile: {}, H264Level: {}, VideoCodecType: { H264: 0 }, SRTPCryptoSuites: { NONE: 0 } };
-  let source = DATA_SOURCE.GOOGLE;
+  let source = DATA_SOURCE.PROTOBUF;
   let resource = 'DEVICE_CAMERA';
   let value = {
     device_identity: { serialNumber: 'CAMERA', softwareVersion: '1.0.0' },

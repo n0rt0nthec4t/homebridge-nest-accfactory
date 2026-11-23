@@ -606,7 +606,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
     .filter(
       ([key, value]) =>
         key.startsWith('DEVICE_') === true &&
-        value?.source === DATA_SOURCE.GOOGLE &&
+        value?.source === DATA_SOURCE.PROTOBUF &&
         PROTOBUF_RESOURCES.PROTECT.includes(value?.value?.device_info?.typeName) === true,
     )
     .forEach(([object_key, value]) => {

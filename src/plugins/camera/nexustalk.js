@@ -48,7 +48,7 @@
 // Mark Hulskamp
 'use strict';
 
-// Define nodejs module requirements
+// Define node.js modules
 import { Buffer } from 'node:buffer';
 import { setInterval, clearInterval } from 'node:timers';
 import path from 'node:path';

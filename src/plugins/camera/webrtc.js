@@ -39,7 +39,7 @@
 //
 // Notes:
 // - This transport owns its Google Home Foyer gRPC client and stream signalling
-// - GoogleAPI owns the separate account Observe/query/command transport
+// - GoogleProtobufAPI owns the separate account Observe/query/command transport
 // - ICE "connected" indicates transport readiness, not media availability
 // - Stream readiness is determined by successful video frame delivery
 //   (first decodable keyframe), not connection state
@@ -57,7 +57,7 @@
 // Define external module requirements
 import * as werift from 'werift';
 
-// Define nodejs module requirements
+// Define node.js modules
 import { Buffer } from 'node:buffer';
 import { setInterval, clearInterval, setTimeout, clearTimeout } from 'node:timers';
 

@@ -12,11 +12,11 @@
 // lifecycle, media timing and output pacing. RTP reconstruction updates only the
 // fragment state supplied by the caller; it does not own a transport session.
 //
-// Code version 2026.10.24
+// Code version 2026.11.23
 // Mark Hulskamp
 'use strict';
 
-// Define nodejs module requirements
+// Define node.js modules
 import { Buffer } from 'node:buffer';
 
 // H264 utility object

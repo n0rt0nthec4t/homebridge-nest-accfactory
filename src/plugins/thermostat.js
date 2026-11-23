@@ -46,7 +46,7 @@
 // Mark Hulskamp
 'use strict';
 
-// Define nodejs module requirements
+// Define node.js modules
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
@@ -2237,7 +2237,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
     .filter(
       ([key, value]) =>
         key.startsWith('DEVICE_') === true &&
-        value?.source === DATA_SOURCE.GOOGLE &&
+        value?.source === DATA_SOURCE.PROTOBUF &&
         PROTOBUF_RESOURCES.THERMOSTAT.includes(value?.value?.device_info?.typeName) === true,
     )
     .forEach(([object_key, value]) => {

@@ -36,7 +36,7 @@ Support provenance statements with specific evidence and identify uncertainty wh
 | Shared streaming and transport interface | `src/plugins/camera/streamer.js`, `src/plugins/camera/streamtransport.js` |
 | Camera transports | `src/plugins/camera/webrtc.js`, `src/plugins/camera/nexustalk.js` |
 | FFmpeg probing and capabilities | `src/plugins/camera/ffmpeg.js` |
-| Nest and Google API clients and gRPC transport | `src/api/nest.js`, `src/api/google.js`, `src/grpctransport.js` |
+| Nest and Google API clients and gRPC transport | `src/api/protobuf.js`, `src/api/homegraph.js`, `src/grpctransport.js` |
 | Support dumps | `src/supportdump.js` |
 
 ## Documentation and JSDoc

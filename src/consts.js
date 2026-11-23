@@ -7,7 +7,7 @@
 // Responsibilities:
 // - Provide centralised constant definitions for all modules
 // - Define supported device types and account types
-// - Expose API resource mappings (Nest REST and Google protobuf)
+// - Expose protobuf resource mappings and device data source names
 // - Define timing intervals and operational limits
 // - Provide fallback media resources for camera streaming
 // - Specify minimum runtime and FFmpeg requirements
@@ -15,7 +15,6 @@
 // Features:
 // - Device type definitions used for module loading and HomeKit mapping
 // - Protobuf resource mappings for device identification
-// - Nest API bucket definitions for REST polling/subscription
 // - Timer intervals for polling, cooldowns, and timeouts
 // - FFmpeg minimum version requirement for streaming support
 // - Resource paths and fallback H264 frames for offline states
@@ -32,14 +31,14 @@
 // Mark Hulskamp
 'use strict';
 
-// Define nodejs module requirements
+// Define node.js modules
 import path from 'node:path';
 import url from 'node:url';
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 
 // Define constants
-export const MIN_NODE_VERSION = 22; // Minimum required Node.js version
+export const MIN_NODE_VERSION = 24; // Minimum required Node.js version
 
 // Permanent project namespace: UUID v5 of 'homebridge-nest-accfactory' in the standard DNS namespace.
 // Keep this value if the project is renamed; existing HomeKit identities must stay stable.
@@ -67,7 +66,6 @@ export const CUSTOM_CHARACTERISTIC_UUID = {
 export const TIMERS = {
   CAMERA_EVENTS: { name: 'camera_events', interval: 2000 }, // Camera events polling interval (ms)
   WEATHER: { name: 'weather', interval: 300000 }, // Weather location data refresh interval (ms)
-  NEST_API: { name: 'nest-api', interval: 10000 }, // Nest API request timeout (ms)
   TALKBACK_AUDIO: { name: 'talkback-audio', interval: 1000 }, // Audio talkback timeout (ms)
   DOORBELL_COOLDOWN: { name: 'doorbell-cooldown', interval: 60000 }, // Cooldown timer for doorbell events (ms)
   MOTION_COOLDOWN: { name: 'motion-cooldown', interval: 60000 }, // Cooldown timer for motion events (ms)
@@ -78,8 +76,8 @@ export const USER_AGENT = 'Nest/5.87.0 (iOScom.nestlabs.jasper.release) os=26.4'
 export const __dirname = path.dirname(url.fileURLToPath(import.meta.url)); // Make a defined for JS __dirname
 
 export const DATA_SOURCE = {
-  NEST: 'Nest', // From the Nest API
-  GOOGLE: 'Google', // From the Protobuf/Google API
+  PROTOBUF: 'Protobuf', // Device data from the protobuf Observe API
+  HOMEGRAPH: 'HomeGraph', // Device data from HomeGraph
 };
 
 export const DAYS_OF_WEEK_FULL = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
@@ -128,38 +126,6 @@ export const PROTOBUF_RESOURCES = {
   GUARD: ['nest.resource.NestGuardResource'],
 };
 
-export const NEST_API_BUCKETS = [
-  'buckets',
-  'delayed_topaz',
-  'demand_response',
-  'device',
-  'device_alert_dialog',
-  'geofence_info',
-  'kryptonite',
-  'link',
-  'message',
-  'message_center',
-  'metadata',
-  'occupancy',
-  'quartz',
-  'safety',
-  'rcs_settings',
-  'safety_summary',
-  'schedule',
-  'shared',
-  'structure',
-  'structure_metadata',
-  'topaz',
-  'topaz_resource',
-  'track',
-  'trip',
-  'tuneups',
-  'user',
-  'user_settings',
-  'where',
-  'widget_track',
-];
-
 export const DEVICE_TYPE = {
   THERMOSTAT: 'Thermostat',
   TEMPSENSOR: 'TemperatureSensor',
@@ -191,8 +157,9 @@ export const DEVICE_CATEGORY_MAP = {
 export const FFMPEG_VERSION = '7.1';
 
 export const ACCOUNT_TYPE = {
-  NEST: 'Nest',
-  GOOGLE: 'Google',
+  NEST: 'nest',
+  GOOGLE: 'google',
+  GOOGLE_HOME: 'googlehome',
 };
 
 export const LOW_BATTERY_LEVEL = 10; // Low battery level percentage
@@ -261,3 +228,8 @@ export const GOOGLE_HOME_FOYER_ENDPOINTS = {
   PRODUCTION: 'https://googlehomefoyer-pa.googleapis.com',
   FIELD_TEST: 'https://preprod-googlehomefoyer-pa.sandbox.googleapis.com',
 };
+
+// Google Home browser requests use a Safari profile; Nest native requests retain USER_AGENT.
+export const GOOGLE_HOME_REFERER = 'https://home.google.com';
+export const GOOGLE_HOME_USER_AGENT =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15';

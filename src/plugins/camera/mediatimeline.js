@@ -14,11 +14,11 @@
 // - A stalled reader cannot pin this buffer or block current source media
 // - Default capacity is per ring; maximum items and bytes are shared across both
 //
-// Code version 2026.11.06
+// Code version 2026.11.23
 // Mark Hulskamp
 'use strict';
 
-// Import our modules
+// Define our modules
 import RingBuffer from '../../ringbuffer.js';
 
 // Define constants

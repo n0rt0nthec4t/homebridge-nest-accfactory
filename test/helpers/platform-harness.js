@@ -6,6 +6,7 @@ import hap from './homebridge-hap.js';
 import { setImmediate } from 'node:timers/promises';
 import HomeKitDevice from '../../src/HomeKitDevice/HomeKitDevice.js';
 import { importSource } from './import-source.js';
+import { ACCOUNT_TYPE } from '../../src/consts.js';
 import { runtime, resetRuntime, clearTimers } from './platform-runtime.js';
 
 let location = new URL('../../src/system.js', import.meta.url);
@@ -15,12 +16,12 @@ let source = (await readFile(location, 'utf8'))
   .replace('from \'./fetchWrapper.js\'', 'from ' + JSON.stringify(boundary))
   .replace('from \'node:timers\'', 'from ' + JSON.stringify(boundary));
 // Ingestion classes retain their real code; redirect only HTTP and timer boundaries.
-let apiLocation = new URL('../../src/api/google.js', import.meta.url);
+let apiLocation = new URL('../../src/api/protobuf.js', import.meta.url);
 let apiSource = (await readFile(apiLocation, 'utf8'))
   .replace('from \'../fetchWrapper.js\'', 'from ' + JSON.stringify(boundary))
   .replace('from \'node:timers\'', 'from ' + JSON.stringify(boundary))
   .replace('from \'../grpctransport.js\'', 'from ' + JSON.stringify(boundary));
-let { default: GoogleAPI } = await importSource(apiLocation, apiSource);
+let { default: GoogleProtobufAPI } = await importSource(apiLocation, apiSource);
 let { default: Platform } = await importSource(location, source);
 let { default: Accounts } = await importSource(new URL('../../src/accounts.js', import.meta.url));
 HomeKitDevice.PLUGIN_NAME = 'platform-harness';
@@ -41,7 +42,7 @@ export async function platformHarness(context, options = {}) {
   let pending = Promise.withResolvers();
   let connection = {
     name: 'Fixture account',
-    type: 'Google',
+    type: ACCOUNT_TYPE.GOOGLE,
     authorised: true,
     referer: 'home.invalid',
     restAPIHost: 'rest.invalid',
@@ -65,13 +66,13 @@ export async function platformHarness(context, options = {}) {
   accounts.start = () => {};
   accounts.shutdown = () => {
     for (let account of accounts.values()) {
-      account.googleAPI?.disconnect();
+      account.googleProtobufAPI?.disconnect();
       account.authorised = false;
     }
     pending.resolve({ status: 0 });
   };
   let markUnauthorised = (...args) => {
-    connection.googleAPI?.disconnect();
+    connection.googleProtobufAPI?.disconnect();
     connection.authorised = false;
     logs.push(['unauthorised', ...args]);
   };
@@ -82,7 +83,7 @@ export async function platformHarness(context, options = {}) {
     authorise = async (uuid, account, details = {}) => {
       // Tests install the replacement transport before announcing refreshed auth.
       let transport = account.grpcTransport;
-      account.googleAPI?.disconnect();
+      account.googleProtobufAPI?.disconnect();
       account.grpcTransport = transport;
       runtime.transport = transport;
       let options = {
@@ -100,9 +101,9 @@ export async function platformHarness(context, options = {}) {
           return run;
         },
       };
-      account.googleAPI ??= new GoogleAPI(options);
+      account.googleProtobufAPI ??= new GoogleProtobufAPI(options);
       await supplied.onAuthorised(uuid, account, details);
-      account.googleAPI.connect();
+      account.googleProtobufAPI.connect();
     };
     return accounts;
   });
