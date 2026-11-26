@@ -553,7 +553,7 @@ test('Google snapshots complete from the client cache while a consumer notificat
       device_info: { typeName: 'google.resource.SpencerResource' },
     },
   });
-  runtime.fetch = async () => ({ arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer });
+  runtime.fetch = async () => new Response(new Uint8Array([1, 2, 3]));
   await flow.api.connect();
   flow.options.onData = () => commit.promise;
   let snapshot = flow.api.get('DEVICE_TEST', 'camera_snapshot');
@@ -563,7 +563,11 @@ test('Google snapshots complete from the client cache while a consumer notificat
       {
         traitId: { resourceId: 'DEVICE_TEST', traitLabel: 'upload_live_image' },
         stateTypes: ['ACCEPTED'],
-        patch: { values: { liveImageUrl: 'https://image.invalid/fresh' } },
+        patch: {
+          values: {
+            liveImageUrl: 'https://nest-camera-media.googleapis.com/download/thumbnails/fixture/account/devices/DEVICE_TEST/id/fresh',
+          },
+        },
       },
     ],
   });
@@ -653,4 +657,25 @@ test('Google settings require explicit connection startup before using the comma
   assert.equal(command.mock.callCount(), 1);
   assert.equal(flow.observations.length, 1);
   assert.deepEqual(flow.api.resources.get('DEVICE_TEST').value, value);
+});
+
+test('protobuf home notifications use source-named routing while retaining the raw RTS identity', async (context) => {
+  let flow = setup(context);
+  await flow.api.connect();
+  await flow.observations[0][4]({
+    observeResponse: [
+      {
+        traitStates: [
+          {
+            traitId: { resourceId: 'STRUCTURE_HOME', traitLabel: 'structure_info' },
+            stateTypes: ['ACCEPTED'],
+            patch: { values: { name: 'Fixture', rtsStructureId: 'rest-home' } },
+          },
+        ],
+      },
+    ],
+  });
+  let change = flow.changed.flatMap((batch) => batch.changes).find((item) => item.resourceId === 'STRUCTURE_HOME');
+  assert.deepEqual(change.home, { name: 'Fixture', values: { protobuf_home_uuid: 'STRUCTURE_HOME' } });
+  assert.equal(change.value.structure_info.rtsStructureId, 'rest-home');
 });

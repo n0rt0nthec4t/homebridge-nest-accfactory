@@ -27,7 +27,7 @@
 // - Imported throughout the codebase for consistency and reuse
 // - Changes here may affect multiple subsystems (devices, streaming, APIs)
 //
-// Code version 2026.11.23
+// Code version 2026.11.27
 // Mark Hulskamp
 'use strict';
 
@@ -38,7 +38,7 @@ import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 
 // Define constants
-export const MIN_NODE_VERSION = 24; // Minimum required Node.js version
+export const MIN_NODE_VERSION = '22.13.0'; // Minimum required Node.js version
 
 // Permanent project namespace: UUID v5 of 'homebridge-nest-accfactory' in the standard DNS namespace.
 // Keep this value if the project is renamed; existing HomeKit identities must stay stable.
@@ -140,6 +140,9 @@ export const DEVICE_TYPE = {
   HOMEAWAY: 'HomeAway',
 };
 
+// Heat Links use the generic cloud SENSOR type; identify the hardware model, not its user label.
+export const GOOGLE_HOME_HEATLINK_MODEL = /heat[ _-]?link/i;
+
 export const DEVICE_CATEGORY_MAP = {
   [DEVICE_TYPE.LOCK]: 6,
   [DEVICE_TYPE.HEATLINK]: 8,
@@ -223,6 +226,11 @@ export const MIN_ELEVATION = 0;
 export const MAX_ELEVATION = 8848;
 
 // Shared Foyer service routing for camera ID lookup and WebRTC signalling.
+// Foyer preference and trait visibility depends on the client release context.
+export const GOOGLE_HOME_CLIENT_ENVIRONMENT = {
+  platform: 1,
+  androidClientInfo: { appReleaseVersion: '4.33.27.5' },
+};
 export const GOOGLE_HOME_FOYER_PREFIX = 'google.internal.home.foyer.v1.';
 export const GOOGLE_HOME_FOYER_ENDPOINTS = {
   PRODUCTION: 'https://googlehomefoyer-pa.googleapis.com',

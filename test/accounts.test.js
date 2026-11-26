@@ -64,7 +64,7 @@ await importSource(apiLocation, apiSource);
 
 let { default: Accounts } = await importSource(location, source);
 let account = { name: 'Test', type: 'nest', access_token: 'access-token' };
-let session = { access_token: 'session-token', userid: 'user', urls: { transport_url: 'https://transport.example' } };
+let session = { access_token: 'session-token', userid: 'user' };
 let response = (value) => ({ json: async () => value });
 
 let owners = new WeakMap();
@@ -935,3 +935,140 @@ test('Google Home remains an inactive account login type', (context) => {
   assert.equal(manager.size, 0);
 });
 
+const homeAccount = {
+  name: 'Home fixture',
+  type: ACCOUNT_TYPE.GOOGLE_HOME,
+  refreshToken: 'fixture-sso-secret',
+  deviceId: '11111111-2222-3333-4444-555555555555',
+};
+
+test('Google Home accounts start only HomeGraph and renew SSO credentials without Nest login', async (context) => {
+  let { manager, uuid, connection } = setup(context, [homeAccount]);
+  let graph = context.mock.method(connection.homegraphAPI, 'connect', async () => true);
+  let protobuf = context.mock.method(connection.googleProtobufAPI, 'connect', async () => true);
+  let requests = context.mock.method(network, 'request', async () => response({ token: 'fixture-home-oauth', expiresIn: 3599 }));
+  manager.start(uuid);
+  assert.equal(graph.mock.callCount(), 1);
+  assert.equal(protobuf.mock.callCount(), 0);
+  assert.equal(await connection.session.connect(), true);
+  assert.equal(connection.oauth2, 'fixture-home-oauth');
+  assert.equal(connection.cameraAuth, undefined);
+  assert.equal(connection.refreshDelay, 3299000);
+  let [method, url, options, body] = requests.mock.calls[0].arguments;
+  assert.equal(method, 'post');
+  assert.equal(url, 'https://oauthaccountmanager.googleapis.com/v1/issuetoken');
+  assert.equal(options.headers.Authorization, 'Bearer fixture-sso-secret');
+  assert.equal(options.redirect, 'error');
+  let form = new URLSearchParams(body.toString());
+  assert.equal(form.get('device_id'), homeAccount.deviceId);
+  assert.equal(form.get('client_id'), options.headers['x-oauth-client-id']);
+  assert.equal(form.get('scope').includes('https://www.googleapis.com/auth/homegraph'), true);
+  context.mock.timers.tick(connection.refreshDelay);
+  await setImmediate();
+  assert.equal(requests.mock.callCount(), 2);
+  assert.equal(connection.refreshToken, homeAccount.refreshToken);
+});
+
+for (let failure of [401, 403, 'invalid_grant', 'PERMISSION_DENIED', 'offline', 'missing']) {
+  test('Google Home authentication failure is private and uses appropriate retry: ' + failure, async (context) => {
+    let logs = [];
+    let log = Object.fromEntries(['debug', 'error', 'info'].map((level) => [level, (...args) => logs.push(args)]));
+    let { connection } = setup(context, [homeAccount], { log });
+    context.mock.method(network, 'request', async () => {
+      if (typeof failure === 'number' || failure === 'offline') {
+        throw Object.assign(new Error(homeAccount.refreshToken), { status: failure === 'offline' ? 503 : failure });
+      }
+      return response(failure === 'missing' ? {} : { error: failure, detail: homeAccount.refreshToken });
+    });
+    assert.equal(await connection.session.connect(), false);
+    assert.equal(connection.allowRetry, ['offline', 'missing'].includes(failure));
+    assert.equal(JSON.stringify(logs).includes(homeAccount.refreshToken), false);
+    assert.equal(connection.oauth2, undefined);
+  });
+}
+
+test('Google Home shutdown retires a late token reply and clears the installed OAuth token', async (context) => {
+  let { manager, connection } = setup(context, [homeAccount]);
+  let finish;
+  context.mock.method(
+    network,
+    'request',
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  let pending = connection.session.connect();
+  manager.shutdown();
+  finish(response({ token: 'late-secret', expiresIn: 3600 }));
+  assert.equal(await pending, false);
+  assert.equal(connection.authorised, false);
+  assert.equal(connection.oauth2, undefined);
+  assert.equal(connection.timer, undefined);
+});
+
+for (let invalid of [{ deviceId: 'invalid' }, { refreshToken: 'fixture\r\nsecret' }]) {
+  test('Google Home rejects malformed enrollment context before network work: ' + Object.keys(invalid)[0], async (context) => {
+    let { connection } = setup(context, [{ ...homeAccount, ...invalid }]);
+    let request = context.mock.method(network, 'request');
+    assert.equal(await connection.session.connect(), false);
+    assert.equal(connection.allowRetry, false);
+    assert.equal(request.mock.callCount(), 0);
+  });
+}
+
+test('Google Home isolated connection check uses the SSO flow without scheduling renewal', async (context) => {
+  let request = context.mock.method(network, 'request', async () => response({ access_token: 'fixture-oauth', expires_in: 3600 }));
+  assert.equal(await AccountSession.testConnection(homeAccount), 'success');
+  assert.equal(request.mock.callCount(), 1);
+});
+
+test('Google Home generates an account-local device ID when omitted and reuses it for renewal', async (context) => {
+  let configured = { name: 'Generated ID', type: ACCOUNT_TYPE.GOOGLE_HOME, refreshToken: 'fixture-sso-secret' };
+  let { connection } = setup(context, [configured]);
+  let id = connection.deviceId;
+  assert.match(id, /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
+  let request = context.mock.method(network, 'request', async () => response({ token: 'fixture-oauth', expiresIn: 3600 }));
+  assert.equal(await connection.session.connect(), true);
+  assert.equal(await connection.session.connect(true), true);
+  assert.equal(request.mock.callCount(), 2);
+  for (let call of request.mock.calls) {
+    assert.equal(new URLSearchParams(call.arguments[3].toString()).get('device_id'), id);
+  }
+  assert.equal(Object.hasOwn(configured, 'deviceId'), false, 'runtime generation must not mutate configuration');
+  let other = new AccountSession(configured);
+  context.after(() => other.disconnect());
+  assert.notEqual(other.account.deviceId, id, 'separate account sessions must not share generated identity');
+});
+
+test('Google Home isolated connection check accepts refresh token without device ID', async (context) => {
+  let configured = { type: ACCOUNT_TYPE.GOOGLE_HOME, refreshToken: 'fixture-sso-secret' };
+  let request = context.mock.method(network, 'request', async () => response({ token: 'fixture-oauth', expiresIn: 3600 }));
+  assert.equal(await AccountSession.testConnection(configured), 'success');
+  assert.match(new URLSearchParams(request.mock.calls[0].arguments[3].toString()).get('device_id'),
+    /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
+  assert.equal(Object.hasOwn(configured, 'deviceId'), false);
+});
+
+for (let denial of ['http', 'json']) {
+  test('notification scope refusal retains HomeGraph authentication for polling: ' + denial, async (context) => {
+    let { connection } = setup(context, [homeAccount]);
+    let scopes = [];
+    context.mock.method(network, 'request', async (_method, _url, _options, body) => {
+      let scope = new URLSearchParams(body.toString()).get('scope');
+      scopes.push(scope);
+      if (scope.includes('https://www.googleapis.com/auth/notifications') === true) {
+        if (denial === 'http') {
+          throw Object.assign(new Error('private-denial'), { status: 403 });
+        }
+        return response({ error: 'PERMISSION_DENIED' });
+      }
+      return response({ token: 'fixture-polling-oauth', expiresIn: 3600 });
+    });
+    assert.equal(await connection.session.connect(), true);
+    assert.equal(connection.oauth2, 'fixture-polling-oauth');
+    assert.equal(scopes.length, 2);
+    assert.equal(scopes[1].includes('https://www.googleapis.com/auth/homegraph'), true);
+    assert.equal(scopes[1].includes('https://www.googleapis.com/auth/notifications'), false);
+  });
+}

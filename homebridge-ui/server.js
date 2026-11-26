@@ -1,11 +1,11 @@
 // Nest Accfactory settings server
 // Part of homebridge-nest-accfactory
 //
-// Provides isolated Google and Nest account connection checks for the custom
+// Provides isolated Google, Nest and Google Home account connection checks for the custom
 // Homebridge settings UI without starting device subscriptions or discovery.
 //
 // Responsibilities:
-// - Register the Homebridge UI /accounts/test route for Google and Nest accounts
+// - Register the Homebridge UI /accounts/test route for Google, Nest and Google Home accounts
 // - Run one isolated authentication check at a time through AccountSession
 // - Return only success, failed or timeout status without exposing credentials
 //
@@ -14,11 +14,11 @@
 // - Configuration is saved by the UI; this server only reports connection status
 // - Routine IPC route notices are suppressed; other console output is preserved
 //
-// Code version 2026.11.23
+// Code version 2026.11.27
 // Mark Hulskamp
 'use strict';
 
-// Define external module requirements
+// Define external modules
 import { HomebridgePluginUiServer, RequestError } from '@homebridge/plugin-ui-utils';
 
 // Define our modules

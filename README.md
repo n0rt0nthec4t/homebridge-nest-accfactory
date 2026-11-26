@@ -32,7 +32,7 @@ Connect your supported Nest and Google Home devices to Apple Home through Homebr
 ### Requirements
 
 - **Homebridge 2.5 or later is recommended.** Homebridge 2.4 is the supported minimum.
-- **Node.js 24 or 26 is required.** Check the Homebridge version in use when upgrading Node.js.
+- **Node.js 22.13.0 or later within Node 22, Node 24 or Node 26 is required.** Node 22 support is retained until 30 April 2027. Check the Homebridge version in use when upgrading Node.js.
 - A Nest or Google account with access to the supported devices.
 - **FFmpeg 7.1 or later** for cameras and doorbells. See [FFmpeg setup](#ffmpeg) for a compatible build.
 
@@ -120,18 +120,14 @@ To temporarily skip an account, enable its `exclude` setting. Leave `fieldTest` 
 
 ## Doorbell Rings and Quiet Time
 
-By default, doorbell alerts in Apple Home follow the indoor chime setting in Nest/Google Home: disabling the indoor
-chime also stops these alerts. Set `ignoreIndoorChime` to `true` for the doorbell to receive Apple Home
-notifications and Apple TV doorbell alerts while the physical chime is disabled, for example when using
-Google Home speakers as your chime. This option does not change the physical chime setting.
+Doorbell presses trigger alerts in Apple Home unless Quiet Time is active in the Nest or Google Home app.
 
-HomePod chimes must also be enabled separately in Apple Home. Open the doorbell accessory's settings,
-select **Chime on HomePod** and enable the speakers you want to use. `ignoreIndoorChime` does not enable
-this setting. See [Apple's HomePod settings guide](https://support.apple.com/guide/homepod/apde6dc8093d/homepod) for more information.
+The physical indoor chime setting does not affect Apple Home notifications, Apple TV doorbell alerts or HomePod chimes.
 
-Quiet Time silences doorbell alerts in Apple Home regardless of `ignoreIndoorChime`. Configure the physical chime
-and Quiet Time in Nest/Google Home. The plugin no longer exposes a chime or Quiet Time switch; remove any
-old `chimeSwitch`, `quietTimeSwitch` and `quietTimeDuration` options from your device configuration.
+HomePod chimes must be enabled separately in Apple Home. Open the doorbell accessory's settings, select **Chime on HomePod** and enable the speakers you want to use.
+See [Apple's HomePod settings guide](https://support.apple.com/guide/homepod/apde6dc8093d/homepod) for more information.
+
+Physical indoor chime settings and Quiet Time are managed directly through the Nest or Google Home app.
 
 ## FFmpeg
 
@@ -282,7 +278,6 @@ The `"name"` field is optional and is only used to help identify the entry in th
 | hotwaterMaxTemp      | Upper hot-water target limit in °C, where temperature control is supported                     | 70                           |
 | hotwaterMinTemp      | Lower hot-water target limit in °C, where temperature control is supported                     | 30                           |
 | humiditySensor       | Enable a separate humidity sensor for thermostat(s) where supported                            | false                        |
-| ignoreIndoorChime    | Allow doorbell alerts in Apple Home when the indoor chime is disabled                         | false                        |
 | logMotionEvents      | Log supported camera, doorbell and Nest Protect motion events                                  | Inherits global setting      |
 | motionCooldown       | Time between detected motion events                                                            | 60s                          |
 | name                 | Optional label to help identify this device entry                                              |                              |

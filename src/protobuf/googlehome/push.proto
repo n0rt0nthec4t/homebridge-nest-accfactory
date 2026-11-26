@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+// Firebase notification-target registration and Android receiver checkin.
+// Only transmitted fields are defined; unnamed fields retain their wire numbers.
+package homebridge.nest.push;
+
+message CheckinRequest {
+  message Checkin {
+    message Build {
+      string fingerprint = 1;
+      string hardware = 2;
+      string brand = 3;
+      string radio = 4;
+      string clientId = 6;
+    }
+    Build build = 1;
+    int64 lastCheckinMs = 2;
+  }
+  int64 androidId = 2;
+  Checkin checkin = 4;
+  string locale = 6;
+  int64 loggingId = 7;
+  string timeZone = 12;
+  int32 version = 14;
+  repeated string otaCert = 15;
+  repeated string macAddressType = 19;
+  int32 fragment = 20;
+  int64 userSerialNumber = 22;
+}
+
+message StoreTargetRequest {
+  message AppInfo {
+    message Data {
+      message Token {
+        string notificationToken = 1;
+        string appId = 2;
+        uint64 deviceId = 3;
+        uint32 field4 = 4;
+      }
+      Token subdata = 1;
+    }
+    uint32 field1 = 1;
+    Data appAndTokenData = 2;
+  }
+  message DeviceInfo {
+    message Data {
+      message Empty {}
+      message Field17 {
+        message Field1 { uint32 field2 = 2; }
+        Field1 field1 = 1;
+      }
+      fixed32 field2 = 2;
+      string appVersion = 3;
+      string field4 = 4;
+      string field5 = 5;
+      string deviceName = 6;
+      uint32 field7 = 7;
+      string deviceVendor = 8;
+      uint32 field9 = 9;
+      string field10 = 10;
+      string fullDeviceName = 11;
+      uint32 field14 = 14;
+      string countryCode = 15;
+      Empty field16 = 16;
+      Field17 field17 = 17;
+      uint32 field18 = 18;
+    }
+    string languageCode = 1;
+    Data deviceAndChannelData = 3;
+    string timeZone = 4;
+  }
+  message MiniAppInfo {
+    message Data {
+      uint64 senderId = 1;
+      string notificationToken = 2;
+    }
+    Data data = 1;
+  }
+  message Field12 { uint32 value = 1; }
+  string feedId = 1;
+  AppInfo appInfo = 5;
+  DeviceInfo deviceInfo = 6;
+  MiniAppInfo miniAppInfo = 7;
+  uint32 field10 = 10;
+  Field12 field12 = 12;
+}

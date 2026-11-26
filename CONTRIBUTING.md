@@ -2,7 +2,7 @@
 
 ## Development setup
 
-Use Node.js 22.13 or later on the Node.js 22 line, or Node.js 24. Node.js 26 support depends on the Homebridge version; use the compatibility ranges in `package.json` as authoritative. Preserve supported Homebridge 1.x and 2.x behaviour.
+Use Node.js 22.13.0 or later within Node 22, Node 24 or Node 26 with Homebridge 2.x. Node 22 support is retained until 30 April 2027. The declared compatibility ranges in `package.json` are authoritative. Homebridge 1.x is no longer supported by the plugin; preserve independently supported standalone HAP environments in shared modules.
 
 Clone the repository with its shared submodules and install dependencies:
 
@@ -112,7 +112,7 @@ This is an intentional project design constraint, not a missing feature to work 
 ## Making changes
 
 - Keep each fix focused on the demonstrated problem. Avoid unrelated refactoring or formatting.
-- Preserve supported devices, configuration compatibility, accessory identity and Nest/Google source handling.
+- Preserve supported devices, configuration compatibility, accessory identity and protobuf/HomeGraph source handling.
 - Add regression tests that assert observable state, commands or lifecycle outcomes. Cover failure paths relevant to the change.
 - For device controls, test both upstream updates and HomeKit writes. For camera changes, consider live streaming, HKSV recording, talkback, reconnect and asynchronous teardown.
 - Follow the repository's `AGENTS.md` instructions when using coding agents.
@@ -131,7 +131,7 @@ Choose verification that covers the affected behaviour, including native-app and
 
 Describe what you tested and what remains unverified. For live checks, record relevant runtime, Homebridge/HAP and FFmpeg versions, device models, source API and observed outcomes. Never include credentials, cookies or tokens in fixtures, logs or issue reports.
 
-CI is configured to run checks with the minimum Node.js 22.13.0 and Node.js 24 against Homebridge 1.11.4 and 2.4.0, and Node.js 26 against Homebridge 2.4.0. The recommended Homebridge 2.5.0 is also checked with Node.js 24 and 26. Publish validation also checks the latest Node.js 22 release. See `.github/workflows/test.yml` for the configured matrix and `package.json` for the declared compatibility ranges. A local pass does not establish that all CI combinations passed.
+CI is configured to run checks with Node.js 22.13.0, 24 and 26 against Homebridge 2.4.0 and 2.5.0 on Ubuntu. Publish validation runs Node.js 22.13.0, 24 and 26 on Ubuntu, Windows and macOS using the locked Homebridge dependency. A separate media job runs real FFmpeg checks with Node.js 24. See `.github/workflows/test.yml`, `.github/workflows/npm-publish.yml` and `.github/workflows/media-tests.yml` for the configured jobs, and `package.json` for the declared compatibility ranges. A local pass does not establish that all CI combinations passed.
 
 ## Release notes
 

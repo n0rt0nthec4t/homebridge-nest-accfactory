@@ -53,9 +53,7 @@ for (let fixture of fixtures) {
       let flow = setup(fixture);
       let initial = Object.values(flow.run())[0].data;
       flow.options.options.exclude = plugin;
-      flow.options.homes = [
-        { google_home_uuid: initial.nest_google_home_uuid, nest_home_uuid: initial.nest_google_home_uuid, exclude: home },
-      ];
+      flow.options.homes = [{ protobuf_home_uuid: initial.nest_google_home_uuid, exclude: home }];
       flow.options.devices = [{ serialNumber: initial.serialNumber.toLowerCase(), exclude: device, eveHistory: false }];
       let mapped = Object.values(flow.run())[0].data;
       assert.equal(mapped.excluded, expected);

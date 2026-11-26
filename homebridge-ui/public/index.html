@@ -7,14 +7,20 @@
   <p id="settings-status" role="status" aria-live="polite"></p>
   <section id="settings-form" aria-label="Plugin settings">
     <fieldset id="settings-fields">
-      <details class="settings-card" open>
+      <details id="accounts-settings" class="settings-card" open>
         <summary><span>Accounts</span></summary>
         <div class="card-content">
+          <div id="google-home-toolbar" class="section-actions">
+            <h3 id="google-home-heading">Google Home</h3>
+            <button type="button" class="btn btn-secondary" disabled>Manual setup</button>
+            <button type="button" class="btn btn-primary" disabled>+ Connect Account</button>
+          </div>
+          <p id="google-home-description" class="section-description">Connect your Google account to access devices through Google Home.</p>
+          <div id="accounts-list"></div>
           <div id="connection-toolbar" class="section-actions">
             <button id="add-manual-account" type="button" class="btn btn-secondary">Manual setup</button>
-            <button id="open-connection" type="button" class="btn btn-primary">+ Connect Account</button>
+            <button id="open-connection" type="button" class="btn btn-secondary">+ Connect Account</button>
           </div>
-          <div id="accounts-list"></div>
           <div id="manual-account-editor" class="editor-panel" hidden></div>
         </div>
       </details>

@@ -38,7 +38,8 @@ body { margin: 0; }
 .section-description { margin: 0 0 16px; font-size: 14px; }
 .account-row, .override-row, .editor-panel { border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 12px; }
 .nest-ui .account-row { display: flex; align-items: center; gap: 12px 18px; flex-wrap: wrap; padding: 14px 16px; }
-.account-info { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+/* Keep actions below account details regardless of which controls the account supports. */
+.account-info { flex: 1 0 100%; min-width: 0; overflow-wrap: anywhere; }
 .account-name { font-weight: 650; }
 .account-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px 18px; flex-wrap: wrap; }
 /* The native checkbox keeps keyboard handling; switch styling makes account state visible. */
@@ -59,12 +60,42 @@ body { margin: 0; }
 .account-actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .account-connection { border-left: 1px solid var(--border); padding-left: 16px; }
 .account-removal { margin-left: auto; border-left: 1px solid var(--border); padding-left: 16px; }
-.account-removal-confirmation { flex: 1 0 100%; padding-top: 12px; border-top: 1px solid var(--border); }
-.account-removal-confirmation p { margin: 0 0 12px; }
-.legacy-notice { margin-top: 16px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); }
-.legacy-notice p { margin: 0 0 12px; }
-.legacy-accounts > summary { cursor: pointer; font-weight: 600; }
-.legacy-account-list { margin-top: 12px; }
+#accounts-settings .account-removal-panel { padding: 18px; }
+.account-removal-panel p { margin: 0 0 18px; overflow-wrap: anywhere; }
+#accounts-settings .account-removal-panel p > span { font-weight: 400; }
+#accounts-settings .account-removal-panel p > strong { font-weight: 700; }
+.legacy-accounts { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border); }
+.legacy-accounts > summary { cursor: pointer; font-weight: 650; font-size: 17px; margin-bottom: 12px; }
+.account-guidance { display: flex; align-items: center; gap: 12px; padding: 10px 14px;
+  border: 1px solid #9565a0; border-radius: 8px; background: #ad8db71a; color: var(--muted); }
+.account-guidance::before { content: "ⓘ"; flex-shrink: 0; font-size: 20px; }
+#google-home-heading { margin: 0 auto 0 0; }
+.legacy-account-list { margin-top: 12px; color: var(--text); }
+/* Account settings follow the compact reference layout, independently of Homebridge's button theme. */
+#accounts-settings { background: linear-gradient(120deg, #2b1032, #1c0c23 70%); }
+#accounts-settings > summary { font-size: 24px; padding: 16px 20px; }
+#accounts-settings .card-content { padding: 0 20px 20px; }
+#accounts-settings #google-home-toolbar { gap: 10px; margin: 4px 0 8px; }
+#accounts-settings #google-home-heading { font-size: 21px; font-weight: 650; }
+#accounts-settings .section-description { margin-bottom: 16px; }
+#accounts-settings .account-empty { padding: 14px 16px; border: 1px solid #805089; border-radius: 10px; background: #26112d55; }
+#accounts-settings .account-row { padding: 14px 16px; gap: 14px; border-color: #805089; border-radius: 10px;
+  background: #26112d55; margin-bottom: 14px; }
+#accounts-settings .account-name { font-size: 17px; }
+#accounts-settings .account-status { font-size: 14px; margin-top: 6px; }
+#accounts-settings .account-enabled { font-size: 14px; color: var(--accent); }
+#accounts-settings .account-excluded { background: #20102666; }
+#accounts-settings .account-actions { gap: 10px; }
+#accounts-settings .account-connection, #accounts-settings .account-removal { border: 0; padding-left: 0; margin-left: 0; }
+#accounts-settings .btn { padding: 9px 12px; text-transform: uppercase; font-size: 13px; border-radius: 7px; }
+#accounts-settings .btn-secondary { border-color: #c5a7ce; }
+#accounts-settings .btn-primary { background: #ff9800; border-color: #ff9800; color: #24102d; }
+#accounts-settings .btn-primary:hover { background: #ffab2b; border-color: #ffab2b; }
+#accounts-settings button:disabled { cursor: default; opacity: .45; }
+#accounts-settings .legacy-accounts { margin-top: 22px; padding-top: 14px; border-color: #9565a0; }
+#accounts-settings .legacy-accounts > summary { font-size: 21px; font-weight: 500; color: var(--muted);
+  margin-bottom: 6px; min-height: 42px; line-height: 40px; }
+#accounts-settings #connection-toolbar { display: inline-flex; float: right; margin: 0 0 10px 14px; line-height: 1.5; }
 .button-row, .section-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .section-actions { justify-content: flex-end; margin-bottom: 16px; }
 .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 24px; align-items: start; }
@@ -125,6 +156,8 @@ body { margin: 0; }
   .settings-footer { align-items: stretch; flex-direction: column; gap: 12px; }
   .settings-footer .button-row { justify-content: flex-end; }
   .section-actions .btn { flex: 1; }
+  #accounts-settings #google-home-heading { flex: 1 0 100%; }
+  #accounts-settings #connection-toolbar { display: flex; float: none; margin: 8px 0 12px; }
 }
 
 .override-row { position: relative; }

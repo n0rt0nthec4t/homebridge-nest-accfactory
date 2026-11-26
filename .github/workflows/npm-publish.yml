@@ -49,7 +49,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         # Match the supported Node.js majors declared in package.json.
-        node: [24, 26]
+        node: [22.13.0, 24, 26]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5

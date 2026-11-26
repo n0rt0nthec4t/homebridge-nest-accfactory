@@ -16,11 +16,15 @@ jobs:
       matrix:
         include:
           # Exercise the supported Node.js majors with the minimum Homebridge version.
+          - node: 22.13.0
+            homebridge: 2.4.0
           - node: 24
             homebridge: 2.4.0
           - node: 26
             homebridge: 2.4.0
           # Verify the recommended platform as well as the supported minimum.
+          - node: 22.13.0
+            homebridge: 2.5.0
           - node: 24
             homebridge: 2.5.0
           - node: 26

@@ -1,10 +1,107 @@
 syntax = "proto3";
 
+// Foyer wire definitions used by the plugin. Omitted fields remain skippable.
+// Preserve existing field numbers when extending this runtime subset.
+
 import "google/protobuf/wrappers.proto";
 import "google/protobuf/struct.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
 
 package google.internal.home.foyer.v1;
 
+// Client context shared by Foyer headers and camera history requests.
+message ClientEnvironment {
+  message AndroidClientInfo {
+    string appReleaseVersion = 2;
+  }
+
+  message IosClientInfo {}
+
+  int32 platform = 1;
+  oneof clientInfo {
+    ClientEnvironment.AndroidClientInfo androidClientInfo = 2;
+    ClientEnvironment.IosClientInfo iosClientInfo = 3;
+  }
+}
+
+// Discovery retains device identities, room membership and structure traits.
+message Home {
+  message Trait {
+    string name = 1;
+    map<string, google.protobuf.Value> fields = 2;
+  }
+
+  string uuid = 1;
+  string name = 2;
+  Address address = 3;
+  repeated Room rooms = 6;
+  repeated Device devices = 7;
+  repeated Home.Trait traits = 21;
+}
+
+message Address {
+  message Coordinates {
+    double latitude = 1;
+    double longitude = 2;
+  }
+
+  message AddressComponents {
+    string state = 3;
+    string city = 5;
+  }
+
+  Address.Coordinates coordinates = 2;
+  string timezone = 6;
+  Address.AddressComponents addressComponents = 7;
+}
+
+message Room {
+  string uuid = 1;
+  string name = 3;
+  repeated Device devices = 5;
+}
+
+message Device {
+  message Hardware {
+    string manufacturer = 1;
+    string model = 2;
+    string softwareVersion = 4;
+  }
+
+  message Names {
+    string nameFromGoogleHome = 1;
+    string name = 2;
+    repeated string defaultNames = 3;
+    repeated string nicknames = 4;
+  }
+
+  message Id {
+    string googleUuid = 1;
+    Device.ThirdPartyId thirdPartyId = 2;
+  }
+
+  message ThirdPartyId {
+    string idType = 1;
+    string id = 2;
+  }
+
+  message OtherThirdPartyIds {
+    repeated Device.ThirdPartyId otherThirdPartyId = 1;
+  }
+
+  Device.Id id = 1;
+  string displayName = 4;
+  string type = 6;
+  repeated string traits = 7;
+  Device.Hardware hardware = 17;
+  Device.Names names = 18;
+  google.protobuf.Struct attributes = 20;
+  Device.OtherThirdPartyIds otherIds = 39;
+  Device.Id parentDevice = 57;
+}
+
+// Hidden device types requested during discovery, including Protect and Heat Link.
 message GetHomeGraphRequest {
   enum DefaultHiddenDeviceType {
     DEVICE_TYPE_UNKNOWN = 0;
@@ -15,237 +112,101 @@ message GetHomeGraphRequest {
     DEVICE_TYPE_NEST_HEATLINK = 5;
   }
 
-  string requestId = 3; // 64 hex characters - random is OK
-  int32 unknown1 = 4; // always 1?
-  int32 unknown2 = 5; // always 1?
-  repeated DefaultHiddenDeviceType deviceTypesToUnhideArray = 10;
+  string requestId = 3;
+  repeated GetHomeGraphRequest.DefaultHiddenDeviceType deviceTypesToUnhideArray = 10;
 }
 
 message GetHomeGraphResponse {
-  // Unidentified catalogue fields remain unmapped until their purpose is established.
-  message SpaceType {
-    string code = 1;
-    string name = 2;
-  }
-
-  message DeviceType {
-    string code = 1;
-    string name = 2;
-  }
-
-  message Agent {
-    string apiProjectId = 1;
-    string name = 2;
-    string iconUrl = 3;
-    string appStoreUrl = 4;
-    string playStoreUrl = 5;
-  }
-
-  message HomeGraphState {
-    message DeviceTypes {
-      repeated string types = 1;
-    }
-
-    uint32 count = 2;
-    DeviceTypes deviceTypes = 3;
-  }
-
-  message LinkableApplication {
-    string knowledgeGraphId = 1;
-    string name = 2;
-    // Retain numeric field names until their enum meanings are established.
-    uint32 field3 = 3;
-    uint32 field4 = 4;
-    uint32 field5 = 5;
-    uint32 field6 = 6;
-    string iconUrl = 7;
-  }
-
-  uint64 responseTimestamp = 1; // Epoch in ms for this response
   repeated Home homes = 2;
   repeated Device unassignedDevices = 3;
-  repeated SpaceType spaceTypes = 4;
-  string stableHash = 5;
-  bool homeGraphHasChanged = 6;
-  repeated DeviceType deviceTypes = 7;
-  repeated Agent agentsInfo = 9;
-  map<string, HomeGraphState> homeGraphState = 11;
-  repeated LinkableApplication linkableApplications = 12;
 }
 
-message Home {
-  // Numbered flags retain unidentified meanings.
-  message AgentMetadata {
-    uint32 field1 = 1;
-    string apiProjectId = 2;
-  }
-
-  message Entitlement {
-    message Metadata {
-      uint32 field1 = 1;
-    }
-    uint32 field2 = 2;
-    uint32 field4 = 4;
-    string emailAddress = 5;
-    uint32 field7 = 7;
-    string name = 8;
-    Metadata metadata = 11;
-  }
-
-  message Favorites {
-    message Item {
-      message DeviceTarget {
-        Device.Id id = 1;
-        uint32 field3 = 3;
-      }
-      DeviceTarget device = 1;
-    }
-    string name = 1;
-    uint32 field3 = 3;
-    repeated Item items = 4;
-  }
-
-  message Trait {
-    string name = 1;
-    map<string, google.protobuf.Value> fields = 2;
-  }
-
-  string uuid = 1;
-  string name = 2;
-  Address address = 3;
-  repeated EmailAddress linked_users = 4;
-  repeated Room rooms = 6;
-  repeated Device devices = 7;
-  AgentMetadata agentMetadata = 11;
-  Entitlement entitlement = 12;
-  Favorites favorites = 16;
-  repeated Trait traits = 21;
-  map<string, Favorites> favoritesByName = 23;
+message GetOutdoorWeatherInfoRequest {
+  string structureId = 1;
+  float latitude = 2;
+  float longitude = 3;
 }
 
-message Address {
-  string line1 = 1;
-  message Coordinates {
-    double latitude = 1;
-    double longitude = 2;
+// The weather accessory currently consumes outdoor temperature and conditions.
+message GetOutdoorWeatherInfoResponse {
+  message OutdoorWeather {
+    google.protobuf.FloatValue temperatureC = 1;
+    string description = 4;
   }
-  Coordinates coordinates = 2;
-  uint64 timeCreated = 5;
-  string timezone = 6;
-  message AddressComponents {
-    string countryCode = 1;
-    string countryName = 2;
-    string state = 3;
-    string city = 5;
-    string street = 6;
-    string number = 11;
-    string postalCode = 12;
-    string unparsableStreetAddress = 14;
-    string buildingName = 15;
-    string apt = 16;
-    string languageCode = 26;
-  }
-  AddressComponents addressComponents = 7;
-  // StructureLocationInfo.addressLines uses wire tag 74. Preserve its structured layout.
-  message AddressLines {
-    message TwoLineAddress {
-      string line1 = 1;
-      string line2 = 2;
-    }
-    message ThreeLineAddress {
-      string aptLine = 1;
-      string line1 = 2;
-      string line2 = 3;
-    }
-    TwoLineAddress twoLineAddress = 1;
-    ThreeLineAddress threeLineAddress = 2;
-  }
-  AddressLines addressLines = 9;
+
+  GetOutdoorWeatherInfoResponse.OutdoorWeather weather = 1;
 }
 
-message EmailAddress {
-  string value = 1;
-  // Unidentified numeric user metadata.
-  uint32 field4 = 4;
+service StructuresService {
+  rpc GetHomeGraph(GetHomeGraphRequest) returns (GetHomeGraphResponse);
+  rpc GetOutdoorWeatherInfo(GetOutdoorWeatherInfoRequest) returns (GetOutdoorWeatherInfoResponse);
 }
 
-message Room {
-  string uuid = 1;
-  string name = 3;
-  message Category {
-    string name = 1;
-  }
-  Category category = 4;
-  repeated Device devices = 5;
+// User preferences: technical-information reads and device subscriptions.
+message GetUserPreferencesRequest {
+  string structureId = 1;
+  repeated uint32 pageCode = 2;
+  google.protobuf.StringValue uuid = 3;
+  bytes field5Proto = 5; // Opaque preference context; sent empty by the client.
 }
 
-message Device {
-  // Keep existing identity fields intact; metadata does not determine accessory identity.
-  message Hardware {
-    string manufacturer = 1;
-    string model = 2;
-    string hardwareVersion = 3;
-    string softwareVersion = 4;
+// Technical-information pages provide identity details through a recursive item tree.
+message GetUserPreferencesResponse {
+  message ItemRef {
+    uint32 id = 2;
+    google.protobuf.StringValue associatedId = 3;
   }
 
-  message Names {
-    // OtherNames.nameFromGHApp in the supplied reference encoder.
-    string nameFromGoogleHome = 1;
-    string name = 2;
-    repeated string defaultNames = 3;
-    repeated string nicknames = 4;
+  message PrefsItem {
+    GetUserPreferencesResponse.ItemRef itemRef = 1;
+    string name = 3;
+    string subtitle = 4;
+    repeated GetUserPreferencesResponse.PrefsItem subitems = 6;
   }
 
-  message Id {
-    string googleUuid = 1;
-    ThirdPartyId thirdPartyId = 2;
-  }
-
-  message ThirdPartyId {
-    string idType = 1;
-    string id = 2;
-  }
-
-  message OtherThirdPartyIds {
-    repeated ThirdPartyId otherThirdPartyId = 1;
-  }
-
-  // Field 30 groups state and attributes by trait category, independently of
-  // the capability names in field 7.
-  message TraitState {
-    string name = 1;
-    map<string, google.protobuf.Value> state = 2;
-    google.protobuf.Struct attributes = 3;
-  }
-
-  Id id = 1;
-  string displayName = 4;
-  string type = 6;
-  repeated string traits = 7;
-  repeated string defaultNames = 16;
-  Hardware hardware = 17;
-  Names names = 18;
-  // Milliseconds since Unix epoch; the event this timestamp denotes is unknown.
-  uint64 timestamp19 = 19;
-  google.protobuf.Struct attributes = 20;
-  repeated EmailAddress linkedUsers = 26;
-  string localAuthToken = 28;
-  repeated TraitState traitStates = 30;
-  ThirdPartyId additionalThirdPartyId = 32;
-  // The reference calls this deviceSource; its numeric meanings are unverified.
-  int32 deviceSource = 37;
-  OtherThirdPartyIds otherIds = 39;
-  // Other observed numbered fields remain unmapped while their meaning is unknown.
+  GetUserPreferencesResponse.PrefsItem item = 1;
 }
 
-// Trait reads include recursive values and per-category attributes.
+// Subscribe discovered devices and renew the bounded server subscription.
+message AppSubscriptionUpdateRequest {
+  message DeviceWithTraits {
+    string hgsDeviceId = 1;
+  }
+
+  message SubscriptionEntities {
+    google.protobuf.Duration smartPollingInterval = 3;
+    repeated AppSubscriptionUpdateRequest.DeviceWithTraits deviceWithTraitsArray = 4;
+  }
+
+  AppSubscriptionUpdateRequest.SubscriptionEntities subscriptionEntities = 3;
+  google.protobuf.Duration ttl = 5;
+}
+
+message AppSubscriptionUpdateResponse {
+  repeated GetTraitsResponse.DeviceState initialDeviceStatesArray = 1;
+}
+
+service UsersService {
+  rpc GetUserPreferences(GetUserPreferencesRequest) returns (GetUserPreferencesResponse);
+  rpc AppSubscriptionUpdate(AppSubscriptionUpdateRequest) returns (AppSubscriptionUpdateResponse);
+}
+
+// Home control: recursive trait reads and setting updates.
 message GetTraitsRequest {
+  enum RefreshReason {
+    REASON_UNSPECIFIED = 0;
+    REASON_FETCH_CAMERA_STREAM_TRAIT = 17;
+  }
+
   message DeviceReference {
     string uuid = 1;
   }
-  repeated DeviceReference deviceIds = 1;
+
+  repeated GetTraitsRequest.DeviceReference deviceIds = 1;
+  GetTraitsRequest.RefreshReason reason = 3;
 }
 
+// Trait reads and push updates share recursive scalar, object and array values.
 message GetTraitsResponse {
   message ScalarValue {
     oneof kind {
@@ -253,85 +214,129 @@ message GetTraitsResponse {
       double number = 2;
       string text = 3;
       bool boolean = 4;
-      Properties properties = 5;
-      PropertyArray array = 6;
+      GetTraitsResponse.Properties properties = 5;
+      GetTraitsResponse.PropertyArray array = 6;
     }
   }
+
   message Properties {
-    repeated Property properties = 1;
+    repeated GetTraitsResponse.Property properties = 1;
   }
+
   message PropertyArray {
-    repeated ScalarValue values = 1;
+    repeated GetTraitsResponse.ScalarValue values = 1;
   }
+
   message Property {
     string name = 1;
-    ScalarValue value = 2;
+    GetTraitsResponse.ScalarValue value = 2;
   }
+
   message Category {
     string name = 1;
-    repeated Property traits = 2;
-    Properties attributes = 3;
+    repeated GetTraitsResponse.Property traits = 2;
+    GetTraitsResponse.Properties attributes = 3;
   }
+
   message DeviceState {
     google.protobuf.StringValue uuid = 1;
-    repeated Category category = 2;
-  }
-  repeated DeviceState device = 1;
-}
-
-// Partial preferences schema for Technical Information pages and their item tree.
-message GetUserPreferencesRequest {
-  string structureId = 1;
-  repeated uint32 pageCode = 2;
-  google.protobuf.StringValue uuid = 3;
-  string unknown5 = 5;
-}
-message GetUserPreferencesResponse {
-  // Wire definitions verified against the supplied reference encoder.
-  // Selection state is numeric; do not infer an on/off meaning from its name.
-  message PrefsItemSelected {
-    int32 state = 1;
-  }
-  message PrefsPageLink {
-    uint32 pageCode = 1;
-    string structureId = 2;
-    google.protobuf.StringValue uuid = 3;
-  }
-  message ItemRef {
-    uint32 id = 2;
-    google.protobuf.StringValue associatedId = 3;
-  }
-  message PrefsItem {
-    ItemRef itemRef = 1;
-    PrefsItemSelected selected = 2;
-    string name = 3;
-    string subtitle = 4;
-    repeated PrefsItem subitems = 6;
-    int32 type = 7;
-    string iconUrl = 9;
-    string appLink = 15;
-    PrefsPageLink prefsPageLink = 26;
-  }
-  PrefsItem item = 1;
-}
-
-message SendTalkbackRequest {
-  enum TalkbackCommand {
-    COMMAND_UNSPECIFIED = 0;
-    COMMAND_START = 1;
-    COMMAND_STOP = 2;
+    repeated GetTraitsResponse.Category category = 2;
   }
 
-  google.protobuf.StringValue googleDeviceId = 1;
-  string streamId = 2;
-  TalkbackCommand command = 3;
+  repeated GetTraitsResponse.DeviceState device = 1;
 }
 
-message SendTalkbackResponse {
-  // Status values have no established meaning here.
-  int32 status = 1;
+message UpdateTraitsRequest {
+  message TargetDevice {
+    message InternalId {
+      string source = 1;
+    }
+
+    string uuid = 1;
+    UpdateTraitsRequest.TargetDevice.InternalId internalId = 2;
+  }
+
+  message Request {
+    UpdateTraitsRequest.TargetDevice deviceId = 1;
+    repeated GetTraitsResponse.Category categories = 2;
+  }
+
+  repeated UpdateTraitsRequest.Request request = 1;
 }
 
+message UpdateTraitsResponse {
+  repeated GetTraitsResponse.DeviceState device = 1;
+}
+
+service HomeControlService {
+  rpc GetTraits(GetTraitsRequest) returns (GetTraitsResponse);
+  rpc UpdateTraits(UpdateTraitsRequest) returns (UpdateTraitsResponse);
+}
+
+// Energy controls use Celsius values and an explicit iOS actor where supported.
+enum ThermostatMode {
+  THERMOSTAT_MODE_UNSPECIFIED = 0;
+  THERMOSTAT_MODE_HEAT = 1;
+  THERMOSTAT_MODE_COOL = 2;
+  THERMOSTAT_MODE_RANGE = 3;
+  THERMOSTAT_MODE_OFF = 4;
+  THERMOSTAT_MODE_ECO = 5;
+}
+
+message UpdateThermostatModeRequest {
+  string deviceId = 1;
+  ThermostatMode mode = 2;
+  ThermostatHvacActor hvacActor = 3;
+}
+
+message UpdateThermostatModeResponse {}
+
+message UpdateTargetTemperatureRequest {
+  string deviceId = 1;
+  ThermostatMode mode = 2;
+  google.protobuf.FloatValue temperature = 3;
+  ThermostatHvacActor hvacActor = 4;
+}
+
+message UpdateTargetTemperatureResponse {}
+
+message UpdateTargetTemperatureRangeRequest {
+  string deviceId = 1;
+  google.protobuf.FloatValue tempLow = 2;
+  google.protobuf.FloatValue tempHigh = 3;
+  ThermostatHvacActor hvacActor = 4;
+}
+
+message UpdateTargetTemperatureRangeResponse {}
+
+message UpdateThermostatFanModeRequest {
+  string deviceId = 1;
+  google.protobuf.UInt32Value runTimeSeconds = 2;
+}
+
+message UpdateThermostatFanModeResponse {}
+
+enum ThermostatHvacActor {
+  HVAC_ACTOR_UNSPECIFIED = 0;
+  HVAC_ACTOR_IOS = 7;
+}
+
+message UpdateHotWaterBoostRequest {
+  string deviceId = 1;
+  google.protobuf.Duration duration = 2;
+}
+
+message UpdateHotWaterBoostResponse {}
+
+service EnergyService {
+  rpc UpdateThermostatMode(UpdateThermostatModeRequest) returns (UpdateThermostatModeResponse);
+  rpc UpdateTargetTemperature(UpdateTargetTemperatureRequest) returns (UpdateTargetTemperatureResponse);
+  rpc UpdateTargetTemperatureRange(UpdateTargetTemperatureRangeRequest) returns (UpdateTargetTemperatureRangeResponse);
+  rpc UpdateThermostatFanMode(UpdateThermostatFanModeRequest) returns (UpdateThermostatFanModeResponse);
+  rpc UpdateHotWaterBoost(UpdateHotWaterBoostRequest) returns (UpdateHotWaterBoostResponse);
+}
+
+// Camera streaming, talkback, power and event-session reads.
 message SendCameraViewIntentRequest {
   enum ViewIntentCommand {
     VIEW_INTENT_UNSPECIFIED = 0;
@@ -340,15 +345,13 @@ message SendCameraViewIntentRequest {
 
   message ViewIntentRequest {
     google.protobuf.StringValue googleDeviceId = 1;
-    ViewIntentCommand command = 2;
+    SendCameraViewIntentRequest.ViewIntentCommand command = 2;
   }
 
-  ViewIntentRequest request = 1;
+  SendCameraViewIntentRequest.ViewIntentRequest request = 1;
 }
 
-message SendCameraViewIntentResponse {
-
-}
+message SendCameraViewIntentResponse {}
 
 message JoinStreamRequest {
   enum JoinStreamRequest_StreamContext {
@@ -380,106 +383,183 @@ message JoinStreamRequest {
   string command = 3;
   string streamId = 4;
   bool local = 5;
-  JoinStreamRequest_StreamContext streamContext = 6;
-  JoinStreamRequest_EndStreamReason endStreamReason = 7;
-  JoinStreamRequest_VideoResolution requestedVideoResolution = 8;
+  JoinStreamRequest.JoinStreamRequest_StreamContext streamContext = 6;
+  JoinStreamRequest.JoinStreamRequest_EndStreamReason endStreamReason = 7;
+  JoinStreamRequest.JoinStreamRequest_VideoResolution requestedVideoResolution = 8;
 }
 
 message JoinStreamResponse {
   enum StreamTerminationStatus {
     STATUS_UNSPECIFIED = 0;
     STATUS_STREAM_TERMINATED = 1;
-    STATUS_STREAM_NOT_TERMINATED = 2; // e.g. invalid stream ID specified
+    STATUS_STREAM_NOT_TERMINATED = 2;
   }
 
   enum StreamExtensionStatus {
     STATUS_UNSPECIFIED = 0;
     STATUS_STREAM_EXTENDED = 1;
-    STATUS_STREAM_NOT_EXTENDED = 2; // e.g. invalid stream ID specified
+    STATUS_STREAM_NOT_EXTENDED = 2;
   }
 
   string sdp = 1;
   string responseType = 2;
   string streamId = 3;
-  StreamTerminationStatus streamTerminationStatus = 4;
-  StreamExtensionStatus streamExtensionStatus = 5;
+  JoinStreamResponse.StreamTerminationStatus streamTerminationStatus = 4;
+  JoinStreamResponse.StreamExtensionStatus streamExtensionStatus = 5;
 }
 
-// UpdateTraits uses the same category/property wire format as GetTraits.
-message UpdateTraitsRequest {
-  message TargetDevice {
-    message InternalId {
-      string source = 1;
-    }
-    string uuid = 1;
-    InternalId internalId = 2;
+message SendTalkbackRequest {
+  enum TalkbackCommand {
+    COMMAND_UNSPECIFIED = 0;
+    COMMAND_START = 1;
+    COMMAND_STOP = 2;
   }
-  message Request {
-    TargetDevice deviceId = 1;
-    repeated GetTraitsResponse.Category categories = 2;
+
+  google.protobuf.StringValue googleDeviceId = 1;
+  string streamId = 2;
+  SendTalkbackRequest.TalkbackCommand command = 3;
+}
+
+message SendTalkbackResponse {
+  int32 status = 1; // Response values have no established interpretation here.
+}
+
+// Detection labels are interpreted dynamically by the camera event mapper.
+enum CameraEventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+  EVENT_TYPE_MOTION = 1;
+  EVENT_TYPE_SOUND = 2;
+  EVENT_TYPE_PERSON = 3;
+  EVENT_TYPE_FACE_FAMILIAR = 4;
+  EVENT_TYPE_FACE_UNFAMILIAR = 5;
+  EVENT_TYPE_PERSON_TALKING = 6;
+  EVENT_TYPE_DOG_BARKING = 7;
+  EVENT_TYPE_DOORBELL = 8;
+  EVENT_TYPE_PACKAGE_DELIVERED = 9;
+  EVENT_TYPE_PACKAGE_RETRIEVED = 10;
+  EVENT_TYPE_SMOKE_ALARM = 11;
+  EVENT_TYPE_CO_ALARM = 12;
+  EVENT_TYPE_FIRE_ALARM = 13;
+  EVENT_TYPE_GLASS_BREAK = 14;
+  EVENT_TYPE_OFFLINE = 15;
+  EVENT_TYPE_BABY_CRYING = 16;
+  EVENT_TYPE_DOOR_KNOCK = 17;
+  EVENT_TYPE_MOVING_VEHICLE = 18;
+  EVENT_TYPE_FACE = 19;
+  EVENT_TYPE_PACKAGE_IN_TRANSIT = 20;
+  EVENT_TYPE_ANIMAL_DOG = 21;
+  EVENT_TYPE_ANIMAL_CAT = 22;
+  EVENT_TYPE_ANIMAL_OTHER = 23;
+  EVENT_TYPE_MAGIC_MOMENT = 24;
+  EVENT_TYPE_CTD = 25;
+  EVENT_TYPE_CMDT = 26;
+  EVENT_TYPE_TALKBACK = 27;
+  EVENT_TYPE_SECURITY_ALARM = 28;
+  EVENT_TYPE_NOT_A_FACE = 29;
+  EVENT_TYPE_DOOR_OPEN = 30;
+  EVENT_TYPE_DOOR_CLOSE = 31;
+  EVENT_TYPE_DOOR_AJAR = 32;
+}
+
+message CameraActivityZone {
+  string zoneId = 1;
+}
+
+message CameraEventTrack {
+  string trackId = 1;
+  google.protobuf.Timestamp startTime = 2;
+  google.protobuf.Timestamp endTime = 3;
+  repeated CameraEventType eventTypes = 4;
+  repeated CameraActivityZone activityZones = 6;
+}
+
+// Sessions can expand after publication; tracks supply detection timestamps.
+message CameraSession {
+  string sessionId = 1;
+  repeated CameraEventTrack tracks = 6;
+}
+
+// BoolValue preserves an explicit disabled camera setting.
+message CameraProperties {
+  google.protobuf.BoolValue streamingEnabled = 1;
+}
+
+message UpdateCameraPropertyRequest {
+  string hgsDeviceId = 1;
+  CameraProperties properties = 3;
+}
+
+message UpdateCameraPropertyResponse {}
+
+// Camera timelines include detection sessions in each period variant.
+message TimelineRequestWindow {
+  string deviceId = 1;
+  google.protobuf.Timestamp startTime = 2;
+  google.protobuf.Timestamp endTime = 3;
+  string pageToken = 4;
+}
+message ListTimelinePeriodsRequest {
+  TimelineRequestWindow request = 1;
+  int32 field2 = 2; // Timeline request selector; the established value is 1.
+  bool strongRead = 3;
+}
+message RecordedTimelinePeriod {
+  CameraSession session = 1;
+}
+message NoVideoTimelinePeriod {
+  CameraSession session = 4;
+}
+message UnknownTimelinePeriod {
+  CameraSession session = 4;
+}
+message TimelinePeriod {
+  google.protobuf.Timestamp startTime = 1;
+  google.protobuf.Timestamp endTime = 2;
+  oneof details {
+    RecordedTimelinePeriod recorded = 3;
+    NoVideoTimelinePeriod noVideo = 4;
+    UnknownTimelinePeriod unknown = 5;
   }
-  repeated Request request = 1;
 }
-
-message UpdateTraitsResponse {
-  repeated GetTraitsResponse.DeviceState device = 1;
-}
-
-// Nest-backed thermostat writes use EnergyService, not generic setpoint traits.
-// Tags and enum values were checked against the supplied compiled Foyer schema;
-// unknown numbered fields retain their names.
-enum ThermostatMode {
-  unspecified = 0;
-  heat = 1;
-  cool = 2;
-  heatcool = 3;
-  off = 4;
-  eco = 5;
-}
-message UpdateThermostatModeRequest {
-  string deviceId = 1;
-  ThermostatMode mode = 2;
-  uint32 unknown3 = 3;
-}
-message UpdateTargetTemperatureRequest {
-  string deviceId = 1;
-  ThermostatMode mode = 2;
-  google.protobuf.FloatValue temperature = 3;
-  uint32 unknown4 = 4;
-}
-message UpdateTargetTemperatureRangeRequest {
-  string deviceId = 1;
-  google.protobuf.FloatValue tempLow = 2;
-  google.protobuf.FloatValue tempHigh = 3;
-  uint32 unknown4 = 4;
-}
-message UpdateThermostatFanModeRequest {
-  string deviceId = 1;
-  google.protobuf.UInt32Value runTimeSeconds = 2;
-}
-message EnergyCommandResponse {}
-service EnergyService {
-  rpc UpdateThermostatMode(UpdateThermostatModeRequest) returns (EnergyCommandResponse);
-  rpc UpdateTargetTemperature(UpdateTargetTemperatureRequest) returns (EnergyCommandResponse);
-  rpc UpdateTargetTemperatureRange(UpdateTargetTemperatureRangeRequest) returns (EnergyCommandResponse);
-  rpc UpdateThermostatFanMode(UpdateThermostatFanModeRequest) returns (EnergyCommandResponse);
-}
-
-service StructuresService {
-  rpc GetHomeGraph(GetHomeGraphRequest) returns (GetHomeGraphResponse);
+message ListTimelinePeriodsResponse {
+  TimelineRequestWindow response = 1;
+  repeated TimelinePeriod periods = 2;
 }
 
 service CameraService {
-  rpc SendTalkback(SendTalkbackRequest) returns (SendTalkbackResponse);
+  rpc UpdateCameraProperty(UpdateCameraPropertyRequest) returns (UpdateCameraPropertyResponse);
+  rpc ListTimelinePeriods(ListTimelinePeriodsRequest) returns (ListTimelinePeriodsResponse);
   rpc SendCameraViewIntent(SendCameraViewIntentRequest) returns (SendCameraViewIntentResponse);
   rpc JoinStream(JoinStreamRequest) returns (JoinStreamResponse);
+  rpc SendTalkback(SendTalkbackRequest) returns (SendTalkbackResponse);
 }
 
-service UsersService {
-  rpc GetUserPreferences(GetUserPreferencesRequest) returns (GetUserPreferencesResponse);
+// Short-lived credential for legacy camera image downloads.
+message GetOliveTokenRequest {}
+
+message GetOliveTokenResponse {
+  message Token {
+    string token = 1;
+    google.protobuf.Duration validity = 2;
+  }
+
+  GetOliveTokenResponse.Token response = 1;
 }
 
-service HomeControlService {
-  rpc GetTraits(GetTraitsRequest) returns (GetTraitsResponse);
-  rpc UpdateTraits(UpdateTraitsRequest) returns (UpdateTraitsResponse);
+service ClientOliveTokenService {
+  rpc GetOliveToken(GetOliveTokenRequest) returns (GetOliveTokenResponse);
+}
+
+// Generic trait updates and explicit invalidations are the events currently consumed.
+message RealtimeMessage {
+  message Event {
+    GetTraitsResponse.DeviceState deviceStateUpdatedEvent = 1;
+    GetTraitsResponse.DeviceState deviceState = 2;
+    // Presence distinguishes an empty invalidation from an absent event.
+    optional bytes refreshDeviceState = 3;
+    // Presence distinguishes an empty invalidation from an absent event.
+    optional bytes refreshHomeGraph = 6;
+  }
+
+  RealtimeMessage.Event event = 1;
 }

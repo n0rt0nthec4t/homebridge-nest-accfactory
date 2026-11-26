@@ -1,5 +1,6 @@
 // Exercise normalised device updates through the real lifecycle and real HAP services.
 // Matrices cover upstream transitions independently of HomeKit writes and retain cached identity.
+import { getResourceKey } from '../src/utils.js';
 import assert from 'node:assert/strict';
 import hap from './helpers/homebridge-hap.js';
 import test from 'node:test';
@@ -10,7 +11,9 @@ import { pathToFileURL } from 'node:url';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { importSource } from './helpers/import-source.js';
 import HomeKitDevice from '../src/HomeKitDevice/HomeKitDevice.js';
-import { LOW_BATTERY_LEVEL, CUSTOM_CHARACTERISTIC_UUID } from '../src/consts.js';
+import HomeKitHistory from '../src/HomeKitHistory/HomeKitHistory.js';
+import { protectHomeGraphFixture, protectSensorProperty } from './helpers/protect-homegraph-fixture.js';
+import { LOW_BATTERY_LEVEL, CUSTOM_CHARACTERISTIC_UUID, DATA_SOURCE } from '../src/consts.js';
 
 let C = hap.Characteristic;
 let classes = {};
@@ -248,8 +251,8 @@ for (let [state, current, target] of [
     ['keypad', 4, 5],
     ['remote', 6, 7],
     ['voice', 6, 7],
-    ['implicit', 8, 7],
-    ['', 6, 7],
+    ['implicit', 8, undefined],
+    ['', undefined, undefined],
   ]) {
     test('lock ' + state + ' by ' + (actor || 'unspecified actor') + ' maps current, target and action', async (context) => {
       let flow = await setup(context, 'lock');
@@ -257,7 +260,12 @@ for (let [state, current, target] of [
       await flow.device.update({ bolt_state: state, bolt_actor: actor, tampered: true, online: false });
       assert.equal(value(service, C.LockCurrentState), current);
       assert.equal(value(service, C.LockTargetState), target);
-      assert.equal(value(service, C.LockLastKnownAction), target === 1 ? secureAction : unsecureAction);
+      let action = state === 'locked' ? secureAction : state === 'unlocked' ? unsecureAction : undefined;
+      assert.equal(service.testCharacteristic(C.LockLastKnownAction), action !== undefined);
+      if (action !== undefined) {
+        assert.equal(value(service, C.LockLastKnownAction), action);
+        assert.equal(await service.getCharacteristic(C.LockLastKnownAction).handleGetRequest(), action);
+      }
       assert.equal(await service.getCharacteristic(C.LockCurrentState).handleGetRequest(), current);
       assert.equal(value(service, C.StatusTampered), C.StatusTampered.TAMPERED);
       assert.equal(value(service, C.StatusFault), C.StatusFault.GENERAL_FAULT);
@@ -274,6 +282,33 @@ for (let [state, current, target] of [
     });
   }
 }
+test('lock last action follows available methods without retaining inferred cached actions', async (context) => {
+  let flow = await setup(context, 'lock', { bolt_actor: null });
+  let service = flow.device.lockService;
+  let uuid = flow.device.accessory.UUID;
+  assert.equal(service.testCharacteristic(C.LockLastKnownAction), false);
+  await flow.device.update({ bolt_state: 'locked', bolt_actor: 'keypad' });
+  let actionUUID = service.getCharacteristic(C.LockLastKnownAction).UUID;
+  assert.equal(await service.getCharacteristic(C.LockLastKnownAction).handleGetRequest(), C.LockLastKnownAction.SECURED_BY_KEYPAD);
+  await flow.device.update({ bolt_state: 'unlocked', bolt_actor: null });
+  assert.equal(service.testCharacteristic(C.LockLastKnownAction), false);
+  await flow.device.update({ bolt_state: 'unlocked', bolt_actor: 'physical' });
+  assert.equal(service.getCharacteristic(C.LockLastKnownAction).UUID, actionUUID);
+  assert.equal(await service.getCharacteristic(C.LockLastKnownAction).handleGetRequest(), C.LockLastKnownAction.UNSECURED_PHYSICALLY);
+  assert.equal(flow.device.lockService, service);
+  assert.equal(flow.device.accessory.UUID, uuid);
+  assert.deepEqual(flow.writes, []);
+
+  // An old cached service may contain a last-action characteristic without a current method.
+  flow.device.accessory = hap.Accessory.deserialize(hap.Accessory.serialize(flow.device.accessory));
+  flow.device.deviceData.bolt_actor = null;
+  await flow.device.onAdd();
+  assert.equal(flow.device.lockService.testCharacteristic(C.LockLastKnownAction), false);
+  assert.equal(flow.device.accessory.UUID, uuid);
+  assert.equal(flow.device.lockService.UUID, service.UUID);
+  assert.equal(flow.device.lockService.subtype, service.subtype);
+});
+
 for (let online of [true, false]) {
   for (let associated of ['', 'DEVICE_PARENT']) {
     for (let active of [true, false]) {
@@ -1393,6 +1428,130 @@ for (let operation of ['lock', 'unlock', 'auto-relock duration']) {
   }
 }
 
+test('lock optional characteristics are set up inline and preserve false and zero', async (context) => {
+  let flow = await setup(context, 'lock', { tampered: null, auto_relock_duration: null, max_auto_relock_duration: null });
+  let service = flow.device.lockService;
+  let identity = [service.UUID, service.subtype];
+  assert.equal(service.testCharacteristic(C.StatusTampered), false);
+  assert.equal(service.testCharacteristic(C.LockManagementAutoSecurityTimeout), false);
+  await flow.device.update({ battery_level: 79 });
+  assert.equal(service.testCharacteristic(C.StatusTampered), false);
+  assert.equal(service.testCharacteristic(C.LockManagementAutoSecurityTimeout), false);
+
+  await flow.device.update({ tampered: false, auto_relock_duration: 0, max_auto_relock_duration: 300 });
+  assert.equal(service.testCharacteristic(C.StatusTampered), false);
+  assert.equal(service.testCharacteristic(C.LockManagementAutoSecurityTimeout), false);
+  await flow.device.onAdd();
+  let tamper = service.getCharacteristic(C.StatusTampered);
+  let timeout = service.getCharacteristic(C.LockManagementAutoSecurityTimeout);
+  assert.equal(await tamper.handleGetRequest(), C.StatusTampered.NOT_TAMPERED);
+  assert.equal(await timeout.handleGetRequest(), 0);
+  assert.equal(timeout.props.maxValue, 300);
+  await flow.device.update({ tampered: true, auto_relock_duration: 60 });
+  assert.equal(service.getCharacteristic(C.StatusTampered), tamper);
+  assert.equal(service.getCharacteristic(C.LockManagementAutoSecurityTimeout), timeout);
+  assert.equal(tamper.value, C.StatusTampered.TAMPERED);
+  assert.equal(timeout.value, 60);
+
+  await flow.device.update({ tampered: null, auto_relock_duration: null, max_auto_relock_duration: null });
+  assert.equal(service.getCharacteristic(C.StatusTampered), tamper);
+  assert.equal(service.getCharacteristic(C.LockManagementAutoSecurityTimeout), timeout);
+  assert.equal(await tamper.handleGetRequest(), C.StatusTampered.TAMPERED);
+  assert.equal(await timeout.handleGetRequest(), 60);
+  assert.deepEqual([service.UUID, service.subtype], identity);
+  assert.equal(service.testCharacteristic(C.LockCurrentState), true);
+  assert.equal(service.testCharacteristic(C.LockTargetState), true);
+  assert.deepEqual(flow.writes, []);
+});
+
+test('cached locks remove stale optional controls without changing accessory or service identity', async (context) => {
+  let flow = await setup(context, 'lock');
+  let uuid = flow.device.accessory.UUID;
+  let identities = flow.device.accessory.services.map((service) => [service.UUID, service.subtype]);
+  flow.device.accessory = hap.Accessory.deserialize(hap.Accessory.serialize(flow.device.accessory));
+  let cached = flow.device.accessory.getService(hap.Service.LockMechanism);
+  assert.equal(cached.testCharacteristic(C.StatusTampered), true);
+  assert.equal(cached.testCharacteristic(C.LockManagementAutoSecurityTimeout), true);
+  flow.device.deviceData.tampered = null;
+  flow.device.deviceData.auto_relock_duration = null;
+  flow.device.deviceData.max_auto_relock_duration = null;
+  await flow.device.onAdd();
+  await flow.device.onUpdate(flow.device.deviceData);
+  assert.equal(flow.device.lockService, cached);
+  assert.equal(cached.testCharacteristic(C.StatusTampered), false);
+  assert.equal(cached.testCharacteristic(C.LockManagementAutoSecurityTimeout), false);
+  assert.equal(flow.device.accessory.UUID, uuid);
+  assert.deepEqual(
+    flow.device.accessory.services.map((service) => [service.UUID, service.subtype]),
+    identities,
+  );
+  await flow.device.update({ auto_relock_duration: 0, max_auto_relock_duration: 300, tampered: false });
+  assert.equal(cached.testCharacteristic(C.LockManagementAutoSecurityTimeout), false);
+  await flow.device.onAdd();
+  let timeout = cached.getCharacteristic(C.LockManagementAutoSecurityTimeout);
+  await timeout.handleSetRequest(60);
+  assert.deepEqual(flow.writes, [{ uuid: 'DEVICE_TEST', auto_relock_duration: 60 }]);
+});
+
+test('mapped HomeGraph lock source updates retain optional characteristics and route basic lock writes', async (context) => {
+  let { processRawData } = await importSource(new URL('../src/plugins/lock.js', import.meta.url));
+  let raw = {
+    [getResourceKey('account', 'HomeGraph', 'home', 'STRUCTURE')]: {
+      source: DATA_SOURCE.HOMEGRAPH,
+      connection: 'account',
+      value: { home: { uuid: 'home' } },
+    },
+    [getResourceKey('account', 'HomeGraph', 'lock')]: {
+      source: DATA_SOURCE.HOMEGRAPH,
+      connection: 'account',
+      value: {
+        structureId: 'home',
+        technicalInformation: { serialNumber: 'YALE_NATIVE_FIXTURE' },
+        googleHome: {
+          id: { googleUuid: 'lock', thirdPartyId: { idType: 'nest-home-assistant-prod' } },
+          type: 'action.devices.types.LOCK',
+          displayName: 'Lock',
+          hardware: { softwareVersion: '1.2.3' },
+        },
+        'deviceStatus.online': { boolean: true },
+        'lockUnlock.isLocked': { boolean: false },
+        'charging.capacityRemainingPercentage': { number: 80 },
+      },
+    },
+  };
+  let mapped = processRawData(undefined, raw, { options: {} }).YALE_NATIVE_FIXTURE;
+  assert.equal(mapped.full, true);
+  let flow = await setup(context, 'lock', { serialNumber: 'YALE_NATIVE_FIXTURE' });
+  let uuid = flow.device.accessory.UUID;
+  let service = flow.device.lockService;
+  await flow.device.update(mapped.data);
+  assert.equal(service.testCharacteristic(C.StatusTampered), true);
+  assert.equal(service.testCharacteristic(C.LockManagementAutoSecurityTimeout), true);
+  assert.equal(flow.device.deviceData.auto_relock_duration, null);
+  await service.getCharacteristic(C.LockTargetState).handleSetRequest(C.LockTargetState.SECURED);
+  assert.deepEqual(flow.writes, [{ uuid: getResourceKey('account', 'HomeGraph', 'lock'), bolt_lock: true }]);
+  await flow.device.update({
+    nest_google_device_uuid: 'DEVICE_PROTO',
+    tampered: false,
+    auto_relock_duration: 0,
+    max_auto_relock_duration: 300,
+  });
+  assert.equal(service.testCharacteristic(C.StatusTampered), true);
+  await flow.device.onAdd();
+  assert.equal(service.testCharacteristic(C.StatusTampered), true);
+  await service.getCharacteristic(C.LockManagementAutoSecurityTimeout).handleSetRequest(60);
+  assert.deepEqual(flow.writes.at(-1), { uuid: 'DEVICE_PROTO', auto_relock_duration: 60 });
+  assert.equal(flow.device.lockService, service);
+  assert.equal(flow.device.accessory.UUID, uuid);
+});
+
+for (let fields of [{ auto_relock_duration: undefined }, { max_auto_relock_duration: undefined }, { auto_relock_duration: '0' }]) {
+  test('lock omits auto-relock control for unavailable fields: ' + JSON.stringify(fields), async (context) => {
+    let flow = await setup(context, 'lock', fields);
+    assert.equal(flow.device.lockService.testCharacteristic(C.LockManagementAutoSecurityTimeout), false);
+  });
+}
+
 for (let locked of [false, true]) {
   test(
     'lock HomeKit commands address the selected resource and suppress duplicate target writes; initially locked=' + locked,
@@ -1734,5 +1893,300 @@ for (let [codes, expected] of [
     assert.equal(control.statusCode, hap.HAPStatus.SUCCESS);
     assert.equal(flow.device.deviceData.target_temperature_high, 23);
     assert.equal(flow.writes.length, 2);
+  });
+}
+
+test('mapped HomeGraph temperature sensors reuse cached HomeKit services and keep selection writable', async (context) => {
+  let { processRawData } = await importSource(new URL('../src/plugins/tempsensor.js', import.meta.url));
+  let raw = {
+    [getResourceKey('account', 'HomeGraph', 'sensor')]: {
+      connection: 'account',
+      source: DATA_SOURCE.HOMEGRAPH,
+      value: {
+        googleHome: {
+          id: { googleUuid: 'sensor', thirdPartyId: { idType: 'nest-home-assistant-prod' } },
+          type: 'action.devices.types.SENSOR',
+          displayName: 'Sensor (Office)',
+          hardware: { model: 'Nest Temperature Sensor' },
+        },
+        structureId: 'home',
+        technicalInformation: { serialNumber: '22AA_NATIVE_FIXTURE' },
+        'temperatureSetting.ambientAirTemperatureC': { number: 21 },
+        'charging.descriptiveCapacityRemaining': { text: 'high' },
+        'deviceStatus.online': { boolean: true },
+      },
+    },
+    [getResourceKey('account', 'HomeGraph', 'parent')]: {
+      connection: 'account',
+      source: DATA_SOURCE.HOMEGRAPH,
+      value: {
+        googleHome: {
+          id: { googleUuid: 'parent', thirdPartyId: { idType: 'nest-home-assistant-prod' } },
+          type: 'action.devices.types.THERMOSTAT',
+        },
+        structureId: 'home',
+        'temperatureSetting.knownThermostatTemperatureSensors': {
+          array: { values: [{ properties: { properties: [{ name: 'sensorId', value: { text: 'sensor' } }] } }] },
+        },
+        'temperatureSetting.activeThermostatTemperatureSensors': { array: { values: [{ text: 'sensor' }] } },
+      },
+    },
+  };
+  let mapped = processRawData(undefined, raw, { options: {} })['22AA_NATIVE_FIXTURE'];
+  assert.equal(mapped.full, true);
+  let flow = await setup(context, 'tempsensor', mapped.data);
+  await flow.device.onUpdate(flow.device.deviceData);
+  let identities = flow.device.accessory.services.map((service) => [service.UUID, service.subtype]);
+  let uuid = flow.device.accessory.UUID;
+  flow.device.accessory = hap.Accessory.deserialize(hap.Accessory.serialize(flow.device.accessory));
+  let cached = flow.device.accessory.getService(hap.Service.TemperatureSensor);
+  let cachedBattery = flow.device.accessory.getService(hap.Service.Battery);
+  await flow.device.onAdd();
+  assert.equal(flow.device.temperatureService, cached);
+  assert.equal(flow.device.batteryService, cachedBattery);
+  assert.equal(flow.device.accessory.UUID, uuid);
+  assert.deepEqual(
+    flow.device.accessory.services.map((service) => [service.UUID, service.subtype]),
+    identities,
+  );
+  let selection = cached.getCharacteristic(C.ActiveTemperatureSensor);
+  assert.deepEqual(selection.props.perms, [hap.Perms.PAIRED_READ, hap.Perms.PAIRED_WRITE, hap.Perms.NOTIFY]);
+  await selection.handleSetRequest(true);
+  assert.deepEqual(flow.writes, [{ uuid: getResourceKey('account', 'HomeGraph', 'sensor'), active_sensor: true }]);
+  raw[getResourceKey('account', 'HomeGraph', 'sensor')].value['temperatureSetting.ambientAirTemperatureC'].number = 23.5;
+  raw[getResourceKey('account', 'HomeGraph', 'sensor')].value['charging.descriptiveCapacityRemaining'].text = 'low';
+  raw[getResourceKey('account', 'HomeGraph', 'sensor')].value['deviceStatus.online'].boolean = false;
+  raw[getResourceKey('account', 'HomeGraph', 'parent')].value['temperatureSetting.activeThermostatTemperatureSensors'].array.values = [
+    { text: 'parent' },
+  ];
+  mapped = processRawData(undefined, raw, { options: {} })['22AA_NATIVE_FIXTURE'];
+  await flow.device.update(mapped.data);
+  assert.equal(value(cached, C.CurrentTemperature), 23.5);
+  assert.equal(value(cached, C.StatusActive), false);
+  assert.equal(value(cached, C.ActiveTemperatureSensor), false);
+  assert.equal(value(cachedBattery, C.BatteryLevel), LOW_BATTERY_LEVEL);
+  assert.equal(value(cachedBattery, C.StatusLowBattery), C.StatusLowBattery.BATTERY_LEVEL_LOW);
+  assert.deepEqual(flow.warnings, []);
+});
+
+test('Off-mode thermostat without cloud setpoints returns finite HomeKit temperatures and reuses cached services', async (context) => {
+  let flow = await setup(context, 'thermostat', {
+    target_temperature: undefined,
+    target_temperature_low: undefined,
+    target_temperature_high: undefined,
+  });
+  let service = flow.device.thermostatService;
+  for (let characteristic of [C.TargetTemperature, C.HeatingThresholdTemperature, C.CoolingThresholdTemperature]) {
+    let control = service.getCharacteristic(characteristic);
+    assert.equal(Number.isFinite(await control.handleGetRequest()), true);
+  }
+  let identities = flow.device.accessory.services.map((entry) => [entry.UUID, entry.subtype]);
+  let uuid = flow.device.accessory.UUID;
+  flow.device.accessory = hap.Accessory.deserialize(hap.Accessory.serialize(flow.device.accessory));
+  await flow.device.onAdd();
+  assert.equal(flow.device.accessory.UUID, uuid);
+  assert.deepEqual(
+    flow.device.accessory.services.map((entry) => [entry.UUID, entry.subtype]),
+    identities,
+  );
+  await flow.device.update({ hvac_mode: 'cool', target_temperature: 24.5, target_temperature_high: 24.5 });
+  assert.equal(await flow.device.thermostatService.getCharacteristic(C.TargetTemperature).handleGetRequest(), 24.5);
+  await flow.device.thermostatService.getCharacteristic(C.TargetTemperature).handleSetRequest(25);
+  assert.deepEqual(flow.writes, [{ uuid: 'DEVICE_TEST', target_temperature_high: 25 }]);
+  assert.deepEqual(flow.warnings, []);
+});
+
+test('mapped HomeGraph Protect updates alarm and battery services without changing cached identity', async (context) => {
+  let { processRawData } = await importSource(new URL('../src/plugins/protect.js', import.meta.url));
+  let raw = protectHomeGraphFixture();
+  let mapped = () => processRawData(undefined, raw, { options: {} })['06TESTPROTECT'].data;
+  let flow = await setup(context, 'protect', mapped());
+  await flow.device.onUpdate(flow.device.deviceData);
+  let uuid = flow.device.accessory.UUID;
+  let identities = flow.device.accessory.services.map((service) => [service.UUID, service.subtype]);
+  flow.device.accessory = hap.Accessory.deserialize(hap.Accessory.serialize(flow.device.accessory));
+  let smoke = flow.device.accessory.getService(hap.Service.SmokeSensor);
+  let co = flow.device.accessory.getService(hap.Service.CarbonMonoxideSensor);
+  let battery = flow.device.accessory.getService(hap.Service.Battery);
+  await flow.device.onAdd();
+  assert.equal(flow.device.smokeService, smoke);
+  assert.equal(flow.device.carbonMonoxideService, co);
+  assert.equal(flow.device.batteryService, battery);
+  assert.equal(flow.device.accessory.UUID, uuid);
+  assert.deepEqual(
+    flow.device.accessory.services.map((service) => [service.UUID, service.subtype]),
+    identities,
+  );
+  protectSensorProperty(raw, 0, 'currentSensorState', 'smoke detected');
+  protectSensorProperty(raw, 0, 'alarmSilenceState', 'SILENCED');
+  protectSensorProperty(raw, 1, 'currentSensorState', 'carbon monoxide detected');
+  raw[getResourceKey('account', 'HomeGraph', 'protect')].value['charging.descriptiveCapacityRemaining'].text = 'low';
+  await flow.device.update(mapped());
+  assert.equal(smoke.getCharacteristic(C.SmokeDetected).value, C.SmokeDetected.SMOKE_DETECTED);
+  assert.equal(co.getCharacteristic(C.CarbonMonoxideDetected).value, C.CarbonMonoxideDetected.CO_LEVELS_ABNORMAL);
+  assert.equal(battery.getCharacteristic(C.StatusLowBattery).value, C.StatusLowBattery.BATTERY_LEVEL_LOW);
+  assert.equal(battery.getCharacteristic(C.BatteryLevel).value, 10);
+  protectSensorProperty(raw, 0, 'currentSensorState', 'no smoke detected');
+  protectSensorProperty(raw, 1, 'currentSensorState', 'no carbon monoxide detected');
+  raw[getResourceKey('account', 'HomeGraph', 'protect')].value['charging.descriptiveCapacityRemaining'].text = 'unknown';
+  await flow.device.update(mapped());
+  assert.equal(smoke.getCharacteristic(C.SmokeDetected).value, C.SmokeDetected.SMOKE_NOT_DETECTED);
+  assert.equal(co.getCharacteristic(C.CarbonMonoxideDetected).value, C.CarbonMonoxideDetected.CO_LEVELS_NORMAL);
+  assert.equal(battery.testCharacteristic(C.BatteryLevel), false);
+  assert.deepEqual(flow.writes, []);
+  assert.deepEqual(flow.warnings, []);
+});
+
+test('Protect Eve reads preserve retained details when HomeGraph fields are unavailable', async (context) => {
+  let previous = HomeKitDevice.EVEHOME;
+  context.after(() => {
+    HomeKitDevice.EVEHOME = previous;
+  });
+  HomeKitDevice.EVEHOME = { GET: 'fixture-eve-get', SET: 'fixture-eve-set' };
+  let { processRawData } = await importSource(new URL('../src/plugins/protect.js', import.meta.url));
+  let raw = protectHomeGraphFixture();
+  let fields = raw[getResourceKey('account', 'HomeGraph', 'home', 'STRUCTURE')].value.home.traits[0].fields;
+  fields.audioTest.structValue.fields.status = { stringValue: 'SELF_TEST_STATUS_COMPLETED' };
+  let mapped = () => processRawData(undefined, raw, { options: {} })['06TESTPROTECT'].data;
+  let flow = await setup(context, 'protect', mapped());
+  let retained = {
+    lastalarmtest: 0,
+    alarmtest: true,
+    heatstatus: false,
+    statusled: true,
+    smoketestpassed: true,
+    heattestpassed: true,
+    hushedstate: true,
+  };
+  let result = flow.device.onMessage(HomeKitDevice.EVEHOME.GET, { ...retained });
+  assert.deepEqual(result, { ...retained, lastalarmtest: 1785047209, alarmtest: false, hushedstate: false });
+  delete fields.manualTest;
+  delete fields.audioTest;
+  let unavailable = await setup(context, 'protect', {
+    ...mapped(),
+    serialNumber: '06TESTUNAVAILABLE',
+    self_test_in_progress: undefined,
+    latest_alarm_test: undefined,
+    hushed_state: undefined,
+  });
+  assert.deepEqual(unavailable.device.onMessage(HomeKitDevice.EVEHOME.GET, { ...retained }), retained);
+  assert.deepEqual(flow.writes, []);
+  assert.deepEqual(flow.warnings, []);
+});
+
+test('Protect HomeGraph Eve configuration passes the real history encoder without refresh warnings', async (context) => {
+  let previous = HomeKitDevice.EVEHOME;
+  context.after(() => {
+    HomeKitDevice.EVEHOME = previous;
+  });
+  HomeKitDevice.EVEHOME = HomeKitHistory;
+  let { processRawData } = await importSource(new URL('../src/plugins/protect.js', import.meta.url));
+  let raw = protectHomeGraphFixture();
+  raw[getResourceKey('account', 'HomeGraph', 'home', 'STRUCTURE')].value.home.traits[0].fields.audioTest.structValue.fields.status = {
+    stringValue: 'SELF_TEST_STATUS_COMPLETED',
+  };
+  let mapped = processRawData(undefined, raw, { options: {} })['06TESTPROTECT'].data;
+  let flow = await setup(context, 'protect', mapped);
+  let warnings = [];
+  let history = new HomeKitHistory(
+    flow.device.accessory,
+    { version: 2.5, hap: { ...hap, HAPStorage: { storage: () => ({ getItem: () => undefined, setItemSync() {} }) } } },
+    { warn: (...args) => warnings.push(args) },
+  );
+  await history.linkToEveHome(flow.device.smokeService, { messages: (type, message) => flow.device.onMessage(type, message) });
+  let configuration = flow.device.smokeService.getCharacteristic(C.EveGetConfiguration);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    assert.equal(typeof (await configuration.handleGetRequest()), 'string');
+  }
+  assert.equal(history.EveSmokePersist.alarmtest, false);
+  assert.equal(history.EveSmokePersist.lastalarmtest, 1785047209);
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(flow.writes, []);
+});
+
+test('HomeGraph active-cooling delta updates HomeKit current state while retaining Cool target mode', async (context) => {
+  let { processRawData } = await importSource(new URL('../src/plugins/thermostat.js', import.meta.url));
+  let id = getResourceKey('cooling', DATA_SOURCE.HOMEGRAPH, 'thermostat');
+  let raw = {
+    [getResourceKey('cooling', DATA_SOURCE.HOMEGRAPH, 'home', 'STRUCTURE')]: {
+      source: DATA_SOURCE.HOMEGRAPH,
+      connection: 'cooling',
+      value: { home: { uuid: 'home', name: 'Fixture' } },
+    },
+    [id]: {
+      source: DATA_SOURCE.HOMEGRAPH,
+      connection: 'cooling',
+      value: {
+        structureId: 'home',
+        technicalInformation: { serialNumber: 'THERMOSTAT_COOLING_DELTA' },
+        googleHome: {
+          id: { googleUuid: 'thermostat', thirdPartyId: { idType: 'nest-home-assistant-prod' } },
+          type: 'action.devices.types.THERMOSTAT',
+          displayName: 'Thermostat',
+          hardware: { model: 'Nest Thermostat E', softwareVersion: '6.5-14' },
+        },
+        'deviceStatus.online': { boolean: true },
+        'temperatureSetting.mode': { text: 'cool' },
+        'temperatureSetting.activeThermostatMode': { text: 'none' },
+        'temperatureSetting.thermostatTemperatureSetpointC': { number: 24.5 },
+        'attributes.temperatureSetting.availableThermostatModes': {
+          array: { values: ['heat', 'cool', 'heatcool', 'off'].map((text) => ({ text })) },
+        },
+        'fanSettings.fanTimerEndTimestampSec': { number: 0 },
+        'fanSpeed.currentFanSpeedSetting': { text: 'OFF' },
+      },
+    },
+  };
+  let mapped = (changes) => processRawData(undefined, raw, { options: {} }, undefined, changes).THERMOSTAT_COOLING_DELTA.data;
+  let flow = await setup(context, 'thermostat', mapped());
+  await flow.device.onUpdate(flow.device.deviceData);
+  let service = flow.device.thermostatService;
+  assert.equal(value(service, C.TargetHeatingCoolingState), C.TargetHeatingCoolingState.COOL);
+  assert.equal(value(service, C.CurrentHeatingCoolingState), C.CurrentHeatingCoolingState.OFF);
+  let delta = {
+    'fanSpeed.currentFanSpeedSetting': { text: 'S1' },
+    'temperatureSetting.activeThermostatMode': { text: 'cool' },
+    'temperatureSetting.compactCaptions': {
+      array: { values: [{ properties: { properties: [{ name: 'hvacStatusText', value: { text: 'Cooling' } }] } }] },
+    },
+  };
+  Object.assign(raw[id].value, delta);
+  await flow.device.update(mapped(new Map([[id, { fields: new Set(Object.keys(delta)) }]])));
+  assert.equal(flow.device.thermostatService, service);
+  assert.equal(value(service, C.TargetHeatingCoolingState), C.TargetHeatingCoolingState.COOL);
+  assert.equal(value(service, C.CurrentHeatingCoolingState), C.CurrentHeatingCoolingState.COOL);
+  assert.equal(value(service, C.TargetTemperature), 24.5);
+  assert.equal(flow.device.deviceData.hvac_state, 'cooling');
+  assert.equal(flow.device.deviceData.fan_timer_speed, 1);
+  raw[id].value['temperatureSetting.activeThermostatMode'] = { text: 'none' };
+  await flow.device.update(mapped(new Map([[id, { fields: new Set(['temperatureSetting.activeThermostatMode']) }]])));
+  assert.equal(value(service, C.CurrentHeatingCoolingState), C.CurrentHeatingCoolingState.OFF);
+  assert.equal(value(service, C.TargetHeatingCoolingState), C.TargetHeatingCoolingState.COOL);
+  assert.deepEqual(flow.writes, []);
+  assert.deepEqual(flow.warnings, []);
+});
+
+for (let humidity of [undefined, 0]) {
+  test('cached weather reconciles only its humidity service at setup: humidity=' + humidity, async (context) => {
+    let flow = await setup(context, 'weather');
+    let uuid = flow.device.accessory.UUID;
+    flow.device.accessory.addService(hap.Service.HumiditySensor, 'Other humidity', 2);
+    flow.device.accessory = hap.Accessory.deserialize(hap.Accessory.serialize(flow.device.accessory));
+    let temperature = flow.device.accessory.getServiceById(hap.Service.TemperatureSensor, 1);
+    let battery = flow.device.accessory.getServiceById(hap.Service.Battery, 1);
+    let cachedHumidity = flow.device.accessory.getServiceById(hap.Service.HumiditySensor, 1);
+    let otherHumidity = flow.device.accessory.getServiceById(hap.Service.HumiditySensor, 2);
+    flow.device.deviceData.current_humidity = humidity;
+    flow.device.onAdd();
+    flow.device.onUpdate(flow.device.deviceData);
+    assert.equal(flow.device.accessory.UUID, uuid);
+    assert.equal(flow.device.temperatureService, temperature);
+    assert.equal(flow.device.batteryService, battery);
+    assert.equal(flow.device.accessory.getServiceById(hap.Service.HumiditySensor, 2), otherHumidity);
+    assert.equal(flow.device.humidityService, humidity === undefined ? undefined : cachedHumidity);
+    assert.equal(flow.device.accessory.getServiceById(hap.Service.HumiditySensor, 1), humidity === undefined ? undefined : cachedHumidity);
+    if (humidity === 0) {
+      assert.equal(cachedHumidity.getCharacteristic(C.CurrentRelativeHumidity).value, 0);
+    }
   });
 }

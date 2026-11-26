@@ -1,5 +1,5 @@
 // Verify camera cleanup uses managed FFmpeg completion without Homebridge, media backends or network sockets.
-// Code version 2026.11.23
+// Code version 2026.11.26
 import assert from 'node:assert/strict';
 import { importSource } from './helpers/import-source.js';
 import { Buffer } from 'node:buffer';
@@ -17,6 +17,9 @@ import { processConfig } from '../src/config.js';
 import { DATA_SOURCE } from '../src/consts.js';
 import { UDPPorts } from '../src/utils.js';
 import RTPMuxer from '../src/plugins/camera/rtpmuxer.js';
+import HomeKitDevice from '../src/HomeKitDevice/HomeKitDevice.js';
+import Streamer from '../src/plugins/camera/streamer.js';
+import StreamTransport from '../src/plugins/camera/streamtransport.js';
 
 // Replace runtime boundaries while exercising the complete camera implementation and real FFmpeg manager.
 let baseModule =
@@ -31,7 +34,7 @@ let streamModule =
   encodeURIComponent(
     'export default class { static MESSAGE = "streamer"; ' +
       'static MESSAGE_TYPE = { START_LIVE: "start_live", STOP_LIVE: "stop_live",' +
-      'START_RECORD: "start_record", STOP_RECORD: "stop_record" };' +
+      'START_RECORD: "start_record", STOP_RECORD: "stop_record", START_BUFFER: "start-buffer", STOP_BUFFER: "stop-buffer" };' +
       'static CODEC_TYPE = { AAC: "aac", SPEEX: "speex", OPUS: "opus" }; }',
   );
 let replacements = {
@@ -1043,4 +1046,45 @@ test('failed Camera preparation releases a port already selected before reportin
   let reused = await UDPPorts.allocate();
   assert.equal(reused, firstPort);
   UDPPorts.release(reused);
+});
+
+// Use the real dispatcher and streamers to catch retained listeners after replacement.
+test('camera routes commands only to its current streamer after transport replacement', async (t) => {
+  HomeKitDevice.PLUGIN_NAME = 'camera-routing-test';
+  class Receiver extends HomeKitDevice {
+    onMessage(...args) {
+      return Camera.prototype.onMessage.call(this, ...args);
+    }
+  }
+  let data = {
+    serialNumber: 'camera-routing', description: 'Camera', manufacturer: 'Nest', model: 'Camera',
+    softwareVersion: '1.0', online: true, streaming_enabled: true,
+  };
+  let camera = new Receiver(undefined, { hap, version: 2.5, on() {} }, data);
+  let firstTransport = new StreamTransport();
+  let secondTransport = new StreamTransport();
+  for (let transport of [firstTransport, secondTransport]) {
+    transport.open = t.mock.fn(async () => {});
+    transport.close = t.mock.fn(async () => {});
+    transport.shutdown = t.mock.fn(async () => {});
+  }
+  let first = new Streamer(camera.uuid, data, { transport: firstTransport });
+  camera.streamer = first;
+  t.after(async () => {
+    await first.stopEverything();
+    await camera.streamer?.stopEverything();
+    await camera.remove();
+  });
+  await camera.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_BUFFER);
+  assert.equal(first.isBuffering(), true);
+  await first.stopEverything();
+  camera.streamer = new Streamer(camera.uuid, data, { transport: secondTransport });
+  firstTransport.open.mock.resetCalls();
+  await camera.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.START_BUFFER);
+  assert.equal(first.isBuffering(), false);
+  assert.equal(firstTransport.open.mock.callCount(), 0);
+  assert.equal(camera.streamer.isBuffering(), true);
+  assert.equal(secondTransport.open.mock.callCount(), 1);
+  await camera.message(Streamer.MESSAGE, Streamer.MESSAGE_TYPE.STOP_BUFFER);
+  assert.equal(camera.streamer.isBuffering(), false);
 });

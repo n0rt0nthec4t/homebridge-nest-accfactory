@@ -2,12 +2,12 @@
 // Part of homebridge-nest-accfactory
 //
 // Registers configured accounts, each with one shared AccountSession and a
-// Google protobuf API client and an on-demand HomeGraph client. Account type selects the login
-// flow; it does not select which API clients are available.
+// Google protobuf API client and a HomeGraph client. Account type selects the login
+// flow and primary source; both API clients remain available.
 //
 // Responsibilities:
 // - Assign runtime account identities and create their sessions and API clients
-// - Start the protobuf client and shut down their shared account sessions
+// - Start the account’s primary API client and shut down shared account sessions
 // - Serialize resource notifications to System through one queue per account
 // - Forward optional consumer notifications without owning either source cache
 //
@@ -17,7 +17,7 @@
 // - Each client owns its source cache; System owns the combined view and HomeKit devices
 // - Notification acknowledgement confirms System received a batch, independently of HomeKit delivery
 //
-// Code version 2026.11.23
+// Code version 2026.11.26
 // Mark Hulskamp
 'use strict';
 
@@ -61,7 +61,14 @@ export default class Accounts {
       // Keep configured credentials separate from the short-lived session token
       // installed after login. Refresh must repeat the original account's auth flow.
       let type = typeof account.type === 'string' ? account.type.trim().toLowerCase() : undefined;
-      let fields = type === ACCOUNT_TYPE.NEST ? ['access_token'] : type === ACCOUNT_TYPE.GOOGLE ? ['issueToken', 'cookie'] : undefined;
+      let fields =
+        type === ACCOUNT_TYPE.NEST
+          ? ['access_token']
+          : type === ACCOUNT_TYPE.GOOGLE
+            ? ['issueToken', 'cookie']
+            : type === ACCOUNT_TYPE.GOOGLE_HOME
+              ? ['refreshToken']
+              : undefined;
 
       if (fields === undefined || fields.some((field) => typeof account[field] !== 'string' || account[field].trim() === '')) {
         continue;
@@ -74,6 +81,7 @@ export default class Accounts {
           type,
           fieldTest: account.fieldTest === true,
           ...Object.fromEntries(fields.map((field) => [field, account[field].trim()])),
+          ...(type === ACCOUNT_TYPE.GOOGLE_HOME ? { deviceId: account.deviceId } : {}),
         },
         {
           uuid,
@@ -94,7 +102,7 @@ export default class Accounts {
     return manager;
   }
 
-  #createAPIClients(uuid, account, { onData }) {
+  #createAPIClients(uuid, account, { onData, storagePath }) {
     let dataQueue = Promise.resolve(); // Serialize notifications to System for this account.
     let options = {
       uuid,
@@ -125,11 +133,11 @@ export default class Accounts {
 
     // Clients survive session refresh; each owns its subscription identity and retry timer.
     account.googleProtobufAPI = new GoogleProtobufAPI(options);
-    // HomeGraph is available on demand; automatic startup awaits device-state mappings.
-    account.homegraphAPI = new HomeGraphAPI(options);
+    // Existing accounts keep HomeGraph on demand; Google Home accounts start it as their primary source.
+    account.homegraphAPI = new HomeGraphAPI({ ...options, storagePath });
   }
 
-  // Start background authentication and Observe. Session and subscription retry
+  // Start authentication and the primary API. Session and subscription retry
   // loops own later attempts; startup must not wait for the first cloud data.
   start(uuid) {
     let account = this.#accounts.get(uuid);
@@ -139,7 +147,7 @@ export default class Accounts {
     }
 
     if (account.allowRetry !== false) {
-      for (let api of [account.googleProtobufAPI]) {
+      for (let api of [account.type === ACCOUNT_TYPE.GOOGLE_HOME ? account.homegraphAPI : account.googleProtobufAPI]) {
         api.connect().catch((error) => {
           // Authentication already reports account failures. Log API startup failures separately.
           if (account.authorised === true) {

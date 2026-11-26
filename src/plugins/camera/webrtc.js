@@ -50,11 +50,11 @@
 // - Streamer owns retention and delivery pacing; source timestamps are not playout deadlines
 // - Incomplete keyframes and pathological access units are dropped/recovered locally rather than blocking the plugin process
 //
-// Code version 2026.11.23
+// Code version 2026.11.27
 // Mark Hulskamp
 'use strict';
 
-// Define external module requirements
+// Define external modules
 import * as werift from 'werift';
 
 // Define node.js modules

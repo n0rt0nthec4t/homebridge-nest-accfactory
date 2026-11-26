@@ -1,30 +1,31 @@
 // AccountSession
 // Part of homebridge-nest-accfactory
 //
-// Authenticates one legacy Nest or Google account and maintains the credential
-// record shared by its protobuf and camera clients.
+// Authenticates one Nest, Google or Google Home account and maintains the credential
+// record shared by its API and camera clients.
 //
 // Responsibilities:
 // - Select production or field-test endpoints and perform the account login flow
 // - Share one pending authentication attempt across concurrent API connects
-// - Maintain session tokens, service URLs and camera authentication details
+// - Maintain session tokens and camera authentication details
 // - Schedule token refresh and bounded retries, stopping on terminal auth failures
 // - Notify clients when authentication is replaced or invalidated
 // - Retire timers and late authentication replies on account shutdown
 //
 // Ownership:
-// - Accounts registers the account and coordinates its protobuf client
+// - Accounts registers the account and starts its primary API client
 // - API clients retire their own subscriptions and transports on session events
-// - Successful refresh replaces the Observe transport
+// - Successful refresh replaces active source transports
 // - Camera credential notification completes before clients resume ingestion
 // - This session does not own resource data, API transports or HomeKit accessories
 //
-// Code version 2026.11.23
+// Code version 2026.11.26
 // Mark Hulskamp
 'use strict';
 
 // Define node.js modules
 import { Buffer } from 'node:buffer';
+import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { setTimeout, clearTimeout } from 'node:timers';
 import { URL } from 'node:url';
@@ -35,6 +36,10 @@ import { ACCOUNT_TYPE, USER_AGENT } from './consts.js';
 const AUTH_RETRY_INITIAL = 15000;
 const AUTH_RETRY_MAX = 60000;
 const AUTH_REFRESH_FALLBACK = 3600;
+// Client context used when enrolling the experimental Google Home SSO credential.
+// Each session reuses its account-specific device ID for token renewal.
+const GOOGLE_HOME_SSO_CLIENT_ID = '498579633514-hhlrn8mcjv1427j0s19dgfoe5cqaba4l.apps.googleusercontent.com';
+const GOOGLE_HOME_SSO_USER_AGENT = 'com.google.Chromecast/3.11 iSL/3.4 iPhone/17.5 hw/iPhone15_2 (gzip)';
 
 export default class AccountSession extends EventEmitter {
   #account = undefined;
@@ -64,10 +69,15 @@ export default class AccountSession extends EventEmitter {
       restAPIHost: fieldTest === true ? 'home.ft.nest.com' : 'home.nest.com',
       cameraAPIHost: fieldTest === true ? 'camera.home.ft.nest.com' : 'camera.home.nest.com',
       grpcEndpointHost: fieldTest === true ? 'apigw.ft.nest.com' : 'apigw.production.nest.com',
-      protobufAPIHost: fieldTest === true ? 'grpc-web.ft.nest.com' : 'grpc-web.production.nest.com',
     };
 
     this.#uuid = uuid;
+    // Google accepts a generated device ID with the stored SSO credential. Keep
+    // it stable for this account's retries and renewals without changing config.
+    if (account.type === ACCOUNT_TYPE.GOOGLE_HOME) {
+      this.#account.deviceId = typeof account.deviceId === 'string' ? account.deviceId.trim() : account.deviceId;
+      this.#account.deviceId ??= randomUUID();
+    }
     this.#log = log;
     this.#onAuthorised = onAuthorised;
   }
@@ -80,7 +90,13 @@ export default class AccountSession extends EventEmitter {
     // Static so supplied credentials are checked in a fresh session, without reusing or changing a running session.
     // Validate credentials before testing; Google cookies must only be sent to its HTTPS account endpoint.
     let fields =
-      account?.type === ACCOUNT_TYPE.GOOGLE ? ['issueToken', 'cookie'] : account?.type === ACCOUNT_TYPE.NEST ? ['access_token'] : undefined;
+      account?.type === ACCOUNT_TYPE.GOOGLE
+        ? ['issueToken', 'cookie']
+        : account?.type === ACCOUNT_TYPE.NEST
+          ? ['access_token']
+          : account?.type === ACCOUNT_TYPE.GOOGLE_HOME
+            ? ['refreshToken']
+            : undefined;
     if (fields === undefined || fields.some((field) => typeof account[field] !== 'string' || account[field].trim() === '')) {
       return 'failed';
     }
@@ -93,7 +109,12 @@ export default class AccountSession extends EventEmitter {
     }
 
     // Use an isolated, quiet session with a 15-second deadline for the complete authentication exchange.
-    let session = new AccountSession({ type: account.type, fieldTest: account.fieldTest === true, ...credentials });
+    let session = new AccountSession({
+      type: account.type,
+      fieldTest: account.fieldTest === true,
+      ...credentials,
+      ...(account.type === ACCOUNT_TYPE.GOOGLE_HOME ? { deviceId: account.deviceId } : {}),
+    });
     let controller = new AbortController();
     let timer = setTimeout(() => controller.abort(), 15000);
     try {
@@ -143,7 +164,7 @@ export default class AccountSession extends EventEmitter {
     let account = this.#account;
 
     let isRetry = account.allowRetry === true;
-    let accountLabel = account.type === ACCOUNT_TYPE.GOOGLE ? 'Google' : 'Nest';
+    let accountLabel = account.type === ACCOUNT_TYPE.GOOGLE_HOME ? 'Google Home' : account.type === ACCOUNT_TYPE.GOOGLE ? 'Google' : 'Nest';
 
     if (account.authorised === true) {
       this.#log?.debug?.('Performing periodic token refresh using %s account for account "%s"', accountLabel, account.name);
@@ -158,7 +179,11 @@ export default class AccountSession extends EventEmitter {
 
     try {
       let session =
-        account.type === ACCOUNT_TYPE.GOOGLE ? await this.#connectGoogle(account, signal) : await this.#connectNest(account, signal);
+        account.type === ACCOUNT_TYPE.GOOGLE_HOME
+          ? await this.#connectGoogleHome(account, signal)
+          : account.type === ACCOUNT_TYPE.GOOGLE
+            ? await this.#connectGoogle(account, signal)
+            : await this.#connectNest(account, signal);
 
       // Authentication can finish after shutdown; only its original account may adopt the session.
       if (this.#active === true) {
@@ -352,6 +377,84 @@ export default class AccountSession extends EventEmitter {
     };
   }
 
+  async #connectGoogleHome(account, signal, notifications = true) {
+    // Enrollment is separate from runtime renewal. Exchange only this account's
+    // stored SSO credential; never use Nest cookies or a proprietary runtime here.
+    if (/^[A-Fa-f0-9-]{36}$/.test(account.deviceId ?? '') !== true || /[\r\n]/.test(account.refreshToken) === true) {
+      throw Object.assign(new Error('Invalid Google Home enrollment credentials'), { code: 401 });
+    }
+
+    let data;
+    try {
+      let response = await fetchWrapper(
+        'post',
+        'https://oauthaccountmanager.googleapis.com/v1/issuetoken',
+        {
+          signal,
+          timeout: 15000,
+          redirect: 'error',
+          headers: {
+            Authorization: 'Bearer ' + account.refreshToken,
+            'x-oauth-client-id': GOOGLE_HOME_SSO_CLIENT_ID,
+            'User-Agent': GOOGLE_HOME_SSO_USER_AGENT,
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+        },
+        Buffer.from(
+          new URLSearchParams({
+            app_id: 'com.google.Chromecast',
+            client_id: GOOGLE_HOME_SSO_CLIENT_ID,
+            device_id: account.deviceId,
+            hl: 'en-US',
+            lib_ver: '3.4',
+            passcode_present: 'YES',
+            response_type: 'token',
+            scope: [
+              'https://www.googleapis.com/auth/userinfo.profile',
+              'https://www.googleapis.com/auth/userinfo.email',
+              'https://www.googleapis.com/auth/homegraph',
+              'https://www.googleapis.com/auth/nest-account',
+              ...(notifications === true ? ['https://www.googleapis.com/auth/notifications'] : []),
+            ].join(' '),
+          }).toString(),
+        ),
+      );
+      data = await response.json();
+    } catch (error) {
+      // Notification access is optional: a refused scope must not prevent
+      // HomeGraph login and its polling fallback from working.
+      if (notifications === true && error?.status === 403) {
+        return await this.#connectGoogleHome(account, signal, false);
+      }
+      // Backend bodies can contain credentials. Preserve retry status without
+      // forwarding response descriptions or transport error text into logs.
+      throw Object.assign(new Error('Google Home token exchange failed'), { code: error?.status ?? error?.code });
+    }
+
+    if (data?.error !== undefined) {
+      if (notifications === true && ['invalid_scope', 'PERMISSION_DENIED'].includes(
+        typeof data.error === 'string' ? data.error : data.error?.status,
+      ) === true) {
+        return await this.#connectGoogleHome(account, signal, false);
+      }
+      let terminal = ['invalid_grant', 'invalid_client', 'unauthorized_client', 'access_denied', 'UNAUTHENTICATED', 'PERMISSION_DENIED'];
+      throw Object.assign(new Error('Google Home token exchange rejected'), {
+        code: terminal.includes(typeof data.error === 'string' ? data.error : data.error?.status) === true ? 401 : undefined,
+      });
+    }
+    let token = [data?.token, data?.accessToken, data?.access_token].find((value) => typeof value === 'string' && value.trim() !== '');
+    if (token === undefined) {
+      throw new Error('Google Home token exchange returned no access token');
+    }
+
+    return {
+      sessionData: { access_token: token.trim() },
+      oauth2: token.trim(),
+      refreshSeconds: Number(data.expiresIn ?? data.expires_in) - 300,
+    };
+  }
+
   async #connectNest(account, signal) {
     // Legacy camera endpoints require a website session cookie. Obtain that
     // separately; Protobuf uses the token returned by the Nest session endpoint.
@@ -422,7 +525,7 @@ export default class AccountSession extends EventEmitter {
     return data;
   }
 
-  async #applyAuthorisedSession(uuid, { sessionData, cameraAuth, refreshSeconds }, isRetry) {
+  async #applyAuthorisedSession(uuid, { sessionData, cameraAuth, oauth2, refreshSeconds }, isRetry) {
     let account = this.#account;
 
     // Google already subtracts its expiry safety margin. Clamp short/expired
@@ -431,7 +534,7 @@ export default class AccountSession extends EventEmitter {
       Number.isFinite(Number(refreshSeconds)) === true ? Math.max(60, Number(refreshSeconds)) : AUTH_REFRESH_FALLBACK;
     let wasAuthorised = account?.authorised === true;
 
-    let accountLabel = account.type === ACCOUNT_TYPE.GOOGLE ? 'Google' : 'Nest';
+    let accountLabel = account.type === ACCOUNT_TYPE.GOOGLE_HOME ? 'Google Home' : account.type === ACCOUNT_TYPE.GOOGLE ? 'Google' : 'Nest';
     this.#log?.[isRetry === true ? 'debug' : 'success']?.(
       (isRetry === true ? 'Successfully performed token refresh using ' : 'Successfully authorised using ') +
         accountLabel +
@@ -443,15 +546,15 @@ export default class AccountSession extends EventEmitter {
     // Close the old Observe transport before replacing the credentials.
     this.emit('disconnect', true);
 
-    // Keep one credential record for the protobuf client and camera transports.
+    // Keep one credential record for both API clients and camera transports.
+    // Google Home has OAuth only; it does not fabricate Nest camera credentials.
     Object.assign(account, {
       authorised: true,
       allowRetry: true,
       userID: sessionData.userid,
-      transport_url: sessionData?.urls?.transport_url,
-      weather_url: sessionData?.urls?.weather_url,
       token: sessionData.access_token,
       cameraAuth,
+      oauth2,
       refreshDelay: refreshSecondsSafe * 1000,
       retryDelay: AUTH_RETRY_INITIAL,
     });
@@ -481,7 +584,7 @@ export default class AccountSession extends EventEmitter {
   #handleConnectError(account, error) {
     let statusCode = error?.code ?? error?.status;
 
-    let accountLabel = account.type === ACCOUNT_TYPE.GOOGLE ? 'Google' : 'Nest';
+    let accountLabel = account.type === ACCOUNT_TYPE.GOOGLE_HOME ? 'Google Home' : account.type === ACCOUNT_TYPE.GOOGLE ? 'Google' : 'Nest';
 
     // Logged-out OAuth cookies require new credentials; transient failures retain backoff retries.
     account.allowRetry =
@@ -524,6 +627,7 @@ export default class AccountSession extends EventEmitter {
     this.emit('disconnect', false);
     account.token = undefined;
     account.cameraAuth = undefined;
+    account.oauth2 = undefined;
     this.removeAllListeners();
   }
 }

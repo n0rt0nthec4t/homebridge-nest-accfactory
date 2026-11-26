@@ -25,7 +25,7 @@ Support provenance statements with specific evidence and identify uncertainty wh
 ## Runtime and Homebridge Support
 
 - Use `engines.node` and `engines.homebridge` in `package.json` for the declared runtime ranges.
-- The plugin supports Homebridge 2.x with Node.js 24 and 26, as declared in `package.json`. Homebridge 1.x and Node.js 22 compatibility are no longer required for the plugin. Preserve independently supported standalone HAP environments in shared modules.
+- The plugin supports Homebridge 2.x with Node.js 22.13.0 or later within Node 22, Node 24 and Node 26, as declared in `package.json`. Retain Node.js 22 support until 30 April 2027. Homebridge 1.x compatibility is no longer required for the plugin. Preserve independently supported standalone HAP environments in shared modules.
 - Use Node.js APIs available across the declared range. When validating Node.js 26, check the specific Homebridge version in use and report the pairing tested.
 
 ## Repository Map

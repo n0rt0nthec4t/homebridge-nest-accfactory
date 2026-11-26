@@ -1,4 +1,5 @@
 {
+  "src/api/homegraphpush.js": { "lines": 95, "branches": 90, "functions": 95 },
   "src/api/homegraph.js": { "lines": 95, "branches": 90, "functions": 100 },
   "src/plugins/camera/foyer.js": { "lines": 100, "branches": 95, "functions": 100 },
   "src/accountsession.js": { "lines": 94, "branches": 93, "functions": 95 },

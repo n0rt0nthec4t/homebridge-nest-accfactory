@@ -10,22 +10,22 @@
 // - Validate numeric command values and scale between ranges
 // - Parse duration strings into normalised seconds
 // - Select and track UDP ports shared by camera endpoints and FFmpeg
-// - Build normalised device descriptions from Google and Nest metadata
+// - Build normalised device descriptions from protobuf and HomeGraph metadata
 //
 // Features:
 // - Temperature conversion with optional rounding (Celsius / Fahrenheit)
 // - CRC24 hashing for stable device identifiers
 // - Numeric validation with type/range checks and value scaling
-// - Shared Google Home/Nest device description normalisation helper
+// - Shared protobuf/HomeGraph device description normalisation helper
 // - Flexible duration parsing (e.g. "1w3d2h15m30s")
 //
 // Notes:
 // - Used by all device and system modules
-// - Shared helpers centralise common Google protobuf and Nest REST processing logic
+// - Shared helpers centralise common protobuf and HomeGraph data processing
 // - Data helpers return undefined for invalid inputs where appropriate
 // - UDP allocation rejects socket failures; owners release reservations on teardown
 //
-// Code version 2026.11.23
+// Code version 2026.11.26
 // Mark Hulskamp
 'use strict';
 
@@ -234,107 +234,93 @@ function processSoftwareVersion(versionString) {
   return version;
 }
 
-// Build a normalised device display name from Google protobuf or Nest REST data.
-// Uses the device label/name plus the most specific available location.
-// Examples:
-// - label "Camera", fixture "Front Door", room "Entryway" -> "Camera - Front Door"
-// - label "Front Door", fixture "Front Door" -> "Front Door"
-// - label "Back door camera", fixture "Back Door" -> "Back door camera"
-// - missing label, room "Hallway" -> "Hallway"
-// - missing label and location -> "unknown description"
+// Resolve source-specific name/location candidates, then apply one shared
+// formatting policy. HomeKit character validation remains with the caller.
 function buildDeviceDescription(rawData, raw) {
   let value = raw?.value;
-  let description = '';
-  let location = '';
-  let descriptionWords = [];
-  let locationWords = [];
-  let locationInDescription = false;
+  let names = [];
+  let locations = [];
 
-  if (
+  if (typeof value?.googleHome === 'object' && value.googleHome !== null) {
+    let device = value.googleHome;
+    // User-assigned app names and nicknames precede generic display/default names.
+    names = [
+      device.names?.nameFromGoogleHome,
+      ...(device.names?.nicknames ?? []),
+      device.displayName,
+      device.names?.name,
+      ...(device.names?.defaultNames ?? []),
+    ];
+    // Room references belong to one account and home; an unrelated home's room
+    // must never supply the device's location just because its ID matches.
+    if (typeof value.roomId === 'string' && value.roomId !== '') {
+      let home = Object.values(rawData ?? {}).find(
+        (entry) => entry?.connection === raw?.connection && entry?.value?.home?.uuid === value.structureId,
+      )?.value?.home;
+      locations = [home?.rooms?.find((room) => room.uuid === value.roomId)?.name];
+    }
+  } else if (
     typeof value?.label?.label === 'string' ||
     (typeof value?.device_located_settings === 'object' && value.device_located_settings !== null)
   ) {
-    description = String(value?.label?.label ?? '').trim();
-
+    names = [value?.label?.label];
     let pairerId = value?.device_info?.pairerId?.resourceId;
-
     let wheres = [
       ...Object.values(rawData?.[pairerId]?.value?.located_annotations?.predefinedWheres || {}),
       ...Object.values(rawData?.[pairerId]?.value?.located_annotations?.customWheres || {}),
     ];
-
-    let findWhere = (id) => String(wheres.find((where) => where?.whereId?.resourceId === id)?.label?.literal ?? '').trim();
-    let whereLocation = String(value?.device_located_settings?.whereLabel?.literal ?? '').trim();
-    let fixtureLocation = String(value?.device_located_settings?.fixtureNameLabel?.literal ?? '').trim();
-
-    if (whereLocation === '') {
-      whereLocation = findWhere(value?.device_located_settings?.whereAnnotationRid?.resourceId);
-    }
-
-    if (fixtureLocation === '') {
-      fixtureLocation = findWhere(value?.device_located_settings?.fixtureAnnotationRid?.resourceId);
-    }
-
-    location = fixtureLocation !== '' ? fixtureLocation : whereLocation;
+    let findWhere = (id) => wheres.find((where) => where?.whereId?.resourceId === id)?.label?.literal;
+    let located = value?.device_located_settings;
+    // Fixtures are more specific than rooms; literal labels precede annotations.
+    locations = [
+      located?.fixtureNameLabel?.literal,
+      findWhere(located?.fixtureAnnotationRid?.resourceId),
+      located?.whereLabel?.literal,
+      findWhere(located?.whereAnnotationRid?.resourceId),
+    ];
   } else {
-    let serialNumber = value?.serial_number;
-
-    description =
+    // Retain the legacy input contract for existing utility callers.
+    let serial = value?.serial_number;
+    names = [
       typeof value?.description === 'string'
-        ? value.description.trim()
-        : typeof serialNumber === 'string'
-          ? String(rawData?.['shared.' + serialNumber]?.value?.name ?? '').trim()
-          : '';
-
+        ? value.description
+        : typeof serial === 'string'
+          ? rawData?.['shared.' + serial]?.value?.name
+          : undefined,
+    ];
     let structureId =
       typeof value?.structure_id === 'string' && value.structure_id !== ''
         ? value.structure_id
-        : typeof serialNumber === 'string'
-          ? rawData?.['link.' + serialNumber]?.value?.structure?.split?.('.')[1]
+        : typeof serial === 'string'
+          ? rawData?.['link.' + serial]?.value?.structure?.split?.('.')[1]
           : undefined;
-
-    location = String(
-      rawData?.['where.' + structureId]?.value?.wheres?.find((where) => where?.where_id === value?.where_id)?.name ?? '',
-    ).trim();
+    locations = [rawData?.['where.' + structureId]?.value?.wheres?.find((where) => where?.where_id === value?.where_id)?.name];
   }
 
-  if (description !== '' && location !== '') {
-    descriptionWords = description
+  // Normalise a trailing parenthetical qualifier before HomeKit validation.
+  // Also accept a missing closing delimiter in previously sanitised names.
+  let [description, location] = [names, locations].map((candidates) =>
+    (candidates.find((name) => typeof name === 'string' && name.trim() !== '')?.trim() ?? '').replace(
+      /\s*\(([^()]*)\)?$/,
+      (match, qualifier) => (qualifier.trim() === '' ? '' : ' - ' + qualifier.trim()),
+    ),
+  );
+
+  // Compare whole word sequences, ignoring case and punctuation, so an existing
+  // location is not appended twice and partial word matches remain distinct.
+  let [descriptionWords, locationWords] = [description, location].map((name) =>
+    name
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, ' ')
-      .trim()
-      .split(/\s+/)
-      .filter((word) => word !== '');
-    locationWords = location
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, ' ')
-      .trim()
-      .split(/\s+/)
-      .filter((word) => word !== '');
-
-    for (let index = 0; index <= descriptionWords.length - locationWords.length && locationWords.length > 0; index++) {
-      locationInDescription = locationWords.every((word, offset) => descriptionWords[index + offset] === word);
-
-      if (locationInDescription === true) {
-        break;
-      }
-    }
-  }
-
-  if (description.toUpperCase() === location.toUpperCase() || locationInDescription === true) {
+      .trim(),
+  );
+  if (
+    description.toUpperCase() === location.toUpperCase() ||
+    (locationWords !== '' && (' ' + descriptionWords + ' ').includes(' ' + locationWords + ' ') === true)
+  ) {
     location = '';
   }
-
-  if (description === '' && location !== '') {
-    description = location;
-    location = '';
-  }
-
-  if (description === '' && location === '') {
-    description = 'unknown description';
-  }
-
-  return location === '' ? description : description + ' - ' + location;
+  return [description, location].filter((name) => name !== '').join(' - ') || 'unknown description';
 }
 
 const UDPPorts = {
@@ -383,7 +369,7 @@ const UDPPorts = {
 };
 
 // Validate numbers/numeric strings without coercing booleans, null or blank input.
-// Optional type and inclusive bounds are shared by Nest and Google command validation.
+// Optional type and inclusive bounds are shared by protobuf and HomeGraph command validation.
 function isNumeric(input, { type = 'number', min = -Infinity, max = Infinity } = {}) {
   if (typeof input !== 'number' && (typeof input !== 'string' || input.trim() === '')) {
     return false;
@@ -400,8 +386,23 @@ function isNumeric(input, { type = 'number', min = -Infinity, max = Infinity } =
   );
 }
 
+// Composite keys belong to the combined cache, never to a cloud request.
+// JSON preserves account/source/native-ID boundaries even when values contain separators.
+/**
+ * Identify a resource in the shared cache without changing its native cloud ID.
+ * @param {string} connection Account identity.
+ * @param {string} source Data-source identity.
+ * @param {string} resourceId Native resource ID.
+ * @param {'DEVICE'|'STRUCTURE'} [kind='DEVICE'] Resource kind.
+ * @returns {string} Account- and source-scoped cache key.
+ */
+function getResourceKey(connection, source, resourceId, kind = 'DEVICE') {
+  return kind + '_' + JSON.stringify([connection, source, resourceId]);
+}
+
 // Define exports
 export {
+  getResourceKey,
   isNumeric,
   UDPPorts,
   processSoftwareVersion,

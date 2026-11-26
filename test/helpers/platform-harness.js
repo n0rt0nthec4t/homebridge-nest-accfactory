@@ -32,6 +32,7 @@ export async function platformHarness(context, options = {}) {
   resetRuntime(options);
   let consume;
   let authorise;
+  let receiveBatch;
   let callbacks = new Map();
   let registered = [];
   let removed = [];
@@ -77,6 +78,7 @@ export async function platformHarness(context, options = {}) {
     logs.push(['unauthorised', ...args]);
   };
   context.mock.method(Accounts, 'fromConfig', (config, supplied) => {
+    receiveBatch = supplied.onData;
     // Emulate the authenticated manager boundary; protocol clients and System's
     // commit/reconciliation code remain real in this platform integration harness.
     connection.dataQueue = Promise.resolve();
@@ -172,6 +174,10 @@ export async function platformHarness(context, options = {}) {
     observations,
     logs,
     send,
+    async sendBatch(batch, uuid = 'account') {
+      await receiveBatch(uuid, batch);
+      await setImmediate();
+    },
     consume,
     pending,
     authorise,

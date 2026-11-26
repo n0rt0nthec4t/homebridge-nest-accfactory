@@ -22,7 +22,7 @@
 //   - endpoint + auth identity, when uuid is not supplied
 // - Different logical connections must not accidentally share the same session
 //
-// Code version 2026.11.23
+// Code version 2026.11.27
 // Mark Hulskamp
 'use strict';
 
@@ -83,6 +83,7 @@ export default class GrpcTransport {
   #userAgent = '';
   #referer = '';
   #origin = '';
+  #foyerEnvironment = '';
   #requestTimeout = 15000;
 
   #bufferInitial = 8 * 1024;
@@ -99,6 +100,7 @@ export default class GrpcTransport {
     this.#userAgent = typeof options?.userAgent === 'string' ? options.userAgent : '';
     this.#referer = typeof options?.referer === 'string' ? options.referer : '';
     this.#origin = typeof options?.origin === 'string' ? options.origin : '';
+    this.#foyerEnvironment = typeof options?.foyerEnvironment === 'string' ? options.foyerEnvironment : '';
     this.#getAuthHeader = typeof options?.getAuthHeader === 'function' ? options.getAuthHeader : undefined;
     this.#uuid = typeof options?.uuid === 'string' ? options.uuid.trim() : '';
 
@@ -267,11 +269,23 @@ export default class GrpcTransport {
           return;
         }
 
+        // Bound acknowledgement time so an unresponsive session is retired by its existing handlers.
         try {
-          session.ping(() => {});
-        } catch {
-          clearInterval(entry.pingTimer);
-          entry.pingTimer = undefined;
+          let timer = setTimeout(() => {
+            session.destroy(new Error('gRPC keepalive acknowledgement timed out'));
+          }, 15000);
+          let cancelTimeout = () => clearTimeout(timer);
+          session.once('close', cancelTimeout);
+
+          session.ping((error) => {
+            cancelTimeout();
+            session.off('close', cancelTimeout);
+            if (error !== null && error !== undefined) {
+              session.destroy(error);
+            }
+          });
+        } catch (error) {
+          session.destroy(error);
         }
       }, this.#pingInterval);
 
@@ -279,8 +293,16 @@ export default class GrpcTransport {
         this.log?.debug?.('Connection established to gRPC endpoint "%s"', entry.endpointHost);
       });
 
-      session.on('goaway', () => {
-        // Empty
+      session.on('goaway', (code, lastStreamId, data) => {
+        // Peer shutdown reasons distinguish keepalive policy from an unresponsive
+        // connection. Never log arbitrary peer debug data, which may be private.
+        this.log?.debug?.(
+          'gRPC peer GOAWAY for "%s": code=%s lastStreamId=%s reason="%s"',
+          entry.endpointHost,
+          Number.isInteger(code) === true ? code : 'unknown',
+          Number.isInteger(lastStreamId) === true ? lastStreamId : 'unknown',
+          Buffer.isBuffer(data) === true && data.equals(Buffer.from('too_many_pings')) === true ? 'too_many_pings' : 'unspecified',
+        );
       });
 
       session.on('error', (error) => {
@@ -452,6 +474,11 @@ export default class GrpcTransport {
       }
       if (this.#origin !== '') {
         requestHeaders.origin = this.#origin;
+      }
+
+      // Foyer clients supply encoded release context; Nest gateway clients omit it.
+      if (this.#foyerEnvironment !== '') {
+        requestHeaders['foyer-gha-environment'] = this.#foyerEnvironment;
       }
 
       if (timeout > 0) {
@@ -733,7 +760,7 @@ export default class GrpcTransport {
         if (result.status !== undefined && result.status !== GrpcTransport.STATUS.OK && expectedObserveEnd !== true) {
           let errorText = typeof result.error === 'string' && result.error !== '' ? ' error="' + result.error + '"' : '';
           this.log?.debug?.(
-            'gRPC stream closed for "%s/%s" with status=%s code="%s" message="%s"%s frames=%d',
+            'gRPC stream closed for "%s/%s" with status=%s code="%s" message="%s"%s frames=%d httpStatus=%s',
             service,
             command,
             result.status,
@@ -741,6 +768,7 @@ export default class GrpcTransport {
             result.message,
             errorText,
             frameCount,
+            Number.isFinite(httpStatus) === true ? httpStatus : 'none',
           );
         }
       });

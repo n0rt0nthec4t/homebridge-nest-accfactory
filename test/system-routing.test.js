@@ -2,8 +2,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { DATA_SOURCE } from '../src/consts.js';
-import HomeGraphAPI from '../src/api/homegraph.js';
+import { importSource } from './helpers/import-source.js';
 import { platformHarness } from './helpers/platform-harness.js';
+import GrpcTransport from '../src/grpctransport.js';
+
+let { default: HomeGraphAPI } = await importSource(new URL('../src/api/homegraph.js', import.meta.url));
 
 let traits = {
   eco_mode_state: { ecoMode: 'ECO_MODE_INACTIVE' },
@@ -51,7 +54,6 @@ for (let [values, label, expected] of [
   [{ streaming_enabled: false }, 'recording_toggle_settings', { targetCameraState: 'CAMERA_OFF' }],
   [{ audio_enabled: true }, 'microphone_settings', { enableMicrophone: true }],
   [{ audio_enabled: false }, 'microphone_settings', { enableMicrophone: false }],
-  [{ indoor_chime_enabled: true }, 'doorbell_indoor_chime_settings', { chimeEnabled: true }],
   [{ light_brightness: 70 }, 'floodlight_settings', { brightness: 7 }],
   [{ hot_water_boost_active: { state: false } }, 'hot_water_settings', { boostTimerEnd: { seconds: 0, nanos: 0 } }],
   [{ hot_water_temperature: 60 }, 'hot_water_settings', { temperature: { value: 60 } }],
@@ -224,7 +226,6 @@ for (let key of [
   'temperature_lock',
   'streaming_enabled',
   'audio_enabled',
-  'indoor_chime_enabled',
   'light_enabled',
   'bolt_lock',
   'vacation_mode',
@@ -468,3 +469,71 @@ for (let sameAccount of [true, false]) {
     assert.equal(other.set.mock.callCount(), 0);
   });
 }
+
+test('System camera_events GET reaches the HomeGraph timeline pipeline without protobuf fallback', async (context) => {
+  let flow = await platformHarness(context);
+  let now = Math.floor(Date.now() / 1000);
+  let calls = [];
+  context.mock.method(GrpcTransport.prototype, 'command', async (_prefix, _service, method) => {
+    calls.push(method);
+    let data = {};
+    if (method === 'GetHomeGraph') {
+      data = {
+        homes: [
+          {
+            uuid: 'home',
+            devices: [
+              {
+                id: { googleUuid: 'DEVICE_TEST', thirdPartyId: { idType: 'nest-home-assistant-prod', id: 'camera' } },
+                type: 'action.devices.types.CAMERA',
+              },
+            ],
+          },
+        ],
+      };
+    }
+    if (method === 'GetTraits') {
+      data = { device: [{ uuid: { value: 'DEVICE_TEST' }, category: [] }] };
+    }
+    if (method === 'ListTimelinePeriods') {
+      data = {
+        periods: [
+          {
+            recorded: {
+              session: {
+                sessionId: 's',
+                tracks: [
+                  {
+                    trackId: 't',
+                    startTime: { seconds: now - 1 },
+                    endTime: { seconds: now },
+                    eventTypes: ['EVENT_TYPE_MOTION', 'EVENT_TYPE_DOORBELL'],
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      };
+    }
+    return { status: 0, data: [data] };
+  });
+  let api = new HomeGraphAPI({ uuid: 'account', getAccessToken: () => 'fabricated-oauth', poll: false });
+  context.after(() => api.disconnect());
+  await api.connect();
+  flow.connection.homegraphAPI = api;
+  flow.raw.DEVICE_TEST.source = DATA_SOURCE.HOMEGRAPH;
+  context.mock.method(flow.connection.googleProtobufAPI, 'get', () => assert.fail('Unexpected protobuf fallback'));
+  let result = await flow.device.get({ uuid: 'DEVICE_TEST', camera_events: true });
+  assert.deepEqual(result.camera_events, [
+    {
+      id: 't',
+      playback_time: (now - 1) * 1000,
+      start_time: (now - 1) * 1000,
+      end_time: now * 1000,
+      types: ['motion', 'doorbell'],
+      zone_ids: [],
+    },
+  ]);
+  assert.equal(calls.filter((method) => method === 'ListTimelinePeriods').length, 1);
+});

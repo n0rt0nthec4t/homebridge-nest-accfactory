@@ -31,7 +31,7 @@ test('settings server exposes only the account test route, without discovery cli
   assert.deepEqual([...fake.server.routes.keys()], ['/accounts/test']);
   assert.doesNotMatch(source, /GoogleProtobufAPI|HomeGraphAPI|loadDeviceModules/);
 });
-for (let type of ['google', 'nest']) {
+for (let type of ['google', 'nest', 'googlehome']) {
   for (let status of ['success', 'failed', 'timeout']) {
     test(type + ' connection check returns only its status: ' + status, async () => {
       setup();
@@ -39,7 +39,9 @@ for (let type of ['google', 'nest']) {
       let account =
         type === 'google'
           ? { type, issueToken: 'https://accounts.google.com/token', cookie: 'private-cookie', fieldTest: true }
-          : { type, access_token: 'private-token', fieldTest: false };
+          : type === 'googlehome'
+            ? { type, refreshToken: 'private-sso-token', deviceId: '11111111-2222-3333-4444-555555555555', fieldTest: false }
+            : { type, access_token: 'private-token', fieldTest: false };
       assert.deepEqual(await check(account), { status });
       assert.deepEqual(fake.runtime.calls, [account]);
     });

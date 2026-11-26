@@ -53,8 +53,15 @@ import { pathToFileURL } from 'node:url';
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
-import { processSoftwareVersion, scaleValue, adjustTemperature, parseDurationToSeconds, buildDeviceDescription } from '../utils.js';
-import { buildMappedObject, createMappingContext } from '../translator.js';
+import {
+  getResourceKey,
+  processSoftwareVersion,
+  scaleValue,
+  adjustTemperature,
+  parseDurationToSeconds,
+  buildDeviceDescription,
+} from '../utils.js';
+import { buildMappedObject, createMappingContext, normaliseSourceContext } from '../translator.js';
 
 // Define constants
 import {
@@ -73,7 +80,7 @@ import {
 
 export default class NestThermostat extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.THERMOSTAT;
-  static VERSION = '2026.11.23'; // Code version
+  static VERSION = '2026.11.26'; // Code version
 
   thermostatService = undefined;
   batteryService = undefined;
@@ -196,7 +203,10 @@ export default class NestThermostat extends HomeKitDevice {
         return this.setTemperature(this.hap.Characteristic.TargetTemperature, value);
       },
       onGet: () => {
-        return this.getTemperature(this.hap.Characteristic.TargetTemperature);
+        return this.getTemperature(
+          this.hap.Characteristic.TargetTemperature,
+          this.thermostatService.getCharacteristic(this.hap.Characteristic.TargetTemperature).value,
+        );
       },
     });
 
@@ -211,7 +221,10 @@ export default class NestThermostat extends HomeKitDevice {
         return this.setTemperature(this.hap.Characteristic.CoolingThresholdTemperature, value);
       },
       onGet: () => {
-        return this.getTemperature(this.hap.Characteristic.CoolingThresholdTemperature);
+        return this.getTemperature(
+          this.hap.Characteristic.CoolingThresholdTemperature,
+          this.thermostatService.getCharacteristic(this.hap.Characteristic.CoolingThresholdTemperature).value,
+        );
       },
     });
 
@@ -226,7 +239,10 @@ export default class NestThermostat extends HomeKitDevice {
         return this.setTemperature(this.hap.Characteristic.HeatingThresholdTemperature, value);
       },
       onGet: () => {
-        return this.getTemperature(this.hap.Characteristic.HeatingThresholdTemperature);
+        return this.getTemperature(
+          this.hap.Characteristic.HeatingThresholdTemperature,
+          this.thermostatService.getCharacteristic(this.hap.Characteristic.HeatingThresholdTemperature).value,
+        );
       },
     });
 
@@ -1148,7 +1164,7 @@ export default class NestThermostat extends HomeKitDevice {
     this.thermostatService.updateCharacteristic(characteristic, temperature);
   }
 
-  getTemperature(characteristic) {
+  getTemperature(characteristic, fallback) {
     // Return the correct temperature value for the requested HomeKit characteristic.
     // Nest exposes three temperature targets:
     //   target_temperature        -> single heat/cool mode
@@ -1178,9 +1194,16 @@ export default class NestThermostat extends HomeKitDevice {
         this.deviceData.target_temperature_high ?? this.deviceData.target_temperature,
     }[characteristic.UUID];
 
-    // HomeKit requires a finite numeric value or null
-    if (Number.isFinite(Number(currentTemperature)) === false) {
-      return null;
+    // Off-mode discovery may omit every setpoint. Keep HomeKit's last value,
+    // or its normal initial threshold, without inventing a cloud target.
+    if (currentTemperature === undefined || currentTemperature === null || Number.isFinite(Number(currentTemperature)) === false) {
+      currentTemperature = fallback;
+      if (typeof currentTemperature !== 'number' || Number.isFinite(currentTemperature) === false) {
+        currentTemperature =
+          characteristic.UUID === this.hap.Characteristic.CoolingThresholdTemperature.UUID
+            ? THERMOSTAT_MAX_TEMPERATURE
+            : THERMOSTAT_MIN_TEMPERATURE;
+      }
     }
 
     // Clamp temperature to HomeKit supported range
@@ -1595,6 +1618,11 @@ const THERMOSTAT_FIELD_MAP = {
           ? raw.value.device_identity.serialNumber.trim().toUpperCase()
           : undefined,
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['technicalInformation'],
+      translate: ({ raw }) => raw.value.technicalInformation?.serialNumber?.trim?.().toUpperCase(),
+    },
   },
 
   nest_google_device_uuid: {
@@ -1603,6 +1631,8 @@ const THERMOSTAT_FIELD_MAP = {
       fields: [],
       translate: ({ objectKey }) => objectKey,
     },
+    prefer: 'googlehome',
+    googlehome: { fields: [], translate: ({ objectKey }) => objectKey },
   },
 
   nest_google_home_uuid: {
@@ -1610,6 +1640,8 @@ const THERMOSTAT_FIELD_MAP = {
       fields: ['device_info'],
       translate: ({ raw }) => raw?.value?.device_info?.pairerId?.resourceId,
     },
+    prefer: 'googlehome',
+    googlehome: { fields: ['structureId'], translate: ({ homeId }) => homeId },
   },
 
   // Naming / descriptive fields
@@ -1646,6 +1678,8 @@ const THERMOSTAT_FIELD_MAP = {
         return 'Thermostat (unknown)';
       },
     },
+    prefer: 'googlehome',
+    googlehome: { fields: ['googleHome'], translate: ({ raw }) => raw.value.googleHome?.hardware?.model },
   },
 
   softwareVersion: {
@@ -1657,6 +1691,14 @@ const THERMOSTAT_FIELD_MAP = {
           ? processSoftwareVersion(raw.value.device_identity.softwareVersion)
           : undefined,
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['googleHome'],
+      translate: ({ raw }) =>
+        typeof raw.value.googleHome?.hardware?.softwareVersion === 'string' && raw.value.googleHome.hardware.softwareVersion.trim() !== ''
+          ? processSoftwareVersion(raw.value.googleHome.hardware.softwareVersion)
+          : undefined,
+    },
   },
 
   description: {
@@ -1664,6 +1706,12 @@ const THERMOSTAT_FIELD_MAP = {
     google: {
       fields: ['label', 'device_info', 'device_located_settings'],
       related: ['located_annotations'],
+      translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
+    },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['googleHome', 'roomId', 'structureId'],
+      related: ['home'],
       translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
     },
   },
@@ -1677,6 +1725,14 @@ const THERMOSTAT_FIELD_MAP = {
           ? Number(raw.value.current_humidity.humidityValue.humidity.value)
           : undefined,
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['temperatureSetting.ambientAirHumidity'],
+      translate: ({ raw }) => {
+        let humidity = raw.value['temperatureSetting.ambientAirHumidity']?.number;
+        return typeof humidity === 'number' && humidity >= 0 && humidity <= 1 ? Math.round(humidity * 100) : undefined;
+      },
+    },
   },
 
   temperature_scale: {
@@ -1684,6 +1740,12 @@ const THERMOSTAT_FIELD_MAP = {
     google: {
       fields: ['display_settings'],
       translate: ({ raw }) => (raw?.value?.display_settings?.temperatureScale === 'TEMPERATURE_SCALE_F' ? 'F' : 'C'),
+    },
+    prefer: 'googlehome',
+    googlehome: {
+      // Preserve the Celsius default when discovery has no unit attribute.
+      fields: ['attributes.temperatureSetting.temperatureUnit', 'googleHome'],
+      translate: ({ raw }) => (raw.value['attributes.temperatureSetting.temperatureUnit']?.text === 'F' ? 'F' : 'C'),
     },
   },
 
@@ -1703,6 +1765,15 @@ const THERMOSTAT_FIELD_MAP = {
           ? adjustTemperature(Number(raw.value.backplate_temperature.temperatureValue.temperature.value), 'C', 'C', true)
           : undefined,
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['temperatureSetting.backplateAmbientAirTemperatureC'],
+      translate: ({ raw }) =>
+        typeof raw.value['temperatureSetting.backplateAmbientAirTemperatureC']?.number === 'number' &&
+        Number.isFinite(raw.value['temperatureSetting.backplateAmbientAirTemperatureC'].number) === true
+          ? adjustTemperature(raw.value['temperatureSetting.backplateAmbientAirTemperatureC'].number, 'C', 'C', true)
+          : undefined,
+    },
   },
 
   current_temperature: {
@@ -1711,6 +1782,15 @@ const THERMOSTAT_FIELD_MAP = {
       translate: ({ raw }) =>
         Number.isFinite(Number(raw?.value?.current_temperature?.temperatureValue?.temperature?.value)) === true
           ? adjustTemperature(Number(raw.value.current_temperature.temperatureValue.temperature.value), 'C', 'C', true)
+          : undefined,
+    },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['temperatureSetting.ambientAirTemperatureC'],
+      translate: ({ raw }) =>
+        typeof raw.value['temperatureSetting.ambientAirTemperatureC']?.number === 'number' &&
+        Number.isFinite(raw.value['temperatureSetting.ambientAirTemperatureC'].number) === true
+          ? adjustTemperature(raw.value['temperatureSetting.ambientAirTemperatureC'].number, 'C', 'C', true)
           : undefined,
     },
   },
@@ -1735,6 +1815,22 @@ const THERMOSTAT_FIELD_MAP = {
         return Math.round(scaleValue(voltage, 3.6, 4.0, 0, 100));
       },
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['charging.capacityRemainingPercentage', 'charging.descriptiveCapacityRemaining'],
+      translate: ({ raw }) => {
+        let level = raw.value['charging.capacityRemainingPercentage']?.number;
+        if (typeof level === 'number' && Number.isFinite(level) === true && level >= 0 && level <= 100) {
+          return Math.round(level);
+        }
+
+        // Use the same coarse estimates as temperature sensors when Google only
+        // reports qualitative capacity. Missing or unknown capacity stays unknown.
+        let capacity = raw.value['charging.descriptiveCapacityRemaining']?.text;
+        let levels = { full: 100, high: 75, medium: 50, low: LOW_BATTERY_LEVEL, critically_low: Math.floor(LOW_BATTERY_LEVEL / 2) };
+        return Object.hasOwn(levels, capacity) === true ? levels[capacity] : undefined;
+      },
+    },
   },
 
   online: {
@@ -1742,6 +1838,12 @@ const THERMOSTAT_FIELD_MAP = {
     google: {
       fields: ['liveness'],
       translate: ({ raw }) => raw?.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
+    },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['deviceStatus.online'],
+      translate: ({ raw }) =>
+        typeof raw.value['deviceStatus.online']?.boolean === 'boolean' ? raw.value['deviceStatus.online'].boolean : undefined,
     },
   },
 
@@ -1760,6 +1862,11 @@ const THERMOSTAT_FIELD_MAP = {
         raw?.value?.hvac_equipment_capabilities?.hasStage2Cool === true ||
         raw?.value?.hvac_equipment_capabilities?.hasStage3Cool === true,
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['attributes.temperatureSetting.availableThermostatModes'],
+      translate: ({ modes }) => (Array.isArray(modes) === true ? modes.includes('cool') : undefined),
+    },
   },
 
   can_heat: {
@@ -1769,6 +1876,11 @@ const THERMOSTAT_FIELD_MAP = {
         raw?.value?.hvac_equipment_capabilities?.hasStage1Heat === true ||
         raw?.value?.hvac_equipment_capabilities?.hasStage2Heat === true ||
         raw?.value?.hvac_equipment_capabilities?.hasStage3Heat === true,
+    },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['attributes.temperatureSetting.availableThermostatModes'],
+      translate: ({ modes }) => (Array.isArray(modes) === true ? modes.includes('heat') : undefined),
     },
   },
 
@@ -1821,6 +1933,11 @@ const THERMOSTAT_FIELD_MAP = {
         typeof raw?.value?.fan_control_capabilities?.maxAvailableSpeed === 'string' &&
         raw.value.fan_control_capabilities.maxAvailableSpeed !== 'FAN_SPEED_SETTING_OFF',
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['attributes.fanSpeed.availableFanSpeeds'],
+      translate: ({ fanSpeeds }) => (Array.isArray(fanSpeeds) === true ? fanSpeeds.some((speed) => /^S[1-3]$/.test(speed)) : undefined),
+    },
   },
 
   fan_state: {
@@ -1829,6 +1946,14 @@ const THERMOSTAT_FIELD_MAP = {
       translate: ({ raw }) =>
         Number.isFinite(Number(raw?.value?.fan_control_settings?.timerEnd?.seconds)) === true &&
         Number(raw.value.fan_control_settings.timerEnd.seconds) > 0,
+    },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['fanSettings.fanTimerEndTimestampSec'],
+      translate: ({ raw }) =>
+        typeof raw.value['fanSettings.fanTimerEndTimestampSec']?.number === 'number'
+          ? raw.value['fanSettings.fanTimerEndTimestampSec'].number > Date.now() / 1000
+          : undefined,
     },
   },
 
@@ -1841,6 +1966,14 @@ const THERMOSTAT_FIELD_MAP = {
           ? Number(raw.value.fan_control_settings.timerSpeed.split('FAN_SPEED_SETTING_STAGE')[1])
           : undefined,
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['fanSpeed.currentFanSpeedSetting'],
+      translate: ({ raw }) => {
+        let speed = raw.value['fanSpeed.currentFanSpeedSetting']?.text;
+        return speed === 'OFF' ? 0 : /^S[1-3]$/.test(speed ?? '') === true ? Number(speed.slice(1)) : undefined;
+      },
+    },
   },
 
   fan_max_speed: {
@@ -1850,6 +1983,14 @@ const THERMOSTAT_FIELD_MAP = {
         raw?.value?.fan_control_capabilities?.maxAvailableSpeed?.includes?.('FAN_SPEED_SETTING_STAGE') === true &&
         Number.isFinite(Number(raw.value.fan_control_capabilities.maxAvailableSpeed.split('FAN_SPEED_SETTING_STAGE')[1])) === true
           ? Number(raw.value.fan_control_capabilities.maxAvailableSpeed.split('FAN_SPEED_SETTING_STAGE')[1])
+          : undefined,
+    },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['attributes.fanSpeed.availableFanSpeeds'],
+      translate: ({ fanSpeeds }) =>
+        Array.isArray(fanSpeeds) === true
+          ? Math.max(0, ...fanSpeeds.filter((speed) => /^S[1-3]$/.test(speed)).map((speed) => Number(speed.slice(1))))
           : undefined,
     },
   },
@@ -1862,6 +2003,8 @@ const THERMOSTAT_FIELD_MAP = {
           ? Number(raw.value.fan_control_settings.timerDuration.seconds)
           : undefined,
     },
+    prefer: 'googlehome',
+    googlehome: { fields: [], translate: () => 900 },
   },
 
   target_humidity_humidifier: {
@@ -1929,6 +2072,15 @@ const THERMOSTAT_FIELD_MAP = {
         }
       },
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['temperatureSetting.mode'],
+      translate: ({ raw }) => {
+        // Foyer mode alone does not distinguish manual from automatic Eco.
+        let mode = raw.value['temperatureSetting.mode']?.text;
+        return mode === 'eco' ? 'unknown' : ['off', 'heat', 'cool', 'heatcool', 'on'].includes(mode) === true ? 'off' : undefined;
+      },
+    },
   },
 
   hvac_mode: {
@@ -1973,6 +2125,45 @@ const THERMOSTAT_FIELD_MAP = {
         return mode;
       },
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: [
+        'temperatureSetting.mode',
+        'temperatureSetting.thermostatTemperatureSetpointLowC',
+        'temperatureSetting.thermostatTemperatureSetpointHighC',
+        'attributes.temperatureSetting.availableThermostatModes',
+      ],
+      translate: ({ temperatureSetting, modes }) => {
+        let state = temperatureSetting;
+        let mode = state?.mode?.text;
+        // Generic On does not identify a heat/cool system; use its declared modes.
+        if (mode === 'on') {
+          return modes?.includes('heatcool') === true
+            ? 'range'
+            : modes?.includes('heat') === true
+              ? 'heat'
+              : modes?.includes('cool') === true
+                ? 'cool'
+                : undefined;
+        }
+        if (mode === 'eco') {
+          let heat = typeof state.thermostatTemperatureSetpointLowC?.number === 'number';
+          let cool = typeof state.thermostatTemperatureSetpointHighC?.number === 'number';
+          // Both stored limits may exist on equipment with only one operating mode.
+          if (heat === true && cool === true) {
+            return modes?.includes('heatcool') === true
+              ? 'ecorange'
+              : modes?.includes('heat') === true
+                ? 'ecoheat'
+                : modes?.includes('cool') === true
+                  ? 'ecocool'
+                  : undefined;
+          }
+          return heat === true ? 'ecoheat' : cool === true ? 'ecocool' : 'off';
+        }
+        return mode === 'heatcool' ? 'range' : ['off', 'heat', 'cool'].includes(mode) === true ? mode : undefined;
+      },
+    },
   },
 
   target_temperature_low: {
@@ -1998,6 +2189,22 @@ const THERMOSTAT_FIELD_MAP = {
         return value !== undefined ? adjustTemperature(value, 'C', 'C', true) : undefined;
       },
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: [
+        'temperatureSetting.mode',
+        'temperatureSetting.thermostatTemperatureSetpointC',
+        'temperatureSetting.thermostatTemperatureSetpointLowC',
+      ],
+      translate: ({ temperatureSetting }) => {
+        let state = temperatureSetting;
+        let temperature =
+          state?.mode?.text === 'heat' ? state.thermostatTemperatureSetpointC?.number : state?.thermostatTemperatureSetpointLowC?.number;
+        return typeof temperature === 'number' && Number.isFinite(temperature) === true
+          ? adjustTemperature(temperature, 'C', 'C', true)
+          : undefined;
+      },
+    },
   },
 
   target_temperature_high: {
@@ -2020,6 +2227,22 @@ const THERMOSTAT_FIELD_MAP = {
         }
 
         return value !== undefined ? adjustTemperature(value, 'C', 'C', true) : undefined;
+      },
+    },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: [
+        'temperatureSetting.mode',
+        'temperatureSetting.thermostatTemperatureSetpointC',
+        'temperatureSetting.thermostatTemperatureSetpointHighC',
+      ],
+      translate: ({ temperatureSetting }) => {
+        let state = temperatureSetting;
+        let temperature =
+          state?.mode?.text === 'cool' ? state.thermostatTemperatureSetpointC?.number : state?.thermostatTemperatureSetpointHighC?.number;
+        return typeof temperature === 'number' && Number.isFinite(temperature) === true
+          ? adjustTemperature(temperature, 'C', 'C', true)
+          : undefined;
       },
     },
   },
@@ -2087,6 +2310,46 @@ const THERMOSTAT_FIELD_MAP = {
         return value !== undefined ? adjustTemperature(value, 'C', 'C', true) : undefined;
       },
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: [
+        'temperatureSetting.mode',
+        'temperatureSetting.thermostatTemperatureSetpointC',
+        'temperatureSetting.thermostatTemperatureSetpointLowC',
+        'temperatureSetting.thermostatTemperatureSetpointHighC',
+        'attributes.temperatureSetting.availableThermostatModes',
+      ],
+      translate: ({ temperatureSetting, modes }) => {
+        let state = temperatureSetting;
+        let single = state?.thermostatTemperatureSetpointC?.number;
+        let low = state?.thermostatTemperatureSetpointLowC?.number;
+        let high = state?.thermostatTemperatureSetpointHighC?.number;
+        // Without a single setpoint, dual limits follow the effective equipment mode.
+        let mode = state?.mode?.text;
+        let heatOnly =
+          mode === 'heat' ||
+          (['on', 'eco'].includes(mode) === true && modes?.includes('heatcool') !== true && modes?.includes('heat') === true);
+        let coolOnly =
+          mode === 'cool' ||
+          (['on', 'eco'].includes(mode) === true &&
+            modes?.includes('heatcool') !== true &&
+            modes?.includes('heat') !== true &&
+            modes?.includes('cool') === true);
+        let target =
+          typeof single === 'number'
+            ? single
+            : typeof low === 'number' && typeof high === 'number'
+              ? heatOnly === true
+                ? low
+                : coolOnly === true
+                  ? high
+                  : (low + high) / 2
+              : typeof low === 'number'
+                ? low
+                : high;
+        return typeof target === 'number' && Number.isFinite(target) === true ? adjustTemperature(target, 'C', 'C', true) : undefined;
+      },
+    },
   },
 
   hvac_state: {
@@ -2117,10 +2380,20 @@ const THERMOSTAT_FIELD_MAP = {
         return state;
       },
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['temperatureSetting.activeThermostatMode'],
+      translate: ({ raw }) => {
+        let state = raw.value['temperatureSetting.activeThermostatMode']?.text;
+        return state === 'heat' ? 'heating' : state === 'cool' ? 'cooling' : state === 'none' ? 'off' : undefined;
+      },
+    },
   },
 
   // RCS / remote comfort sensor fields
   active_rcs_sensor: {
+    merge: ({ values, context }) => (context.sources.googlehome !== undefined ? values.googlehome : values.google),
+    // Sensor references (including the empty built-in ID) belong to the selected API.
     google: {
       fields: ['remote_comfort_sensing_settings'],
       translate: ({ raw }) =>
@@ -2128,9 +2401,22 @@ const THERMOSTAT_FIELD_MAP = {
           ? raw.value.remote_comfort_sensing_settings.activeRcsSelection.activeRcsSensor.resourceId
           : undefined,
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: [
+        'googleHome',
+        'structureId',
+        'temperatureSetting.activeThermostatTemperatureSensors',
+        'temperatureSetting.knownThermostatTemperatureSensors',
+      ],
+      related: ['googleHome', 'structureId'],
+      translate: ({ activeSensor }) => activeSensor,
+    },
   },
 
+  // Sensor references and their temperature must share the selected API/account.
   linked_rcs_sensors: {
+    merge: ({ values, context }) => (context.sources.googlehome !== undefined ? values.googlehome : values.google),
     google: {
       fields: ['remote_comfort_sensing_settings'],
       translate: ({ raw }) => {
@@ -2145,9 +2431,16 @@ const THERMOSTAT_FIELD_MAP = {
         return sensors;
       },
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['structureId', 'temperatureSetting.knownThermostatTemperatureSensors'],
+      related: ['structureId'],
+      translate: ({ linkedSensors }) => linkedSensors,
+    },
   },
 
   active_rcs_sensor_temperature: {
+    merge: ({ values, context }) => (context.sources.googlehome !== undefined ? values.googlehome : values.google),
     google: {
       fields: ['remote_comfort_sensing_settings'],
       translate: ({ value, rawData }) => {
@@ -2162,6 +2455,22 @@ const THERMOSTAT_FIELD_MAP = {
         }
 
         return undefined;
+      },
+    },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: [
+        'googleHome',
+        'structureId',
+        'temperatureSetting.activeThermostatTemperatureSensors',
+        'temperatureSetting.knownThermostatTemperatureSensors',
+      ],
+      related: ['googleHome', 'structureId', 'temperatureSetting.ambientAirTemperatureC'],
+      translate: ({ rawData, activeSensor }) => {
+        let temperature = rawData[activeSensor]?.value?.['temperatureSetting.ambientAirTemperatureC']?.number;
+        return typeof temperature === 'number' && Number.isFinite(temperature) === true
+          ? adjustTemperature(temperature, 'C', 'C', true)
+          : undefined;
       },
     },
   },
@@ -2218,7 +2527,7 @@ const THERMOSTAT_FIELD_MAP = {
   },
 };
 
-// Process thermostat state from protobuf resources.
+// Process thermostat state from protobuf and HomeGraph resources.
 export function processRawData(log, rawData, config, deviceType = undefined, changedData = undefined) {
   if (
     rawData === null ||
@@ -2230,143 +2539,172 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
     return;
   }
 
-  // Process data for any thermostat(s) we have in the raw data
   let devices = {};
-
+  let contexts = new Map();
   Object.entries(rawData)
     .filter(
       ([key, value]) =>
         key.startsWith('DEVICE_') === true &&
-        value?.source === DATA_SOURCE.PROTOBUF &&
-        PROTOBUF_RESOURCES.THERMOSTAT.includes(value?.value?.device_info?.typeName) === true,
+        ((value?.source === DATA_SOURCE.PROTOBUF && PROTOBUF_RESOURCES.THERMOSTAT.includes(value?.value?.device_info?.typeName) === true) ||
+          (value?.source === DATA_SOURCE.HOMEGRAPH &&
+            value.value?.googleHome?.type === 'action.devices.types.THERMOSTAT' &&
+            value.value.googleHome.id?.thirdPartyId?.idType?.startsWith('nest') === true)),
     )
     .forEach(([object_key, value]) => {
       try {
-        let homeId = value.value?.device_info?.pairerId?.resourceId;
+        let isHomeGraph = value.source === DATA_SOURCE.HOMEGRAPH;
+        let homeId =
+          isHomeGraph === true
+            ? getResourceKey(value.connection, value.source, value.value.structureId, 'STRUCTURE')
+            : value.value?.device_info?.pairerId?.resourceId;
+        // Sensor temperatures and selection belong to this thermostat's account/home.
+        let temperatureSetting = {};
+        if (isHomeGraph === true) {
+          for (let [key, scalar] of Object.entries(value.value)) {
+            if (key.startsWith('temperatureSetting.') === true) {
+              temperatureSetting[key.slice('temperatureSetting.'.length)] = scalar;
+            }
+          }
+        }
+        let modes = value.value['attributes.temperatureSetting.availableThermostatModes']?.array?.values?.map((mode) => mode.text);
+        let fanSpeeds = value.value['attributes.fanSpeed.availableFanSpeeds']?.properties?.properties
+          ?.find((property) => property.name === 'speeds')
+          ?.value?.array?.values?.map(
+            (speed) => speed.properties?.properties?.find((property) => property.name === 'speed_name')?.value?.text,
+          );
+        let knownSensors = temperatureSetting.knownThermostatTemperatureSensors?.array?.values
+          ?.map((sensor) => sensor.properties?.properties?.find((property) => property.name === 'sensorId')?.value?.text)
+          ?.filter((id) => typeof id === 'string' && id !== '')
+          ?.map((id) => getResourceKey(value.connection, value.source, id));
+        let linkedSensors = knownSensors?.filter(
+          (id) =>
+            rawData[id]?.source === DATA_SOURCE.HOMEGRAPH &&
+            rawData[id]?.connection === value.connection &&
+            rawData[id]?.value?.structureId === value.value.structureId,
+        );
+        let selected = temperatureSetting.activeThermostatTemperatureSensors?.array?.values;
+        let activeSensor =
+          Array.isArray(selected) === true && selected.length === 1
+            ? selected[0]?.text === value.value.googleHome?.id?.googleUuid
+              ? ''
+              : linkedSensors?.find((id) => rawData[id]?.value?.googleHome?.id?.googleUuid === selected[0]?.text)
+            : undefined;
         let relatedIds = [
           homeId,
+          ...(knownSensors ?? []),
           ...(value.value?.remote_comfort_sensing_settings?.associatedRcsSensors ?? []).map((sensor) => sensor?.deviceId?.resourceId),
         ];
 
-        // Parent and sensor traits can arrive after the device's own state.
-        if (changedData instanceof Map && [object_key, ...relatedIds].some((id) => changedData.has(id)) === false) {
+        let serial = isHomeGraph === true ? value.value.technicalInformation?.serialNumber : value.value.device_identity?.serialNumber;
+        if (typeof serial !== 'string' || serial.trim() === '') {
           return;
         }
-
+        serial = serial.trim().toUpperCase();
+        let candidate = contexts.get(serial) ?? {
+          context: createMappingContext(rawData, object_key),
+          fields: new Set(),
+          changed: changedData instanceof Map !== true,
+        };
+        contexts.set(serial, candidate);
+        candidate.changed = candidate.changed === true || [object_key, ...relatedIds].some((id) => changedData?.has?.(id) === true);
         if (
-          value?.value?.configuration_done?.deviceReady !== true ||
-          typeof rawData?.[value?.value?.device_info?.pairerId?.resourceId] !== 'object'
+          (isHomeGraph !== true && value?.value?.configuration_done?.deviceReady !== true) ||
+          typeof rawData[homeId] !== 'object' ||
+          (isHomeGraph === true && (rawData[homeId].source !== DATA_SOURCE.HOMEGRAPH || rawData[homeId].connection !== value.connection))
         ) {
           return;
         }
 
-        let fields = new Set(Object.keys(value.value ?? {}));
-        for (let id of relatedIds) {
-          for (let field of Object.keys(rawData[id]?.value ?? {})) {
-            fields.add(field);
-          }
+        for (let id of [object_key, ...relatedIds]) {
+          Object.keys(rawData[id]?.value ?? {}).forEach((field) => candidate.fields.add(field));
         }
 
-        let mappedResult = buildMappedObject(THERMOSTAT_FIELD_MAP, createMappingContext(rawData, object_key, { google: value }), fields);
-
-        // Apply thermostat-specific post-map adjustments
-        if (typeof mappedResult?.data === 'object' && mappedResult.data?.constructor === Object) {
-          // If an active remote temperature sensor is selected, use its temperature as the thermostat current temperature
-          if (Number.isFinite(Number(mappedResult.data.active_rcs_sensor_temperature)) === true) {
-            mappedResult.data.current_temperature = mappedResult.data.active_rcs_sensor_temperature;
-          }
-        }
-
-        let serialNumber = mappedResult?.data?.serialNumber;
-        let existingDevice = devices[serialNumber];
-
-        // If we have all required fields, build the full thermostat device data object
-        if (mappedResult?.hasRequired === true) {
-          let tempDevice = {
-            type: DEVICE_TYPE.THERMOSTAT,
-            manufacturer: 'Nest',
-            ...mappedResult.data,
-          };
-
-          // EU thermostat variants with hot water control
-          if (tempDevice.has_hot_water_control === true) {
-            tempDevice.model = tempDevice.model?.replace?.(/\bgen\)/, 'gen, EU)');
-          }
-
-          // Respect requested device type if specified
-          if (deviceType !== undefined && (typeof deviceType !== 'string' || deviceType === '' || tempDevice.type !== deviceType)) {
-            return;
-          }
-
-          // Check for any device or home configuration options that match this device
-          // We'll use the serial number to match against device options, and the home uuid to match against home options
-          let deviceOptions = config?.devices?.find(
-            (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
-          );
-          let homeOptions = config?.homes?.find(
-            (home) =>
-              home?.nest_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
-              home?.google_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
-          );
-
-          // Insert any extra options we've read in from configuration file for this device
-          tempDevice.eveHistory =
-            deviceOptions?.eveHistory !== undefined ? deviceOptions.eveHistory === true : config?.options?.eveHistory === true;
-          tempDevice.humiditySensor = deviceOptions?.humiditySensor === true;
-
-          // Process fan running duration. We only allow values matching the app
-          tempDevice.fan_duration = parseDurationToSeconds(deviceOptions?.fanDuration, {
-            defaultValue: tempDevice.fan_duration,
-            min: 900,
-            max: 604800,
-          });
-
-          tempDevice.fan_duration = FAN_DURATION_TIMES.reduce((a, b) =>
-            Math.abs(tempDevice.fan_duration - a) < Math.abs(tempDevice.fan_duration - b) ? a : b,
-          );
-
-          // Do we have an external code module for thermostat functions
-          tempDevice.external =
-            typeof deviceOptions?.external === 'string' && deviceOptions.external !== '' ? deviceOptions.external : undefined;
-
-          // Process additional exclusion details
-          tempDevice.excluded =
-            deviceOptions?.exclude === true ||
-            (deviceOptions?.exclude !== false &&
-              (homeOptions?.exclude === true || (homeOptions?.exclude !== false && config?.options?.exclude === true)));
-
-          // Store full device
-          // Full always overrides partial if present
-          if (existingDevice?.full !== true) {
-            devices[tempDevice.serialNumber] = {
-              full: true,
-              data: tempDevice,
-            };
-          }
-        }
-
-        // Refresh existing device reference after potential full insert
-        existingDevice = devices[serialNumber];
-
-        // Only store partial data if nothing has already been stored for this serial in this pass.
-        // A later full payload will replace an earlier partial payload.
-        if (
-          mappedResult?.hasRequired === false &&
-          serialNumber !== undefined &&
-          typeof mappedResult?.data === 'object' &&
-          mappedResult.data?.constructor === Object &&
-          Object.keys(mappedResult.data).length !== 0 &&
-          existingDevice === undefined
-        ) {
-          devices[serialNumber] = {
-            full: false,
-            data: mappedResult.data,
-          };
-        }
+        let source = isHomeGraph === true ? 'googlehome' : 'google';
+        candidate.context.sources[source] = normaliseSourceContext(source, object_key, value, {
+          homeId,
+          temperatureSetting,
+          modes,
+          fanSpeeds,
+          linkedSensors,
+          activeSensor,
+        });
       } catch (error) {
         log?.error?.('Error processing thermostat data for "%s": %s', object_key, String(error));
       }
     });
 
+  for (let [serialNumber, candidate] of contexts) {
+    if (candidate.changed !== true) {
+      continue;
+    }
+    try {
+      let mappedResult = buildMappedObject(THERMOSTAT_FIELD_MAP, candidate.context, candidate.fields);
+      // Apply thermostat-specific post-map adjustments
+      if (typeof mappedResult?.data === 'object' && mappedResult.data?.constructor === Object) {
+        // If an active remote temperature sensor is selected, use its temperature as the thermostat current temperature
+        if (Number.isFinite(Number(mappedResult.data.active_rcs_sensor_temperature)) === true) {
+          mappedResult.data.current_temperature = mappedResult.data.active_rcs_sensor_temperature;
+        }
+      }
+
+      // If we have all required fields, build the full thermostat device data object
+      if (mappedResult?.hasRequired === true) {
+        let tempDevice = {
+          type: DEVICE_TYPE.THERMOSTAT,
+          manufacturer: 'Nest',
+          ...mappedResult.data,
+        };
+
+        // EU thermostat variants with hot water control
+        if (tempDevice.has_hot_water_control === true) {
+          tempDevice.model = tempDevice.model?.replace?.(/\bgen\)/, 'gen, EU)');
+        }
+
+        // Respect requested device type if specified
+        if (deviceType !== undefined && (typeof deviceType !== 'string' || deviceType === '' || tempDevice.type !== deviceType)) {
+          continue;
+        }
+
+        let deviceOptions = config?.devices?.find(
+          (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+        );
+        let homeOptions = config?.homes?.find(
+          (home) =>
+            home?.protobuf_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
+            home?.homegraph_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
+        );
+
+        tempDevice.eveHistory =
+          deviceOptions?.eveHistory !== undefined ? deviceOptions.eveHistory === true : config?.options?.eveHistory === true;
+        tempDevice.humiditySensor = deviceOptions?.humiditySensor === true;
+
+        // Process fan running duration. We only allow values matching the app
+        tempDevice.fan_duration = parseDurationToSeconds(deviceOptions?.fanDuration, {
+          defaultValue: tempDevice.fan_duration,
+          min: 900,
+          max: 604800,
+        });
+
+        tempDevice.fan_duration = FAN_DURATION_TIMES.reduce((a, b) =>
+          Math.abs(tempDevice.fan_duration - a) < Math.abs(tempDevice.fan_duration - b) ? a : b,
+        );
+
+        // Do we have an external code module for thermostat functions
+        tempDevice.external =
+          typeof deviceOptions?.external === 'string' && deviceOptions.external !== '' ? deviceOptions.external : undefined;
+
+        tempDevice.excluded =
+          deviceOptions?.exclude === true ||
+          (deviceOptions?.exclude !== false &&
+            (homeOptions?.exclude === true || (homeOptions?.exclude !== false && config?.options?.exclude === true)));
+
+        devices[serialNumber] = { full: true, data: tempDevice };
+      } else if (mappedResult.data.serialNumber !== undefined) {
+        devices[serialNumber] = { full: false, data: mappedResult.data };
+      }
+    } catch (error) {
+      log?.error?.('Error processing thermostat data for "%s": %s', serialNumber, String(error));
+    }
+  }
   return devices;
 }

@@ -1,5 +1,6 @@
 // Verify redaction at the log boundary, stable aliases, delta selection, and diagnostic limits.
 // Fabricated payloads retain legacy secret and alias field names to check redaction under both current source labels.
+import { getResourceKey } from '../src/utils.js';
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { format } from 'node:util';
@@ -384,4 +385,60 @@ test('HomeGraph legacy camera aliases remain redacted without REST bucket consta
   assert.equal(text.includes('"idType": "CAMERA"'), true);
   assert.equal(text.includes('quartz.'), true);
   assert.deepEqual(output.warnings, []);
+});
+
+test('HomeGraph Property names stay visible while values inherit their semantic privacy rules', () => {
+  let output = capture();
+  let raw = {
+    DEVICE_FIXTURE: {
+      connection: 'account',
+      source: DATA_SOURCE.HOMEGRAPH,
+      value: {
+        googleHome: { displayName: 'Private Camera' },
+        'attributes.cameraStream.deviceId': { text: 'PRIVATE_DEVICE_ID' },
+        'attributes.cameraStream.serialNumber': { text: 'PRIVATE_SERIAL' },
+        'attributes.cameraStream.access_token': { text: 'PRIVATE_TOKEN' },
+        'cameraStream.settings': {
+          properties: {
+            properties: [
+              { name: 'protocols', value: { array: { values: [{ text: 'nexustalk' }, { text: 'rtsp' }] } } },
+              { name: 'limits', value: { properties: { properties: [{ name: 'minimum', value: { number: 3 } }] } } },
+              { name: 'serialNumber', value: { text: 'PRIVATE_SERIAL' } },
+              { name: 'name', value: { text: 'Private Bedroom' } },
+              { name: 'cookie', value: { text: 'PRIVATE_COOKIE' } },
+            ],
+          },
+        },
+      },
+    },
+  };
+  let before = structuredClone(raw);
+  output.dump(raw, 'account');
+  let text = output.lines.join('\n');
+  for (let name of ['protocols', 'limits', 'minimum', 'serialNumber', 'name', 'cookie']) {
+    assert.equal(text.includes('"name": "' + name + '"'), true, name);
+  }
+  assert.equal(text.includes('nexustalk'), true);
+  assert.equal(text.includes('rtsp'), true);
+  assert.equal(text.includes('"number": 3'), true);
+  for (let secret of ['PRIVATE_DEVICE_ID', 'PRIVATE_SERIAL', 'PRIVATE_TOKEN', 'Private Camera', 'Private Bedroom', 'PRIVATE_COOKIE']) {
+    assert.equal(text.includes(secret), false, secret);
+  }
+  assert.deepEqual(raw, before);
+  assert.deepEqual(output.warnings, []);
+});
+
+test('HomeGraph floodlight references are aliased even before the light resource has been discovered', () => {
+  let flow = capture();
+  flow.dump({
+    [getResourceKey('account', 'HomeGraph', 'camera')]: {
+      source: DATA_SOURCE.HOMEGRAPH, connection: 'account',
+      value: { floodlightId: 'private-light-target', 'onOff.onOff': { boolean: false } },
+    },
+  }, 'account');
+  let output = flow.lines.join('\n');
+  assert.equal(output.includes('private-light-target'), false);
+  assert.match(output, /floodlightId/);
+  assert.match(output, /REDACTED/);
+  assert.match(output, /false/);
 });

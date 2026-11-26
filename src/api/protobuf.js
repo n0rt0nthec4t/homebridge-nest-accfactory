@@ -25,7 +25,7 @@
 // - connect() starts ingestion without a consumer; onData optionally reports committed changes
 // - Google Home Foyer media signalling belongs to the WebRTC camera transport
 //
-// Code version 2026.11.23
+// Code version 2026.11.26
 // Mark Hulskamp
 
 // Define node.js modules
@@ -46,6 +46,7 @@ import { ACCOUNT_TYPE, DATA_SOURCE, PROTOBUF_RESOURCES, USER_AGENT, __dirname } 
 const SNAPSHOT_TIMEOUT = 7000;
 const SNAPSHOT_FETCH_TIMEOUT = 3000;
 const SNAPSHOT_WAIT_TIMEOUT = 3000;
+const SNAPSHOT_MAX_BYTES = 8 * 1024 * 1024;
 
 const API_STREAM_LOOP_INTERVAL = 1000;
 const API_STREAM_RETRY_INITIAL = 5000;
@@ -266,7 +267,7 @@ export default class GoogleProtobufAPI {
                 let change = { resourceId, value: { [traitLabel]: patchValues }, fields: new Set([traitLabel]) };
                 changes.push(change);
 
-                // Store the internal Nest and Google structure uuids if matched to a defined home array entry
+                // Associate configured homes with their protobuf resource IDs.
                 if (
                   resourceId.startsWith('STRUCTURE_') === true &&
                   traitLabel === 'structure_info' &&
@@ -274,7 +275,7 @@ export default class GoogleProtobufAPI {
                 ) {
                   change.home = {
                     name: patchValues.name,
-                    values: { nest_home_uuid: patchValues.rtsStructureId, google_home_uuid: resourceId },
+                    values: { protobuf_home_uuid: resourceId },
                   };
                 }
               }
@@ -726,18 +727,6 @@ export default class GoogleProtobufAPI {
         }
         break;
 
-      case 'indoor_chime_enabled':
-        if (typeof value === 'boolean') {
-          // Enable/disable chime status on doorbell
-          setUpdateTrait(
-            'doorbell_indoor_chime_settings',
-            'type.nestlabs.com/nest.trait.product.doorbell.DoorbellIndoorChimeSettingsTrait',
-            undefined,
-            { chimeEnabled: value },
-          );
-        }
-        break;
-
       case 'light_enabled':
         if (typeof value === 'boolean' && typeof resource?.value?.related_resources?.relatedResources === 'object') {
           // Floodlight power belongs to the related Aziz service, while brightness
@@ -929,7 +918,7 @@ export default class GoogleProtobufAPI {
   }
 
   // Returns the query value directly: camera_snapshot -> Buffer/undefined,
-  // camera_events -> array. Location weather is a Nest REST query, routed by System.
+  // camera_events -> array. location_weather -> forecast fields from this client's Nest REST query.
   // Invalid input/account/resource rejects; an unknown key on an available resource returns undefined.
   async get(resourceId, key, values = {}) {
     let account = this.#options.session?.account;
@@ -1219,7 +1208,31 @@ export default class GoogleProtobufAPI {
     if ((latestUrl ?? '') !== '') {
       // The request's overall deadline also cancels this image fetch.
       try {
-        let response = await fetchWrapper(fetchWrapper.GET, latestUrl, {
+        let url = typeof latestUrl === 'string' ? URL.parse(latestUrl) : null;
+        let legacy = /^nexusapi-[a-z0-9-]+\.camera\.home\.(?:ft\.)?nest\.com$/.test(url?.hostname ?? '') === true;
+        let media = url?.hostname === 'nest-camera-media.googleapis.com';
+        let target =
+          legacy === true
+            ? /^\/resources\/([^/]+)\/live_image$/.exec(url?.pathname ?? '')
+            : /^\/download\/thumbnails\/(?:[A-Za-z0-9_-]+\/)+devices\/([^/]+)(?:\/id\/[^/]+)?$/.exec(url?.pathname ?? '');
+
+        // The protobuf device ID is embedded in its image path. Bind downloads to
+        // this camera before attaching credentials, including cached fallback URLs.
+        if (
+          url === null ||
+          url.protocol !== 'https:' ||
+          url.username !== '' ||
+          url.password !== '' ||
+          url.port !== '' ||
+          url.hash !== '' ||
+          (legacy !== true && media !== true) ||
+          target === null ||
+          target[1] !== resourceId
+        ) {
+          throw new Error('Untrusted snapshot image reference');
+        }
+
+        let response = await fetchWrapper(fetchWrapper.GET, url.href, {
           headers: {
             Referer: 'https://' + account.referer,
             Origin: 'https://' + account.referer,
@@ -1228,11 +1241,28 @@ export default class GoogleProtobufAPI {
             'Sec-Fetch-Mode': 'cors',
             'Sec-Fetch-Site': 'same-origin',
           },
+          redirect: 'error',
           retry: 2,
           timeout: SNAPSHOT_FETCH_TIMEOUT,
           signal,
         });
-        let image = Buffer.from(await response.arrayBuffer());
+        // Apply the same image-byte limit as HomeGraph before buffering the body.
+        if (Number(response.headers.get('content-length')) > SNAPSHOT_MAX_BYTES) {
+          await response.body?.cancel();
+          throw new Error('Snapshot exceeds image size limit');
+        }
+
+        // Content-Length can be absent or inaccurate, so also bound streamed bytes.
+        let chunks = [];
+        let size = 0;
+        for await (let chunk of response.body) {
+          size += chunk.length;
+          if (size > SNAPSHOT_MAX_BYTES) {
+            throw new Error('Snapshot exceeds image size limit');
+          }
+          chunks.push(chunk);
+        }
+        let image = Buffer.concat(chunks, size);
 
         if (image.length > 0) {
           snapshot = image;

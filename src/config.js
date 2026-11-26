@@ -26,7 +26,7 @@
 // - FFmpeg validation determines availability of camera streaming and HKSV recording
 // - Used during plugin startup before any device initialisation
 //
-// Code version 2026.11.23
+// Code version 2026.11.26
 // Mark Hulskamp
 'use strict';
 
@@ -117,7 +117,7 @@ function processConfig(config, log, api) {
   // When disabled, debug logging becomes a no-op.
   log.debug = options.debug === true ? (message, ...parameters) => log?.info?.(chalk.gray(message), ...parameters) : () => {};
 
-  // Support Dump for Nest and Google API data.
+  // Support dump for protobuf and HomeGraph API data.
   // When enabled, the plugin logs redacted API objects and streaming diagnostics to assist with troubleshooting.
   // This may produce a large amount of log output and should normally only be enabled temporarily.
   options.supportDump = config?.options?.supportDump === true;

@@ -4,7 +4,7 @@
 // HomeKit accessory implementation for Nest × Yale Lock devices.
 // Provides secure lock control, battery monitoring, auto-relock configuration,
 // tamper reporting, activity tracking, and structured state synchronisation
-// using Google protobuf API data.
+// using Google protobuf and HomeGraph API data.
 //
 // Responsibilities:
 // - Expose lock state and control via HomeKit LockMechanism service
@@ -30,7 +30,8 @@
 // - Eve Home history integration
 //
 // Notes:
-// - Google protobuf API support only
+// - Tamper and auto-relock characteristics depend on reported optional fields
+// - HomeGraph lock/unlock uses the shared device setting keys
 // - Nest REST API is not used for lock devices
 // - Lock state and actor details are normalised before presentation to HomeKit
 // - Transitional lock packets may temporarily report empty actor details
@@ -46,15 +47,15 @@
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
-import { processSoftwareVersion, scaleValue, buildDeviceDescription } from '../utils.js';
-import { buildMappedObject, createMappingContext } from '../translator.js';
+import { getResourceKey, processSoftwareVersion, scaleValue, buildDeviceDescription } from '../utils.js';
+import { buildMappedObject, createMappingContext, normaliseSourceContext } from '../translator.js';
 
 // Define constants
 import { DATA_SOURCE, DEVICE_TYPE, PROTOBUF_RESOURCES, LOW_BATTERY_LEVEL } from '../consts.js';
 
 export default class NestLock extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.LOCK;
-  static VERSION = '2026.11.23'; // Code version
+  static VERSION = '2026.11.26'; // Code version
 
   // Define lock bolt states
   static STATE = {
@@ -108,46 +109,55 @@ export default class NestLock extends HomeKitDevice {
       },
     });
 
-    this.addCharacteristic(this.lockService, this.hap.Characteristic.LockManagementAutoSecurityTimeout, {
-      props: {
-        minValue: 0,
-        maxValue: this.deviceData.max_auto_relock_duration,
-      },
-      onSet: async (value) => {
-        value = Math.floor(value); // Make a round number
+    // Cached accessories must not retain an action inferred from an unknown actor.
+    if (this.#lastAction(this.deviceData) !== undefined) {
+      this.addCharacteristic(this.lockService, this.hap.Characteristic.LockLastKnownAction, {
+        onGet: () => this.#lastAction(this.deviceData),
+      });
+    } else {
+      this.removeCharacteristic(this.lockService, this.hap.Characteristic.LockLastKnownAction);
+    }
 
-        if (value !== this.deviceData.auto_relock_duration) {
-          // A timeout change follows the same cloud acceptance boundary as bolt control.
-          await this.set({
-            uuid: this.deviceData.nest_google_device_uuid,
-            auto_relock_duration: value,
-          });
+    // Optional controls are configured only during accessory setup.
+    if (typeof this.deviceData.auto_relock_duration === 'number' && typeof this.deviceData.max_auto_relock_duration === 'number') {
+      this.addCharacteristic(this.lockService, this.hap.Characteristic.LockManagementAutoSecurityTimeout, {
+        initialValue: this.deviceData.auto_relock_duration,
+        props: {
+          minValue: 0,
+          maxValue: this.deviceData.max_auto_relock_duration,
+        },
+        onSet: async (value) => {
+          value = Math.floor(value); // Make a round number
 
-          this?.log?.info?.(
-            'Setting lock auto-relocking duration on "%s" to "%s"',
-            this.deviceData.description,
-            value !== 0 ? value + ' seconds' : 'Disabled',
-          );
-        }
-      },
-      onGet: () => {
-        return this.deviceData.auto_relock_duration;
-      },
-    });
+          if (value !== this.deviceData.auto_relock_duration) {
+            // A timeout change follows the same cloud acceptance boundary as bolt control.
+            await this.set({
+              uuid: this.deviceData.nest_google_device_uuid,
+              auto_relock_duration: value,
+            });
 
-    this.addCharacteristic(this.lockService, this.hap.Characteristic.LockLastKnownAction, {
-      onGet: () => {
-        return this.#lastAction(this.deviceData);
-      },
-    });
+            this?.log?.info?.(
+              'Setting lock auto-relocking duration on "%s" to "%s"',
+              this.deviceData.description,
+              value !== 0 ? value + ' seconds' : 'Disabled',
+            );
+          }
+        },
+      });
+    } else {
+      this.removeCharacteristic(this.lockService, this.hap.Characteristic.LockManagementAutoSecurityTimeout);
+    }
 
-    this.addCharacteristic(this.lockService, this.hap.Characteristic.StatusTampered, {
-      onGet: () => {
-        return this.deviceData.tampered === true
-          ? this.hap.Characteristic.StatusTampered.TAMPERED
-          : this.hap.Characteristic.StatusTampered.NOT_TAMPERED;
-      },
-    });
+    if (typeof this.deviceData.tampered === 'boolean') {
+      this.addCharacteristic(this.lockService, this.hap.Characteristic.StatusTampered, {
+        initialValue:
+          this.deviceData.tampered === true
+            ? this.hap.Characteristic.StatusTampered.TAMPERED
+            : this.hap.Characteristic.StatusTampered.NOT_TAMPERED,
+      });
+    } else {
+      this.removeCharacteristic(this.lockService, this.hap.Characteristic.StatusTampered);
+    }
 
     // Setup battery service if not already present on the accessory
     this.batteryService = this.addService(this.hap.Service.Battery, '', 1, { hidden: true });
@@ -173,8 +183,35 @@ export default class NestLock extends HomeKitDevice {
     // Update lock state
     this.lockService.updateCharacteristic(this.hap.Characteristic.LockCurrentState, this.#currentState(deviceData));
     this.lockService.updateCharacteristic(this.hap.Characteristic.LockTargetState, this.#targetState(deviceData));
-    this.lockService.updateCharacteristic(this.hap.Characteristic.LockLastKnownAction, this.#lastAction(deviceData));
-    this.lockService.updateCharacteristic(this.hap.Characteristic.LockManagementAutoSecurityTimeout, deviceData.auto_relock_duration);
+    // Only completed actions with a known method have a truthful HAP representation.
+    let action = this.#lastAction(deviceData);
+    if (action !== undefined) {
+      if (this.lockService.testCharacteristic(this.hap.Characteristic.LockLastKnownAction) === false) {
+        this.addCharacteristic(this.lockService, this.hap.Characteristic.LockLastKnownAction, {
+          onGet: () => this.#lastAction(this.deviceData),
+        });
+      }
+      this.lockService.updateCharacteristic(this.hap.Characteristic.LockLastKnownAction, action);
+    } else {
+      this.removeCharacteristic(this.lockService, this.hap.Characteristic.LockLastKnownAction);
+    }
+
+    // Optional characteristics retain their last value when an update has no reading.
+    if (
+      this.lockService.testCharacteristic(this.hap.Characteristic.LockManagementAutoSecurityTimeout) === true &&
+      typeof deviceData.auto_relock_duration === 'number'
+    ) {
+      this.lockService.updateCharacteristic(this.hap.Characteristic.LockManagementAutoSecurityTimeout, deviceData.auto_relock_duration);
+    }
+
+    if (this.lockService.testCharacteristic(this.hap.Characteristic.StatusTampered) === true && typeof deviceData.tampered === 'boolean') {
+      this.lockService.updateCharacteristic(
+        this.hap.Characteristic.StatusTampered,
+        deviceData.tampered === true
+          ? this.hap.Characteristic.StatusTampered.TAMPERED
+          : this.hap.Characteristic.StatusTampered.NOT_TAMPERED,
+      );
+    }
 
     // If device isn't online report in HomeKit
     this.lockService.updateCharacteristic(
@@ -191,12 +228,6 @@ export default class NestLock extends HomeKitDevice {
         : this.hap.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW,
     );
     this.batteryService.updateCharacteristic(this.hap.Characteristic.ChargingState, this.hap.Characteristic.ChargingState.NOT_CHARGEABLE);
-
-    // Update tampered state
-    this.lockService.updateCharacteristic(
-      this.hap.Characteristic.StatusTampered,
-      deviceData.tampered !== true ? this.hap.Characteristic.StatusTampered.NOT_TAMPERED : this.hap.Characteristic.StatusTampered.TAMPERED,
-    );
 
     // Log lock state changes with source and actor details if available
     if (deviceData.bolt_state !== this.deviceData.bolt_state) {
@@ -228,9 +259,10 @@ export default class NestLock extends HomeKitDevice {
   }
 
   #lastAction(deviceData) {
-    // Determine whether the lock is currently considered secured
-    // Treat both LOCKED and LOCKING as secured states
-    let secured = deviceData.bolt_state === NestLock.STATE.LOCKED || deviceData.bolt_state === NestLock.STATE.LOCKING;
+    if (deviceData.bolt_state !== NestLock.STATE.LOCKED && deviceData.bolt_state !== NestLock.STATE.UNLOCKED) {
+      return undefined;
+    }
+    let secured = deviceData.bolt_state === NestLock.STATE.LOCKED;
 
     // Lock/unlock initiated physically at the lock
     if (deviceData.bolt_actor === NestLock.LAST_ACTION.PHYSICAL) {
@@ -253,19 +285,12 @@ export default class NestLock extends HomeKitDevice {
         : this.hap.Characteristic.LockLastKnownAction.UNSECURED_REMOTELY;
     }
 
-    // Local implicit actions are usually automatic secure events.
-    // HAP has no matching automatic/unsecured value, so report that as remote.
-    if (deviceData.bolt_actor === NestLock.LAST_ACTION.IMPLICIT) {
-      return secured === true
-        ? this.hap.Characteristic.LockLastKnownAction.SECURED_BY_AUTO_SECURE_TIMEOUT
-        : this.hap.Characteristic.LockLastKnownAction.UNSECURED_REMOTELY;
+    // HAP has no automatic-unlock value; do not substitute a remote action.
+    if (deviceData.bolt_actor === NestLock.LAST_ACTION.IMPLICIT && secured === true) {
+      return this.hap.Characteristic.LockLastKnownAction.SECURED_BY_AUTO_SECURE_TIMEOUT;
     }
 
-    // Unknown/missing actor values should not be reported as physical.
-    // Actor-less transition packets can precede the final remote actor update.
-    return secured === true
-      ? this.hap.Characteristic.LockLastKnownAction.SECURED_REMOTELY
-      : this.hap.Characteristic.LockLastKnownAction.UNSECURED_REMOTELY;
+    return undefined;
   }
 
   #logLockChange(source, stateLabel, actor = undefined) {
@@ -337,6 +362,14 @@ const LOCK_FIELD_MAP = {
           ? raw.value.device_identity.serialNumber.trim().toUpperCase()
           : undefined,
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['technicalInformation'],
+      translate: ({ raw }) => {
+        let serial = raw.value.technicalInformation?.serialNumber;
+        return typeof serial === 'string' && serial.trim() !== '' ? serial.trim().toUpperCase() : undefined;
+      },
+    },
   },
 
   nest_google_device_uuid: {
@@ -345,6 +378,8 @@ const LOCK_FIELD_MAP = {
       fields: [],
       translate: ({ objectKey }) => objectKey,
     },
+    prefer: 'googlehome',
+    googlehome: { fields: [], translate: ({ objectKey }) => objectKey },
   },
 
   nest_google_home_uuid: {
@@ -352,6 +387,8 @@ const LOCK_FIELD_MAP = {
       fields: ['device_info'],
       translate: ({ raw }) => raw?.value?.device_info?.pairerId?.resourceId,
     },
+    prefer: 'googlehome',
+    googlehome: { fields: ['structureId'], translate: ({ homeId }) => homeId },
   },
 
   // Naming / descriptive fields
@@ -364,6 +401,14 @@ const LOCK_FIELD_MAP = {
           ? processSoftwareVersion(raw.value.device_identity.softwareVersion)
           : undefined,
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['googleHome'],
+      translate: ({ raw }) =>
+        typeof raw.value.googleHome?.hardware?.softwareVersion === 'string' && raw.value.googleHome.hardware.softwareVersion.trim() !== ''
+          ? processSoftwareVersion(raw.value.googleHome.hardware.softwareVersion)
+          : undefined,
+    },
   },
 
   description: {
@@ -371,6 +416,12 @@ const LOCK_FIELD_MAP = {
     google: {
       fields: ['label', 'device_info', 'device_located_settings'],
       related: ['located_annotations'],
+      translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
+    },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['googleHome', 'roomId', 'structureId'],
+      related: ['home'],
       translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
     },
   },
@@ -382,10 +433,17 @@ const LOCK_FIELD_MAP = {
       fields: ['liveness'],
       translate: ({ raw }) => raw?.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['deviceStatus.online'],
+      translate: ({ raw }) =>
+        typeof raw.value['deviceStatus.online']?.boolean === 'boolean' ? raw.value['deviceStatus.online'].boolean : undefined,
+    },
   },
 
   tampered: {
-    required: true,
+    // Retain absence while HomeGraph has no verified tamper-state mapping.
+    merge: ({ values, context }) => (context.sources.googlehome === undefined ? values.google : undefined),
     google: {
       fields: ['tamper'],
       translate: ({ raw }) => raw?.value?.tamper?.tamperState === 'TAMPER_STATE_TAMPERED',
@@ -409,9 +467,26 @@ const LOCK_FIELD_MAP = {
                   ? NestLock.STATE.UNLOCKED
                   : NestLock.STATE.UNKNOWN,
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['lockUnlock.isLocked', 'lockUnlock.isJammed'],
+      translate: ({ raw }) => {
+        // Jammed takes precedence; absent state must not imply an unlocked door.
+        let locked = raw.value['lockUnlock.isLocked']?.boolean;
+        return raw.value['lockUnlock.isJammed']?.boolean === true
+          ? NestLock.STATE.JAMMED
+          : locked === true
+            ? NestLock.STATE.LOCKED
+            : locked === false
+              ? NestLock.STATE.UNLOCKED
+              : undefined;
+      },
+    },
   },
 
   bolt_actor: {
+    // HomeGraph has no verified method or event correlation with protobuf actors.
+    merge: ({ values, context }) => (context.sources.googlehome === undefined ? values.google : undefined),
     google: {
       fields: ['bolt_lock'],
       translate: ({ raw }) =>
@@ -428,11 +503,9 @@ const LOCK_FIELD_MAP = {
                 ? NestLock.LAST_ACTION.REMOTE
                 : raw?.value?.bolt_lock?.boltLockActor?.method === 'BOLT_LOCK_ACTOR_METHOD_VOICE_ASSISTANT'
                   ? NestLock.LAST_ACTION.VOICE
-                  : ['BOLT_LOCK_ACTOR_METHOD_LOCAL_IMPLICIT', 'BOLT_LOCK_ACTOR_METHOD_LOW_POWER_SHUTDOWN'].includes(
-                      raw?.value?.bolt_lock?.boltLockActor?.method,
-                    ) === true
-                      ? NestLock.LAST_ACTION.IMPLICIT
-                      : undefined,
+                  : raw?.value?.bolt_lock?.boltLockActor?.method === 'BOLT_LOCK_ACTOR_METHOD_LOCAL_IMPLICIT'
+                    ? NestLock.LAST_ACTION.IMPLICIT
+                    : undefined,
     },
   },
 
@@ -446,11 +519,26 @@ const LOCK_FIELD_MAP = {
           ? Math.round(scaleValue(Number(raw.value.battery_power_source.remaining.remainingPercent.value), 0, 1, 0, 100))
           : undefined,
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['charging.capacityRemainingPercentage', 'charging.descriptiveCapacityRemaining'],
+      translate: ({ raw }) => {
+        let level = raw.value['charging.capacityRemainingPercentage']?.number;
+        if (typeof level === 'number' && Number.isFinite(level) === true && level >= 0 && level <= 100) {
+          return Math.round(level);
+        }
+        // Qualitative categories use the same coarse estimates as other devices.
+        let levels = { full: 100, high: 75, medium: 50, low: LOW_BATTERY_LEVEL, critically_low: Math.floor(LOW_BATTERY_LEVEL / 2) };
+        let capacity = raw.value['charging.descriptiveCapacityRemaining']?.text;
+        return Object.hasOwn(levels, capacity) === true ? levels[capacity] : undefined;
+      },
+    },
   },
 
-  // Optional configuration/state fields
+  // Auto-relock controls require the selected API to support their writes.
+  // Protobuf-only controls must not appear on HomeGraph-backed accessories.
   auto_relock_duration: {
-    required: true,
+    merge: ({ values, context }) => (context.sources.googlehome === undefined ? values.google : undefined),
     google: {
       fields: ['bolt_lock_settings'],
       translate: ({ raw }) =>
@@ -461,7 +549,7 @@ const LOCK_FIELD_MAP = {
   },
 
   max_auto_relock_duration: {
-    required: true,
+    merge: ({ values, context }) => (context.sources.googlehome === undefined ? values.google : undefined),
     google: {
       fields: ['bolt_lock_capabilities'],
       translate: ({ raw }) =>
@@ -472,7 +560,7 @@ const LOCK_FIELD_MAP = {
   },
 };
 
-// Function to process our RAW Google data for lock devices
+// Process committed protobuf locks and the verified HomeGraph lock state subset.
 // eslint-disable-next-line no-unused-vars
 export function processRawData(log, rawData, config, deviceType = undefined, changedData = undefined) {
   if (
@@ -485,105 +573,103 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
     return;
   }
 
-  // Process data for any lock(s) we have in the raw data
   let devices = {};
-
+  let contexts = new Map();
   Object.entries(rawData)
     .filter(
       ([key, value]) =>
-        key.startsWith('DEVICE_') === true && PROTOBUF_RESOURCES.LOCK.includes(value?.value?.device_info?.typeName) === true,
+        key.startsWith('DEVICE_') === true &&
+        ((value?.source === DATA_SOURCE.PROTOBUF && PROTOBUF_RESOURCES.LOCK.includes(value?.value?.device_info?.typeName) === true) ||
+          (value?.source === DATA_SOURCE.HOMEGRAPH &&
+            value?.value?.googleHome?.type === 'action.devices.types.LOCK' &&
+            value.value.googleHome.id?.thirdPartyId?.idType?.startsWith('nest') === true)),
     )
     .forEach(([object_key, value]) => {
       try {
+        let isHomeGraph = value.source === DATA_SOURCE.HOMEGRAPH;
+        let homeId =
+          isHomeGraph === true
+            ? getResourceKey(value.connection, value.source, value.value.structureId, 'STRUCTURE')
+            : value.value?.device_info?.pairerId?.resourceId;
+        let home = rawData[homeId];
         // Revisit cached lock traits when the device or its home changes, including late parent discovery.
-        let resourceKeys = [object_key, value?.value?.device_info?.pairerId?.resourceId];
-        if (changedData instanceof Map && resourceKeys.some((key) => changedData.has(key)) === false) {
+        let resourceKeys = [object_key, homeId];
+        let serial = isHomeGraph === true ? value.value.technicalInformation?.serialNumber : value.value.device_identity?.serialNumber;
+        if (typeof serial !== 'string' || serial.trim() === '') {
           return;
         }
-
+        serial = serial.trim().toUpperCase();
+        let candidate = contexts.get(serial) ?? {
+          context: createMappingContext(rawData, object_key),
+          fields: new Set(),
+          changed: changedData instanceof Map !== true,
+        };
+        contexts.set(serial, candidate);
+        candidate.changed = candidate.changed === true || resourceKeys.some((id) => changedData?.has?.(id) === true);
         // Only process valid Google lock devices that are ready and linked to a known home object
         if (
-          value?.source !== DATA_SOURCE.PROTOBUF ||
-          value?.value?.configuration_done?.deviceReady !== true ||
-          rawData?.[value?.value?.device_info?.pairerId?.resourceId] === undefined
+          (isHomeGraph !== true && value?.value?.configuration_done?.deviceReady !== true) ||
+          home === undefined ||
+          (isHomeGraph === true && (home.source !== DATA_SOURCE.HOMEGRAPH || home.connection !== value.connection))
         ) {
           return;
         }
 
-        // Required lock traits need not arrive in the same Observe message.
-        let mappedResult = buildMappedObject(
-          LOCK_FIELD_MAP,
-          createMappingContext(rawData, object_key, {
-            google: value,
-          }),
-          new Set(Object.keys(value?.value ?? {})),
-        );
-
-        let serialNumber = mappedResult?.data?.serialNumber;
-        let existingDevice = devices[serialNumber];
-
-        // If we have all required fields, build the full lock device data object
-        if (mappedResult?.hasRequired === true) {
-          let tempDevice = {
-            type: DEVICE_TYPE.LOCK,
-            model: 'x Yale Lock',
-            manufacturer: 'Nest',
-            ...mappedResult.data,
-          };
-
-          // Check for any device or home configuration options that match this device
-          // We'll use the serial number to match against device options, and the home uuid to match against home options
-          let deviceOptions = config?.devices?.find(
-            (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
-          );
-          let homeOptions = config?.homes?.find(
-            (home) =>
-              home?.nest_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
-              home?.google_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
-          );
-
-          // Insert any extra options we've read in from configuration file for this device
-          tempDevice.eveHistory =
-            deviceOptions?.eveHistory !== undefined ? deviceOptions.eveHistory === true : config?.options?.eveHistory === true;
-
-          // Process additional exclusion details
-          tempDevice.excluded =
-            deviceOptions?.exclude === true ||
-            (deviceOptions?.exclude !== false &&
-              (homeOptions?.exclude === true || (homeOptions?.exclude !== false && config?.options?.exclude === true)));
-
-          // Store full device
-          // Full always overrides partial if present
-          if (existingDevice?.full !== true) {
-            devices[tempDevice.serialNumber] = {
-              full: true,
-              data: tempDevice,
-            };
-          }
-        }
-
-        // Refresh existing device reference after potential full insert
-        existingDevice = devices[serialNumber];
-
-        // Only store partial data if nothing has already been stored for this serial in this pass.
-        // A later full payload will replace an earlier partial payload.
-        if (
-          mappedResult?.hasRequired === false &&
-          serialNumber !== undefined &&
-          typeof mappedResult?.data === 'object' &&
-          mappedResult.data?.constructor === Object &&
-          Object.keys(mappedResult.data).length !== 0 &&
-          existingDevice === undefined
-        ) {
-          devices[serialNumber] = {
-            full: false,
-            data: mappedResult.data,
-          };
+        let source = isHomeGraph === true ? 'googlehome' : 'google';
+        candidate.context.sources[source] = normaliseSourceContext(source, object_key, value, { homeId });
+        for (let field of Object.keys(value.value)) {
+          candidate.fields.add(field);
         }
       } catch (error) {
         log?.error?.('Error processing lock data for "%s": %s', object_key, String(error));
       }
     });
 
+  for (let [serialNumber, candidate] of contexts) {
+    if (candidate.changed !== true) {
+      continue;
+    }
+    try {
+      let mappedResult = buildMappedObject(LOCK_FIELD_MAP, candidate.context, candidate.fields);
+      // Undefined fields retain old values in accessory delta merges. Explicit
+      // absence clears optional data when the selected representation changes.
+      for (let field of ['bolt_actor', 'tampered', 'auto_relock_duration', 'max_auto_relock_duration']) {
+        mappedResult.data[field] ??= null;
+      }
+
+      // If we have all required fields, build the full lock device data object
+      if (mappedResult?.hasRequired === true) {
+        let tempDevice = {
+          type: DEVICE_TYPE.LOCK,
+          model: 'x Yale Lock',
+          manufacturer: 'Nest',
+          ...mappedResult.data,
+        };
+
+        let deviceOptions = config?.devices?.find(
+          (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+        );
+        let homeOptions = config?.homes?.find(
+          (home) =>
+            home?.homegraph_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
+            home?.protobuf_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
+        );
+
+        tempDevice.eveHistory =
+          deviceOptions?.eveHistory !== undefined ? deviceOptions.eveHistory === true : config?.options?.eveHistory === true;
+
+        tempDevice.excluded =
+          deviceOptions?.exclude === true ||
+          (deviceOptions?.exclude !== false &&
+            (homeOptions?.exclude === true || (homeOptions?.exclude !== false && config?.options?.exclude === true)));
+
+        devices[serialNumber] = { full: true, data: tempDevice };
+      } else if (mappedResult.data.serialNumber !== undefined) {
+        devices[serialNumber] = { full: false, data: mappedResult.data };
+      }
+    } catch (error) {
+      log?.error?.('Error processing lock data for "%s": %s', serialNumber, String(error));
+    }
+  }
   return devices;
 }

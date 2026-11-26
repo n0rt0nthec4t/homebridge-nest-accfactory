@@ -17,19 +17,22 @@
 // - Callers own constructor prefetch, lazy retries and client cleanup
 // - No credentials or global lookup cache are stored by this module
 //
-// Code version 2026.11.23
+// Code version 2026.11.26
 'use strict';
 
 // Define node.js modules
 import crypto from 'node:crypto';
+import { Buffer } from 'node:buffer';
 import path from 'node:path';
 
 // Define our modules
 import GrpcTransport from '../../grpctransport.js';
+import { getProtoType } from '../../protobuf.js';
 
 // Define constants
 import {
   GOOGLE_HOME_FOYER_PREFIX,
+  GOOGLE_HOME_CLIENT_ENVIRONMENT,
   GOOGLE_HOME_FOYER_ENDPOINTS,
   GOOGLE_HOME_REFERER,
   GOOGLE_HOME_USER_AGENT,
@@ -40,9 +43,12 @@ import {
 // The returned transport remains caller-owned, alongside its pending lookup promise.
 function setupGoogleHomeFoyer(options, transport = undefined) {
   if (transport === undefined) {
+    let protoPath = path.join(__dirname, 'protobuf/googlehome/foyer.proto');
+    let environmentType = getProtoType(protoPath, GOOGLE_HOME_FOYER_PREFIX + 'ClientEnvironment');
     transport = new GrpcTransport({
       log: options.log,
-      protoPath: path.join(__dirname, 'protobuf/googlehome/foyer.proto'),
+      protoPath,
+      foyerEnvironment: Buffer.from(environmentType.encode(GOOGLE_HOME_CLIENT_ENVIRONMENT).finish()).toString('base64'),
       endpointHost: options.fieldTest === true ? GOOGLE_HOME_FOYER_ENDPOINTS.FIELD_TEST : GOOGLE_HOME_FOYER_ENDPOINTS.PRODUCTION,
       uuid: options.uuid,
       userAgent: GOOGLE_HOME_USER_AGENT,
@@ -70,7 +76,7 @@ async function resolveCameraIds(transport, resourceId) {
     for (let device of Object.values(home?.devices ?? {})) {
       let aliases = Object.values(device?.otherIds?.otherThirdPartyId ?? {});
       // Resolve aliases on the same device; never borrow another camera's ID.
-      if (aliases.some((alias) => alias?.id === resourceId) === false) {
+      if (device?.id?.googleUuid !== resourceId && aliases.some((alias) => alias?.id === resourceId) === false) {
         continue;
       }
       let camera = aliases.find(

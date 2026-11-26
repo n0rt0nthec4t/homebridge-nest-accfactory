@@ -173,6 +173,26 @@ for (let fieldTest of [false, true]) {
       assert.equal(headers['user-agent'], GOOGLE_HOME_USER_AGENT);
       assert.match(headers['user-agent'], /Version\/27\.2 Safari\/605\.1\.15$/);
       assert.equal(headers.authorization, 'Bearer fabricated-oauth');
+      assert.equal(Buffer.from(headers['foyer-gha-environment'], 'base64').toString('hex'), '0801120b1209342e33332e32372e35');
     }
+  });
+}
+
+for (let native of [false, true]) {
+  test('Foyer resolves native IDs or aliases and keeps Quartz IDs on the matched device: native=' + native, async () => {
+    let id = 'ba370022-d5a3-4839-943c-45dd4b5377aa';
+    let key = native === true ? id : 'DEVICE_MATCH';
+    let transport = {
+      command: async () =>
+        graph([
+          device('different-device', [{ idType: 'CAMERA', id: 'quartz.other' }]),
+          device(id, [
+            { idType: 'PHX', id: 'DEVICE_MATCH' },
+            { idType: 'CAMERA', id: 'quartz.correct' },
+          ]),
+        ]),
+    };
+    assert.deepEqual(await resolveCameraIds(transport, key), { googleDeviceId: id, legacyDeviceId: 'correct' });
+    assert.deepEqual(await resolveCameraIds({ command: async () => graph([device('foreign-device', [])]) }, key), {});
   });
 }

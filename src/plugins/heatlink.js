@@ -32,8 +32,8 @@
 // - Temperature values are normalised via shared utility helpers
 //
 // Data Translation:
-// - Protobuf thermostat data is mapped using HEATLINK_FIELD_MAP
-// - Translate protobuf data for supported devices
+// - Protobuf thermostat data and verified HomeGraph identity fields use HEATLINK_FIELD_MAP
+// - HomeGraph mappings stay partial until physical identity and control capabilities are known
 // - processRawData() builds device objects and applies configuration overrides
 //
 // Mark Hulskamp
@@ -41,8 +41,8 @@
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
-import { processSoftwareVersion, adjustTemperature, parseDurationToSeconds, buildDeviceDescription } from '../utils.js';
-import { buildMappedObject, createMappingContext } from '../translator.js';
+import { getResourceKey, processSoftwareVersion, adjustTemperature, parseDurationToSeconds, buildDeviceDescription } from '../utils.js';
+import { buildMappedObject, createMappingContext, normaliseSourceContext } from '../translator.js';
 
 // Define constants
 import {
@@ -52,11 +52,12 @@ import {
   HOTWATER_MIN_TEMPERATURE,
   PROTOBUF_RESOURCES,
   HOTWATER_BOOST_TIMES,
+  GOOGLE_HOME_HEATLINK_MODEL,
 } from '../consts.js';
 
 export default class NestHeatlink extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.HEATLINK;
-  static VERSION = '2026.11.23'; // Code version
+  static VERSION = '2026.11.26'; // Code version
 
   thermostatService = undefined; // Hotwater temperature control
   switchService = undefined; // Hotwater heating boost control
@@ -357,14 +358,23 @@ const HEATLINK_FIELD_MAP = {
           ? raw.value.heat_link.heatLinkSerialNumber.value.trim().toUpperCase()
           : undefined,
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['technicalInformation'],
+      // Keep physical serial identity; cloud and Phoenix IDs are routing identifiers.
+      translate: ({ raw }) => raw.value.technicalInformation?.serialNumber?.trim?.().toUpperCase(),
+    },
   },
 
+  // Keep protobuf command routing when available until HomeGraph controls are verified.
   nest_google_device_uuid: {
     required: true,
     google: {
       fields: [],
       translate: ({ objectKey }) => objectKey,
     },
+    prefer: 'google',
+    googlehome: { fields: [], translate: ({ objectKey }) => objectKey },
   },
 
   nest_google_home_uuid: {
@@ -372,6 +382,8 @@ const HEATLINK_FIELD_MAP = {
       fields: ['device_info'],
       translate: ({ raw }) => raw?.value?.device_info?.pairerId?.resourceId,
     },
+    prefer: 'google',
+    googlehome: { fields: ['structureId'], translate: ({ homeUUID }) => homeUUID },
   },
 
   // Model identification
@@ -395,6 +407,8 @@ const HEATLINK_FIELD_MAP = {
         return model !== '' ? 'Heat Link (unknown - ' + model + ')' : undefined;
       },
     },
+    prefer: 'googlehome',
+    googlehome: { fields: ['googleHome'], translate: ({ raw }) => raw.value.googleHome?.hardware?.model },
   },
 
   softwareVersion: {
@@ -406,6 +420,14 @@ const HEATLINK_FIELD_MAP = {
           ? processSoftwareVersion(raw.value.heat_link.heatLinkSwVersion.value)
           : undefined,
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['googleHome'],
+      translate: ({ raw }) =>
+        typeof raw.value.googleHome?.hardware?.softwareVersion === 'string' && raw.value.googleHome.hardware.softwareVersion.trim() !== ''
+          ? processSoftwareVersion(raw.value.googleHome.hardware.softwareVersion)
+          : undefined,
+    },
   },
 
   // Thermostat association
@@ -415,6 +437,8 @@ const HEATLINK_FIELD_MAP = {
       fields: [],
       translate: ({ objectKey }) => objectKey,
     },
+    prefer: 'google',
+    googlehome: { fields: ['googleHome', 'structureId'], translate: ({ parentUUID }) => parentUUID },
   },
 
   temperature_scale: {
@@ -423,6 +447,15 @@ const HEATLINK_FIELD_MAP = {
       fields: ['display_settings'],
       translate: ({ raw }) => (raw?.value?.display_settings?.temperatureScale === 'TEMPERATURE_SCALE_F' ? 'F' : 'C'),
     },
+    prefer: 'google',
+    googlehome: {
+      fields: ['googleHome', 'structureId'],
+      related: ['temperatureSetting.temperatureUnit'],
+      translate: ({ parent }) =>
+        ['C', 'F'].includes(parent?.value?.['temperatureSetting.temperatureUnit']?.text) === true
+          ? parent.value['temperatureSetting.temperatureUnit'].text
+          : undefined,
+    },
   },
 
   online: {
@@ -430,6 +463,12 @@ const HEATLINK_FIELD_MAP = {
     google: {
       fields: ['liveness'],
       translate: ({ raw }) => raw?.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
+    },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['deviceStatus.online'],
+      translate: ({ raw }) =>
+        typeof raw.value['deviceStatus.online']?.boolean === 'boolean' ? raw.value['deviceStatus.online'].boolean : undefined,
     },
   },
 
@@ -493,10 +532,16 @@ const HEATLINK_FIELD_MAP = {
       related: ['located_annotations'],
       translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['googleHome', 'roomId'],
+      related: ['home'],
+      translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
+    },
   },
 };
 
-// Process linked Heat Link state from protobuf thermostat resources.
+// Process protobuf thermostat-derived Heat Links and partial HomeGraph identity data.
 export function processRawData(log, rawData, config, deviceType = undefined, changedData = undefined) {
   if (
     rawData === null ||
@@ -507,142 +552,157 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
   ) {
     return;
   }
-
-  // Process data for any heat link devices found via thermostat resources
   let devices = {};
-
+  if (deviceType !== undefined && deviceType !== DEVICE_TYPE.HEATLINK) {
+    return devices;
+  }
+  let contexts = new Map();
   Object.entries(rawData)
     .filter(
       ([key, value]) =>
         key.startsWith('DEVICE_') === true &&
-        value?.source === DATA_SOURCE.PROTOBUF &&
-        PROTOBUF_RESOURCES.THERMOSTAT.includes(value?.value?.device_info?.typeName) === true,
+        ((value?.source === DATA_SOURCE.PROTOBUF && PROTOBUF_RESOURCES.THERMOSTAT.includes(value?.value?.device_info?.typeName) === true) ||
+          (value?.source === DATA_SOURCE.HOMEGRAPH &&
+            value.value?.googleHome?.type === 'action.devices.types.SENSOR' &&
+            value.value.googleHome.id?.thirdPartyId?.idType?.startsWith('nest') === true &&
+            GOOGLE_HOME_HEATLINK_MODEL.test(value.value.googleHome.hardware?.model ?? '') === true)),
     )
     .forEach(([object_key, value]) => {
       try {
-        let homeId = value.value?.device_info?.pairerId?.resourceId;
+        let homegraph = value.source === DATA_SOURCE.HOMEGRAPH;
+        let homeId =
+          homegraph === true
+            ? getResourceKey(value.connection, value.source, value.value.structureId, 'STRUCTURE')
+            : value.value?.device_info?.pairerId?.resourceId;
+        let parentId =
+          homegraph === true && typeof value.value.googleHome.parentDevice?.googleUuid === 'string'
+            ? getResourceKey(value.connection, value.source, value.value.googleHome.parentDevice.googleUuid)
+            : undefined;
+        let parent = rawData[parentId];
+        // Cloud parent references may arrive before the thermostat. Only resolve
+        // a Nest thermostat in this same account and home; never borrow another API's ID.
+        let parentUUID =
+          parent?.source === value.source &&
+          parent?.connection === value.connection &&
+          parent?.value?.structureId === value.value.structureId &&
+          parent?.value?.googleHome?.type === 'action.devices.types.THERMOSTAT' &&
+          parent.value.googleHome.id?.thirdPartyId?.idType?.startsWith('nest') === true
+            ? parentId
+            : undefined;
         let relatedIds = [
           homeId,
+          parentId,
           ...(value.value?.remote_comfort_sensing_settings?.associatedRcsSensors ?? []).map((sensor) => sensor?.deviceId?.resourceId),
         ];
 
-        // Parent and sensor traits can arrive after the device's own state.
-        if (changedData instanceof Map && [object_key, ...relatedIds].some((id) => changedData.has(id)) === false) {
-          return;
-        }
-
         if (
-          value?.value?.configuration_done?.deviceReady !== true ||
-          typeof rawData?.[value?.value?.device_info?.pairerId?.resourceId] !== 'object' ||
-          ['HEAT_LINK_CONNECTION_TYPE_ON_OFF', 'HEAT_LINK_CONNECTION_TYPE_OPENTHERM'].some(
-            (type) =>
-              value?.value?.heat_link_settings?.heatConnectionType === type ||
-              value?.value?.heat_link_settings?.hotWaterConnectionType === type,
-          ) !== true
+          homegraph === true
+            ? rawData[homeId]?.source !== value.source || rawData[homeId]?.connection !== value.connection
+            : value?.value?.configuration_done?.deviceReady !== true ||
+              typeof rawData?.[value?.value?.device_info?.pairerId?.resourceId] !== 'object' ||
+              ['HEAT_LINK_CONNECTION_TYPE_ON_OFF', 'HEAT_LINK_CONNECTION_TYPE_OPENTHERM'].some(
+                (type) =>
+                  value?.value?.heat_link_settings?.heatConnectionType === type ||
+                  value?.value?.heat_link_settings?.hotWaterConnectionType === type,
+              ) !== true
         ) {
           return;
         }
 
-        let fields = new Set(Object.keys(value.value ?? {}));
-        for (let id of relatedIds) {
+        let serial =
+          homegraph === true ? value.value.technicalInformation?.serialNumber : value.value.heat_link?.heatLinkSerialNumber?.value;
+        if (typeof serial !== 'string' || serial.trim() === '') {
+          return;
+        }
+        serial = serial.trim().toUpperCase();
+        let candidate = contexts.get(serial) ?? {
+          context: createMappingContext(rawData, object_key),
+          fields: new Set(),
+          changed: changedData instanceof Map !== true,
+        };
+        candidate.context.sources[homegraph === true ? 'googlehome' : 'google'] = normaliseSourceContext(
+          homegraph === true ? 'googlehome' : 'google',
+          object_key,
+          value,
+          { homeUUID: homeId, parentUUID, parent: parentUUID === undefined ? undefined : parent },
+        );
+        for (let id of [object_key, ...relatedIds]) {
           for (let field of Object.keys(rawData[id]?.value ?? {})) {
-            fields.add(field);
+            candidate.fields.add(field);
           }
+          candidate.changed = candidate.changed === true || changedData?.has?.(id) === true;
         }
-
-        let mappedResult = buildMappedObject(HEATLINK_FIELD_MAP, createMappingContext(rawData, object_key, { google: value }), fields);
-
-        let serialNumber = mappedResult?.data?.serialNumber;
-        let existingDevice = devices[serialNumber];
-
-        // If we have all required fields, build the full heat link device data object
-        if (mappedResult?.hasRequired === true) {
-          let tempDevice = {
-            type: DEVICE_TYPE.HEATLINK,
-            manufacturer: 'Nest',
-            ...mappedResult.data,
-          };
-
-          // Respect requested device type if specified
-          if (deviceType !== undefined && (typeof deviceType !== 'string' || deviceType === '' || tempDevice.type !== deviceType)) {
-            return;
-          }
-
-          // Check for any device or home configuration options that match this device
-          // We'll use the serial number to match against device options, and the home uuid to match against home options
-          let deviceOptions = config?.devices?.find(
-            (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
-          );
-          let homeOptions = config?.homes?.find(
-            (home) =>
-              home?.nest_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
-              home?.google_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
-          );
-
-          // Insert configuration options
-          tempDevice.eveHistory =
-            deviceOptions?.eveHistory !== undefined ? deviceOptions.eveHistory === true : config?.options?.eveHistory === true;
-
-          // Hot water boost duration allowed by Nest app presets
-          tempDevice.hotwaterBoostTime = parseDurationToSeconds(deviceOptions?.hotwaterBoostTime, {
-            defaultValue: 1800,
-            min: 1800,
-            max: 7200,
-          });
-
-          tempDevice.hotwaterBoostTime = HOTWATER_BOOST_TIMES.reduce((a, b) =>
-            Math.abs(tempDevice.hotwaterBoostTime - a) < Math.abs(tempDevice.hotwaterBoostTime - b) ? a : b,
-          );
-
-          // Configurable temperature bounds
-          tempDevice.hotwaterMinTemp =
-            Number.isFinite(Number(deviceOptions?.hotwaterMinTemp)) === true
-              ? adjustTemperature(deviceOptions.hotwaterMinTemp, 'C', 'C', true)
-              : HOTWATER_MIN_TEMPERATURE;
-
-          tempDevice.hotwaterMaxTemp =
-            Number.isFinite(Number(deviceOptions?.hotwaterMaxTemp)) === true
-              ? adjustTemperature(deviceOptions.hotwaterMaxTemp, 'C', 'C', true)
-              : HOTWATER_MAX_TEMPERATURE;
-
-          // Process additional exclusion details
-          tempDevice.excluded =
-            deviceOptions?.exclude === true ||
-            (deviceOptions?.exclude !== false &&
-              (homeOptions?.exclude === true || (homeOptions?.exclude !== false && config?.options?.exclude === true)));
-
-          // Store full device
-          // Full always overrides partial if present
-          if (existingDevice?.full !== true) {
-            devices[tempDevice.serialNumber] = {
-              full: true,
-              data: tempDevice,
-            };
-          }
-        }
-
-        // Refresh existing device reference after potential full insert
-        existingDevice = devices[serialNumber];
-
-        // Only store partial data if nothing has already been stored for this serial in this pass.
-        // A later full payload will replace an earlier partial payload.
-        if (
-          mappedResult?.hasRequired === false &&
-          serialNumber !== undefined &&
-          typeof mappedResult?.data === 'object' &&
-          mappedResult.data?.constructor === Object &&
-          Object.keys(mappedResult.data).length !== 0 &&
-          existingDevice === undefined
-        ) {
-          devices[serialNumber] = {
-            full: false,
-            data: mappedResult.data,
-          };
-        }
+        contexts.set(serial, candidate);
       } catch (error) {
         log?.error?.('Error processing heat link data for "%s": %s', object_key, String(error));
       }
     });
 
+  // Map each physical serial once, using field preferences for both full reads
+  // and one-source deltas. Unknown HomeGraph capabilities keep new devices partial.
+  for (let [serialNumber, candidate] of contexts) {
+    if (candidate.changed !== true) {
+      continue;
+    }
+    try {
+      let mappedResult = buildMappedObject(HEATLINK_FIELD_MAP, candidate.context, candidate.fields);
+      if (mappedResult.hasRequired === true) {
+        let tempDevice = {
+          type: DEVICE_TYPE.HEATLINK,
+          manufacturer: 'Nest',
+          ...mappedResult.data,
+        };
+
+        // Check for any device or home configuration options that match this device
+        // We'll use the serial number to match against device options, and the home uuid to match against home options
+        let deviceOptions = config?.devices?.find(
+          (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+        );
+        let homeOptions = config?.homes?.find(
+          (home) =>
+            home?.protobuf_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
+            home?.homegraph_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
+        );
+
+        // Insert configuration options
+        tempDevice.eveHistory =
+          deviceOptions?.eveHistory !== undefined ? deviceOptions.eveHistory === true : config?.options?.eveHistory === true;
+
+        // Hot water boost duration allowed by Nest app presets
+        tempDevice.hotwaterBoostTime = parseDurationToSeconds(deviceOptions?.hotwaterBoostTime, {
+          defaultValue: 1800,
+          min: 1800,
+          max: 7200,
+        });
+
+        tempDevice.hotwaterBoostTime = HOTWATER_BOOST_TIMES.reduce((a, b) =>
+          Math.abs(tempDevice.hotwaterBoostTime - a) < Math.abs(tempDevice.hotwaterBoostTime - b) ? a : b,
+        );
+
+        // Configurable temperature bounds
+        tempDevice.hotwaterMinTemp =
+          Number.isFinite(Number(deviceOptions?.hotwaterMinTemp)) === true
+            ? adjustTemperature(deviceOptions.hotwaterMinTemp, 'C', 'C', true)
+            : HOTWATER_MIN_TEMPERATURE;
+
+        tempDevice.hotwaterMaxTemp =
+          Number.isFinite(Number(deviceOptions?.hotwaterMaxTemp)) === true
+            ? adjustTemperature(deviceOptions.hotwaterMaxTemp, 'C', 'C', true)
+            : HOTWATER_MAX_TEMPERATURE;
+
+        // Process additional exclusion details
+        tempDevice.excluded =
+          deviceOptions?.exclude === true ||
+          (deviceOptions?.exclude !== false &&
+            (homeOptions?.exclude === true || (homeOptions?.exclude !== false && config?.options?.exclude === true)));
+
+        devices[serialNumber] = { full: true, data: tempDevice };
+      } else if (Object.keys(mappedResult.data).length > 0) {
+        devices[serialNumber] = { full: false, data: mappedResult.data };
+      }
+    } catch (error) {
+      log?.error?.('Error processing heat link data for "%s": %s', serialNumber, String(error));
+    }
+  }
   return devices;
 }

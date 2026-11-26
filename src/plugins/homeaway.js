@@ -3,12 +3,12 @@
 //
 // Virtual HomeKit accessory representing Nest structure home/away status.
 // Provides a single occupancy sensor that reflects whether the structure
-// is currently marked as Home or Away by the protobuf API.
+// is currently marked as Home or Away by protobuf or Google Home.
 //
 // Responsibilities:
 // - Create a virtual Home/Away accessory per structure/home
 // - Expose structure occupancy state via HomeKit OccupancySensor service
-// - Translate protobuf structure mode into HomeKit occupancy
+// - Translate protobuf structure mode or Google Home area presence into HomeKit occupancy
 // - Update HomeKit occupancy status when upstream structure mode changes
 //
 // Services:
@@ -17,7 +17,7 @@
 // Features:
 // - Structure-level virtual accessory (not tied to a physical Nest device)
 // - Real-time HomeKit characteristic updates
-// - Uses protobuf structure data only
+// - Uses protobuf or HomeGraph structure data
 // - Stable synthetic serial number derived from structure identity
 //
 // Notes:
@@ -30,7 +30,7 @@
 // Data Translation:
 // - Raw data is mapped using HOMEAWAY_FIELD_MAP
 // - processRawData() builds virtual devices from structure-level data
-// - Protobuf structure data is normalised into a HomeKit model
+// - Structure data is normalised into a source-independent HomeKit model
 // - Serial number is derived from structure ID with a virtual device type prefix
 //
 // Mark Hulskamp
@@ -46,7 +46,7 @@ import { DATA_SOURCE, DEVICE_TYPE, NESTLABS_MAC_PREFIX } from '../consts.js';
 
 export default class NestHomeAway extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.HOMEAWAY;
-  static VERSION = '2026.11.23'; // Code version
+  static VERSION = '2026.11.25'; // Code version
 
   occupancyService = undefined;
 
@@ -100,6 +100,14 @@ const HOMEAWAY_FIELD_MAP = {
             crc24(DEVICE_TYPE.HOMEAWAY.toUpperCase() + ':' + raw.value.structure_info.rtsStructureId.trim().toUpperCase()).toUpperCase()
           : undefined,
     },
+    googlehome: {
+      fields: ['home'],
+      // Foyer supplies its own home UUID; do not guess a legacy Nest structure ID.
+      translate: ({ raw }) =>
+        typeof raw.value.home?.uuid === 'string' && raw.value.home.uuid.trim() !== ''
+          ? NESTLABS_MAC_PREFIX + crc24(DEVICE_TYPE.HOMEAWAY.toUpperCase() + ':' + raw.value.home.uuid.trim().toUpperCase()).toUpperCase()
+          : undefined,
+    },
   },
 
   nest_google_device_uuid: {
@@ -108,6 +116,7 @@ const HOMEAWAY_FIELD_MAP = {
       fields: [],
       translate: ({ objectKey }) => objectKey,
     },
+    googlehome: { fields: [], translate: ({ objectKey }) => objectKey },
   },
 
   nest_google_home_uuid: {
@@ -116,15 +125,16 @@ const HOMEAWAY_FIELD_MAP = {
       fields: [],
       translate: ({ objectKey }) => objectKey,
     },
+    googlehome: { fields: [], translate: ({ objectKey }) => objectKey },
   },
 
   // Naming / descriptive fields
   description: {
     required: true,
-    merge: ({ values }) =>
-      HomeKitDevice.makeValidHKName(
-        typeof values?.google === 'string' && values.google.trim() !== '' ? values.google.trim() : 'unknown description',
-      ),
+    merge: ({ values }) => {
+      let name = values.googlehome ?? values.google;
+      return HomeKitDevice.makeValidHKName(typeof name === 'string' && name.trim() !== '' ? name.trim() : 'unknown description');
+    },
     google: {
       fields: ['structure_location', 'structure_info'],
       translate: ({ raw }) =>
@@ -134,6 +144,18 @@ const HOMEAWAY_FIELD_MAP = {
           : String(raw?.value?.structure_info?.name ?? '').trim() !== ''
             ? String(raw.value.structure_info.name).trim()
             : undefined,
+    },
+    googlehome: {
+      fields: ['home'],
+      translate: ({ raw }) => {
+        let address = raw.value.home?.address?.addressComponents;
+        return typeof address?.city === 'string' &&
+          address.city.trim() !== '' &&
+          typeof address?.state === 'string' &&
+          address.state.trim() !== ''
+          ? address.city.trim() + ' - ' + address.state.trim()
+          : raw.value.home?.name;
+      },
     },
   },
 
@@ -147,6 +169,18 @@ const HOMEAWAY_FIELD_MAP = {
         let mode = raw?.value?.structure_mode?.structureMode;
         return ['STRUCTURE_MODE_HOME', 'STRUCTURE_MODE_AWAY', 'STRUCTURE_MODE_SLEEP', 'STRUCTURE_MODE_VACATION'].includes(mode) === true
           ? mode === 'STRUCTURE_MODE_HOME'
+          : undefined;
+      },
+    },
+    googlehome: {
+      fields: ['home'],
+      translate: ({ raw }) => {
+        let state = raw.value.home?.traits?.find((trait) => trait.name === 'home.platform.traits.AreaPresenceStateTrait')?.fields
+          ?.presenceState?.stringValue;
+        // Only the observed occupied/vacant states establish occupancy. FeatureMap
+        // describes capabilities and must not be interpreted as presence.
+        return ['PRESENCE_STATE_OCCUPIED', 'PRESENCE_STATE_VACANT'].includes(state) === true
+          ? state === 'PRESENCE_STATE_OCCUPIED'
           : undefined;
       },
     },
@@ -171,7 +205,10 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
   let devices = {};
 
   Object.entries(rawData)
-    .filter(([key, value]) => key.startsWith('STRUCTURE_') === true && value?.source === DATA_SOURCE.PROTOBUF)
+    .filter(
+      ([key, value]) =>
+        key.startsWith('STRUCTURE_') === true && [DATA_SOURCE.PROTOBUF, DATA_SOURCE.HOMEGRAPH].includes(value?.source) === true,
+    )
     .forEach(([object_key, value]) => {
       try {
         if (changedData instanceof Map && changedData.has(object_key) === false) {
@@ -182,7 +219,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
         let mappedResult = buildMappedObject(
           HOMEAWAY_FIELD_MAP,
           createMappingContext(rawData, object_key, {
-            google: value,
+            [value.source === DATA_SOURCE.HOMEGRAPH ? 'googlehome' : 'google']: value,
           }),
           new Set(Object.keys(value?.value ?? {})),
         );
@@ -207,8 +244,8 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
 
           let homeOptions = config?.homes?.find(
             (home) =>
-              home?.nest_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
-              home?.google_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
+              home?.protobuf_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
+              home?.homegraph_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
           );
 
           // Apply Eve history setting (device overrides global)

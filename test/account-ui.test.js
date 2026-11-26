@@ -209,7 +209,13 @@ test('settings host checks both account types and edits Nest credentials using t
       accounts: [
         { ...account, exclude: false },
         { name: 'Nest', type: 'nest', access_token: 'fabricated-nest-token' },
-        { name: 'Excluded', type: 'nest', access_token: 'fabricated-excluded-token', exclude: true },
+        {
+          name: 'Excluded',
+          type: 'googlehome',
+          refreshToken: 'fabricated-sso-token',
+          deviceId: '11111111-2222-3333-4444-555555555555',
+          exclude: true,
+        },
       ],
       homes: [],
       devices: [],
@@ -237,7 +243,22 @@ test('settings host checks both account types and edits Nest credentials using t
       return deferredCheck ?? { status: checkedStatus };
     },
   };
+  // Find cards by their configured identity regardless of grouping/order.
+  const cards = () => {
+    const rows = get('accounts-list').querySelectorAll('.account-row');
+    return current[0].accounts.map((account) => rows.find((row) => row.querySelector('.account-name').textContent === account.name));
+  };
   await startSettings(bridge, document);
+  assert.equal(get('accounts-list').children.length, 2);
+  assert.equal(get('accounts-list').children[0].querySelector('.account-name').textContent, 'Excluded');
+  assert.equal(get('accounts-list').querySelector('.legacy-accounts').open, false);
+  assert.equal(get('accounts-list').querySelector('.legacy-account-list').children.length, 2);
+  assert.equal(get('accounts-list').querySelector('.nest-heading').textContent, 'Nest');
+  assert.equal(get('accounts-list').querySelector('.legacy-accounts').querySelector('summary').children[1], get('connection-toolbar'));
+  assert.match(markup, /id="open-connection"[^>]+class="btn btn-secondary"/);
+  assert.equal(get('add-manual-account').disabled, false);
+  assert.equal(get('open-connection').disabled, false);
+  get('accounts-list').querySelector('.legacy-accounts').open = true;
   assert.equal(get('save-settings').disabled, true);
   await get('save-settings').handlers.get('click')();
   assert.equal(saves, 0);
@@ -249,15 +270,15 @@ test('settings host checks both account types and edits Nest credentials using t
     requests.every((request) => request.route === '/accounts/test'),
     true,
   );
-  assert.equal(get('accounts-list').children.length, 3);
+  assert.equal(cards().length, 3);
   assert.deepEqual(
-    get('accounts-list').children.map((card) => card.querySelector('input').checked),
+    cards().map((card) => card.querySelector('input').checked),
     [true, true, false],
   );
-  assert.equal(get('accounts-list').children[2].querySelector('input').role, 'switch');
+  assert.equal(cards()[2].querySelector('input').role, 'switch');
 
-  assert.equal(get('accounts-list').children[2].querySelector('.account-status').textContent, 'Not checked');
-  for (let card of get('accounts-list').children.slice(0, 2)) {
+  assert.equal(cards()[2].querySelector('.account-status').textContent, 'Not checked');
+  for (let card of cards().slice(0, 2)) {
     const status = card.querySelector('.account-status');
     assert.equal(status.textContent, 'Connection successful');
     assert.equal(status.className.includes('text-success'), true);
@@ -270,11 +291,16 @@ test('settings host checks both account types and edits Nest credentials using t
   // result and must never enable the account or persist the check status.
   for (let result of ['failed', 'timeout', 'success']) {
     checkedStatus = result;
-    const check = get('accounts-list')
-      .children[2].querySelectorAll('button')
+    const check = cards()[2].querySelectorAll('button')
       .find((button) => button.textContent === 'Check connection');
     await check.handlers.get('click')();
-    const status = get('accounts-list').children[2].querySelector('.account-status');
+    assert.deepEqual(requests.at(-1).payload, {
+      type: 'googlehome',
+      refreshToken: 'fabricated-sso-token',
+      deviceId: '11111111-2222-3333-4444-555555555555',
+      fieldTest: false,
+    });
+    const status = cards()[2].querySelector('.account-status');
     assert.equal(status.className.includes(result === 'success' ? 'text-success' : 'text-danger'), true);
     assert.equal(current[0].accounts[2].exclude, true);
   }
@@ -282,58 +308,57 @@ test('settings host checks both account types and edits Nest credentials using t
   // Card toggles stage only exclude, preserving credentials and checked status.
   const beforeToggle = structuredClone(current[0].accounts[2]);
   const requestCount = requests.length;
-  let enabled = get('accounts-list').children[2].querySelector('input');
+  let enabled = cards()[2].querySelector('input');
   enabled.checked = true;
   await enabled.handlers.get('change')();
   await setImmediate();
   assert.deepEqual(current[0].accounts[2], { ...beforeToggle, exclude: false });
   assert.equal(get('save-settings').disabled, false);
-  assert.equal(get('accounts-list').children[2].className.includes('account-excluded'), false);
-  assert.equal(get('accounts-list').children[2].querySelector('.account-status').textContent, 'Connection successful');
-  enabled = get('accounts-list').children[2].querySelector('input');
+  assert.equal(cards()[2].className.includes('account-excluded'), false);
+  assert.equal(cards()[2].querySelector('.account-status').textContent, 'Connection successful');
+  enabled = cards()[2].querySelector('input');
   enabled.checked = false;
   await enabled.handlers.get('change')();
   await setImmediate();
   assert.deepEqual(current[0].accounts[2], beforeToggle);
   assert.equal(get('save-settings').disabled, true, 'Reverting the toggle restores the saved draft');
   // Accounts without an explicit exclude:false also return to the same enabled state.
-  let defaultEnabled = get('accounts-list').children[1].querySelector('input');
+  let defaultEnabled = cards()[1].querySelector('input');
   defaultEnabled.checked = false;
   await defaultEnabled.handlers.get('change')();
   await setImmediate();
   assert.equal(get('save-settings').disabled, false);
-  defaultEnabled = get('accounts-list').children[1].querySelector('input');
+  defaultEnabled = cards()[1].querySelector('input');
   defaultEnabled.checked = true;
   await defaultEnabled.handlers.get('change')();
   await setImmediate();
   assert.equal(get('save-settings').disabled, true);
-  assert.equal(get('accounts-list').children[2].className.includes('account-excluded'), true);
+  assert.equal(cards()[2].className.includes('account-excluded'), true);
+  assert.equal(get('accounts-list').querySelector('.legacy-accounts').open, true, 'toggles and checks preserve the legacy disclosure');
   assert.equal(requests.length, requestCount);
   assert.equal(saves, 0);
-  assert.equal(
-    get('accounts-list')
-      .children[2].querySelectorAll('button')
-      .filter((button) => button.disabled === true).length,
-    0,
+  assert.deepEqual(
+    cards()[2].querySelectorAll('button')
+      .filter((button) => button.disabled === true)
+      .map((button) => button.textContent),
+    ['Edit', 'Reconnect'],
   );
 
   for (let status of ['failed', 'timeout']) {
     checkedStatus = status;
-    const check = get('accounts-list')
-      .children[1].querySelectorAll('button')
+    const check = cards()[1].querySelectorAll('button')
       .find((button) => button.textContent === 'Check connection');
     await check.handlers.get('click')();
-    const text = get('accounts-list').children[1].querySelector('.account-status');
+    const text = cards()[1].querySelector('.account-status');
     assert.equal(text.className.includes('text-danger'), true);
     assert.equal(text.className.includes('text-success'), false);
   }
   const pending = Promise.withResolvers();
   deferredCheck = pending.promise;
-  const check = get('accounts-list')
-    .children[1].querySelectorAll('button')
+  const check = cards()[1].querySelectorAll('button')
     .find((button) => button.textContent === 'Check connection');
   const checking = check.handlers.get('click')();
-  let nestCard = get('accounts-list').children[1];
+  let nestCard = cards()[1];
   assert.equal(nestCard.querySelector('.account-status').textContent, '', 'Pending checks retain an empty status row');
   assert.equal(get('save-settings').disabled, true);
   let edit = nestCard.querySelectorAll('button').find((button) => button.textContent === 'Edit');
@@ -346,7 +371,7 @@ test('settings host checks both account types and edits Nest credentials using t
   assert.equal(labels.includes('Exclude account'), false);
   assert.equal(current[0].accounts[1].access_token, 'fabricated-nest-token');
   // A card change made while editing cannot be undone by Apply account.
-  enabled = get('accounts-list').children[1].querySelector('input');
+  enabled = cards()[1].querySelector('input');
   enabled.checked = false;
   await enabled.handlers.get('change')();
   await setImmediate();
@@ -361,10 +386,11 @@ test('settings host checks both account types and edits Nest credentials using t
     .handlers.get('click')();
   pending.resolve({ status: 'success' });
   await checking;
-  const status = get('accounts-list').children[1].querySelector('.account-status');
+  const status = cards()[1].querySelector('.account-status');
   assert.equal(status.textContent, 'Not checked');
   assert.equal(status.className.includes('text-success'), false);
   assert.equal(current[0].accounts[1].access_token, 'replacement-nest-token');
+  assert.equal(get('accounts-list').querySelector('.legacy-accounts').open, true, 'applying account edits preserves the disclosure');
   assert.equal(current[0].accounts[1].exclude, true);
   assert.equal(saves, 0);
   assert.equal(get('save-settings').disabled, false);
@@ -378,7 +404,93 @@ test('settings host checks both account types and edits Nest credentials using t
   assert.equal(saves, 2);
   assert.equal(closes, 1);
   assert.equal(get('save-settings').disabled, true);
+
+  // Removing the final Google Home account retains both sections and shows its empty state.
+  let home = get('accounts-list').querySelectorAll('.account-entry').find((entry) => entry.querySelector('.account-row') === cards()[2]);
+  const removeButton = home.querySelectorAll('button').find((button) => button.textContent === 'Remove');
+  await removeButton.handlers.get('click')();
+  assert.equal(home.querySelector('.account-removal-panel').hidden, false);
+  assert.equal(current[0].accounts.length, 3, 'the first click does not remove an account');
+  await home.querySelectorAll('button').find((button) => button.textContent === 'Cancel').handlers.get('click')();
+  assert.equal(home.querySelector('.account-removal-panel').hidden, true, 'Cancel closes the panel without removal');
+  await home.querySelectorAll('button').find((button) => button.textContent === 'Remove').handlers.get('click')();
+  await home.querySelectorAll('button').find((button) => button.textContent === 'Remove account').handlers.get('click')();
+  assert.equal(get('accounts-list').querySelector('.nest-heading').textContent, 'Nest');
+  assert.equal(get('accounts-list').children[0].textContent, 'No Google Home accounts configured.');
+  assert.equal(get('add-manual-account').disabled, false);
+  assert.equal(get('accounts-list').children.length, 2);
+  assert.deepEqual(cards().map((card) => card.querySelector('.account-name').textContent), ['Existing', 'Nest']);
+  assert.equal(get('open-connection').disabled, false);
+  assert.equal(get('save-settings').disabled, false, 'removal still uses the normal Save flow');
+  while (get('accounts-list').querySelector('.account-row') !== null) {
+    const card = get('accounts-list').querySelectorAll('.account-entry')[0];
+    await card.querySelectorAll('button').find((button) => button.textContent === 'Remove').handlers.get('click')();
+    await card.querySelectorAll('button').find((button) => button.textContent === 'Remove account').handlers.get('click')();
+  }
+  assert.equal(get('accounts-list').querySelector('.legacy-account-list').querySelector('.account-empty').textContent,
+    'No Nest accounts configured.');
+  assert.equal(get('accounts-list').querySelector('.account-guidance').hidden, true);
+  assert.equal(get('open-connection').disabled, false, 'Nest setup remains available with no configured accounts');
 });
+
+for (const changedField of ['refreshToken', 'deviceId']) {
+  test('Google Home check cannot move to another account with a different ' + changedField, async () => {
+    const { readFile } = await import('node:fs/promises');
+    const { startSettings } = await import('../homebridge-ui/public/app.js');
+    const schema = JSON.parse(await readFile(new URL('../config.schema.json', import.meta.url), 'utf8'));
+    const elements = new Map();
+    const get = (id) => {
+      const dynamic = [...elements.values()]
+        .flatMap((root) => root.querySelectorAll('button,input,select'))
+        .find((item) => item.id === id);
+      if (dynamic !== undefined) {
+        return dynamic;
+      }
+      if (elements.has(id) !== true) {
+        elements.set(id, new SettingsElement());
+      }
+      return elements.get(id);
+    };
+    const document = {
+      getElementById: get,
+      createElement: (tag) => Object.assign(new SettingsElement(), { tag }),
+      defaultView: { requestAnimationFrame: (callback) => callback() },
+    };
+    get('manual-account-editor').hidden = true;
+    const first = { name: 'A', type: 'googlehome', refreshToken: 'fabricated-refresh', deviceId: 'fixture-device', exclude: true };
+    let draft = [{ platform: 'NestAccfactory', accounts: [first, { ...first, name: 'B', [changedField]: 'fabricated-replacement' }] }];
+    let finishCheck;
+    let requests = 0;
+    await startSettings({
+      getPluginConfig: async () => structuredClone(draft),
+      getPluginConfigSchema: async () => schema,
+      updatePluginConfig: async (next) => {
+        draft = next;
+      },
+      hideSchemaForm() {},
+      showSchemaForm() {},
+      request: () => {
+        requests += 1;
+        return new Promise((resolve) => {
+          finishCheck = resolve;
+        });
+      },
+    }, document);
+    const entries = () => get('accounts-list').querySelectorAll('.account-entry');
+    const button = (entry, label) => entry.querySelectorAll('button').find((item) => item.textContent === label);
+    const pending = button(entries()[0], 'Check connection').handlers.get('click')();
+    await button(entries()[0], 'Remove').handlers.get('click')();
+    await button(entries()[0], 'Remove account').handlers.get('click')();
+    await setImmediate();
+    assert.equal(draft[0].accounts.length, 1);
+    assert.equal(draft[0].accounts[0].name, 'B');
+    finishCheck({ status: 'success' });
+    await pending;
+    assert.equal(requests, 1, 'only the removed account was checked');
+    assert.equal(entries()[0].querySelector('.account-status').textContent, 'Not checked');
+    assert.equal(button(entries()[0], 'Check connection').disabled, false);
+  });
+}
 
 for (let status of ['failed', 'timeout', 'unexpected']) {
   test('guided connection never stages failed or unknown check status: ' + status, async () => {

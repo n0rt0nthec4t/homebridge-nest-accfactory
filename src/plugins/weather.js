@@ -1,7 +1,7 @@
 // Nest Weather Station - HomeKit integration
 // Part of homebridge-nest-accfactory
 //
-// Virtual HomeKit accessory representing weather data for a Nest/Google structure.
+// Virtual HomeKit accessory representing weather data for a protobuf or HomeGraph structure.
 // Provides temperature, humidity, and optional environmental data using
 // location-based weather information from upstream APIs.
 //
@@ -19,7 +19,7 @@
 // - EveAirPressureSensor (optional, when supported by HAP)
 //
 // Features:
-// - Periodic polling of the Nest REST weather forecast endpoint
+// - Periodic polling through the selected weather API
 // - Real-time HomeKit characteristic updates
 // - Eve Home custom characteristics (forecast, condition, wind, sunrise/sunset)
 // - Temperature normalisation and unit handling
@@ -28,13 +28,13 @@
 // Notes:
 // - This is a virtual device (not a physical Nest device)
 // - One weather accessory is created per structure/home
-// - Requires both location and weather data to be available
-// - Protobuf supplies structure identity and location; weather readings still use Nest REST
+// - Requires location and a current temperature reading
+// - Protobuf weather uses Nest REST; HomeGraph supplies current temperature and conditions
 //
 // Data Translation:
 // - Raw data is mapped using WEATHER_FIELD_MAP
 // - processRawData() builds virtual devices from structure-level data
-// - Only protobuf structures are used for accessory discovery and configuration
+// - Protobuf and HomeGraph structures are used for accessory discovery and configuration
 // - Serial number is derived from structure ID for consistent deduplication
 //
 // Mark Hulskamp
@@ -50,7 +50,7 @@ import { DATA_SOURCE, DEVICE_TYPE, MAX_ELEVATION, MIN_ELEVATION, NESTLABS_MAC_PR
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.WEATHER;
-  static VERSION = '2026.11.23'; // Code version
+  static VERSION = '2026.11.26'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -62,8 +62,13 @@ export default class NestWeather extends HomeKitDevice {
     // Setup temperature service if not already present on the accessory
     this.temperatureService = this.addService(this.hap.Service.TemperatureSensor, '', 1, { primary: true });
 
-    // Setup humidity service if not already present on the accessory
-    this.humidityService = this.addService(this.hap.Service.HumiditySensor, '', 1);
+    // Reconcile cached humidity support with the available reading at setup.
+    if (Number.isFinite(this.deviceData.current_humidity) === true) {
+      this.humidityService = this.addService(this.hap.Service.HumiditySensor, '', 1);
+    } else {
+      this.removeService(this.hap.Service.HumiditySensor, 1);
+      this.humidityService = undefined;
+    }
 
     // Setup battery service if not already present on the accessory (required for EveHome support)
     this.batteryService = this.addService(this.hap.Service.Battery, '', 1, { hidden: true });
@@ -119,7 +124,6 @@ export default class NestWeather extends HomeKitDevice {
       typeof deviceData !== 'object' ||
       deviceData?.constructor !== Object ||
       this.temperatureService === undefined ||
-      this.humidityService === undefined ||
       this.batteryService === undefined
     ) {
       return;
@@ -134,7 +138,9 @@ export default class NestWeather extends HomeKitDevice {
     );
     this.batteryService.updateCharacteristic(this.hap.Characteristic.ChargingState, this.hap.Characteristic.ChargingState.NOT_CHARGEABLE);
 
-    this.humidityService.updateCharacteristic(this.hap.Characteristic.CurrentRelativeHumidity, deviceData.current_humidity);
+    if (this.humidityService !== undefined && Number.isFinite(deviceData.current_humidity) === true) {
+      this.humidityService.updateCharacteristic(this.hap.Characteristic.CurrentRelativeHumidity, deviceData.current_humidity);
+    }
 
     if (this.airPressureService !== undefined) {
       // this.airPressureService.updateCharacteristic(this.hap.Characteristic.EveAirPressure, 0);   // Where from??
@@ -213,18 +219,23 @@ export default class NestWeather extends HomeKitDevice {
 
     let response = await this.get({ uuid: this.deviceData.nest_google_device_uuid, location_weather: true });
     if (typeof response?.location_weather === 'object' && Object.keys(response.location_weather).length > 0) {
-      // Send updated weather data via UPDATE message to refresh characteristics
-      this.update({
-        current_temperature: response.location_weather.current_temperature,
-        current_humidity: response.location_weather.current_humidity,
-        condition: response.location_weather.condition,
-        wind_direction: response.location_weather.wind_direction,
-        wind_speed: response.location_weather.wind_speed,
-        sunrise: response.location_weather.sunrise,
-        sunset: response.location_weather.sunset,
-        station: response.location_weather.station,
-        forecast: response.location_weather.forecast,
-      });
+      // Missing fields read as undefined and are filtered before UPDATE, so
+      // HomeGraph updates temperature/condition while protobuf can supply all fields.
+      this.update(
+        Object.fromEntries(
+          Object.entries({
+            current_temperature: response.location_weather.current_temperature,
+            current_humidity: response.location_weather.current_humidity,
+            condition: response.location_weather.condition,
+            wind_direction: response.location_weather.wind_direction,
+            wind_speed: response.location_weather.wind_speed,
+            sunrise: response.location_weather.sunrise,
+            sunset: response.location_weather.sunset,
+            station: response.location_weather.station,
+            forecast: response.location_weather.forecast,
+          }).filter(([, value]) => value !== undefined),
+        ),
+      );
     }
   }
 }
@@ -248,6 +259,14 @@ const WEATHER_FIELD_MAP = {
             crc24(DEVICE_TYPE.WEATHER.toUpperCase() + ':' + raw.value.structure_info.rtsStructureId.trim().toUpperCase()).toUpperCase()
           : undefined,
     },
+    googlehome: {
+      fields: ['home'],
+      // Use the native home UUID without guessing an equivalent legacy structure ID.
+      translate: ({ raw }) =>
+        typeof raw.value.home?.uuid === 'string' && raw.value.home.uuid.trim() !== ''
+          ? NESTLABS_MAC_PREFIX + crc24(DEVICE_TYPE.WEATHER.toUpperCase() + ':' + raw.value.home.uuid.trim().toUpperCase()).toUpperCase()
+          : undefined,
+    },
   },
 
   nest_google_device_uuid: {
@@ -256,6 +275,7 @@ const WEATHER_FIELD_MAP = {
       fields: [],
       translate: ({ objectKey }) => objectKey,
     },
+    googlehome: { fields: [], translate: ({ objectKey }) => objectKey },
   },
 
   nest_google_home_uuid: {
@@ -264,6 +284,7 @@ const WEATHER_FIELD_MAP = {
       fields: [],
       translate: ({ objectKey }) => objectKey,
     },
+    googlehome: { fields: [], translate: ({ objectKey }) => objectKey },
   },
 
   // Naming / descriptive fields
@@ -271,7 +292,8 @@ const WEATHER_FIELD_MAP = {
     required: true,
     merge: ({ values }) =>
       HomeKitDevice.makeValidHKName(
-        typeof values?.google === 'string' && values.google.trim() !== '' ? values.google.trim() : 'unknown description',
+        [values?.googlehome, values?.google].find((value) => typeof value === 'string' && value.trim() !== '')?.trim() ??
+          'unknown description',
       ),
     google: {
       fields: ['structure_location', 'structure_info'],
@@ -283,6 +305,7 @@ const WEATHER_FIELD_MAP = {
             ? String(raw.value.structure_info.name).trim()
             : undefined,
     },
+    googlehome: { fields: ['home'], translate: ({ raw }) => raw.value.home?.name },
   },
 
   // Core required weather fields
@@ -295,10 +318,16 @@ const WEATHER_FIELD_MAP = {
           ? adjustTemperature(Number(raw.value.weather.current_temperature), 'C', 'C', true)
           : undefined,
     },
+    googlehome: {
+      fields: ['home'],
+      translate: ({ raw }) =>
+        Number.isFinite(raw.value.home?.weather?.current_temperature) === true
+          ? adjustTemperature(raw.value.home.weather.current_temperature, 'C', 'C', true)
+          : undefined,
+    },
   },
 
   current_humidity: {
-    required: true,
     google: {
       fields: ['weather'],
       translate: ({ raw }) =>
@@ -309,7 +338,7 @@ const WEATHER_FIELD_MAP = {
   // Optional weather detail fields
   timezone: {
     // Null explicitly clears a previously reported zone so updates can return to the host timezone.
-    merge: ({ values }) => values.google ?? null,
+    merge: ({ values }) => values.googlehome ?? values.google ?? null,
     google: {
       fields: [],
       translate: ({ raw }) => {
@@ -331,6 +360,7 @@ const WEATHER_FIELD_MAP = {
         return zones.size === 1 ? zones.values().next().value : undefined;
       },
     },
+    googlehome: { fields: ['home'], translate: ({ raw }) => raw.value.home?.address?.timezone },
   },
 
   condition: {
@@ -338,6 +368,7 @@ const WEATHER_FIELD_MAP = {
       fields: ['weather'],
       translate: ({ raw }) => ((raw?.value?.weather?.condition?.trim() ?? '') !== '' ? raw.value.weather.condition.trim() : undefined),
     },
+    googlehome: { fields: ['home'], translate: ({ raw }) => raw.value.home?.weather?.condition },
   },
 
   wind_direction: {
@@ -405,14 +436,17 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
   let devices = {};
 
   Object.entries(rawData)
-    .filter(([key, value]) => key.startsWith('STRUCTURE_') === true && value?.source === DATA_SOURCE.PROTOBUF)
+    .filter(
+      ([key, value]) =>
+        key.startsWith('STRUCTURE_') === true && [DATA_SOURCE.PROTOBUF, DATA_SOURCE.HOMEGRAPH].includes(value?.source) === true,
+    )
     .forEach(([object_key, value]) => {
       try {
         if (changedData instanceof Map) {
           let fields = changedData.get(object_key)?.fields;
           if (
             fields instanceof Set !== true ||
-            (['structure_info', 'structure_location', 'weather', 'time_zone'].some((field) => fields.has(field)) === false &&
+            (['structure_info', 'structure_location', 'weather', 'time_zone', 'home'].some((field) => fields.has(field)) === false &&
               [...fields].some((field) => value?.value?.[field]?.timezoneName !== undefined) === false)
           ) {
             return;
@@ -423,7 +457,7 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
         let mappedResult = buildMappedObject(
           WEATHER_FIELD_MAP,
           createMappingContext(rawData, object_key, {
-            google: value,
+            [value.source === DATA_SOURCE.HOMEGRAPH ? 'googlehome' : 'google']: value,
           }),
           new Set(Object.keys(value?.value ?? {})),
         );
@@ -448,8 +482,8 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
 
           let homeOptions = config?.homes?.find(
             (home) =>
-              home?.nest_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
-              home?.google_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
+              home?.protobuf_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
+              home?.homegraph_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
           );
 
           // Apply Eve history setting (device overrides global)

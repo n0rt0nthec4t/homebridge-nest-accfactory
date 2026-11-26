@@ -7,6 +7,28 @@ import { fileURLToPath } from 'node:url';
 import { platformHarness } from './helpers/platform-harness.js';
 import { getProtoType } from '../src/protobuf.js';
 import { DATA_SOURCE } from '../src/consts.js';
+import { getResourceKey } from '../src/utils.js';
+
+const SNAPSHOT_URL = 'https://nest-camera-media.googleapis.com/download/thumbnails/fixture/account/devices/DEVICE_TEST/id/';
+
+for (let source of [DATA_SOURCE.PROTOBUF, DATA_SOURCE.HOMEGRAPH]) {
+  test('query failure logs the native device ID for ' + source, async (context) => {
+    let flow = await platformHarness(context);
+    let nativeId = source === DATA_SOURCE.HOMEGRAPH ? 'camera-fixture' : 'DEVICE_TEST';
+    let routingId = getResourceKey('account', source, nativeId);
+    flow.raw[routingId] = { ...flow.raw.DEVICE_TEST, source, resourceId: nativeId };
+    let reject = async () => {
+      throw new Error('Fixture query failure');
+    };
+    if (source === DATA_SOURCE.HOMEGRAPH) {
+      flow.connection.homegraphAPI = { get: reject };
+    } else {
+      context.mock.method(flow.connection.googleProtobufAPI, 'get', reject);
+    }
+    await flow.device.get({ uuid: routingId, camera_events: true });
+    assert.deepEqual(flow.logs.at(-1).slice(2), ['Camera events', nativeId, 'Fixture query failure']);
+  });
+}
 
 let weather = {
   now: {
@@ -121,8 +143,63 @@ test('Google camera history normalises timestamps, zones and event enums and ord
   ]);
 });
 
+for (let url of [
+  SNAPSHOT_URL + 'capture?signature=fixture-signed-value',
+  'https://nest-camera-media.googleapis.com/download/thumbnails/fixture/account/devices/DEVICE_TEST',
+  'https://nexusapi-us1.camera.home.nest.com/resources/DEVICE_TEST/live_image',
+  'https://nexusapi-eu1.camera.home.ft.nest.com/resources/DEVICE_TEST/live_image',
+]) {
+  test('protobuf snapshot accepts an owned image reference: ' + new URL(url).hostname + new URL(url).pathname, async (context) => {
+    let image = Buffer.from([5, 6, 7]);
+    let flow = await platformHarness(context, {
+      value: {
+        device_info: { typeName: 'google.resource.SpencerResource' },
+        upload_live_image: { liveImageUrl: url },
+      },
+      fetch: async () => new Response(image),
+    });
+    flow.connection.grpcTransport.command = async () => ({ status: 14 });
+    assert.deepEqual((await flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true })).camera_snapshot, image);
+    assert.equal(flow.requests.length, 1);
+    assert.equal(flow.requests[0][1], url);
+    assert.equal(flow.requests[0][2].headers.Authorization, 'Basic fixture-token');
+    assert.equal(flow.requests[0][2].redirect, 'error', 'redirects must not carry the snapshot request to another destination');
+  });
+}
+
 for (let [label, url] of [
-  ['cached URL', 'https://image.invalid/old.jpg'],
+  ['HTTP', SNAPSHOT_URL.replace('https:', 'http:') + 'capture'],
+  ['unrelated host', 'https://image.invalid/resources/DEVICE_TEST/live_image'],
+  ['host suffix', 'https://nexusapi-us1.camera.home.nest.com.untrusted.invalid/resources/DEVICE_TEST/live_image'],
+  ['username', SNAPSHOT_URL.replace('https://', 'https://fixture@') + 'capture'],
+  ['password', SNAPSHOT_URL.replace('https://', 'https://fixture:secret@') + 'capture'],
+  ['port', SNAPSHOT_URL.replace('.com/', '.com:8443/') + 'capture'],
+  ['fragment', SNAPSHOT_URL + 'capture#fragment'],
+  ['foreign media camera', SNAPSHOT_URL.replace('DEVICE_TEST', 'DEVICE_OTHER') + 'capture'],
+  ['foreign legacy camera', 'https://nexusapi-us1.camera.home.nest.com/resources/DEVICE_OTHER/live_image'],
+  ['encoded device ID', SNAPSHOT_URL.replace('DEVICE_TEST', 'DEVICE%5fTEST') + 'capture'],
+  ['unexpected media path', 'https://nest-camera-media.googleapis.com/resources/DEVICE_TEST/live_image'],
+  ['unexpected legacy path', 'https://nexusapi-us1.camera.home.nest.com/resources/DEVICE_TEST/other_image'],
+  ['malformed URL', 'not a URL'],
+  ['non-string URL', { private: 'fixture' }],
+]) {
+  test('protobuf snapshot rejects ' + label + ' before sending credentials', async (context) => {
+    let flow = await platformHarness(context, {
+      value: {
+        device_info: { typeName: 'google.resource.SpencerResource' },
+        upload_live_image: { liveImageUrl: url },
+      },
+      fetch: async () => assert.fail('Untrusted image destination reached HTTP'),
+    });
+    flow.connection.grpcTransport.command = async () => ({ status: 14 });
+    assert.equal((await flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true })).camera_snapshot, undefined);
+    assert.equal(flow.requests.length, 0);
+    assert.equal(JSON.stringify(flow.logs).includes('Untrusted snapshot image reference'), true);
+  });
+}
+
+for (let [label, url] of [
+  ['cached URL', SNAPSHOT_URL + 'old.jpg'],
   ['no URL', ''],
 ]) {
   test('Google snapshot falls back to ' + label + ' after rejected refresh', async (context) => {
@@ -132,7 +209,7 @@ for (let [label, url] of [
         device_info: { typeName: 'google.resource.SpencerResource' },
         upload_live_image: { liveImageUrl: url },
       },
-      fetch: async () => ({ arrayBuffer: async () => image }),
+      fetch: async () => new Response(image),
     });
     flow.connection.grpcTransport.command = async () => ({ status: 14 });
     let result = (await flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true })).camera_snapshot;
@@ -143,18 +220,18 @@ test('Google snapshot observes a fresh image, clears its waiter and fetches the 
   let flow = await platformHarness(context, {
     value: {
       device_info: { typeName: 'google.resource.SpencerResource' },
-      upload_live_image: { liveImageUrl: 'https://image.invalid/old.jpg' },
+      upload_live_image: { liveImageUrl: SNAPSHOT_URL + 'old.jpg' },
     },
-    fetch: async () => ({ arrayBuffer: async () => Buffer.from([9]) }),
+    fetch: async () => new Response(Buffer.from([9])),
   });
   let delivered;
   flow.connection.grpcTransport.command = async () => {
-    delivered = flow.send('DEVICE_TEST', { upload_live_image: { liveImageUrl: 'https://image.invalid/new.jpg' } });
+    delivered = flow.send('DEVICE_TEST', { upload_live_image: { liveImageUrl: SNAPSHOT_URL + 'new.jpg' } });
     return { status: 0, data: [{ traitOperations: [{ progress: 'COMPLETE', event: { event: { status: 'STATUS_SUCCESSFUL' } } }] }] };
   };
   assert.deepEqual((await flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true })).camera_snapshot, Buffer.from([9]));
   await delivered;
-  assert.equal(flow.requests.at(-1)[1], 'https://image.invalid/new.jpg');
+  assert.equal(flow.requests.at(-1)[1], SNAPSHOT_URL + 'new.jpg');
 });
 for (let [label, status, recover, expectedUploads] of [
   ['recovers after HTTP 400', 400, true, 2],
@@ -171,14 +248,14 @@ for (let [label, status, recover, expectedUploads] of [
       fetch: async (method, url) => {
         downloads.push(url);
         if (recover === true && downloads.length === 2) {
-          return { arrayBuffer: async () => image };
+          return new Response(image);
         }
         throw Object.assign(new Error('Fixture image URL failure'), { status });
       },
     });
     flow.connection.grpcTransport.command = async () => {
       uploads++;
-      await flow.send('DEVICE_TEST', { upload_live_image: { liveImageUrl: 'https://image.invalid/' + uploads + '.jpg' } });
+      await flow.send('DEVICE_TEST', { upload_live_image: { liveImageUrl: SNAPSHOT_URL + uploads + '.jpg' } });
       return { data: [{ traitOperations: [{ progress: 'COMPLETE', event: { event: { status: 'STATUS_SUCCESSFUL' } } }] }] };
     };
     assert.deepEqual(
@@ -188,7 +265,7 @@ for (let [label, status, recover, expectedUploads] of [
     assert.equal(uploads, expectedUploads);
     assert.deepEqual(
       downloads,
-      Array.from({ length: expectedUploads }, (_, index) => 'https://image.invalid/' + (index + 1) + '.jpg'),
+      Array.from({ length: expectedUploads }, (_, index) => SNAPSHOT_URL + (index + 1) + '.jpg'),
     );
   });
 }
@@ -207,7 +284,7 @@ test('Google snapshot skips a fresh-upload retry when only download time remains
   let success = { data: [{ traitOperations: [{ progress: 'COMPLETE', event: { event: { status: 'STATUS_SUCCESSFUL' } } }] }] };
   flow.connection.grpcTransport.command = async () => {
     uploads++;
-    await flow.send('DEVICE_TEST', { upload_live_image: { liveImageUrl: 'https://image.invalid/first.jpg' } });
+    await flow.send('DEVICE_TEST', { upload_live_image: { liveImageUrl: SNAPSHOT_URL + 'first.jpg' } });
     return success;
   };
   let request = flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true });
@@ -230,9 +307,9 @@ test('Google snapshot times out its Observe wait and fetches the previously avai
   let flow = await platformHarness(context, {
     value: {
       device_info: { typeName: 'google.resource.SpencerResource' },
-      upload_live_image: { liveImageUrl: 'https://image.invalid/cached.jpg' },
+      upload_live_image: { liveImageUrl: SNAPSHOT_URL + 'cached.jpg' },
     },
-    fetch: async () => ({ arrayBuffer: async () => Buffer.from([4]) }),
+    fetch: async () => new Response(Buffer.from([4])),
   });
   let started = Promise.withResolvers();
   flow.connection.grpcTransport.command = async () => {
@@ -241,7 +318,7 @@ test('Google snapshot times out its Observe wait and fetches the previously avai
   };
   let request = flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true });
   await started.promise;
-  let replayed = flow.send('DEVICE_TEST', { upload_live_image: { liveImageUrl: 'https://image.invalid/cached.jpg' } });
+  let replayed = flow.send('DEVICE_TEST', { upload_live_image: { liveImageUrl: SNAPSHOT_URL + 'cached.jpg' } });
   await setImmediate();
   context.mock.timers.tick(3000);
   assert.deepEqual((await request).camera_snapshot, Buffer.from([4]));
@@ -258,11 +335,11 @@ test('Google snapshot shortens the Observe wait after a slow successful command'
   let flow = await platformHarness(context, {
     value: {
       device_info: { typeName: 'google.resource.SpencerResource' },
-      upload_live_image: { liveImageUrl: 'https://image.invalid/cached.jpg' },
+      upload_live_image: { liveImageUrl: SNAPSHOT_URL + 'cached.jpg' },
     },
     fetch: async () => {
       downloadedAt = Date.now();
-      return { arrayBuffer: async () => Buffer.from([6]) };
+      return new Response(Buffer.from([6]));
     },
   });
   let command = Promise.withResolvers();
@@ -284,9 +361,9 @@ test('Google snapshot reserves download time after the command timeout', async (
   let flow = await platformHarness(context, {
     value: {
       device_info: { typeName: 'google.resource.SpencerResource' },
-      upload_live_image: { liveImageUrl: 'https://image.invalid/cached.jpg' },
+      upload_live_image: { liveImageUrl: SNAPSHOT_URL + 'cached.jpg' },
     },
-    fetch: async () => ({ arrayBuffer: async () => Buffer.from([7]) }),
+    fetch: async () => new Response(Buffer.from([7])),
   });
   let pending = Promise.withResolvers();
   let started = Promise.withResolvers();
@@ -307,7 +384,7 @@ test('overall snapshot timeout lets HomeKit continue when a cloud command never 
   let flow = await platformHarness(context, {
     value: {
       device_info: { typeName: 'google.resource.SpencerResource' },
-      upload_live_image: { liveImageUrl: 'https://image.invalid/cached.jpg' },
+      upload_live_image: { liveImageUrl: SNAPSHOT_URL + 'cached.jpg' },
     },
   });
   let pending = Promise.withResolvers();
@@ -336,7 +413,7 @@ test('snapshot expiry removes only its own waiter while an overlapping request c
   context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 100000 });
   let flow = await platformHarness(context, {
     value: { device_info: { typeName: 'google.resource.SpencerResource' } },
-    fetch: async () => ({ arrayBuffer: async () => Buffer.from([8]) }),
+    fetch: async () => new Response(Buffer.from([8])),
   });
   let commands = [];
   flow.connection.grpcTransport.command = (...args) => {
@@ -355,7 +432,7 @@ test('snapshot expiry removes only its own waiter while an overlapping request c
   commands[0].resolve({ status: 4, code: 'REQUEST_TIMEOUT' });
   assert.equal(await first, undefined);
   context.mock.timers.tick(500);
-  await flow.send('DEVICE_TEST', { upload_live_image: { liveImageUrl: 'https://image.invalid/fresh.jpg' } });
+  await flow.send('DEVICE_TEST', { upload_live_image: { liveImageUrl: SNAPSHOT_URL + 'fresh.jpg' } });
   let success = { status: 0, data: [{ traitOperations: [{ progress: 'COMPLETE', event: { event: { status: 'STATUS_SUCCESSFUL' } } }] }] };
   commands[1].resolve(success);
   assert.deepEqual(await second, Buffer.from([8]));
@@ -372,7 +449,7 @@ test('overall snapshot deadline aborts an in-flight HTTP image fetch', async (co
   let flow = await platformHarness(context, {
     value: {
       device_info: { typeName: 'google.resource.SpencerResource' },
-      upload_live_image: { liveImageUrl: 'https://image.invalid/cached.jpg' },
+      upload_live_image: { liveImageUrl: SNAPSHOT_URL + 'cached.jpg' },
     },
     fetch: async (method, url, options) => {
       signal = options.signal;
@@ -403,20 +480,20 @@ let imageTrait = getProtoType(
 for (let [label, before, fresh] of [
   [
     'new timestamp at the same URL',
-    { liveImageUrl: 'https://image.invalid/old.jpg', timestamp: { seconds: 100, nanos: 100 } },
-    { liveImageUrl: 'https://image.invalid/old.jpg', timestamp: { seconds: 100, nanos: 101 } },
+    { liveImageUrl: SNAPSHOT_URL + 'old.jpg', timestamp: { seconds: 100, nanos: 100 } },
+    { liveImageUrl: SNAPSHOT_URL + 'old.jpg', timestamp: { seconds: 100, nanos: 101 } },
   ],
   [
     'new timestamp and URL',
-    { liveImageUrl: 'https://image.invalid/old.jpg', timestamp: { seconds: 100, nanos: 100 } },
-    { liveImageUrl: 'https://image.invalid/new.jpg', timestamp: { seconds: 101 } },
+    { liveImageUrl: SNAPSHOT_URL + 'old.jpg', timestamp: { seconds: 100, nanos: 100 } },
+    { liveImageUrl: SNAPSHOT_URL + 'new.jpg', timestamp: { seconds: 101 } },
   ],
   [
     'new seconds across a digit boundary at the same URL',
-    { liveImageUrl: 'https://image.invalid/old.jpg', timestamp: { seconds: 9 } },
-    { liveImageUrl: 'https://image.invalid/old.jpg', timestamp: { seconds: 10 } },
+    { liveImageUrl: SNAPSHOT_URL + 'old.jpg', timestamp: { seconds: 9 } },
+    { liveImageUrl: SNAPSHOT_URL + 'old.jpg', timestamp: { seconds: 10 } },
   ],
-  ['changed URL without timestamps', { liveImageUrl: 'https://image.invalid/old.jpg' }, { liveImageUrl: 'https://image.invalid/new.jpg' }],
+  ['changed URL without timestamps', { liveImageUrl: SNAPSHOT_URL + 'old.jpg' }, { liveImageUrl: SNAPSHOT_URL + 'new.jpg' }],
 ]) {
   for (let decoded of [false, true]) {
     test('Google snapshot ignores stale Observe updates until ' + label + ', protobuf JSON=' + decoded, async (context) => {
@@ -430,7 +507,7 @@ for (let [label, before, fresh] of [
       let image = Buffer.from([8]);
       let flow = await platformHarness(context, {
         value: { device_info: { typeName: 'google.resource.SpencerResource' }, upload_live_image: initial },
-        fetch: async () => ({ arrayBuffer: async () => image }),
+        fetch: async () => new Response(image),
       });
       let started = Promise.withResolvers();
       flow.connection.grpcTransport.command = async () => {
@@ -444,8 +521,8 @@ for (let [label, before, fresh] of [
       let stale = [before, { liveImageUrl: '', timestamp: { seconds: 102 } }];
       if (before.timestamp !== undefined) {
         stale.push(
-          { liveImageUrl: 'https://image.invalid/replayed.jpg', timestamp: before.timestamp },
-          { liveImageUrl: 'https://image.invalid/older.jpg', timestamp: { seconds: Number(before.timestamp.seconds) - 1 } },
+          { liveImageUrl: SNAPSHOT_URL + 'replayed.jpg', timestamp: before.timestamp },
+          { liveImageUrl: SNAPSHOT_URL + 'older.jpg', timestamp: { seconds: Number(before.timestamp.seconds) - 1 } },
         );
       }
       for (let update of stale) {
@@ -466,9 +543,9 @@ test('connection cleanup can release a snapshot freshness waiter without an imag
   let flow = await platformHarness(context, {
     value: {
       device_info: { typeName: 'google.resource.SpencerResource' },
-      upload_live_image: { liveImageUrl: 'https://image.invalid/cached.jpg', timestamp: { seconds: 100 } },
+      upload_live_image: { liveImageUrl: SNAPSHOT_URL + 'cached.jpg', timestamp: { seconds: 100 } },
     },
-    fetch: async () => ({ arrayBuffer: async () => image }),
+    fetch: async () => new Response(image),
   });
   let started = Promise.withResolvers();
   flow.connection.grpcTransport.command = async () => {
@@ -485,21 +562,21 @@ test('Google snapshot fetches its accepted image even if a later cache update re
   let flow = await platformHarness(context, {
     value: {
       device_info: { typeName: 'google.resource.SpencerResource' },
-      upload_live_image: { liveImageUrl: 'https://image.invalid/old.jpg', timestamp: { seconds: 1 } },
+      upload_live_image: { liveImageUrl: SNAPSHOT_URL + 'old.jpg', timestamp: { seconds: 1 } },
     },
-    fetch: async () => ({ arrayBuffer: async () => Buffer.from([9]) }),
+    fetch: async () => new Response(Buffer.from([9])),
   });
   flow.connection.grpcTransport.command = async () => {
     await flow.send('DEVICE_TEST', {
-      upload_live_image: { liveImageUrl: 'https://image.invalid/new.jpg', timestamp: { seconds: 2 } },
+      upload_live_image: { liveImageUrl: SNAPSHOT_URL + 'new.jpg', timestamp: { seconds: 2 } },
     });
     await flow.send('DEVICE_TEST', {
-      upload_live_image: { liveImageUrl: 'https://image.invalid/old.jpg', timestamp: { seconds: 1 } },
+      upload_live_image: { liveImageUrl: SNAPSHOT_URL + 'old.jpg', timestamp: { seconds: 1 } },
     });
     return { data: [{ traitOperations: [{ progress: 'COMPLETE', event: { event: { status: 'STATUS_SUCCESSFUL' } } }] }] };
   };
   assert.deepEqual((await flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true })).camera_snapshot, Buffer.from([9]));
-  assert.equal(flow.requests.at(-1)[1], 'https://image.invalid/new.jpg');
+  assert.equal(flow.requests.at(-1)[1], SNAPSHOT_URL + 'new.jpg');
 });
 
 test('System enriches a new protobuf structure and refreshes its weather location', async (context) => {
@@ -651,3 +728,50 @@ test('platform quietly skips unavailable-account queries and resumes polling aft
   assert.equal((await flow.device.get({ uuid: id, camera_events: true })).camera_events, undefined);
   assert.equal(flow.logs.at(-1).at(-1), 'Unexpected query failure', 'Unexpected authorised failures must remain visible');
 });
+
+for (let declared of [true, false]) {
+  test('protobuf snapshot rejects oversized image bytes: declared=' + declared, async (context) => {
+    let cancelled = false;
+    let chunks = declared === true ? [] : [new Uint8Array(8 * 1024 * 1024), new Uint8Array([1])];
+    let body = new ReadableStream({
+      pull(controller) {
+        if (chunks.length > 0) {
+          controller.enqueue(chunks.shift());
+        }
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    let flow = await platformHarness(context, {
+      value: {
+        device_info: { typeName: 'google.resource.SpencerResource' },
+        upload_live_image: { liveImageUrl: SNAPSHOT_URL + 'cached.jpg' },
+      },
+      fetch: async () => new Response(body, { headers: { 'content-length': declared === true ? '8388609' : '1' } }),
+    });
+    flow.connection.grpcTransport.command = async () => ({ status: 14 });
+    assert.equal((await flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true })).camera_snapshot, undefined);
+    assert.equal(cancelled, true);
+    assert.equal(flow.requests.length, 1);
+    assert.equal(
+      flow.logs.some((args) => args.some((value) => String(value).includes('Snapshot exceeds image size limit'))),
+      true,
+    );
+  });
+}
+
+for (let size of [0, 8 * 1024 * 1024]) {
+  test('protobuf snapshot handles the size boundary: bytes=' + size, async (context) => {
+    let flow = await platformHarness(context, {
+      value: {
+        device_info: { typeName: 'google.resource.SpencerResource' },
+        upload_live_image: { liveImageUrl: SNAPSHOT_URL + 'cached.jpg' },
+      },
+      fetch: async () => new Response(Buffer.alloc(size)),
+    });
+    flow.connection.grpcTransport.command = async () => ({ status: 14 });
+    let image = (await flow.device.get({ uuid: 'DEVICE_TEST', camera_snapshot: true })).camera_snapshot;
+    assert.equal(size === 0 ? image : image.length, size === 0 ? undefined : size);
+  });
+}

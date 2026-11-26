@@ -37,14 +37,14 @@
 // Mark Hulskamp
 'use strict';
 
-// Define external module requirements
+// Define external modules
 import NestCamera, { processRawData as processCameraRawData } from './camera.js';
 import { scaleValue } from '../utils.js';
 import { DEVICE_TYPE } from '../consts.js';
 
 export default class NestFloodlight extends NestCamera {
   static TYPE = DEVICE_TYPE.FLOODLIGHT;
-  static VERSION = '2026.10.29'; // Code version
+  static VERSION = '2026.11.27'; // Code version
 
   lightService = undefined; // HomeKit light
 
@@ -133,6 +133,12 @@ const EXTRA_FIELD_MAP = {
       fields: ['floodlight_settings', 'floodlight_state'],
       translate: ({ raw }) => typeof raw?.value?.floodlight_settings === 'object' && typeof raw?.value?.floodlight_state === 'object',
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['floodlightId'],
+      related: ['googleHome', 'onOff.onOff', 'brightness.brightness'],
+      translate: ({ light }) => (light !== undefined ? true : undefined),
+    },
   },
 
   light_enabled: {
@@ -140,6 +146,13 @@ const EXTRA_FIELD_MAP = {
     google: {
       fields: ['floodlight_state'],
       translate: ({ raw }) => raw?.value?.floodlight_state?.currentState === 'LIGHT_STATE_ON',
+    },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['floodlightId'],
+      related: ['onOff.onOff'],
+      translate: ({ light }) =>
+        typeof light?.value?.['onOff.onOff']?.boolean === 'boolean' ? light.value['onOff.onOff'].boolean : undefined,
     },
   },
 
@@ -151,6 +164,18 @@ const EXTRA_FIELD_MAP = {
         Number.isFinite(Number(raw?.value?.floodlight_settings?.brightness)) === true
           ? scaleValue(Number(raw.value.floodlight_settings.brightness), 0, 10, 0, 100)
           : undefined,
+    },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['floodlightId'],
+      related: ['brightness.brightness'],
+      translate: ({ light }) => {
+        let brightness = light?.value?.['brightness.brightness']?.number;
+        // Foyer already reports percent; protobuf's 0–10 scale is source-specific.
+        return typeof brightness === 'number' && Number.isFinite(brightness) === true && brightness >= 0 && brightness <= 100
+          ? brightness
+          : undefined;
+      },
     },
   },
 };

@@ -17,7 +17,7 @@
 // - The guided connection controller stages accounts through this host's draft facade
 // - Homebridge owns configuration persistence and the surrounding settings dialog
 //
-// Code version 2026.11.23
+// Code version 2026.11.27
 // Mark Hulskamp
 
 // Define our modules
@@ -151,7 +151,15 @@ export async function startSettings(homebridge, document) {
   // Identify the credentials checked. Cache keys are private comparisons only, never
   // displayed or logged; changing credentials immediately invalidates old results.
   const fingerprint = (account) =>
-    JSON.stringify([account?.type, account?.issueToken, account?.cookie, account?.access_token, account?.fieldTest === true]);
+    JSON.stringify([
+      account?.type,
+      account?.issueToken,
+      account?.cookie,
+      account?.access_token,
+      account?.refreshToken,
+      account?.deviceId,
+      account?.fieldTest === true,
+    ]);
 
   // Define form controls. Buttons do not submit the surrounding Homebridge form.
   const button = (label, handler, primary = false) => {
@@ -567,7 +575,7 @@ export async function startSettings(homebridge, document) {
 
     const account = accounts()[accountIndex];
 
-    if ([ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST].includes(account?.type) === false) {
+    if ([ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST, ACCOUNT_TYPE.GOOGLE_HOME].includes(account?.type) === false) {
       return;
     }
 
@@ -585,7 +593,9 @@ export async function startSettings(homebridge, document) {
         type: account.type,
         ...(account.type === ACCOUNT_TYPE.GOOGLE
           ? { issueToken: account.issueToken, cookie: account.cookie }
-          : { access_token: account.access_token }),
+          : account.type === ACCOUNT_TYPE.GOOGLE_HOME
+            ? { refreshToken: account.refreshToken, deviceId: account.deviceId }
+            : { access_token: account.access_token }),
         fieldTest: account.fieldTest === true,
       });
 
@@ -616,7 +626,25 @@ export async function startSettings(homebridge, document) {
     // Enable/disable edits the unsaved configuration; connection status independently
     // reports what this settings session has verified and never changes exclusion.
     const list = get('accounts-list');
+    const hasGoogleHome = accounts().some((account) => account.type === ACCOUNT_TYPE.GOOGLE_HOME);
+    const legacy = node('details', 'legacy-accounts');
+    const legacyList = node('div', 'legacy-account-list');
 
+    // Existing setup controls belong to Nest; Google Home's SSO controls remain disabled.
+    get('add-manual-account').disabled = false;
+    get('open-connection').disabled = connectionBusy === true;
+
+    // Retain the disclosure state when checks, toggles or edits rebuild the cards.
+    legacy.open = list.querySelector('.legacy-accounts')?.open === true;
+    const summary = node('summary');
+    // Setup actions stay in the native disclosure header so they remain available when closed.
+    summary.append(node('span', 'nest-heading', 'Nest'), get('connection-toolbar'));
+    legacy.append(
+      summary,
+      node('p', 'section-description', 'Access devices through the Nest service using an existing Google or Nest account.'),
+      node('p', 'account-guidance', 'Keep these accounts configured until all your devices are supported through Google Home.'),
+      legacyList,
+    );
     list.replaceChildren();
 
     for (const [accountIndex, account] of accounts().entries()) {
@@ -637,7 +665,7 @@ export async function startSettings(homebridge, document) {
       enabled.setAttribute('role', 'switch');
       enabled.setAttribute('aria-label', 'Enable account ' + (account.name ?? 'Unnamed account'));
       enabledLabel.htmlFor = enabled.id;
-      enabledLabel.append(enabled, node('span', undefined, 'Enabled'));
+      enabledLabel.append(enabled, node('span', undefined, enabled.checked === true ? 'Enabled' : 'Disabled'));
       enabled.addEventListener('change', () => {
         // Preserve the existing configuration key; the control presents its inverse.
         account.exclude = enabled.checked !== true;
@@ -680,7 +708,14 @@ export async function startSettings(homebridge, document) {
       const edit = button('Edit', (event) => editAccount(accountIndex, event.currentTarget));
 
       edit.id = 'edit-account-' + accountIndex;
+      // Keep the card layout consistent while Google Home enrollment remains manual.
+      edit.disabled = account.type === ACCOUNT_TYPE.GOOGLE_HOME;
       actions.append(edit);
+      if (account.type === ACCOUNT_TYPE.GOOGLE_HOME) {
+        const reconnect = button('Reconnect', () => {});
+        reconnect.disabled = true;
+        actions.append(reconnect);
+      }
       if ([ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST].includes(account.type) === true) {
         actions.append(
           button('Reconnect', async () => {
@@ -705,39 +740,38 @@ export async function startSettings(homebridge, document) {
 
       const removal = node('div', 'account-removal');
 
-      // Use inline confirmation: Homebridge's sandboxed iframe does not permit
-      // native confirm dialogs. No draft changes occur until removal is confirmed.
-      const confirmation = node('div', 'account-removal-confirmation');
-
+      // Match the manual editor with a separate panel below the account card.
+      // Confirmation only stages removal; Save commits the configuration.
+      const confirmation = node('section', 'editor-panel account-removal-panel');
       confirmation.hidden = true;
-      confirmation.setAttribute('role', 'group');
-      confirmation.setAttribute('aria-label', 'Confirm account removal');
-      confirmation.append(node('p', undefined, 'Remove account “' + (account.name ?? 'Unnamed account') + '”?'));
-
+      const question = node('p');
+      question.append(
+        node('span', undefined, 'Remove '),
+        node('strong', undefined, '“' + (account.name ?? 'Unnamed account') + '”'),
+        node('span', undefined, ' from this configuration?'),
+      );
+      question.id = 'remove-account-question-' + accountIndex;
+      confirmation.setAttribute('aria-labelledby', question.id);
+      const remove = button('Remove', () => {
+        confirmation.hidden = false;
+        confirmation.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+        cancel.focus({ preventScroll: true });
+      });
+      const cancel = button('Cancel', () => {
+        confirmation.hidden = true;
+        remove.focus({ preventScroll: true });
+      });
       const choices = node('div', 'button-row');
-
-      choices.append(
-        button('Keep account', () => {
-          confirmation.hidden = true;
-          removal.querySelector('button').focus();
-        }),
-        button('Remove account', () => {
-          block().accounts.splice(accountIndex, 1);
-          connectionStates.clear();
-          changed();
-          renderAll();
-        }),
-      );
-      confirmation.append(choices);
-      removal.append(
-        button('Remove', () => {
-          confirmation.hidden = false;
-          confirmation.scrollIntoView({ block: 'nearest', behavior: 'instant' });
-          choices.querySelector('button').focus({ preventScroll: true });
-        }),
-      );
+      choices.append(cancel, button('Remove account', () => {
+        block().accounts.splice(accountIndex, 1);
+        connectionStates.clear();
+        changed();
+        renderAll();
+      }, true));
+      confirmation.append(question, choices);
+      removal.append(remove);
       actionGroups.append(actions);
-      if ([ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST].includes(account.type) === true) {
+      if ([ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST, ACCOUNT_TYPE.GOOGLE_HOME].includes(account.type) === true) {
         const connection = node('div', 'account-connection');
         const check = button(state === 'pending' ? 'Checking…' : 'Check connection', () => checkConnection(accountIndex));
         check.disabled = connectionBusy;
@@ -746,13 +780,20 @@ export async function startSettings(homebridge, document) {
       }
 
       actionGroups.append(removal);
-      row.append(info, actionGroups, confirmation);
-      list.append(row);
+      row.append(info, actionGroups);
+      const entry = node('div', 'account-entry');
+      entry.append(row, confirmation);
+      (account.type !== ACCOUNT_TYPE.GOOGLE_HOME ? legacyList : list).append(entry);
     }
 
-    if (accounts().length === 0) {
-      list.append(node('p', 'section-description', 'Connect a Google or Nest account, or enter existing credentials with Manual setup.'));
+    if (hasGoogleHome !== true) {
+      list.append(node('p', 'account-empty section-description', 'No Google Home accounts configured.'));
     }
+    if (legacyList.children.length === 0) {
+      legacyList.append(node('p', 'account-empty section-description', 'No Nest accounts configured.'));
+      legacy.querySelector('.account-guidance').hidden = true;
+    }
+    list.append(legacy);
   }
 
   function renderAll() {
@@ -903,7 +944,7 @@ export async function startSettings(homebridge, document) {
   // Check each enabled account once when settings opens. No device subscriptions
   // or background polling are started by this UI.
   for (const [accountIndex, account] of accounts().entries()) {
-    if ([ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST].includes(account.type) === true && account.exclude !== true) {
+    if ([ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST, ACCOUNT_TYPE.GOOGLE_HOME].includes(account.type) === true && account.exclude !== true) {
       await checkConnection(accountIndex);
     }
   }

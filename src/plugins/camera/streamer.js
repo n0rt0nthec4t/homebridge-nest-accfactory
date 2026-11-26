@@ -32,7 +32,7 @@
 // - Protocol signalling, packet reordering and frame assembly remain in the source
 // - FFmpeg owns command construction and the bounded MP4 fragment reader
 //
-// Code version 2026.11.23
+// Code version 2026.11.26
 // Mark Hulskamp
 'use strict';
 
@@ -45,7 +45,6 @@ import path from 'node:path';
 import { PassThrough } from 'stream';
 
 // Define our modules
-import HomeKitDevice from '../../HomeKitDevice.js';
 import MediaTimeline from './mediatimeline.js';
 import StreamTransport from './streamtransport.js';
 import H264 from './h264.js';
@@ -145,10 +144,6 @@ export default class Streamer {
     }
 
     this.#HomeKitDeviceUUID = uuid;
-
-    HomeKitDevice.message(uuid, Streamer.MESSAGE, this);
-    HomeKitDevice.message(uuid, HomeKitDevice.UPDATE, this);
-    HomeKitDevice.message(uuid, HomeKitDevice.TIMER, this);
 
     this.migrating = deviceData?.migrating === true;
     this.online = deviceData?.online === true;
@@ -255,10 +250,11 @@ export default class Streamer {
     becameOnline = wasOnline !== true && this.online === true;
     becameAvailable = becameOnline === true && this.videoEnabled === true;
 
-    // Transport-owned connection/auth/source options.
+    // Transport-owned connection/auth/source options. Native IDs supplied by the
+    // routing boundary are independent of the accessory's combined-cache key.
     // Transport subclasses decide which fields matter.
     transportOptions = {
-      uuid: deviceData?.nest_google_device_uuid,
+      uuid: deviceData?.apiAccess?.resourceId ?? deviceData?.nest_google_device_uuid,
       host: deviceData?.nexustalk_host,
       apiAccess: deviceData?.apiAccess,
       fieldTest: deviceData?.apiAccess?.fieldTest === true,

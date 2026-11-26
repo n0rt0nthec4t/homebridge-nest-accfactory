@@ -26,7 +26,7 @@
 // - Aliases remain private to the writer and are released on platform shutdown
 // - Normal plugin logs and streaming debug messages are outside this module
 //
-// Code version 2026.11.23
+// Code version 2026.11.24
 // Mark Hulskamp
 'use strict';
 
@@ -169,6 +169,7 @@ const REDACTION = {
     'directnexustalkhost',
     // User-chosen names, room labels, and opaque service configuration.
     'name',
+    'displayname',
     'description',
     'title',
     'label',
@@ -183,6 +184,7 @@ const REDACTION = {
     'serialnumber',
     'deviceserialnumber',
     'heatlinkserialnumber',
+    'floodlightid',
     'rtsserialnumber',
     'deviceid',
     'rtsdeviceid',
@@ -223,12 +225,20 @@ const REDACTION = {
 // Token/password suffixes also cover qualified property names such as camera.pairing_token.
 function fieldRule(key) {
   let normalised = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  // HomeGraph publishes qualified buckets such as attributes.cameraStream.deviceId.
+  // Apply the same privacy rule to the terminal property as an unqualified field.
+  let property = key
+    .split('.')
+    .at(-1)
+    .replace(/[^a-z0-9]/gi, '')
+    .toLowerCase();
   return REDACTION.remove.has(normalised) === true ||
+    REDACTION.remove.has(property) === true ||
     normalised.endsWith('token') === true ||
     normalised.endsWith('tokens') === true ||
     normalised.endsWith('password') === true
     ? 'remove'
-    : REDACTION.alias.has(normalised) === true
+    : REDACTION.alias.has(normalised) === true || REDACTION.alias.has(property) === true
       ? 'alias'
       : undefined;
 }
@@ -313,12 +323,28 @@ function createSupportDump(log) {
             collect(item, key, depth + 1);
           }
         } else if (value !== null && typeof value === 'object' && ArrayBuffer.isView(value) === false) {
+          // In Foyer Property wrappers, name is a schema key, not a user label.
+          // Its value must inherit that key's privacy rule (serial, token, name, etc.).
+          let property =
+            ['properties', 'traits'].includes(key) === true && typeof value.name === 'string' && Object.hasOwn(value, 'value') === true
+              ? value.name
+              : undefined;
           for (let field in value) {
             if (Object.hasOwn(value, field) === true) {
               if (RESOURCE_PREFIX.test(field) === true || isIP(field) !== 0) {
                 registerIdentifier(field);
               }
-              collect(value[field], rule === 'alias' ? key : field, depth + 1);
+              collect(
+                value[field],
+                rule === 'alias'
+                  ? key
+                  : property !== undefined && field === 'name'
+                    ? 'schemaPropertyName'
+                    : property !== undefined && field === 'value'
+                      ? property
+                      : field,
+                depth + 1,
+              );
             }
           }
         }
@@ -400,9 +426,23 @@ function createSupportDump(log) {
         if (value !== null && typeof value === 'object') {
           // Rewrite identifying keys as well as values, keeping references usable in the diagnostic copy.
           let result = Object.create(null);
+          let property =
+            ['properties', 'traits'].includes(key) === true && typeof value.name === 'string' && Object.hasOwn(value, 'value') === true
+              ? value.name
+              : undefined;
           for (let field of Object.keys(value)) {
             let alias = pattern === undefined ? field : field.replace(pattern, (match) => identifiers.get(match));
-            result[alias] = redact(value[field], rule === 'alias' ? key : field, depth + 1);
+            result[alias] = redact(
+              value[field],
+              rule === 'alias'
+                ? key
+                : property !== undefined && field === 'name'
+                  ? 'schemaPropertyName'
+                  : property !== undefined && field === 'value'
+                    ? property
+                    : field,
+              depth + 1,
+            );
           }
           return result;
         }

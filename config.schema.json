@@ -183,12 +183,6 @@
             "humiditySensor": {
               "type": "boolean"
             },
-            "ignoreIndoorChime": {
-              "type": "boolean"
-            },
-            "localAccess": {
-              "type": "boolean"
-            },
             "logMotionEvents": {
                "type": "boolean"
             },

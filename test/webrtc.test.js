@@ -203,6 +203,7 @@ test('WebRTC prevents duplicate opens and sends gathered SDP, not the initial of
   await Promise.all([context.transport.open(), context.transport.open()]);
   assert.equal(context.peers.length, 1);
   assert.equal(context.calls('JoinStream')[0].sdp, 'gathered-offer');
+  assert.equal(context.calls('JoinStream')[0].deviceId, 'camera');
   assert.deepEqual(context.peers[0].remoteDescription, { type: 'answer', sdp: 'answer-sdp' });
   context.peers[0].iceConnectionState = 'connected';
   context.peers[0].iceConnectionStateChange.emit();
@@ -1792,4 +1793,50 @@ test('WebRTC retries shared lookup after credentials changed during prefetch', a
   await flow.transport.open();
   assert.equal(requests, 2);
   assert.equal(flow.peers.length, 1);
+});
+
+test('WebRTC uses the resolved HomeGraph ID for offer, extension, media and shutdown', async (t) => {
+  let id = 'ba370022-d5a3-4839-943c-45dd4b5377aa';
+  let flow = setup(t, {
+    extend: { status: 0, data: [{ streamExtensionStatus: 'STATUS_STREAM_EXTENDED' }] },
+    GetHomeGraph: {
+      status: 0,
+      data: [
+        { homes: [{ devices: [{ id: { googleUuid: id }, otherIds: { otherThirdPartyId: [{ idType: 'PHX', id: 'DEVICE_CAMERA' }] } }] }] },
+      ],
+    },
+  });
+  await flow.transport.update({ uuid: id });
+  await flow.transport.open();
+  assert.equal(flow.peers.length, 1);
+  assert.equal(flow.calls('SendCameraViewIntent')[0].request.googleDeviceId.value, id);
+  assert.equal(flow.calls('JoinStream')[0].deviceId, id);
+  assert.equal(flow.transport.closed, false);
+  // Exercise renewal before media starts its separate inactivity watchdog.
+  flow.transport.setState(StreamTransport.STATE.READY);
+  t.mock.timers.tick(30000);
+  await setImmediate();
+  let peer = flow.peers[0];
+  let track = { codec: { payloadType: 111 }, onReceiveRtp: event() };
+  peer.transceivers.find((entry) => entry.kind === 'audio').onTrack.emit(track);
+  for (let n = 0; n < 3; n++) {
+    track.onReceiveRtp.emit({ header: { sequenceNumber: n, timestamp: n * 960, payloadType: 111, ssrc: 7 }, payload: Buffer.from([1, 2]) });
+    t.mock.timers.tick(160);
+  }
+  assert.ok(flow.media.length > 0);
+  flow.stopConsumers();
+  await flow.transport.close();
+  let calls = flow.calls('JoinStream');
+  assert.equal(
+    calls.every((call) => call.deviceId === id),
+    true,
+  );
+  assert.equal(
+    calls.some((call) => call.command === 'extend'),
+    true,
+  );
+  assert.equal(
+    calls.some((call) => call.command === 'end'),
+    true,
+  );
 });

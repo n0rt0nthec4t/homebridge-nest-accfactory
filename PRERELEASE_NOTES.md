@@ -8,6 +8,51 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.0.0-beta.4] - 2026-11-27
+
+### Breaking Changes
+
+- HomeKit doorbell rings now follow Quiet Time independently of the physical indoor chime. `ignoreIndoorChime` is obsolete and can be removed from configuration.
+
+### Testing
+
+Google Home integration is experimental and requires manually configured SSO credentials. Please test discovery, state changes, controls and recovery after restart or source changes. For cameras and doorbells, also test snapshots, live video, HKSV, two-way audio and repeated event notifications. Heat Link capabilities and HomeGraph lock actor, tamper and auto-relock details still require device validation.
+
+### Added
+
+- Google Home support for thermostats, temperature sensors, Protects, locks, cameras, doorbells, floodlights and Home/Away accessories, plus weather with current outdoor temperature and conditions.
+- Google Home push updates with automatic registration, reconnect and polling fallback.
+- Initial Heat Link identity and thermostat-association mappings, and hot-water boost control through the associated thermostat. Heat Link accessory creation remains gated on verified identity and capabilities.
+
+### Changed
+
+- Restore Node.js 22 support from 22.13.0 through 30 April 2027, alongside Node.js 24 and 26, and enforce the complete minimum version at startup. Homebridge 2.x remains required.
+- Confirm account removal in an inline panel matching manual account setup.
+- Restyle account settings with consistent Google Home and collapsible Nest sections, empty states and setup controls beside each heading. Keep Google Home setup disabled pending SSO support and label account switches Enabled or Disabled to match their state.
+- Retrieve Google Home camera events with one timeline request per camera, limited to four seconds without automatic retries.
+- Include HTTP response status and peer shutdown information in gRPC failure diagnostics.
+- Update development tooling dependencies.
+- Firebase installation requests use the shared Google Home user agent.
+- Limit the packaged Foyer schema to APIs and message fields currently used by the plugin.
+- Google Home accounts support SSO token renewal and UI connection checks, with a generated session device ID when none is configured.
+- Camera motion sensors remain available, with detection driven by received events rather than a motion-enabled preference.
+
+### Fixed
+
+- Prevent a completed connection check from being shown on a different Google Home account after removal.
+- Preserve Google Home discovery backoff across push-status changes and remove blanket automatic Foyer request retries.
+- Fix Windows publish validation by making the push-registration persistence-failure test consistent across platforms.
+- Correct HomeGraph device naming, firmware reporting and technical-information parsing, including full-width punctuation, and improve thermostat and Protect state updates.
+- Request fresh Google Home camera snapshots and use the supplied placeholder when no live-image reference is available.
+- Prevent retained motion and doorbell history from retriggering alerts after cooldown or Quiet Time, and prevent retired camera transports from restarting after migration.
+- Apply field-map source preferences consistently and preserve accessory identity and routing when a complete API fallback is available.
+- Recover stalled gRPC and push connections while preserving commands across ordinary telemetry and unchanged polling reads.
+- Deliver accepted trait changes after initial discovery, limit support dumps to changed fields and show native device UUIDs in query errors.
+
+### Security
+
+- Restrict protobuf snapshot downloads to approved HTTPS hosts and matching camera paths, reject redirects and limit downloaded images to 8 MiB.
+
 ## [1.0.0-beta.3] - 2026-11-23
 
 ### Added
@@ -1383,7 +1428,8 @@ Due to the volume of changes in this release, versioning has been reverted to al
 
 - Main changes are around the video/audio pipelines in `webrtc.js` and `streamer.js` to improve stability and recovery from packet loss, especially for video streams
 
-[Unreleased]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/compare/v1.0.0-beta.3...HEAD
+[Unreleased]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/compare/v1.0.0-beta.4...HEAD
+[1.0.0-beta.4]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/compare/v1.0.0-beta.3...v1.0.0-beta.4
 [1.0.0-beta.3]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/compare/v1.0.0-beta.2...v1.0.0-beta.3
 [1.0.0-beta.2]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/compare/v1.0.0-beta.1...v1.0.0-beta.2
 [1.0.0-beta.1]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/tree/v1.0.0-beta.1

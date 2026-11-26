@@ -250,7 +250,8 @@ for (let [requested, selected, frames] of [
       return writeVideo.call(this, data, timestamp, bootstrap);
     });
     await streamer.onMessage(Streamer.MESSAGE_TYPE.START_RECORD, {
-      sessionID: 'preceding-idr', options: { recordTime: requested, includeAudio: true },
+      sessionID: 'preceding-idr',
+      options: { recordTime: requested, includeAudio: true },
     });
     advance(context, 500);
     assert.equal(written[0], selected);
@@ -2009,3 +2010,13 @@ for (let evicted of [false, true]) {
     assert.equal(hooks.instances[0].closed, false);
   });
 }
+
+test('camera cache routing IDs stay separate from native transport IDs across credential updates', async (context) => {
+  let { streamer, transport } = setup(context);
+  let routingId = 'DEVICE_["account","HomeGraph","native-camera"]';
+  await streamer.onUpdate({ nest_google_device_uuid: routingId, apiAccess: { oauth2: 'fabricated', resourceId: 'native-camera' } });
+  assert.equal(streamer.nest_google_device_uuid, routingId);
+  assert.equal(transport.calls.findLast((call) => call[0] === 'update')[1].uuid, 'native-camera');
+  await streamer.onUpdate({ apiAccess: { oauth2: 'replacement', resourceId: 'native-camera' } });
+  assert.equal(transport.calls.findLast((call) => call[0] === 'update')[1].uuid, 'native-camera');
+});

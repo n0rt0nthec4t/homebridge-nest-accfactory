@@ -1,5 +1,6 @@
 // Exercise account ownership, source selection and diagnostics through the real platform lifecycle.
 // Network and device mapping remain fixture boundaries; System and the protobuf client retain their source bodies.
+import { getResourceKey } from '../src/utils.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate } from 'node:timers/promises';
@@ -88,7 +89,7 @@ test('camera credential refresh follows the resource owner across protobuf resou
     assert.equal(flow.device.deviceData.nest_google_device_uuid, resource);
     for (let [id, account] of flow.accounts) {
       runtime.messages.length = 0;
-      account.cameraAuth = { token: id + '-token' };
+      account.cameraAuth = { token: id + '-refreshed-' + resource };
       await flow.authorise(id, account, { wasAuthorised: true });
       assert.equal(runtime.messages.length, owner === id ? 1 : 0);
       if (owner === id) {
@@ -148,3 +149,38 @@ test('enabled support dumps redact secrets without changing raw or accessory dat
   assert.equal(flow.raw.DEVICE_TEST.value.fixture.access_token, 'Private Account Token');
   assert.equal(flow.device.deviceData.nest_google_device_uuid, 'DEVICE_TEST');
 });
+
+for (let source of [DATA_SOURCE.HOMEGRAPH, DATA_SOURCE.PROTOBUF]) {
+  test('support dumps retain unmapped device updates without a HomeKit accessory: ' + source, async (context) => {
+    let flow = await platformHarness(context, { config: { supportDump: true }, map: () => ({}) });
+    let nativeId = source === DATA_SOURCE.HOMEGRAPH ? 'unmapped' : 'DEVICE_UNMAPPED';
+    let id = source === DATA_SOURCE.HOMEGRAPH ? getResourceKey('account', source, nativeId) : nativeId;
+    let field = source === DATA_SOURCE.HOMEGRAPH ? 'unmappedDiagnostic.motionEnabled' : 'unmapped_diagnostic';
+    let first = { [field]: { boolean: true }, retainedValue: { number: 21.25 } };
+    flow.logs.length = 0;
+    await flow.sendBatch({
+      source,
+      isCurrent: () => true,
+      changes: [{ resourceId: nativeId, value: first, fields: new Set(Object.keys(first)) }],
+    });
+    assert.equal(flow.device, undefined);
+    assert.deepEqual(flow.registered, []);
+    assert.deepEqual(flow.raw[id].value, first);
+    let initial = flow.logs.map((entry) => entry.slice(1).join(' ')).join('\n');
+    assert.match(initial, /unmappedDiagnostic|unmapped_diagnostic/);
+    assert.match(initial, /21.25/);
+    flow.logs.length = 0;
+    await flow.sendBatch({
+      source,
+      isCurrent: () => true,
+      changes: [{ resourceId: nativeId, value: { [field]: { boolean: false } }, fields: new Set([field]) }],
+    });
+    let changed = flow.logs.map((entry) => entry.slice(1).join(' ')).join('\n');
+    assert.match(changed, /unmappedDiagnostic|unmapped_diagnostic/);
+    assert.match(changed, /false/);
+    assert.equal(changed.includes('retainedValue'), false, 'unchanged sibling fields are not dumped again');
+    assert.equal(flow.raw[id].value.retainedValue.number, 21.25);
+    assert.equal(flow.raw[id].value[field].boolean, false);
+    assert.deepEqual(flow.registered, []);
+  });
+}

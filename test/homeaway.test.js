@@ -1,4 +1,5 @@
 // Verify protobuf-only Home/Away discovery, stable identity and occupancy updates without starting Homebridge.
+import { getResourceKey } from '../src/utils.js';
 import assert from 'node:assert/strict';
 import { importSource } from './helpers/import-source.js';
 import { readFile } from 'node:fs/promises';
@@ -100,4 +101,73 @@ test('Home/Away publishes the translated occupancy supplied by the lifecycle', (
     updates.map((args) => args[1]),
     [1, 0],
   );
+});
+
+const homegraphId = getResourceKey('account', 'HomeGraph', 'foyer-home', 'STRUCTURE');
+const homegraphSerial = NESTLABS_MAC_PREFIX + crc24(DEVICE_TYPE.HOMEAWAY.toUpperCase() + ':FOYER-HOME').toUpperCase();
+function homegraphStructure(state) {
+  return {
+    source: DATA_SOURCE.HOMEGRAPH,
+    value: {
+      home: {
+        uuid: 'foyer-home',
+        name: 'Home',
+        address: { addressComponents: { city: 'Sydney', state: 'NSW' } },
+        traits: [
+          {
+            name: 'home.platform.traits.AreaPresenceStateTrait',
+            fields: {
+              presenceState: { stringValue: state },
+              featureMap: { numberValue: 1 },
+            },
+          },
+        ],
+      },
+    },
+  };
+}
+
+test('HomeGraph Home/Away uses its home identity and maps only confirmed occupied/vacant states', () => {
+  let raw = { [homegraphId]: homegraphStructure('PRESENCE_STATE_OCCUPIED') };
+  let config = { options: {}, homes: [{ homegraph_home_uuid: homegraphId, exclude: true }] };
+  for (let [state, expected] of [
+    ['PRESENCE_STATE_OCCUPIED', true],
+    ['PRESENCE_STATE_VACANT', false],
+  ]) {
+    raw[homegraphId].value.home.traits[0].fields.presenceState.stringValue = state;
+    let result = processRawData(undefined, raw, config, undefined, new Map([[homegraphId, { fields: new Set(['home']) }]]));
+    assert.deepEqual(Object.keys(result), [homegraphSerial]);
+    assert.equal(result[homegraphSerial].full, true);
+    let data = result[homegraphSerial].data;
+    assert.equal(data.occupancy, expected);
+    assert.equal(data.nest_google_device_uuid, homegraphId);
+    assert.equal(data.nest_google_home_uuid, homegraphId);
+    assert.equal(data.description, 'Sydney - NSW');
+    assert.equal(data.excluded, true);
+    assert.equal(Object.hasOwn(data, 'source'), false);
+    assert.equal(Object.hasOwn(data, 'dataSource'), false);
+  }
+  for (let state of [undefined, 'PRESENCE_STATE_UNSPECIFIED', 'UNKNOWN']) {
+    raw[homegraphId].value.home.traits[0].fields.presenceState.stringValue = state;
+    let result = processRawData(undefined, raw, config);
+    assert.equal(result[homegraphSerial].full, false);
+    assert.equal(result[homegraphSerial].data.occupancy, undefined);
+  }
+});
+
+test('HomeGraph Home/Away retains configuration overrides and ignores unrelated resource changes', () => {
+  let raw = { [homegraphId]: homegraphStructure('PRESENCE_STATE_VACANT') };
+  delete raw[homegraphId].value.home.address;
+  let config = {
+    options: { eveHistory: true },
+    homes: [{ homegraph_home_uuid: homegraphId, exclude: true }],
+    devices: [{ serialNumber: homegraphSerial, exclude: false, eveHistory: false }],
+  };
+  let data = processRawData(undefined, raw, config)[homegraphSerial].data;
+  assert.equal(data.description, 'Home');
+  assert.equal(data.excluded, false);
+  assert.equal(data.eveHistory, false);
+  assert.deepEqual(processRawData(undefined, raw, config, undefined, new Map([['STRUCTURE_OTHER', { fields: new Set(['home']) }]])), {});
+  delete raw[homegraphId].value.home.uuid;
+  assert.deepEqual(processRawData(undefined, raw, config), {});
 });

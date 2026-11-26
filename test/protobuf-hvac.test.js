@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { importSource } from './helpers/import-source.js';
 import test from 'node:test';
 import { DATA_SOURCE } from '../src/consts.js';
+import { getResourceKey } from '../src/utils.js';
 
 let { processRawData: heatlink } = await importSource(new URL('../src/plugins/heatlink.js', import.meta.url));
 let { processRawData: tempsensor } = await importSource(new URL('../src/plugins/tempsensor.js', import.meta.url));
@@ -171,7 +172,7 @@ for (let [plugin, home, device, excluded] of [
     let raw = rawData();
     let data = tempsensor(undefined, raw, {
       options: { exclude: plugin, eveHistory: false },
-      homes: [{ google_home_uuid: 'structure_home', exclude: home }],
+      homes: [{ protobuf_home_uuid: 'structure_home', exclude: home }],
       devices: [{ serialNumber: 'sensor_serial', exclude: device, eveHistory: true }],
     }).SENSOR_SERIAL.data;
     assert.equal(data.excluded, excluded);
@@ -324,3 +325,141 @@ test('unready protobuf does not fall back to retired REST thermostat, sensor or 
     assert.deepEqual(result, {});
   }
 });
+
+function homegraphHeatlink() {
+  let home = getResourceKey('account', DATA_SOURCE.HOMEGRAPH, 'home', 'STRUCTURE');
+  let parent = getResourceKey('account', DATA_SOURCE.HOMEGRAPH, 'thermostat');
+  let device = getResourceKey('account', DATA_SOURCE.HOMEGRAPH, 'heatlink');
+  return {
+    home,
+    parent,
+    device,
+    raw: {
+      [home]: { connection: 'account', source: DATA_SOURCE.HOMEGRAPH, value: { home: { uuid: 'home', name: 'Home' } } },
+      [parent]: {
+        connection: 'account',
+        source: DATA_SOURCE.HOMEGRAPH,
+        value: {
+          structureId: 'home',
+          googleHome: {
+            id: { googleUuid: 'thermostat', thirdPartyId: { idType: 'nest-home-assistant-prod' } },
+            type: 'action.devices.types.THERMOSTAT',
+          },
+          'temperatureSetting.temperatureUnit': { text: 'C' },
+        },
+      },
+      [device]: {
+        connection: 'account',
+        source: DATA_SOURCE.HOMEGRAPH,
+        value: {
+          structureId: 'home',
+          googleHome: {
+            id: { googleUuid: 'heatlink', thirdPartyId: { idType: 'nest-home-assistant-prod' } },
+            type: 'action.devices.types.SENSOR',
+            displayName: 'Heat Link',
+            hardware: { model: 'Heat Link E', softwareVersion: '1.2.3' },
+            parentDevice: { googleUuid: 'thermostat' },
+          },
+          technicalInformation: { serialNumber: 'HEATLINK_SERIAL' },
+          'deviceStatus.online': { boolean: false },
+        },
+      },
+    },
+  };
+}
+
+test('HomeGraph Heat Link identity stays partial until controls are verified, without inventing readings', () => {
+  let { raw, home, parent, device } = homegraphHeatlink();
+  let result = heatlink(undefined, raw, { options: {} }).HEATLINK_SERIAL;
+  assert.equal(result.full, false);
+  assert.equal(result.data.serialNumber, 'HEATLINK_SERIAL');
+  assert.equal(result.data.model, 'Heat Link E');
+  assert.equal(result.data.softwareVersion, '1.2.3');
+  assert.equal(result.data.nest_google_device_uuid, device);
+  assert.equal(result.data.nest_google_home_uuid, home);
+  assert.equal(result.data.associated_thermostat, parent);
+  assert.equal(result.data.online, false);
+  assert.equal(result.data.temperature_scale, 'C');
+  for (let key of [
+    'has_hot_water_control',
+    'has_hot_water_temperature',
+    'hot_water_boost_active',
+    'current_water_temperature',
+    'hot_water_temperature',
+    'source',
+    'dataSource',
+  ]) {
+    assert.equal(result.data[key], undefined, key);
+  }
+  assert.deepEqual(tempsensor(undefined, raw, { options: {} }), {});
+  raw[parent].value['temperatureSetting.temperatureUnit'].text = 'F';
+  let changed = new Map([[parent, { fields: new Set(['temperatureSetting.temperatureUnit']) }]]);
+  assert.equal(heatlink(undefined, raw, { options: {} }, undefined, changed).HEATLINK_SERIAL.data.temperature_scale, 'F');
+  assert.deepEqual(heatlink(undefined, raw, { options: {} }, undefined, new Map()), {});
+  delete raw[device].value.technicalInformation;
+  assert.deepEqual(heatlink(undefined, raw, { options: {} }), {});
+});
+
+for (let invalid of [
+  'parent account',
+  'parent home',
+  'parent provider',
+  'parent type',
+  'home account',
+  'device provider',
+  'missing firmware',
+]) {
+  test('HomeGraph Heat Link retains unknown identity/association safely: ' + invalid, () => {
+    let { raw, home, parent, device } = homegraphHeatlink();
+    if (invalid === 'parent account') {
+      raw[parent].connection = 'other-account';
+    }
+    if (invalid === 'parent home') {
+      raw[parent].value.structureId = 'other-home';
+    }
+    if (invalid === 'parent provider') {
+      raw[parent].value.googleHome.id.thirdPartyId.idType = 'third-party';
+    }
+    if (invalid === 'parent type') {
+      raw[parent].value.googleHome.type = 'action.devices.types.LOCK';
+    }
+    if (invalid === 'home account') {
+      raw[home].connection = 'other-account';
+    }
+    if (invalid === 'device provider') {
+      raw[device].value.googleHome.id.thirdPartyId.idType = 'third-party';
+    }
+    if (invalid === 'missing firmware') {
+      delete raw[device].value.googleHome.hardware.softwareVersion;
+    }
+    let result = heatlink(undefined, raw, { options: {} }).HEATLINK_SERIAL;
+    if (['home account', 'device provider'].includes(invalid) === true) {
+      assert.equal(result, undefined);
+    } else {
+      assert.equal(result.full, false);
+      assert.equal(result.data[invalid === 'missing firmware' ? 'softwareVersion' : 'associated_thermostat'], undefined);
+    }
+  });
+}
+
+for (let reverse of [false, true]) {
+  test('partial HomeGraph Heat Link updates preserve protobuf control routing: reverse=' + reverse, () => {
+    let cloud = homegraphHeatlink();
+    let raw = { ...rawData(), ...cloud.raw };
+    if (reverse === true) {
+      raw = Object.fromEntries(Object.entries(raw).reverse());
+    }
+    let changed = new Map([[cloud.device, { fields: new Set(['technicalInformation', 'googleHome']) }]]);
+    let result = heatlink(undefined, raw, { options: {} }, undefined, changed).HEATLINK_SERIAL;
+    assert.equal(result.full, true);
+    assert.equal(result.data.nest_google_device_uuid, 'DEVICE_THERMOSTAT');
+    assert.equal(result.data.associated_thermostat, 'DEVICE_THERMOSTAT');
+    assert.equal(result.data.nest_google_home_uuid, 'STRUCTURE_HOME');
+    assert.equal(result.data.has_hot_water_temperature, true);
+    assert.equal(result.data.hot_water_temperature, 55);
+    assert.equal(result.data.serialNumber, 'HEATLINK_SERIAL');
+    delete raw[cloud.device].value.googleHome.hardware.softwareVersion;
+    assert.equal(heatlink(undefined, raw, { options: {} }, undefined, changed).HEATLINK_SERIAL.data.softwareVersion, '1.2.3');
+    assert.deepEqual(heatlink(undefined, raw, { options: {} }, 'Lock'), {});
+  });
+}

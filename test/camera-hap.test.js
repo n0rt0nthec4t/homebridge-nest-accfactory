@@ -57,7 +57,6 @@ async function setup(context, name = 'camera', data = {}, prepareAccessory = und
       motionCooldown: 30,
       doorbellCooldown: 5,
       has_motion_detection: true,
-      motion_detection_enabled: true,
       has_microphone: true,
       has_speaker: true,
       speaker_volume: 50,
@@ -70,8 +69,6 @@ async function setup(context, name = 'camera', data = {}, prepareAccessory = und
       has_light: name === 'floodlight',
       light_enabled: false,
       light_brightness: 50,
-      has_indoor_chime: true,
-      indoor_chime_enabled: true,
       events: [],
       streaming_protocols: ['PROTOCOL_WEBRTC'],
       ffmpeg: { valid: true, binary: 'fixture', hwaccel: false, transcode: false },
@@ -207,11 +204,19 @@ test('camera status LED accepts boolean and numeric HAP controls', async (contex
   HomeKitDevice.message(flow.device.uuid, HomeKitDevice.SET, async (values) => {
     flow.writes.push(values);
   });
-  for (let [requested, brightness] of [[0, 1], [1, 0], [false, 1], [true, 0]]) {
+  for (let [requested, brightness] of [
+    [0, 1],
+    [1, 0],
+    [false, 1],
+    [true, 0],
+  ]) {
     await characteristic.handleSetRequest(requested);
     assert.equal(flow.device.deviceData.statusled_brightness, brightness);
   }
-  assert.deepEqual(flow.writes, [1, 0, 1, 0].map((brightness) => ({ uuid: 'DEVICE_CAMERA', statusled_brightness: brightness })));
+  assert.deepEqual(
+    flow.writes,
+    [1, 0, 1, 0].map((brightness) => ({ uuid: 'DEVICE_CAMERA', statusled_brightness: brightness })),
+  );
 });
 
 test('consecutive night-vision writes retain boolean state before cloud reconciliation', async (context) => {
@@ -230,7 +235,10 @@ test('consecutive night-vision writes retain boolean state before cloud reconcil
     assert.equal(await characteristic.handleGetRequest(), enabled);
     await characteristic.handleSetRequest(enabled);
   }
-  assert.deepEqual(flow.writes, [false, true, false].map((enabled) => ({ uuid: 'DEVICE_CAMERA', irled_enabled: enabled })));
+  assert.deepEqual(
+    flow.writes,
+    [false, true, false].map((enabled) => ({ uuid: 'DEVICE_CAMERA', irled_enabled: enabled })),
+  );
 });
 
 for (let name of ['camera', 'doorbell', 'floodlight']) {
@@ -268,8 +276,11 @@ for (let name of ['camera', 'doorbell', 'floodlight']) {
       assert.equal(motion.value, false, 'a different ID at the same motion time must not rearm it');
       await device.update({ events: [{ ...event, id: 'delayed-motion', end_time: start + 3 }] });
       assert.equal(motion.value, false, 'a delayed older event must not rearm it');
-      await device.update({ events: [{ ...event, id: 'motion-2', end_time: start + 5 }] });
-      assert.equal(motion.value, true, 'newer motion must still start the cooldown');
+      await device.update({ events: [{ ...event, id: 'motion-1', end_time: start + 5 }] });
+      assert.equal(motion.value, false, 'an advancing end must not rearm the expired episode');
+      assert.equal(resets(), 2);
+      await device.update({ events: [{ ...event, id: 'motion-2', start_time: start + 5, end_time: start + 6 }] });
+      assert.equal(motion.value, true, 'a newer episode must still start the cooldown');
       assert.equal(resets(), 3);
     });
   }
@@ -301,30 +312,36 @@ test('camera motion watermark survives source changes between epoch seconds and 
   await device.update({ nest_google_device_uuid: 'DEVICE_CAMERA' });
   assert.equal(motion.value, false, 'retained history must not rearm motion when the source changes');
   await device.update({ events: [{ start_time: start * 1000, end_time: (start + 2) * 1000, types: ['motion'] }] });
+  assert.equal(motion.value, false, 'a revised end in another source does not create a new episode');
+  await device.update({ events: [{ start_time: (start + 3) * 1000, end_time: (start + 4) * 1000, types: ['motion'] }] });
   assert.equal(motion.value, true);
   await device.message(HomeKitDevice.TIMER, { timer: TIMERS.MOTION_COOLDOWN.name });
   await device.update({ nest_google_device_uuid: 'quartz.CAMERA' });
   assert.equal(motion.value, false);
-  await device.update({ events: [{ start_time: start, end_time: start + 3, types: ['motion'] }] });
-  assert.equal(motion.value, true, 'returning to seconds must still accept newer activity');
+  await device.update({ events: [{ start_time: start + 3, end_time: start + 5, types: ['motion'] }] });
+  assert.equal(motion.value, false, 'returning to seconds must retain the handled episode');
+  await device.update({ events: [{ start_time: start + 6, end_time: start + 7, types: ['motion'] }] });
+  assert.equal(motion.value, true, 'returning to seconds must still accept a newer episode');
 });
 
-test('motion, detection disable, offline and shutdown clear the same HomeKit service', async (context) => {
+test('motion events, cooldown and shutdown retain the same HomeKit service', async (context) => {
   let flow = await setup(context);
   let device = flow.device;
   let service = device.motionService;
   let event = { id: 'motion-1', start_time: 100, end_time: 101, types: ['motion'] };
   await device.update({ events: [event] });
   assert.equal(service.getCharacteristic(C.MotionDetected).value, true);
-  await device.update({ events: [], motion_detection_enabled: false });
+  await device.update({ events: [] });
+  assert.equal(service.getCharacteristic(C.MotionDetected).value, true, 'empty history must not end active motion early');
+  await device.onTimer({ timer: TIMERS.MOTION_COOLDOWN.name });
   assert.equal(service.getCharacteristic(C.MotionDetected).value, false);
-  await device.update({ motion_detection_enabled: true, events: [event] });
+  await device.update({ events: [event] });
   assert.equal(service.getCharacteristic(C.MotionDetected).value, false);
-  await device.update({ events: [{ ...event, id: 'motion-2', end_time: 102 }] });
+  await device.update({ events: [{ ...event, id: 'motion-2', start_time: 102, end_time: 103 }] });
   assert.equal(service.getCharacteristic(C.MotionDetected).value, true);
   await device.onTimer({ timer: TIMERS.MOTION_COOLDOWN.name });
   assert.equal(service.getCharacteristic(C.MotionDetected).value, false);
-  await device.update({ events: [{ ...event, id: 'motion-3', end_time: 103 }] });
+  await device.update({ events: [{ ...event, id: 'motion-3', start_time: 104, end_time: 105 }] });
   await device.onShutdown();
   assert.equal(service.getCharacteristic(C.MotionDetected).value, false);
   assert.equal(device.motionService, service);
@@ -531,3 +548,24 @@ test('camera timer dispatch polls through GET and commits motion through the lif
   assert.deepEqual(device.deviceData.events, events);
   assert.equal(device.motionService.getCharacteristic(C.MotionDetected).value, true);
 });
+
+for (let name of ['camera', 'doorbell', 'floodlight']) {
+  test(name + ' does not repeat an old vehicle track after cooldown, metadata updates or reconnection', async (context) => {
+    let { device } = await setup(context, name);
+    let service = device.motionService;
+    let motion = service.getCharacteristic(C.MotionDetected);
+    let event = { id: 'retained-vehicle', start_time: 1700000000000, end_time: 1700000001000, types: ['motion', 'vehicle'] };
+    await device.update({ events: [event] });
+    assert.equal(motion.value, true);
+    await device.message(HomeKitDevice.TIMER, { timer: TIMERS.MOTION_COOLDOWN.name });
+    await device.update({ battery_level: 75, events: [{ ...event, end_time: 1700000035000 }] });
+    assert.equal(motion.value, false);
+    await device.message(HomeKitDevice.OFFLINE);
+    await device.message(HomeKitDevice.ONLINE);
+    await device.update({ events: [{ ...event, end_time: 1700000060000 }] });
+    assert.equal(motion.value, false);
+    await device.update({ events: [{ ...event, id: 'new-vehicle', start_time: 1700000061000, end_time: 1700000062000 }] });
+    assert.equal(motion.value, true);
+    assert.equal(device.motionService, service);
+  });
+}

@@ -38,7 +38,7 @@ function setup(
   let requests = [];
   context.mock.method(http2, 'connect', () => {
     let session = new EventEmitter();
-    session.ping = () => {};
+    session.ping = (callback) => callback(null);
     session.destroy = () => {
       session.destroyed = true;
       session.emit('close');
@@ -216,6 +216,53 @@ test('session failure removes stale pooling state and a later command opens a re
   assert.equal((await flow.transport.command(prefix, 'ResourceApi', 'SendCommand', {})).status, 0);
 });
 
+for (let throws of [false, true]) {
+  test('keepalive failure retires its pooled session and reconnects: throws=' + throws, async (context) => {
+    let flow = setup(context);
+    await flow.transport.command(prefix, 'ResourceApi', 'SendCommand', {});
+    let old = flow.sessions[0];
+    old.ping = (callback) => {
+      let error = new Error('Fixture keepalive failure');
+      if (throws === true) {
+        throw error;
+      }
+      callback(error);
+    };
+    context.mock.timers.tick(60000);
+    assert.equal(old.destroyed, true);
+    assert.equal((await flow.transport.command(prefix, 'ResourceApi', 'SendCommand', {})).status, 0);
+    assert.equal(flow.sessions.length, 2);
+    assert.notEqual(flow.sessions[1].destroyed, true);
+  });
+}
+
+test('successful keepalive retains its pooled session', async (context) => {
+  let flow = setup(context);
+  await flow.transport.command(prefix, 'ResourceApi', 'SendCommand', {});
+  flow.sessions[0].ping = (callback) => callback(null);
+  context.mock.timers.tick(60000);
+  assert.equal((await flow.transport.command(prefix, 'ResourceApi', 'SendCommand', {})).status, 0);
+  assert.equal(flow.sessions.length, 1);
+  assert.notEqual(flow.sessions[0].destroyed, true);
+});
+
+test('late keepalive failure cannot retire the pooled replacement', async (context) => {
+  let flow = setup(context);
+  await flow.transport.command(prefix, 'ResourceApi', 'SendCommand', {});
+  let old = flow.sessions[0];
+  let callback;
+  old.ping = (onPing) => {
+    callback = onPing;
+  };
+  context.mock.timers.tick(60000);
+  old.closed = true;
+  await flow.transport.command(prefix, 'ResourceApi', 'SendCommand', {});
+  callback(new Error('Fixture delayed keepalive failure'));
+  assert.equal((await flow.transport.command(prefix, 'ResourceApi', 'SendCommand', {})).status, 0);
+  assert.equal(flow.sessions.length, 2);
+  assert.notEqual(flow.sessions[1].destroyed, true);
+});
+
 test('gRPC encodes nested Any payloads without mutating caller objects', async (context) => {
   let flow = setup(context);
   let values = {
@@ -339,4 +386,173 @@ test('gRPC stale session close and release cannot evict its pooled replacement',
   await flow.transport.command(prefix, 'ResourceApi', 'SendCommand', {});
   assert.equal(flow.sessions.length, 2);
   assert.notEqual(flow.sessions[1].destroyed, true);
+});
+
+for (let [method, values] of [
+  ['UpdateHotWaterBoost', { deviceId: 'thermostat', duration: { seconds: '3600' } }],
+  ['UpdateThermostatMode', { deviceId: 'thermostat', mode: 'THERMOSTAT_MODE_COOL', hvacActor: 'HVAC_ACTOR_IOS' }],
+  [
+    'UpdateTargetTemperature',
+    { deviceId: 'thermostat', mode: 'THERMOSTAT_MODE_COOL', temperature: { value: 24.5 }, hvacActor: 'HVAC_ACTOR_IOS' },
+  ],
+  [
+    'UpdateTargetTemperatureRange',
+    { deviceId: 'thermostat', tempLow: { value: 19 }, tempHigh: { value: 25 }, hvacActor: 'HVAC_ACTOR_IOS' },
+  ],
+  ['UpdateThermostatFanMode', { deviceId: 'thermostat', runTimeSeconds: { value: 900 } }],
+]) {
+  test('Foyer ' + method + ' resolves its schema and sends a native gRPC request', async (context) => {
+    let flow = setup(context, undefined, { protoPath: fileURLToPath(new URL('../src/protobuf/googlehome/foyer.proto', import.meta.url)) });
+    let result = await flow.transport.command('google.internal.home.foyer.v1.', 'EnergyService', method, values);
+    assert.equal(result.status, 0, result.code);
+    assert.deepEqual(result.data, [{}]);
+    assert.equal(flow.requests.length, 1);
+    assert.equal(flow.requests[0].headers[':path'], '/google.internal.home.foyer.v1.EnergyService/' + method);
+    assert.equal(flow.requests[0].frame.length > 5, true);
+  });
+}
+
+test('Foyer trait reads resolve production request/reply types through native gRPC', async (context) => {
+  let response = Buffer.from('0a050a030a0163', 'hex');
+  let flow = setup(
+    context,
+    (request) => {
+      let frame = Buffer.alloc(5 + response.length);
+      frame.writeUInt32BE(response.length, 1);
+      response.copy(frame, 5);
+      request.emit('response', { ':status': 200, 'content-type': 'application/grpc' });
+      request.emit('data', frame);
+      request.emit('trailers', { 'grpc-status': '0' });
+      request.close();
+    },
+    { protoPath: fileURLToPath(new URL('../src/protobuf/googlehome/foyer.proto', import.meta.url)) },
+  );
+  let result = await flow.transport.command('google.internal.home.foyer.v1.', 'HomeControlService', 'GetTraits', {
+    deviceIds: [{ uuid: 'c' }],
+  });
+  assert.equal(result.status, 0, result.code);
+  assert.equal(flow.requests[0].headers[':path'], '/google.internal.home.foyer.v1.HomeControlService/GetTraits');
+  assert.equal(result.data[0].device[0].uuid.value, 'c');
+});
+
+for (let [service, method, values, reply, expected] of [
+  [
+    'CameraService',
+    'ListTimelinePeriods',
+    { request: { deviceId: 'c', startTime: { seconds: '100' }, endTime: { seconds: '200' } }, field2: 1, strongRead: true },
+    '121f0a020864120208691a150a130a0173320e0a0174120208641a020869220108',
+    (data) => assert.deepEqual(data.periods[0].recorded.session.tracks[0].eventTypes, ['EVENT_TYPE_DOORBELL']),
+  ],
+]) {
+  test('Foyer ' + method + ' decodes camera history through the native transport', async (context) => {
+    let payload = Buffer.from(reply, 'hex');
+    let flow = setup(
+      context,
+      (request) => {
+        let frame = Buffer.alloc(5 + payload.length);
+        frame.writeUInt32BE(payload.length, 1);
+        payload.copy(frame, 5);
+        request.emit('response', { ':status': 200, 'content-type': 'application/grpc' });
+        request.emit('data', frame);
+        request.emit('trailers', { 'grpc-status': '0' });
+        request.close();
+      },
+      { protoPath: fileURLToPath(new URL('../src/protobuf/googlehome/foyer.proto', import.meta.url)) },
+    );
+    let result = await flow.transport.command('google.internal.home.foyer.v1.', service, method, values);
+    assert.equal(result.status, 0, result.code);
+    assert.equal(flow.requests[0].headers[':path'], '/google.internal.home.foyer.v1.' + service + '/' + method);
+    expected(result.data[0]);
+  });
+}
+
+for (let environment of [undefined, '', {}, 'CAESCxIJNC4zMy4yNy41']) {
+  test('Foyer release metadata is opt-in and preserves auth/framing: ' + JSON.stringify(environment), async (context) => {
+    let flow = setup(context, undefined, { foyerEnvironment: environment });
+    let result = await flow.transport.command(prefix, 'ResourceApi', 'SendCommand', {});
+    assert.equal(result.status, Grpc.STATUS.OK);
+    assert.equal(
+      flow.requests[0].headers['foyer-gha-environment'],
+      typeof environment === 'string' && environment !== '' ? environment : undefined,
+    );
+    assert.equal(flow.requests[0].headers.authorization, 'fixture');
+    assert.equal(flow.requests[0].headers['content-type'], 'application/grpc');
+    assert.equal(flow.requests[0].headers.te, 'trailers');
+    assert.equal(flow.requests[0].headers[':path'], '/' + prefix + 'ResourceApi/SendCommand');
+  });
+}
+
+test('unanswered keepalive retires only its session after fifteen seconds', async (context) => {
+  let flow = setup(context);
+  await flow.transport.command(prefix, 'ResourceApi', 'SendCommand', {});
+  let old = flow.sessions[0];
+  let acknowledge;
+  old.ping = (callback) => {
+    acknowledge = callback;
+  };
+  context.mock.timers.tick(60000);
+  context.mock.timers.tick(14999);
+  assert.notEqual(old.destroyed, true);
+  context.mock.timers.tick(1);
+  assert.equal(old.destroyed, true);
+  assert.equal((await flow.transport.command(prefix, 'ResourceApi', 'SendCommand', {})).status, 0);
+  assert.equal(flow.sessions.length, 2);
+  acknowledge(null);
+  context.mock.timers.tick(15000);
+  assert.notEqual(flow.sessions[1].destroyed, true);
+});
+
+test('keepalive acknowledgement clears its deadline and close listener', async (context) => {
+  let flow = setup(context);
+  await flow.transport.command(prefix, 'ResourceApi', 'SendCommand', {});
+  let session = flow.sessions[0];
+  let count = session.listenerCount('close');
+  let acknowledge;
+  session.ping = (callback) => {
+    acknowledge = callback;
+  };
+  context.mock.timers.tick(60000);
+  assert.equal(session.listenerCount('close'), count + 1);
+  context.mock.timers.tick(10000);
+  acknowledge(null);
+  assert.equal(session.listenerCount('close'), count);
+  context.mock.timers.tick(5000);
+  assert.notEqual(session.destroyed, true);
+});
+
+test('releasing a session clears an unanswered keepalive deadline', async (context) => {
+  let flow = setup(context);
+  await flow.transport.command(prefix, 'ResourceApi', 'SendCommand', {});
+  let session = flow.sessions[0];
+  session.ping = () => {};
+  let destroy = context.mock.method(session, 'destroy');
+  context.mock.timers.tick(60000);
+  flow.transport.release();
+  assert.equal(destroy.mock.callCount(), 1);
+  context.mock.timers.tick(15000);
+  assert.equal(destroy.mock.callCount(), 1);
+});
+
+test('GOAWAY diagnostics identify ping policy without exposing arbitrary peer data', async (context) => {
+  let calls = [];
+  let flow = setup(context, undefined, { log: { debug: (...args) => calls.push(args) } });
+  await flow.transport.command(prefix, 'ResourceApi', 'SendCommand', {});
+  let session = flow.sessions[0];
+  session.emit('goaway', 11, 7, Buffer.from('too_many_pings'));
+  session.emit('goaway', 0, 9, Buffer.from('fabricated-private-token'));
+  let notices = calls.filter((args) => args[0].startsWith('gRPC peer GOAWAY'));
+  assert.deepEqual(notices.map((args) => args.slice(2)), [[11, 7, 'too_many_pings'], [0, 9, 'unspecified']]);
+  assert.equal(JSON.stringify(calls).includes('fabricated-private-token'), false);
+  assert.notEqual(session.destroyed, true, 'diagnostics preserve existing session lifecycle');
+});
+
+test('unary timeout diagnostics distinguish absent HTTP headers', async (context) => {
+  let calls = [];
+  let flow = setup(context, () => {}, { log: { debug: (...args) => calls.push(args) } });
+  let pending = flow.transport.command(prefix, 'ResourceApi', 'SendCommand', {}, { timeout: 10 });
+  await setImmediate();
+  context.mock.timers.tick(10);
+  await pending;
+  let notice = calls.find((args) => args[0].startsWith('gRPC stream closed'));
+  assert.equal(notice.at(-1), 'none');
 });

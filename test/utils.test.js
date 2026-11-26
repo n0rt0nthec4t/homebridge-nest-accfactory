@@ -5,6 +5,7 @@ import dgram from 'node:dgram';
 import { EventEmitter } from 'node:events';
 
 import {
+  getResourceKey,
   UDPPorts,
   isNumeric,
   adjustTemperature,
@@ -184,4 +185,86 @@ test('device description resolves a legacy room without repeating its name', () 
   assert.equal(buildDeviceDescription(rawData, raw), 'Camera - Kitchen');
   raw.value.description = 'Kitchen Camera';
   assert.equal(buildDeviceDescription(rawData, raw), 'Kitchen Camera');
+});
+
+test('device descriptions share parenthetical formatting across protobuf and HomeGraph inputs', () => {
+  for (let [name, expected] of [
+    ['Bedroom(Main)', 'Bedroom - Main'],
+    ['Bedroom ( Main )', 'Bedroom - Main'],
+    ['Bedroom(Main', 'Bedroom - Main'],
+    ['Bedroom - Main', 'Bedroom - Main'],
+    ['Camera (Patio)', 'Camera - Patio'],
+    ['Thermostat (Upstairs)', 'Thermostat - Upstairs'],
+    ['Sensor ()', 'Sensor'],
+  ]) {
+    assert.equal(buildDeviceDescription({}, { value: { label: { label: name } } }), expected);
+    assert.equal(buildDeviceDescription({}, { value: { googleHome: { displayName: name } } }), expected);
+  }
+  assert.equal(
+    buildDeviceDescription({}, { value: { googleHome: { displayName: 'Camera (Outdoor) Above Door' } } }),
+    'Camera (Outdoor) Above Door',
+  );
+});
+
+test('HomeGraph names use nonblank source priority and resolve rooms only in the same account/home', () => {
+  let rawData = {
+    STRUCTURE_OTHER: { connection: 'other', value: { home: { uuid: 'home', rooms: [{ uuid: 'room', name: 'Wrong Room' }] } } },
+    STRUCTURE_HOME: { connection: 'account', value: { home: { uuid: 'home', rooms: [{ uuid: 'room', name: 'Kitchen' }] } } },
+  };
+  let raw = {
+    connection: 'account',
+    value: {
+      structureId: 'home',
+      roomId: 'room',
+      googleHome: {
+        names: { nameFromGoogleHome: ' Kitchen Camera ', name: 'Fallback' },
+        displayName: 'Display',
+      },
+    },
+  };
+  assert.equal(buildDeviceDescription(rawData, raw), 'Kitchen Camera');
+  raw.value.googleHome.names.nameFromGoogleHome = ' ';
+  assert.equal(buildDeviceDescription(rawData, raw), 'Display - Kitchen');
+  raw.value.googleHome.displayName = '';
+  assert.equal(buildDeviceDescription(rawData, raw), 'Fallback - Kitchen');
+  raw.value.googleHome.names.name = '';
+  assert.equal(buildDeviceDescription(rawData, raw), 'Kitchen');
+  raw.connection = 'unrelated';
+  assert.equal(buildDeviceDescription(rawData, raw), 'unknown description');
+});
+
+test('Google Home sensor nicknames retain qualifiers when display and default names are generic', () => {
+  for (let qualifier of ['Spare', 'Main', 'Chloe']) {
+    let raw = {
+      connection: 'account',
+      value: {
+        googleHome: {
+          displayName: 'Bedroom',
+          names: { name: 'Bedroom', defaultNames: ['Bedroom', 'Temp Sensor'], nicknames: ['Bedroom(' + qualifier + ')'] },
+        },
+      },
+    };
+    assert.equal(buildDeviceDescription({}, raw), 'Bedroom - ' + qualifier);
+    raw.value.googleHome.names.nameFromGoogleHome = 'Custom Name';
+    assert.equal(buildDeviceDescription({}, raw), 'Custom Name');
+    raw.value.googleHome.names.nameFromGoogleHome = '';
+    raw.value.googleHome.names.nicknames = ['', '  ', 'Bedroom(' + qualifier + ')'];
+    assert.equal(buildDeviceDescription({}, raw), 'Bedroom - ' + qualifier);
+    raw.value.googleHome.names.nicknames = [];
+    assert.equal(buildDeviceDescription({}, raw), 'Bedroom');
+  }
+});
+
+test('resource cache keys preserve account/source/type boundaries and separator-containing IDs', () => {
+  let keys = [
+    getResourceKey('first', 'HomeGraph', 'same'),
+    getResourceKey('second', 'HomeGraph', 'same'),
+    getResourceKey('first', 'Protobuf', 'same'),
+    getResourceKey('first', 'HomeGraph', 'same', 'STRUCTURE'),
+    getResourceKey('first_second', 'HomeGraph', 'id'),
+    getResourceKey('first', 'HomeGraph', 'second_id'),
+    getResourceKey('a", "b', 'HomeGraph', 'id'),
+  ];
+  assert.equal(new Set(keys).size, keys.length);
+  assert.equal(keys[0], getResourceKey('first', 'HomeGraph', 'same'));
 });

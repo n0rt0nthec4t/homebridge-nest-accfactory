@@ -3,7 +3,7 @@
 //
 // HomeKit accessory implementation for Nest Protect devices.
 // Provides smoke and carbon monoxide detection, battery monitoring,
-// alarm state handling, and activity tracking using Nest and Google APIs.
+// alarm state handling, and activity tracking using protobuf and HomeGraph APIs.
 //
 // Responsibilities:
 // - Expose smoke and carbon monoxide detection via HomeKit services
@@ -26,7 +26,7 @@
 // - Eve Home history integration
 //
 // Notes:
-// - Supports both Nest and Google APIs depending on device/account type
+// - Supports protobuf and HomeGraph data through the shared field map
 // - Alarm states are normalised before presentation to HomeKit
 // - HomeKit does not differentiate alarm sources beyond service type
 //
@@ -40,8 +40,8 @@
 
 // Define our modules
 import HomeKitDevice from '../HomeKitDevice.js';
-import { processSoftwareVersion, scaleValue, buildDeviceDescription } from '../utils.js';
-import { buildMappedObject, createMappingContext } from '../translator.js';
+import { getResourceKey, processSoftwareVersion, scaleValue, buildDeviceDescription } from '../utils.js';
+import { buildMappedObject, createMappingContext, normaliseSourceContext } from '../translator.js';
 
 // Define constants
 import { LOW_BATTERY_LEVEL, DATA_SOURCE, PROTOBUF_RESOURCES, DEVICE_TYPE, CUSTOM_CHARACTERISTIC_UUID } from '../consts.js';
@@ -60,7 +60,7 @@ function hasSafetySummaryFailure(raw, failureType) {
 
 export default class NestProtect extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.PROTECT;
-  static VERSION = '2026.11.23'; // Code version
+  static VERSION = '2026.11.26'; // Code version
 
   batteryService = undefined;
   smokeService = undefined;
@@ -292,15 +292,21 @@ export default class NestProtect extends HomeKitDevice {
     }
 
     if (type === HomeKitDevice?.EVEHOME?.GET) {
-      // Pass back extra data for Eve Smoke onGet() to process command
-      // Data will already be an object, our only job is to add/modify to it
-      message.lastalarmtest = this.deviceData.latest_alarm_test;
-      message.alarmtest = this.deviceData.self_test_in_progress;
-      message.heatstatus = this.deviceData.heat_status;
-      message.statusled = this.deviceData.ntp_green_led_enable;
-      message.smoketestpassed = this.deviceData.smoke_test_passed;
-      message.heattestpassed = this.deviceData.heat_test_passed;
-      message.hushedstate = this.deviceData.hushed_state;
+      // Eve supplies its retained, typed details. Missing cloud fields must not
+      // replace those values with undefined and invalidate the entire refresh.
+      for (let [key, value] of Object.entries({
+        lastalarmtest: this.deviceData.latest_alarm_test,
+        alarmtest: this.deviceData.self_test_in_progress,
+        heatstatus: this.deviceData.heat_status,
+        statusled: this.deviceData.ntp_green_led_enable,
+        smoketestpassed: this.deviceData.smoke_test_passed,
+        heattestpassed: this.deviceData.heat_test_passed,
+        hushedstate: this.deviceData.hushed_state,
+      })) {
+        if (value !== undefined) {
+          message[key] = value;
+        }
+      }
       return message;
     }
 
@@ -332,6 +338,11 @@ const PROTECT_FIELD_MAP = {
           ? raw.value.device_identity.serialNumber.trim().toUpperCase()
           : undefined,
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['technicalInformation'],
+      translate: ({ raw }) => raw.value.technicalInformation?.serialNumber?.trim?.().toUpperCase(),
+    },
   },
 
   nest_google_device_uuid: {
@@ -340,6 +351,8 @@ const PROTECT_FIELD_MAP = {
       fields: [],
       translate: ({ objectKey }) => objectKey,
     },
+    prefer: 'googlehome',
+    googlehome: { fields: [], translate: ({ objectKey }) => objectKey },
   },
 
   nest_google_home_uuid: {
@@ -347,6 +360,8 @@ const PROTECT_FIELD_MAP = {
       fields: ['device_info'],
       translate: ({ raw }) => raw?.value?.device_info?.pairerId?.resourceId,
     },
+    prefer: 'googlehome',
+    googlehome: { fields: ['structureId'], translate: ({ homeId }) => homeId },
   },
 
   // Naming / descriptive fields
@@ -368,6 +383,25 @@ const PROTECT_FIELD_MAP = {
                 : 'Protect (unknown)';
       },
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['technicalInformation', 'googleHome'],
+      translate: ({ raw }) => {
+        // The technical model identifies the variant; a generic display model does not.
+        let model = raw.value.technicalInformation?.model ?? '';
+        // First-generation prefixes are inferred from protobuf resource names;
+        // second-generation prefixes are confirmed by HomeGraph captures.
+        return model.startsWith('NEST_PROTECT_1_LINE.') === true
+          ? 'Protect (1st gen, wired)'
+          : model.startsWith('NEST_PROTECT_1_BATTERY.') === true
+            ? 'Protect (1st gen, battery)'
+            : model.startsWith('NEST_PROTECT_2_LINE.') === true
+              ? 'Protect (2nd gen, wired)'
+              : model.startsWith('NEST_PROTECT_2_BATTERY.') === true
+                ? 'Protect (2nd gen, battery)'
+                : raw.value.googleHome?.hardware?.model;
+      },
+    },
   },
 
   softwareVersion: {
@@ -379,6 +413,14 @@ const PROTECT_FIELD_MAP = {
           ? processSoftwareVersion(raw.value.device_identity.softwareVersion)
           : undefined,
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['googleHome'],
+      translate: ({ raw }) =>
+        typeof raw.value.googleHome?.hardware?.softwareVersion === 'string' && raw.value.googleHome.hardware.softwareVersion.trim() !== ''
+          ? processSoftwareVersion(raw.value.googleHome.hardware.softwareVersion)
+          : undefined,
+    },
   },
 
   description: {
@@ -386,6 +428,12 @@ const PROTECT_FIELD_MAP = {
     google: {
       fields: ['label', 'device_info', 'device_located_settings'],
       related: ['located_annotations'],
+      translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
+    },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['googleHome', 'roomId', 'structureId'],
+      related: ['home'],
       translate: ({ rawData, raw }) => HomeKitDevice.makeValidHKName(buildDeviceDescription(rawData, raw)),
     },
   },
@@ -396,6 +444,12 @@ const PROTECT_FIELD_MAP = {
     google: {
       fields: ['liveness'],
       translate: ({ raw }) => raw?.value?.liveness?.status === 'LIVENESS_DEVICE_STATUS_ONLINE',
+    },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['deviceStatus.online'],
+      translate: ({ raw }) =>
+        typeof raw.value['deviceStatus.online']?.boolean === 'boolean' ? raw.value['deviceStatus.online'].boolean : undefined,
     },
   },
 
@@ -411,6 +465,12 @@ const PROTECT_FIELD_MAP = {
       fields: ['wall_power'],
       translate: ({ raw }) => raw?.value?.wall_power?.present !== true,
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['attributes'],
+      translate: ({ energySources }) =>
+        energySources?.includes('WIRE') === true ? false : energySources?.includes('BATTERY') === true ? true : undefined,
+    },
   },
 
   battery_low: {
@@ -421,6 +481,18 @@ const PROTECT_FIELD_MAP = {
         return indicator === 'BATTERY_REPLACEMENT_INDICATOR_NOT_AT_ALL'
           ? false
           : ['BATTERY_REPLACEMENT_INDICATOR_SOON', 'BATTERY_REPLACEMENT_INDICATOR_IMMEDIATELY'].includes(indicator) === true
+              ? true
+              : undefined;
+      },
+    },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['charging.descriptiveCapacityRemaining'],
+      translate: ({ raw }) => {
+        let capacity = raw.value['charging.descriptiveCapacityRemaining']?.text;
+        return ['full', 'high', 'medium'].includes(capacity) === true
+          ? false
+          : ['low', 'critically_low'].includes(capacity) === true
               ? true
               : undefined;
       },
@@ -455,6 +527,20 @@ const PROTECT_FIELD_MAP = {
         return Number.isFinite(voltage) === true ? Math.round(scaleValue(voltage, 4.5, 5.4, 0, 100)) : undefined;
       },
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['charging.capacityRemainingPercentage', 'charging.descriptiveCapacityRemaining'],
+      translate: ({ raw }) => {
+        let level = raw.value['charging.capacityRemainingPercentage']?.number;
+        if (typeof level === 'number' && Number.isFinite(level) === true && level >= 0 && level <= 100) {
+          return Math.round(level);
+        }
+        // Match the existing sensor estimates when Google reports only a capacity category.
+        let capacity = raw.value['charging.descriptiveCapacityRemaining']?.text;
+        let levels = { full: 100, high: 75, medium: 50, low: LOW_BATTERY_LEVEL, critically_low: Math.floor(LOW_BATTERY_LEVEL / 2) };
+        return Object.hasOwn(levels, capacity) === true ? levels[capacity] : undefined;
+      },
+    },
   },
 
   smoke_status: {
@@ -463,6 +549,14 @@ const PROTECT_FIELD_MAP = {
       fields: ['safety_alarm_smoke'],
       translate: ({ raw }) => raw?.value?.safety_alarm_smoke?.alarmState === 'ALARM_STATE_ALARM',
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['sensorState.currentSensorStateData'],
+      translate: ({ sensors }) => {
+        let state = sensors.SmokeLevel?.currentSensorState?.text;
+        return ['smoke detected', 'high'].includes(state) === true ? true : state === 'no smoke detected' ? false : undefined;
+      },
+    },
   },
 
   co_status: {
@@ -470,6 +564,18 @@ const PROTECT_FIELD_MAP = {
     google: {
       fields: ['safety_alarm_co'],
       translate: ({ raw }) => raw?.value?.safety_alarm_co?.alarmState === 'ALARM_STATE_ALARM',
+    },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['sensorState.currentSensorStateData'],
+      translate: ({ sensors }) => {
+        let state = sensors.CarbonMonoxideLevel?.currentSensorState?.text;
+        return ['carbon monoxide detected', 'high'].includes(state) === true
+          ? true
+          : ['no carbon monoxide detected', 'low', 'medium'].includes(state) === true
+              ? false
+              : undefined;
+      },
     },
   },
 
@@ -486,6 +592,14 @@ const PROTECT_FIELD_MAP = {
       translate: ({ raw }) =>
         raw?.value?.safety_alarm_smoke?.silenceState === 'SILENCE_STATE_SILENCED' ||
         raw?.value?.safety_alarm_co?.silenceState === 'SILENCE_STATE_SILENCED',
+    },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['sensorState.currentSensorStateData'],
+      translate: ({ sensors }) => {
+        let states = [sensors.SmokeLevel?.alarmSilenceState?.text, sensors.CarbonMonoxideLevel?.alarmSilenceState?.text];
+        return states.includes('SILENCED') === true ? true : states.every((state) => state === 'DISALLOWED') === true ? false : undefined;
+      },
     },
   },
 
@@ -547,6 +661,18 @@ const PROTECT_FIELD_MAP = {
           ? Number(raw.value.self_test.lastMstEnd.seconds)
           : undefined,
     },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['structureId'],
+      related: ['home'],
+      translate: ({ structureTraits }) => {
+        // This is the latest manual test end, not the last successful test or the
+        // automatic audio-test timestamp. Structure association is account-scoped.
+        let end = structureTraits?.['home.platform.traits.StructureSelfTestTrait']?.manualTest?.structValue?.fields?.endTime?.stringValue;
+        let seconds = typeof end === 'string' && end.trim() !== '' ? Number(end) : undefined;
+        return Number.isFinite(seconds) === true && seconds > 0 ? seconds : undefined;
+      },
+    },
   },
 
   self_test_in_progress: {
@@ -554,6 +680,18 @@ const PROTECT_FIELD_MAP = {
       fields: ['legacy_structure_self_test'],
       translate: ({ raw }) =>
         raw?.value?.legacy_structure_self_test?.mstInProgress === true || raw?.value?.legacy_structure_self_test?.astInProgress === true,
+    },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['structureId'],
+      related: ['home'],
+      translate: ({ structureTraits }) => {
+        let tests = structureTraits?.['home.platform.traits.StructureSelfTestTrait'];
+        let statuses = ['manualTest', 'audioTest'].map((test) => tests?.[test]?.structValue?.fields?.status?.stringValue);
+        // Both completed statuses are captured. Other status names still need a
+        // running-test capture; missing/unknown status must not imply inactivity.
+        return statuses.every((status) => status === 'SELF_TEST_STATUS_COMPLETED') === true ? false : undefined;
+      },
     },
   },
 
@@ -565,6 +703,18 @@ const PROTECT_FIELD_MAP = {
         Number.isFinite(Number(raw?.value?.legacy_protect_device_settings?.replaceByDate?.seconds)) === true
           ? Number(raw.value.legacy_protect_device_settings.replaceByDate.seconds)
           : undefined,
+    },
+    prefer: 'googlehome',
+    googlehome: {
+      fields: ['attributes'],
+      translate: ({ raw }) => {
+        // Foyer reports expiryDate as Unix seconds in discovery attributes, not GetTraits.
+        let value = raw.value.attributes?.fields?.expiryDate?.stringValue;
+        let seconds = typeof value === 'string' && value.trim() !== '' ? Number(value) : undefined;
+        return Number.isFinite(seconds) === true && seconds > 0 && Number.isFinite(new Date(seconds * 1000).getTime()) === true
+          ? seconds
+          : undefined;
+      },
     },
   },
 
@@ -587,7 +737,7 @@ const PROTECT_FIELD_MAP = {
   },
 };
 
-// Process protobuf data for Protect devices
+// Process protobuf and HomeGraph data for Protect devices
 export function processRawData(log, rawData, config, deviceType = undefined, changedData = undefined) {
   if (
     rawData === null ||
@@ -599,120 +749,129 @@ export function processRawData(log, rawData, config, deviceType = undefined, cha
     return;
   }
 
-  // Process data for any smoke detectors we have in the raw data
   let devices = {};
-
+  let contexts = new Map();
   Object.entries(rawData)
     .filter(
       ([key, value]) =>
         key.startsWith('DEVICE_') === true &&
-        value?.source === DATA_SOURCE.PROTOBUF &&
-        PROTOBUF_RESOURCES.PROTECT.includes(value?.value?.device_info?.typeName) === true,
+        ((value?.source === DATA_SOURCE.PROTOBUF && PROTOBUF_RESOURCES.PROTECT.includes(value?.value?.device_info?.typeName) === true) ||
+          (value?.source === DATA_SOURCE.HOMEGRAPH &&
+            value.value?.googleHome?.type === 'action.devices.types.SMOKE_DETECTOR' &&
+            value.value.googleHome.id?.thirdPartyId?.idType?.startsWith('nest') === true)),
     )
     .forEach(([object_key, value]) => {
       try {
-        // Parent traits may arrive separately from device traits.
-        let resourceKeys = [object_key, value?.value?.device_info?.pairerId?.resourceId];
-        if (changedData instanceof Map && resourceKeys.some((key) => changedData.has(key)) === false) {
+        let isHomeGraph = value.source === DATA_SOURCE.HOMEGRAPH;
+        let homeId =
+          isHomeGraph === true
+            ? getResourceKey(value.connection, value.source, value.value.structureId, 'STRUCTURE')
+            : value.value?.device_info?.pairerId?.resourceId;
+        let home = rawData[homeId];
+        let resourceKeys = [object_key, homeId];
+        let serial = isHomeGraph === true ? value.value.technicalInformation?.serialNumber : value.value.device_identity?.serialNumber;
+        if (typeof serial !== 'string' || serial.trim() === '') {
           return;
         }
-
-        // Only publish configured protobuf devices with an available parent.
+        serial = serial.trim().toUpperCase();
+        let candidate = contexts.get(serial) ?? {
+          context: createMappingContext(rawData, object_key),
+          fields: new Set(),
+          changed: changedData instanceof Map !== true,
+        };
+        contexts.set(serial, candidate);
+        candidate.changed = candidate.changed === true || resourceKeys.some((id) => changedData?.has?.(id) === true);
+        // Require a configured protobuf device or a HomeGraph device with its account-scoped home.
         if (
-          value?.value?.configuration_done?.deviceReady !== true ||
-          rawData?.[value?.value?.device_info?.pairerId?.resourceId] === undefined
+          (isHomeGraph !== true && value?.value?.configuration_done?.deviceReady !== true) ||
+          home === undefined ||
+          (isHomeGraph === true && (home.source !== DATA_SOURCE.HOMEGRAPH || home.connection !== value.connection))
         ) {
           return;
         }
 
-        // Rebuild from committed traits so split startup data stays supported.
-        let mappedResult = buildMappedObject(
-          PROTECT_FIELD_MAP,
-          createMappingContext(rawData, object_key, {
-            google: value,
+        // Sensor entries use named Struct properties. Resolve structure test history
+        // only from the same account/home; unknown component fault semantics stay unmapped.
+        let sensors = Object.fromEntries(
+          (value.value['sensorState.currentSensorStateData']?.array?.values ?? []).map((sensor) => {
+            let properties = Object.fromEntries((sensor.properties?.properties ?? []).map((property) => [property.name, property.value]));
+            return [properties.name?.text, properties];
           }),
-          new Set(Object.keys(value?.value ?? {})),
         );
+        let energySources = value.value.attributes?.fields?.supportedEnergySources?.listValue?.values?.map((source) => source.stringValue);
+        let structureTraits =
+          isHomeGraph === true
+            ? Object.fromEntries((home.value?.home?.traits ?? []).map((trait) => [trait.name, trait.fields]))
+            : undefined;
 
-        // An explicit absence clears a previous percentage when HomeKit merges
-        // updates; undefined would retain the old value after a source change.
-        mappedResult.data.battery_level ??= null;
-
-        let serialNumber = mappedResult?.data?.serialNumber;
-        let existingDevice = devices[serialNumber];
-
-        // If we have all required fields, build the full protect device data object
-        if (mappedResult?.hasRequired === true) {
-          let tempDevice = {
-            type: DEVICE_TYPE.PROTECT,
-            manufacturer: 'Nest',
-            ...mappedResult.data,
-          };
-
-          // Respect requested device type if specified
-          if (deviceType !== undefined && (typeof deviceType !== 'string' || deviceType === '' || tempDevice.type !== deviceType)) {
-            return;
-          }
-
-          // Check for any device or home configuration options that match this device
-          // We'll use the serial number to match against device options, and the home uuid to match against home options
-          let deviceOptions = config?.devices?.find(
-            (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
-          );
-          let homeOptions = config?.homes?.find(
-            (home) =>
-              home?.nest_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
-              home?.google_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
-          );
-
-          // Insert any extra options we've read in from configuration file for this device
-          tempDevice.eveHistory =
-            deviceOptions?.eveHistory !== undefined ? deviceOptions.eveHistory === true : config?.options?.eveHistory === true;
-          tempDevice.logMotionEvents =
-            deviceOptions?.logMotionEvents !== undefined
-              ? deviceOptions.logMotionEvents === true
-              : config?.options?.logMotionEvents === false
-                ? false
-                : true;
-
-          // Process additional exclusion details
-          tempDevice.excluded =
-            deviceOptions?.exclude === true ||
-            (deviceOptions?.exclude !== false &&
-              (homeOptions?.exclude === true || (homeOptions?.exclude !== false && config?.options?.exclude === true)));
-
-          // Store full device
-          // Full always overrides partial if present
-          if (existingDevice?.full !== true) {
-            devices[tempDevice.serialNumber] = {
-              full: true,
-              data: tempDevice,
-            };
-          }
-        }
-
-        // Refresh existing device reference after potential full insert
-        existingDevice = devices[serialNumber];
-
-        // Only store partial data if nothing has already been stored for this serial in this pass.
-        // A later full payload will replace an earlier partial payload.
-        if (
-          mappedResult?.hasRequired === false &&
-          serialNumber !== undefined &&
-          typeof mappedResult?.data === 'object' &&
-          mappedResult.data?.constructor === Object &&
-          Object.keys(mappedResult.data).length !== 0 &&
-          existingDevice === undefined
-        ) {
-          devices[serialNumber] = {
-            full: false,
-            data: mappedResult.data,
-          };
+        let source = isHomeGraph === true ? 'googlehome' : 'google';
+        candidate.context.sources[source] = normaliseSourceContext(source, object_key, value, {
+          homeId,
+          sensors,
+          energySources,
+          structureTraits,
+        });
+        for (let field of Object.keys(value.value)) {
+          candidate.fields.add(field);
         }
       } catch (error) {
         log?.error?.('Error processing protect data for "%s": %s', object_key, String(error));
       }
     });
 
+  for (let [serialNumber, candidate] of contexts) {
+    if (candidate.changed !== true) {
+      continue;
+    }
+    try {
+      let mappedResult = buildMappedObject(PROTECT_FIELD_MAP, candidate.context, candidate.fields);
+      // An explicit absence clears a previous percentage when HomeKit merges
+      // updates; undefined would retain the old value after a source change.
+      mappedResult.data.battery_level ??= null;
+
+      // If we have all required fields, build the full protect device data object
+      if (mappedResult?.hasRequired === true) {
+        let tempDevice = {
+          type: DEVICE_TYPE.PROTECT,
+          manufacturer: 'Nest',
+          ...mappedResult.data,
+        };
+
+        // Respect requested device type if specified
+        if (deviceType !== undefined && (typeof deviceType !== 'string' || deviceType === '' || tempDevice.type !== deviceType)) {
+          continue;
+        }
+
+        let deviceOptions = config?.devices?.find(
+          (device) => device?.serialNumber?.toUpperCase?.() === tempDevice?.serialNumber?.toUpperCase?.(),
+        );
+        let homeOptions = config?.homes?.find(
+          (home) =>
+            home?.protobuf_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.() ||
+            home?.homegraph_home_uuid?.toUpperCase?.() === tempDevice?.nest_google_home_uuid?.toUpperCase?.(),
+        );
+
+        tempDevice.eveHistory =
+          deviceOptions?.eveHistory !== undefined ? deviceOptions.eveHistory === true : config?.options?.eveHistory === true;
+        tempDevice.logMotionEvents =
+          deviceOptions?.logMotionEvents !== undefined
+            ? deviceOptions.logMotionEvents === true
+            : config?.options?.logMotionEvents === false
+              ? false
+              : true;
+
+        tempDevice.excluded =
+          deviceOptions?.exclude === true ||
+          (deviceOptions?.exclude !== false &&
+            (homeOptions?.exclude === true || (homeOptions?.exclude !== false && config?.options?.exclude === true)));
+
+        devices[serialNumber] = { full: true, data: tempDevice };
+      } else if (mappedResult.data.serialNumber !== undefined) {
+        devices[serialNumber] = { full: false, data: mappedResult.data };
+      }
+    } catch (error) {
+      log?.error?.('Error processing protect data for "%s": %s', serialNumber, String(error));
+    }
+  }
   return devices;
 }

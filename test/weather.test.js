@@ -5,15 +5,15 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { URL } from 'node:url';
 import { DATA_SOURCE, DEVICE_TYPE, NESTLABS_MAC_PREFIX } from '../src/consts.js';
-import { crc24 } from '../src/utils.js';
+import { crc24, getResourceKey } from '../src/utils.js';
 
 let location = new URL('../src/plugins/weather.js', import.meta.url);
 let parent = 'data:text/javascript,' + encodeURIComponent('export default class { static makeValidHKName(name) { return name; } }');
 let source = (await readFile(location, 'utf8')).replace(/from '([^']+)'/g, (match, specifier) => {
   return 'from ' + JSON.stringify(specifier === '../HomeKitDevice.js' ? parent : new URL(specifier, location).href);
 });
-let { processRawData } = await importSource(location, source);
-let config = { options: {}, homes: [{ google_home_uuid: 'STRUCTURE_HOME', weather: true, elevation: 50 }] };
+let { default: NestWeather, processRawData } = await importSource(location, source);
+let config = { options: {}, homes: [{ protobuf_home_uuid: 'STRUCTURE_HOME', weather: true, elevation: 50 }] };
 let serial = NESTLABS_MAC_PREFIX + crc24(DEVICE_TYPE.WEATHER.toUpperCase() + ':STRUCTURE.HOME').toUpperCase();
 let traits = {
   structure_info: { rtsStructureId: 'structure.home', name: 'Home' },
@@ -117,3 +117,97 @@ test('weather does not choose arbitrarily between conflicting home timezone trai
   };
   assert.equal(processRawData(undefined, raw, config)[serial].data.timezone, null);
 });
+
+test('HomeGraph weather discovers temperature and conditions without inventing humidity or AQI', () => {
+  let id = getResourceKey('account', DATA_SOURCE.HOMEGRAPH, 'home', 'STRUCTURE');
+  let raw = {
+    [id]: {
+      source: DATA_SOURCE.HOMEGRAPH,
+      connection: 'account',
+      value: {
+        home: { uuid: 'home', name: 'Home', address: { timezone: 'Australia/Sydney' } },
+      },
+    },
+  };
+  let configuration = { options: { eveHistory: true }, homes: [{ homegraph_home_uuid: id, weather: true, elevation: 75 }] };
+  let devices = processRawData(undefined, raw, configuration);
+  assert.equal(Object.values(devices)[0].full, false);
+  raw[id].value.home.weather = { current_temperature: 0, condition: 'Cloudy' };
+  devices = processRawData(undefined, raw, configuration, undefined, new Map([[id, { fields: new Set(['home']) }]]));
+  let mapped = Object.values(devices)[0];
+  assert.equal(mapped.full, true);
+  assert.equal(mapped.data.current_temperature, 0);
+  assert.equal(mapped.data.condition, 'Cloudy');
+  assert.equal(mapped.data.current_humidity, undefined);
+  assert.equal(mapped.data.airQuality, undefined);
+  assert.equal(mapped.data.excluded, false);
+  assert.equal(mapped.data.eveHistory, true);
+  assert.equal(mapped.data.elevation, 75);
+  assert.equal(mapped.data.nest_google_home_uuid, id);
+  assert.equal(mapped.data.serialNumber, NESTLABS_MAC_PREFIX + crc24('WEATHER:HOME').toUpperCase());
+  assert.notEqual(mapped.data.serialNumber, serial);
+  configuration.homes[0].weather = false;
+  assert.equal(Object.values(processRawData(undefined, raw, configuration))[0].data.excluded, true);
+  assert.deepEqual(processRawData(undefined, raw, configuration, undefined, new Map()), {});
+});
+
+for (let humidity of [undefined, 60]) {
+  test('weather services reflect available readings and preserve service subtypes: humidity=' + humidity, async () => {
+    let weather = new NestWeather();
+    weather.deviceData = { current_temperature: 25, condition: 'Cloudy', current_humidity: humidity, nest_google_device_uuid: 'home' };
+    weather.hap = {
+      Service: { TemperatureSensor: 'temperature', HumiditySensor: 'humidity', Battery: 'battery' },
+      Characteristic: {
+        CurrentTemperature: 'temperature',
+        CurrentRelativeHumidity: 'humidity',
+        Condition: 'condition',
+        WindSpeed: 'wind',
+        BatteryLevel: 'battery',
+        StatusLowBattery: { BATTERY_LEVEL_NORMAL: 0 },
+        ChargingState: { NOT_CHARGEABLE: 2 },
+      },
+    };
+    let services = [];
+    let removed = [];
+    weather.removeService = (type, subtype) => removed.push([type, subtype]);
+    let readings = [];
+    weather.addService = (type, name, subtype) => {
+      let service = {
+        type,
+        subtype,
+        testCharacteristic: () => true,
+        updateCharacteristic: (characteristic, value) => readings.push({ type, characteristic, value }),
+      };
+      services.push(service);
+      return service;
+    };
+    let characteristics = [];
+    weather.addCharacteristic = (service, type) => characteristics.push(type);
+    weather.addTimer = () => {};
+    weather.history = () => {};
+    weather.onAdd();
+    assert.deepEqual(removed, humidity === undefined ? [['humidity', 1]] : []);
+    assert.deepEqual(
+      services.map((service) => service.type),
+      humidity === undefined ? ['temperature', 'battery'] : ['temperature', 'humidity', 'battery'],
+    );
+    assert.equal(
+      services.every((service) => service.subtype === 1),
+      true,
+    );
+    assert.deepEqual(characteristics, ['condition', 'wind']);
+    weather.onUpdate(weather.deviceData);
+    assert.equal(readings.find((reading) => reading.type === 'temperature' && reading.characteristic === 'temperature').value, 25);
+    assert.equal(
+      readings.some((reading) => reading.value === undefined),
+      false,
+    );
+    weather.get = async () => ({ location_weather: { current_temperature: 26, condition: 'Sunny' } });
+    let updated;
+    weather.update = (values) => {
+      updated = values;
+    };
+    await weather.onTimer({ timer: 'weather' });
+    assert.deepEqual(updated, { current_temperature: 26, condition: 'Sunny' });
+  });
+}

@@ -23,7 +23,7 @@
 // - Device modules interpret source data, apply source preference and configure HomeKit
 // - API clients own source caches; System owns the combined cache and HomeKit delivery
 //
-// Code version 2026.11.23
+// Code version 2026.11.27
 // Mark Hulskamp
 'use strict';
 
@@ -36,6 +36,7 @@ import HomeKitDevice from './HomeKitDevice.js';
 import Accounts from './accounts.js';
 import { loadDeviceModules, getDeviceHKCategory } from './devices.js';
 import { processConfig } from './config.js';
+import { getResourceKey } from './utils.js';
 import { createSupportDump } from './supportdump.js';
 
 // Define constants
@@ -48,9 +49,9 @@ export default class NestAccfactory {
 
   // Internal data only for this class
   #accounts = undefined; // Accounts manager
-  #rawData = {}; // Cached copy of data from both Nest and Google APIs
+  #rawData = {}; // Combined cache of protobuf and HomeGraph resource data
   #trackedDevices = new Map(); // Devices we've created, keyed by serial number
-  #pendingData = new Map(); // Changed field names per account, not queued payloads
+  #pendingData = new Map(); // Coalesced fields/removals per account, not queued payloads
   #processingData = false; // One accessory reconciliation worker across account sources
   #deviceModules = undefined; // No loaded device support modules to start
   #supportDumpWriter = undefined; // Diagnostic writer and aliases, created only when enabled
@@ -63,11 +64,12 @@ export default class NestAccfactory {
     // Set the shared HomeKitDevice module logger so device modules don't need it passed in.
     HomeKitDevice.LOGGER = log;
 
-    // Validate required version of Node.js that we're running on.
-    // If less than our minimum required version, log an error and stop initialisation
-    let nodeVersion = Number(process.versions.node.split('.')[0]);
-
-    if (nodeVersion < MIN_NODE_VERSION) {
+    // Compare the complete version numerically, matching FFmpeg's minimum-version check.
+    if (process.versions.node.localeCompare(MIN_NODE_VERSION, undefined, {
+      numeric: true,
+      sensitivity: 'case',
+      caseFirst: 'upper',
+    }) < 0) {
       this.log.error(
         'We no longer support running on Node.js %s. Please upgrade to Node.js %s or newer. The plugin will not be started.',
         process.versions.node,
@@ -101,7 +103,7 @@ export default class NestAccfactory {
       // and device modules are ready to receive cloud updates.
       this.#accounts = this.#createAccounts();
 
-      // Check for valid accounts with either legacy Nest or Google authentication. Otherwise, return back.
+      // Stop startup when no enabled account has usable authentication details.
       if (this.#accounts.size === 0) {
         this?.log?.error?.('No active accounts have been specified in the JSON configuration. Please review');
         return;
@@ -159,6 +161,7 @@ export default class NestAccfactory {
     // to System's combined view and refresh credentials on existing camera accessories.
     return Accounts.fromConfig(this.config, {
       log: this.log,
+      storagePath: this.api?.user?.storagePath?.(),
       onData: (uuid, batch) => this.#applyData(uuid, batch),
 
       onAuthorised: async (uuid, account) => {
@@ -185,7 +188,10 @@ export default class NestAccfactory {
           try {
             // Send an update message onto the device so it can update its api access details if needed.
             await HomeKitDevice.message(trackedDevice.uuid, HomeKitDevice.UPDATE, {
-              apiAccess: account.cameraAuth,
+              apiAccess:
+                this.#rawData[trackedDevice.nest_google_device_uuid].source === DATA_SOURCE.HOMEGRAPH
+                  ? { ...account.cameraAuth, resourceId: this.#rawData[trackedDevice.nest_google_device_uuid].resourceId }
+                  : account.cameraAuth,
             });
           } catch (error) {
             this?.log?.debug?.(
@@ -213,19 +219,16 @@ export default class NestAccfactory {
         return false;
       }
 
-      let resourceId = change.resourceId;
+      // Scope native HomeGraph IDs here; cloud clients never receive the cache key.
+      let resourceId =
+        batch.source === DATA_SOURCE.HOMEGRAPH ? getResourceKey(uuid, batch.source, change.resourceId, change.kind) : change.resourceId;
 
       if (change.remove === true) {
-        // Topology removals retire the accessory first; raw-only removals just evict the resource.
-        if (change.notify === true) {
-          await this.#removeDevice(resourceId);
-
-          if (batch.isCurrent() !== true) {
-            return false;
-          }
-        }
-
+        // Reconcile cached fallbacks before removing accessories that selected this resource.
         delete this.#rawData[resourceId];
+        let changed = changedData.get(resourceId) ?? { fields: new Set() };
+        changed.remove = changed.remove === true || change.notify === true;
+        changedData.set(resourceId, changed);
         continue;
       }
 
@@ -268,6 +271,7 @@ export default class NestAccfactory {
       this.#rawData[resourceId] = {
         connection: uuid,
         source: batch.source,
+        resourceId: change.resourceId,
         value: { ...this.#rawData[resourceId]?.value, ...incomingValue },
       };
 
@@ -275,7 +279,7 @@ export default class NestAccfactory {
       if (change.home !== undefined) {
         Object.assign(
           this.config.homes?.find((home) => home?.name?.trim?.().toUpperCase() === change.home?.name?.trim?.().toUpperCase()) ?? {},
-          change.home.values,
+          batch.source === DATA_SOURCE.HOMEGRAPH ? { homegraph_home_uuid: resourceId } : change.home.values,
         );
       }
 
@@ -298,12 +302,13 @@ export default class NestAccfactory {
       if (pending === undefined) {
         this.#pendingData.set(uuid, changedData);
       } else {
-        // Retain changed field names, not a payload queue, while delivery is busy.
+        // Coalesce fields and removals while delivery is busy; do not queue payloads.
         for (let [id, changed] of changedData) {
           let entry = pending.get(id) ?? { fields: new Set() };
           for (let field of changed.fields) {
             entry.fields.add(field);
           }
+          entry.remove = entry.remove === true || changed.remove === true;
           pending.set(id, entry);
         }
       }
@@ -350,8 +355,7 @@ export default class NestAccfactory {
     }
   }
 
-  // Accessory reconciliation: topology removals retire every accessory selecting
-  // that resource; mapped updates below retain identity across source changes.
+  // Retire accessories still selecting a removed resource after fallback reconciliation.
   async #removeDevice(resourceId) {
     // One thermostat resource can own both thermostat and Heat Link accessories.
     // Match selected resources rather than serials so an unused fallback source
@@ -372,6 +376,11 @@ export default class NestAccfactory {
 
   async #processData(uuid, changedData = undefined) {
     let account = this.#accounts?.get(uuid);
+    let removed = new Set(
+      [...(changedData ?? [])]
+        .filter(([id, change]) => change.remove === true && this.#rawData[id] === undefined)
+        .map(([id]) => id),
+    );
 
     if (this.config?.options?.supportDump === true && typeof account === 'object' && account !== null) {
       this.#supportDumpWriter ??= createSupportDump(this.log);
@@ -385,7 +394,11 @@ export default class NestAccfactory {
         let devices = {};
 
         try {
-          devices = deviceModule.processRawData(this.log, this.#rawData, this.config, deviceType, changedData);
+          // A removed source cannot dirty its unchanged fallback. Revisit the full
+          // cache through the existing field-map preferences for topology removals.
+          devices = deviceModule.processRawData(
+            this.log, this.#rawData, this.config, deviceType, removed.size > 0 ? undefined : changedData,
+          );
         } catch (error) {
           this?.log?.warn?.('%s module failed to process data. Error was "%s"', deviceType, String(error));
         }
@@ -397,6 +410,11 @@ export default class NestAccfactory {
             let trackedDevice = this.#trackedDevices.get(serialNumber);
 
             if (deviceData === null || typeof deviceData !== 'object' || deviceData?.constructor !== Object) {
+              continue;
+            }
+
+            // An incomplete fallback must not inherit the removed source's state or routing.
+            if (removed.has(trackedDevice?.nest_google_device_uuid) === true && isFull !== true) {
               continue;
             }
 
@@ -465,7 +483,10 @@ export default class NestAccfactory {
                   deviceModule.class.TYPE === DEVICE_TYPE.DOORBELL ||
                   deviceModule.class.TYPE === DEVICE_TYPE.FLOODLIGHT
                 ) {
-                  deviceData.apiAccess = this.#accounts?.get(this.#rawData?.[deviceData?.nest_google_device_uuid]?.connection)?.cameraAuth;
+                  let resource = this.#rawData[deviceData.nest_google_device_uuid];
+                  let cameraAuth = this.#accounts?.get(resource?.connection)?.cameraAuth;
+                  deviceData.apiAccess =
+                    resource?.source === DATA_SOURCE.HOMEGRAPH ? { ...cameraAuth, resourceId: resource.resourceId } : cameraAuth;
                 }
 
                 let tempDevice = new deviceModule.class(this.cachedAccessories, this.api, deviceData);
@@ -526,7 +547,8 @@ export default class NestAccfactory {
               let resourceData = this.#rawData?.[resourceId];
               let newSource = resourceData?.source;
 
-              if (newSource !== DATA_SOURCE.PROTOBUF) {
+              // Only defined API sources may update accessory state and routing.
+              if (Object.values(DATA_SOURCE).includes(newSource) !== true) {
                 continue;
               }
               if (trackedDevice.source !== newSource || trackedDevice.nest_google_device_uuid !== resourceId) {
@@ -542,11 +564,24 @@ export default class NestAccfactory {
                 trackedDevice.nest_google_device_uuid = resourceId;
               }
 
+              if ([DEVICE_TYPE.CAMERA, DEVICE_TYPE.DOORBELL, DEVICE_TYPE.FLOODLIGHT].includes(trackedDevice.type) === true) {
+                let cameraAuth = this.#accounts.get(resourceData.connection)?.cameraAuth;
+                deviceData.apiAccess =
+                  newSource === DATA_SOURCE.HOMEGRAPH ? { ...cameraAuth, resourceId: resourceData.resourceId } : cameraAuth;
+              }
+
               // Send updated data onto HomeKit device for it to process
               await HomeKitDevice.message(trackedDevice.uuid, HomeKitDevice.UPDATE, deviceData);
             }
           }
         }
+      }
+    }
+
+    for (let resourceId of removed) {
+      // Ingestion can restore this resource while accessory delivery is awaiting HomeKit.
+      if (this.#rawData[resourceId] === undefined) {
+        await this.#removeDevice(resourceId);
       }
     }
   }
@@ -581,7 +616,7 @@ export default class NestAccfactory {
     // HomeKit's routing identifier belongs to this adapter, not the cloud API.
     let settings = { ...values };
     delete settings.uuid;
-    return await api.set(resourceId, settings);
+    return await api.set(resource.resourceId ?? resourceId, settings);
   }
 
   async #get(uuid, resourceId, values) {
@@ -632,13 +667,13 @@ export default class NestAccfactory {
         if (typeof api?.get !== 'function') {
           throw new Error('GET is not supported for the selected device data source');
         }
-        values[key] = await api.get(resourceId, key, parameters);
+        values[key] = await api.get(resource.resourceId ?? resourceId, key, parameters);
       } catch (error) {
         let request = { camera_snapshot: 'Camera snapshot', location_weather: 'Weather', camera_events: 'Camera events' }[key] ?? key;
         this.log?.debug?.(
           '%s request failed for device uuid "%s". Error was "%s"',
           request,
-          resourceId,
+          resource.resourceId ?? resourceId,
           typeof error?.message === 'string' ? error.message : String(error),
         );
       }
