@@ -97,10 +97,27 @@ test('installed Werift negotiates camera codecs and closes its loopback transpor
     videoPayload,
   );
 
-  let incomingAudio = talkback.watch((kind) => kind === 'audio', 3000);
+  // Exercise the receiver's actual SRTCP feedback path, which camera startup
+  // and decoder recovery use rather than the data channel.
+  let keyframeRequest = video.sender.onPictureLossIndication.asPromise(3000);
+  let receiver = local.getTransceivers().find((transceiver) => transceiver.kind === 'video').receiver;
+  await receiver.sendRtcpPLI(video.sender.ssrc);
+  await keyframeRequest;
+
+  // Camera audio is received independently of the outbound talkback sender.
+  let cameraAudio = received.watch((kind) => kind === 'audio', 3000);
   let audioPayload = Buffer.from([0xf8, 0xff, 0xfe]);
+  let remoteAudio = remote.getTransceivers().find((transceiver) => transceiver.kind === 'audio');
+  await remoteAudio.sender.sendRtp(
+    new RtpPacket(new RtpHeader({ payloadType: 111, sequenceNumber: 30, timestamp: 48000, marker: true }), audioPayload),
+  );
+  assert.deepEqual((await cameraAudio)[1].payload, audioPayload);
+
+  let incomingAudio = talkback.watch((kind) => kind === 'audio', 3000);
+
+  // The plugin supplies serialised packets for talkback, not RtpPacket objects.
   await audio.sender.sendRtp(
-    new RtpPacket(new RtpHeader({ payloadType: 111, sequenceNumber: 20, timestamp: 48000, marker: true }), audioPayload),
+    new RtpPacket(new RtpHeader({ payloadType: 111, sequenceNumber: 20, timestamp: 48000, marker: true }), audioPayload).serialize(),
   );
   assert.deepEqual(
     (
@@ -114,6 +131,7 @@ test('installed Werift negotiates camera codecs and closes its loopback transpor
   await Promise.all([local.close(), remote.close()]);
   assert.equal(local.connectionState, 'closed');
   assert.equal(remote.connectionState, 'closed');
+  assert.equal(channel.readyState, 'closed');
   assert.equal(
     local.iceTransports.every((transport) => transport.state === 'closed'),
     true,

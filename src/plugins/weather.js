@@ -50,7 +50,7 @@ import { DATA_SOURCE, DEVICE_TYPE, MAX_ELEVATION, MIN_ELEVATION, NESTLABS_MAC_PR
 
 export default class NestWeather extends HomeKitDevice {
   static TYPE = DEVICE_TYPE.WEATHER;
-  static VERSION = '2026.11.26'; // Code version
+  static VERSION = '2026.11.28'; // Code version
 
   batteryService = undefined;
   airPressureService = undefined;
@@ -73,32 +73,38 @@ export default class NestWeather extends HomeKitDevice {
     // Setup battery service if not already present on the accessory (required for EveHome support)
     this.batteryService = this.addService(this.hap.Service.Battery, '', 1, { hidden: true });
 
-    // Add custom weather service and characteristics if they have been defined
+    // Neither weather source supplies pressure. Remove the cached service rather
+    // than presenting an unmeasured pressure value or elevation-only sensor.
     if (this.hap.Service?.EveAirPressureSensor !== undefined) {
-      // This will be linked to the Eve app if configured to do so
-      this.airPressureService = this.addService(this.hap.Service.EveAirPressureSensor, '', 1, { history: {} });
+      this.removeService(this.hap.Service.EveAirPressureSensor, 1);
+    }
+    if (this.hap.Service?.EveHomeHistory !== undefined) {
+      this.removeService(this.hap.Service.EveHomeHistory);
     }
 
-    if (this.hap.Characteristic?.ForecastDay !== undefined) {
-      this.addCharacteristic(this.temperatureService, this.hap.Characteristic.ForecastDay);
-    }
-    if (this.hap.Characteristic?.ObservationStation !== undefined) {
-      this.addCharacteristic(this.temperatureService, this.hap.Characteristic.ObservationStation);
-    }
-    if (this.hap.Characteristic?.Condition !== undefined) {
-      this.addCharacteristic(this.temperatureService, this.hap.Characteristic.Condition);
-    }
-    if (this.hap.Characteristic?.WindDirection !== undefined) {
-      this.addCharacteristic(this.temperatureService, this.hap.Characteristic.WindDirection);
-    }
-    if (this.hap.Characteristic?.WindSpeed !== undefined) {
-      this.addCharacteristic(this.temperatureService, this.hap.Characteristic.WindSpeed);
-    }
-    if (this.hap.Characteristic?.SunriseTime !== undefined) {
-      this.addCharacteristic(this.temperatureService, this.hap.Characteristic.SunriseTime);
-    }
-    if (this.hap.Characteristic?.SunsetTime !== undefined) {
-      this.addCharacteristic(this.temperatureService, this.hap.Characteristic.SunsetTime);
+    // Reconcile optional characteristics at setup, including cached accessories.
+    // Keep zero wind speed and epoch timestamps; blank or invalid readings do not
+    // establish a supported characteristic.
+    for (let [name, field, numeric] of [
+      ['ForecastDay', 'forecast', false],
+      ['ObservationStation', 'station', false],
+      ['Condition', 'condition', false],
+      ['WindDirection', 'wind_direction', false],
+      ['WindSpeed', 'wind_speed', true],
+      ['SunriseTime', 'sunrise', true],
+      ['SunsetTime', 'sunset', true],
+    ]) {
+      let characteristic = this.hap.Characteristic?.[name];
+      if (characteristic === undefined) {
+        continue;
+      }
+      let value = this.deviceData[field];
+      let available = numeric === true ? Number.isFinite(value) === true : typeof value === 'string' && value.trim() !== '';
+      if (available === true) {
+        this.addCharacteristic(this.temperatureService, characteristic);
+      } else {
+        this.removeCharacteristic(this.temperatureService, characteristic);
+      }
     }
 
     // Extra setup details for output

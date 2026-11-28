@@ -14,7 +14,7 @@
 // onData({ source, changes, isCurrent }) must accept the cache update before it is
 // committed; System handles accessory delivery separately. poll:false disables polling.
 //
-// Code version 2026.11.27
+// Code version 2026.11.28
 // Mark Hulskamp
 
 // Define node.js modules
@@ -28,6 +28,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { fetchWrapper } from '../fetchWrapper.js';
 import GrpcTransport from '../grpctransport.js';
 import { getProtoType } from '../protobuf.js';
+import { adjustTemperature } from '../utils.js';
 import GoogleHomePush from './homegraphpush.js';
 
 // Define constants
@@ -46,15 +47,6 @@ import {
   HOTWATER_BOOST_TIMES,
   __dirname,
 } from '../consts.js';
-
-// Shared trait mode names differ from the native Foyer enum labels.
-const THERMOSTAT_MODES = {
-  heat: 'THERMOSTAT_MODE_HEAT',
-  cool: 'THERMOSTAT_MODE_COOL',
-  heatcool: 'THERMOSTAT_MODE_RANGE',
-  off: 'THERMOSTAT_MODE_OFF',
-  eco: 'THERMOSTAT_MODE_ECO',
-};
 
 const POLL_INTERVAL = 2000;
 const RECONCILE_INTERVAL = 30000;
@@ -746,7 +738,7 @@ export default class HomeGraphAPI {
         }
         // Later setpoints in this SET use the accepted mode while the observed cache
         // remains unchanged until ingestion confirms the device's state.
-        if (method === 'UpdateThermostatMode') {
+        if (key === 'hvac_mode' || key === 'eco_mode') {
           appliedMode = setting.mode;
         }
         // Push and reconciliation remain the authoritative state writers for Google Home
@@ -770,6 +762,7 @@ export default class HomeGraphAPI {
     // Return one protocol request; set() owns execution, accepted mode and errors.
     // Related-device settings retain their ownership checks for the pending write.
     let request;
+    let thermostatTraits;
     let targetId = resourceId;
     let service = 'HomeControlService';
     let method = 'UpdateTraits';
@@ -971,10 +964,8 @@ export default class HomeGraphAPI {
         if (['heat', 'cool', 'heatcool', 'off', 'eco'].includes(requested) !== true || modes?.includes(requested) !== true) {
           break;
         }
-        service = 'EnergyService';
-        method = 'UpdateThermostatMode';
         mode = requested;
-        request = { deviceId: resourceId, mode: THERMOSTAT_MODES[mode], hvacActor: 'HVAC_ACTOR_IOS' };
+        thermostatTraits = [{ name: 'mode', value: { text: mode } }];
         break;
       }
       case 'target_temperature':
@@ -989,9 +980,8 @@ export default class HomeGraphAPI {
         if (value < minimum || value > maximum || ['heat', 'cool', 'heatcool'].includes(mode) !== true) {
           break;
         }
-        service = 'EnergyService';
-        // Range mode writes both thresholds together, retaining the observed companion
-        // value when only one is supplied. A paired update sends one range command.
+        // Range writes send only requested properties, so a later write cannot resend
+        // a stale companion threshold. Observed companions are used only for validation.
         if (mode === 'heatcool') {
           if (
             key === 'target_temperature' ||
@@ -1002,8 +992,10 @@ export default class HomeGraphAPI {
             }
             break;
           }
-          let low = values.target_temperature_low ?? temperature?.thermostatTemperatureSetpointLowC?.number;
-          let high = values.target_temperature_high ?? temperature?.thermostatTemperatureSetpointHighC?.number;
+          let hasLow = Object.hasOwn(values, 'target_temperature_low');
+          let hasHigh = Object.hasOwn(values, 'target_temperature_high');
+          let low = hasLow === true ? values.target_temperature_low : temperature?.thermostatTemperatureSetpointLowC?.number;
+          let high = hasHigh === true ? values.target_temperature_high : temperature?.thermostatTemperatureSetpointHighC?.number;
           let buffer = attributes?.find((property) => property.name === 'bufferRangeCelsius')?.value?.number ?? 0;
           if (
             typeof low !== 'number' ||
@@ -1016,14 +1008,18 @@ export default class HomeGraphAPI {
           ) {
             break;
           }
-          method = 'UpdateTargetTemperatureRange';
-          request = { deviceId: resourceId, tempLow: { value: low }, tempHigh: { value: high }, hvacActor: 'HVAC_ACTOR_IOS' };
+          // APK mapping uses unsuffixed write names; the observed Celsius names have a C suffix.
+          thermostatTraits = [
+            ...(hasLow === true ? [{ name: 'thermostatTemperatureSetpointLow', value: { number: low } }] : []),
+            ...(hasHigh === true ? [{ name: 'thermostatTemperatureSetpointHigh', value: { number: high } }] : []),
+          ];
         } else {
           if ((key === 'target_temperature_low' && mode !== 'heat') || (key === 'target_temperature_high' && mode !== 'cool')) {
             break;
           }
-          method = 'UpdateTargetTemperature';
-          request = { deviceId: resourceId, mode: THERMOSTAT_MODES[mode], temperature: { value }, hvacActor: 'HVAC_ACTOR_IOS' };
+          // The generic setpoint applies to the device's current mode without
+          // reasserting a mode from our potentially stale observed state.
+          thermostatTraits = [{ name: 'thermostatTemperatureSetpoint', value: { number: value } }];
         }
         break;
       }
@@ -1072,6 +1068,28 @@ export default class HomeGraphAPI {
         break;
       default:
         break;
+    }
+    if (thermostatTraits !== undefined) {
+      // Mode and temperature properties share the APK's UpdateTraits routing.
+      let source = resource?.device?.id?.thirdPartyId?.idType;
+      if (typeof source === 'string' && source.trim() !== '') {
+        // Generic write properties use the thermostat's unit, unlike the C-suffixed
+        // read properties. Convert HomeKit Celsius without changing the device's unit.
+        let fahrenheit = attributes?.find((property) => property.name === 'temperatureUnit')?.value?.text === 'F';
+        let changes = thermostatTraits.map((trait) =>
+          fahrenheit === true && typeof trait.value.number === 'number'
+            ? { ...trait, value: { number: adjustTemperature(trait.value.number, 'C', 'F', false) } }
+            : trait,
+        );
+        request = {
+          request: [
+            {
+              deviceId: { uuid: resourceId, internalId: { source } },
+              categories: [{ name: 'temperatureSetting', traits: changes }],
+            },
+          ],
+        };
+      }
     }
     return { request, service, method, targetId, targetCurrent, mode };
   }

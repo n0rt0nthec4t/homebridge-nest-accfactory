@@ -17,12 +17,13 @@
 // - The guided connection controller stages accounts through this host's draft facade
 // - Homebridge owns configuration persistence and the surrounding settings dialog
 //
-// Code version 2026.11.27
+// Code version 2026.11.28
 // Mark Hulskamp
 
 // Define our modules
 import { ACCOUNT_TYPE } from './constants.js';
 import { startSetup } from './main.js';
+import { googleHomeCredentials } from './config.js';
 
 // Define popup lifecycle state. The fallback form must restore the host layout.
 let restoreSettingsWindow = () => {};
@@ -207,7 +208,14 @@ export async function startSettings(homebridge, document) {
       if (Array.isArray(definition.enum) === true) {
         input = node('select');
         for (const entry of definition.enum) {
-          option(input, entry, key === 'type' ? ({ [ACCOUNT_TYPE.GOOGLE]: 'Google', [ACCOUNT_TYPE.NEST]: 'Nest' }[entry] ?? entry) : entry);
+          option(
+            input,
+            entry,
+            key === 'type'
+              ? ({ [ACCOUNT_TYPE.GOOGLE]: 'Google', [ACCOUNT_TYPE.NEST]: 'Nest', [ACCOUNT_TYPE.GOOGLE_HOME]: 'Google Home' }[entry] ??
+                  entry)
+              : entry,
+          );
         }
         input.value = value ?? definition.default ?? '';
       } else {
@@ -439,7 +447,7 @@ export async function startSettings(homebridge, document) {
     }
   }
 
-  function editAccount(accountIndex, trigger) {
+  function editAccount(accountIndex, trigger, type = ACCOUNT_TYPE.GOOGLE) {
     // Isolate edits until Apply, retaining advanced fields from the original
     // account. Cancel discards only this editor's changes.
     const panel = get('manual-account-editor');
@@ -469,21 +477,29 @@ export async function startSettings(homebridge, document) {
     panel.replaceChildren();
     panel.hidden = false;
 
-    let draft = structuredClone(accounts()[accountIndex] ?? { name: '', type: ACCOUNT_TYPE.GOOGLE });
+    let draft = structuredClone(accounts()[accountIndex] ?? { name: '', type });
 
     const render = () => {
       panel.replaceChildren();
       panel.append(node('h3', undefined, 'Account settings'));
       const definitions = schema.schema.properties.accounts.items.properties;
 
-      field(panel, 'type', 'Account type', { type: 'string', enum: [ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST] }, draft.type, (value) => {
+      field(panel, 'type', 'Account type', { type: 'string', enum: Object.values(ACCOUNT_TYPE) }, draft.type, (value) => {
         draft.type = value;
-        for (const key of ['issueToken', 'cookie', 'access_token']) {
+        for (const key of ['issueToken', 'cookie', 'access_token', 'refreshToken', 'deviceId']) {
           delete draft[key];
         }
         render();
       });
-      for (const key of ['name', ...(draft.type === ACCOUNT_TYPE.GOOGLE ? ['issueToken', 'cookie'] : ['access_token'])]) {
+      const usingSso = draft.type === ACCOUNT_TYPE.GOOGLE_HOME;
+      for (const key of [
+        'name',
+        ...(usingSso === true
+          ? ['refreshToken', 'deviceId']
+          : draft.type === ACCOUNT_TYPE.GOOGLE
+            ? ['issueToken', 'cookie']
+            : ['access_token']),
+      ]) {
         field(
           panel,
           key,
@@ -492,6 +508,8 @@ export async function startSettings(homebridge, document) {
             issueToken: 'Issue Token',
             cookie: 'Cookie',
             access_token: 'Access Token',
+            refreshToken: 'Refresh token',
+            deviceId: 'Device ID (optional)',
           }[key],
           definitions[key],
           draft[key],
@@ -514,7 +532,10 @@ export async function startSettings(homebridge, document) {
         button(
           'Apply account',
           () => {
-            const required = ['name', ...(draft.type === ACCOUNT_TYPE.GOOGLE ? ['issueToken', 'cookie'] : ['access_token'])];
+            const required = [
+              'name',
+              ...(usingSso === true ? ['refreshToken'] : draft.type === ACCOUNT_TYPE.GOOGLE ? ['issueToken', 'cookie'] : ['access_token']),
+            ];
 
             if (
               required.some(
@@ -531,6 +552,19 @@ export async function startSettings(homebridge, document) {
 
             for (const key of required) {
               draft[key] = draft[key].trim();
+            }
+            if (usingSso === true) {
+              try {
+                const checked = googleHomeCredentials({
+                  refreshToken: draft.refreshToken,
+                  ...(typeof draft.deviceId === 'string' && draft.deviceId.trim() !== '' ? { deviceId: draft.deviceId } : {}),
+                });
+                delete draft.deviceId;
+                Object.assign(draft, checked);
+              } catch {
+                feedback.textContent = 'Enter a valid refresh token and, if supplied, its device ID.';
+                return;
+              }
             }
 
             block().accounts ??= [];
@@ -583,6 +617,7 @@ export async function startSettings(homebridge, document) {
 
     connectionBusy = true;
     get('open-connection').disabled = true;
+    get('open-google-home').disabled = true;
 
     // Progress and failures belong to the account whose credentials were used.
     // Fingerprint each state so edits or removals cannot attach it to another account.
@@ -591,10 +626,10 @@ export async function startSettings(homebridge, document) {
     try {
       const result = await homebridge.request('/accounts/test', {
         type: account.type,
-        ...(account.type === ACCOUNT_TYPE.GOOGLE
-          ? { issueToken: account.issueToken, cookie: account.cookie }
-          : account.type === ACCOUNT_TYPE.GOOGLE_HOME
-            ? { refreshToken: account.refreshToken, deviceId: account.deviceId }
+        ...(account.type === ACCOUNT_TYPE.GOOGLE_HOME
+          ? { refreshToken: account.refreshToken, deviceId: account.deviceId }
+          : account.type === ACCOUNT_TYPE.GOOGLE
+            ? { issueToken: account.issueToken, cookie: account.cookie }
             : { access_token: account.access_token }),
         fieldTest: account.fieldTest === true,
       });
@@ -618,6 +653,7 @@ export async function startSettings(homebridge, document) {
     } finally {
       connectionBusy = false;
       get('open-connection').disabled = false;
+      get('open-google-home').disabled = false;
       renderAccounts();
     }
   }
@@ -630,9 +666,10 @@ export async function startSettings(homebridge, document) {
     const legacy = node('details', 'legacy-accounts');
     const legacyList = node('div', 'legacy-account-list');
 
-    // Existing setup controls belong to Nest; Google Home's SSO controls remain disabled.
-    get('add-manual-account').disabled = false;
+    // Each section opens its account configuration fields. Nest keeps both
+    // Google and legacy Nest credentials available.
     get('open-connection').disabled = connectionBusy === true;
+    get('open-google-home').disabled = connectionBusy === true;
 
     // Retain the disclosure state when checks, toggles or edits rebuild the cards.
     legacy.open = list.querySelector('.legacy-accounts')?.open === true;
@@ -708,15 +745,8 @@ export async function startSettings(homebridge, document) {
       const edit = button('Edit', (event) => editAccount(accountIndex, event.currentTarget));
 
       edit.id = 'edit-account-' + accountIndex;
-      // Keep the card layout consistent while Google Home enrollment remains manual.
-      edit.disabled = account.type === ACCOUNT_TYPE.GOOGLE_HOME;
       actions.append(edit);
-      if (account.type === ACCOUNT_TYPE.GOOGLE_HOME) {
-        const reconnect = button('Reconnect', () => {});
-        reconnect.disabled = true;
-        actions.append(reconnect);
-      }
-      if ([ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST].includes(account.type) === true) {
+      if ([ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST, ACCOUNT_TYPE.GOOGLE_HOME].includes(account.type) === true) {
         actions.append(
           button('Reconnect', async () => {
             if (connectionBusy === true) {
@@ -725,15 +755,7 @@ export async function startSettings(homebridge, document) {
               return;
             }
 
-            await guideControls.open();
-
-            const select = get('account-target');
-            const position = accounts()
-              .slice(0, accountIndex + 1)
-              .filter((entry) => [ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST].includes(entry.type) === true).length;
-
-            select.value = String(position);
-            select.dispatchEvent(new Event('change'));
+            await guideControls.open(account.type, accountIndex);
           }),
         );
       }
@@ -762,12 +784,19 @@ export async function startSettings(homebridge, document) {
         remove.focus({ preventScroll: true });
       });
       const choices = node('div', 'button-row');
-      choices.append(cancel, button('Remove account', () => {
-        block().accounts.splice(accountIndex, 1);
-        connectionStates.clear();
-        changed();
-        renderAll();
-      }, true));
+      choices.append(
+        cancel,
+        button(
+          'Remove account',
+          () => {
+            block().accounts.splice(accountIndex, 1);
+            connectionStates.clear();
+            changed();
+            renderAll();
+          },
+          true,
+        ),
+      );
       confirmation.append(question, choices);
       removal.append(remove);
       actionGroups.append(actions);
@@ -803,8 +832,6 @@ export async function startSettings(homebridge, document) {
     renderHomes();
     renderDevices();
   }
-
-  get('add-manual-account').addEventListener('click', (event) => editAccount(undefined, event.currentTarget));
 
   get('add-home').addEventListener('click', () => {
     block().homes ??= [];

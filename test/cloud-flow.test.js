@@ -732,3 +732,144 @@ for (let [initial, requested, heat, cool] of [
     assert.equal(notifications.at(-1), requested);
   });
 }
+
+// Model only the remote mask application. All HAP handlers, device lifecycle,
+// System routing, protobuf request construction and Observe delivery remain real.
+async function rangeWriteFlow(context) {
+  let flow = await setup(context);
+  flow.values.target_temperature_settings.targetTemperature.setpointType = 'SET_POINT_TYPE_RANGE';
+  await flow.send(Object.entries(flow.values).map(([label, values]) => trait('DEVICE_THERMOSTAT', label, values)));
+  let cloud = structuredClone(flow.values.target_temperature_settings);
+  let snapshots = [];
+  let backend = { rejectNext: false, afterWrite: undefined };
+  let fields = {
+    'target_temperature.heating_target': 'heatingTarget',
+    'target_temperature.cooling_target': 'coolingTarget',
+    'target_temperature.current_actor_info': 'currentActorInfo',
+  };
+  let command = flow.connection.grpcTransport.command;
+  flow.connection.grpcTransport.command = async (...args) => {
+    let response = await command(...args);
+    if (backend.rejectNext === true) {
+      backend.rejectNext = false;
+      return { status: 0, data: [{ traitOperations: [{ progress: 'COMPLETE', status: { code: 13 } }] }] };
+    }
+    let update = args[3].batchUpdateStateRequest[0];
+    assert.equal(update.traitRequest.resourceId, 'DEVICE_THERMOSTAT');
+    assert.equal(update.traitRequest.traitLabel, 'target_temperature_settings');
+    if (update.stateMask === undefined) {
+      // Negative-control runs use the original whole-trait replacement behaviour.
+      Object.assign(cloud, structuredClone(update.state.value));
+    } else {
+      assert.ok(update.stateMask.paths.length > 0);
+      for (let path of update.stateMask.paths) {
+        assert.equal(Object.hasOwn(fields, path), true, 'Unexpected range-write mask: ' + path);
+        cloud.targetTemperature[fields[path]] = structuredClone(update.state.value.targetTemperature[fields[path]]);
+      }
+    }
+    snapshots.push(structuredClone(cloud));
+    await backend.afterWrite?.();
+    return response;
+  };
+  return {
+    ...flow,
+    cloud,
+    snapshots,
+    backend,
+    service: flow.device.thermostatService,
+    echo: (value) => flow.send([trait('DEVICE_THERMOSTAT', 'target_temperature_settings', value)]),
+  };
+}
+
+for (let reverse of [false, true]) {
+  test('HomeKit Auto range preserves both writes before Observe and reconciles delayed echoes, reverse=' + reverse, async (context) => {
+    let flow = await rangeWriteFlow(context);
+    let writes = [
+      [hap.Characteristic.CoolingThresholdTemperature, 26],
+      [hap.Characteristic.HeatingThresholdTemperature, 19],
+    ];
+    if (reverse === true) {
+      writes.reverse();
+    }
+    for (let [characteristic, value] of writes) {
+      await flow.service.getCharacteristic(characteristic).handleSetRequest(value);
+      await setImmediate();
+    }
+    assert.equal(flow.cloud.targetTemperature.heatingTarget.value, 19);
+    assert.equal(flow.cloud.targetTemperature.coolingTarget.value, 26);
+    let source = flow.connection.googleProtobufAPI.resources.get('DEVICE_THERMOSTAT').value.target_temperature_settings;
+    assert.equal(source.targetTemperature.heatingTarget.value, 20);
+    assert.equal(source.targetTemperature.coolingTarget.value, 24);
+    // Deliver the first command's older echo after the second has completed.
+    await flow.echo(flow.snapshots[0]);
+    await flow.echo(flow.snapshots[1]);
+    assert.equal(await flow.service.getCharacteristic(hap.Characteristic.HeatingThresholdTemperature).handleGetRequest(), 19);
+    assert.equal(await flow.service.getCharacteristic(hap.Characteristic.CoolingThresholdTemperature).handleGetRequest(), 26);
+    assert.equal(flow.commands.length, 2, 'Observe reconciliation must not issue replacement commands');
+  });
+
+  test('overlapping HomeKit Auto writes remain serialized and preserve both targets, reverse=' + reverse, async (context) => {
+    let flow = await rangeWriteFlow(context);
+    let started = Promise.withResolvers();
+    let released = Promise.withResolvers();
+    flow.backend.afterWrite = async () => {
+      if (flow.snapshots.length === 1) {
+        started.resolve();
+        await released.promise;
+      }
+    };
+    let writes = [
+      [hap.Characteristic.CoolingThresholdTemperature, 26],
+      [hap.Characteristic.HeatingThresholdTemperature, 19],
+    ];
+    if (reverse === true) {
+      writes.reverse();
+    }
+    let first = flow.service.getCharacteristic(writes[0][0]).handleSetRequest(writes[0][1]);
+    await started.promise;
+    let second = flow.service.getCharacteristic(writes[1][0]).handleSetRequest(writes[1][1]);
+    await setImmediate();
+    let beforeRelease = flow.commands.length;
+    released.resolve();
+    await Promise.all([first, second]);
+    assert.equal(beforeRelease, 1);
+    assert.equal(flow.commands.length, 2);
+    assert.equal(flow.cloud.targetTemperature.heatingTarget.value, 19);
+    assert.equal(flow.cloud.targetTemperature.coolingTarget.value, 26);
+  });
+}
+
+for (let [firstCharacteristic, firstValue, externalField, externalValue, secondCharacteristic, secondValue] of [
+  [hap.Characteristic.CoolingThresholdTemperature, 26, 'coolingTarget', 23, hap.Characteristic.HeatingThresholdTemperature, 19],
+  [hap.Characteristic.CoolingThresholdTemperature, 26, 'coolingTarget', 24, hap.Characteristic.HeatingThresholdTemperature, 19],
+  [hap.Characteristic.HeatingThresholdTemperature, 19, 'heatingTarget', 18, hap.Characteristic.CoolingThresholdTemperature, 26],
+  [hap.Characteristic.HeatingThresholdTemperature, 19, 'heatingTarget', 20, hap.Characteristic.CoolingThresholdTemperature, 26],
+]) {
+  test('HomeKit range write preserves an unobserved dial/app change: ' + externalField + '=' + externalValue, async (context) => {
+    let flow = await rangeWriteFlow(context);
+    await flow.service.getCharacteristic(firstCharacteristic).handleSetRequest(firstValue);
+    // The device changes independently; intentionally do not deliver Observe yet.
+    flow.cloud.targetTemperature[externalField].value = externalValue;
+    await flow.service.getCharacteristic(secondCharacteristic).handleSetRequest(secondValue);
+    assert.equal(flow.cloud.targetTemperature[externalField].value, externalValue);
+    let changed = externalField === 'coolingTarget' ? 'heatingTarget' : 'coolingTarget';
+    assert.equal(flow.cloud.targetTemperature[changed].value, secondValue);
+    await flow.echo(flow.cloud);
+    assert.equal(await flow.service.getCharacteristic(firstCharacteristic).handleGetRequest(), externalValue);
+    assert.equal(await flow.service.getCharacteristic(secondCharacteristic).handleGetRequest(), secondValue);
+    assert.equal(flow.commands.length, 2);
+  });
+}
+
+test('rejected HomeKit cooling write cannot contaminate a later accepted heating write', async (context) => {
+  let flow = await rangeWriteFlow(context);
+  flow.backend.rejectNext = true;
+  await assert.rejects(flow.service.getCharacteristic(hap.Characteristic.CoolingThresholdTemperature).handleSetRequest(26));
+  assert.equal(flow.cloud.targetTemperature.coolingTarget.value, 24);
+  assert.equal(flow.service.getCharacteristic(hap.Characteristic.CoolingThresholdTemperature).value, 24);
+  await flow.service.getCharacteristic(hap.Characteristic.HeatingThresholdTemperature).handleSetRequest(19);
+  assert.equal(flow.cloud.targetTemperature.coolingTarget.value, 24);
+  assert.equal(flow.cloud.targetTemperature.heatingTarget.value, 19);
+  await flow.echo(flow.cloud);
+  assert.equal(await flow.service.getCharacteristic(hap.Characteristic.CoolingThresholdTemperature).handleGetRequest(), 24);
+});

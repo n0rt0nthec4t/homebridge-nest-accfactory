@@ -63,54 +63,136 @@ One or more Nest and Google accounts can be configured together.
 
 ## Configuration
 
-Open the plugin settings in Homebridge to add your accounts and choose settings for your homes and devices. Follow the instructions below for the account you use to sign in to Nest.
+Open the plugin settings in Homebridge to connect your accounts and configure your homes and devices.
 
-You can also edit advanced settings in `config.json`; see the [configuration reference](#configuration-reference).
+The plugin supports three account authentication methods:
 
-Google accounts use `issueToken` and `cookie`. Legacy Nest accounts use `access_token`. Treat these credentials as passwords: do not share them in issues, screenshots, logs or configuration examples.
+| Account type | Authentication credentials |
+| --- | --- |
+| Google Home | Refresh Token and optional Device ID |
+| Google (Nest) | Issue Token URL and Cookie |
+| Nest | Access Token |
+
+Follow the instructions below for your preferred authentication method.
+
+Advanced settings can also be configured directly in `config.json`. See the [configuration reference](#configuration-reference) for available options.
+
+**Important:** Authentication credentials should be treated as passwords. Never share them in GitHub issues, screenshots, logs or configuration examples.
+
+<a id="google-home-account"></a>
+
+### Google Home Account
+
+Google Home authentication uses a Google Single Sign-On (SSO) Refresh Token to authenticate access to Google Home.
+
+Unlike the Google (Nest) authentication method, this method does not require capturing cookies or network requests from a web browser.
+
+#### Obtaining your credentials
+
+A macOS sign-in helper is available to obtain the required authentication credentials.
+
+1. Follow the [macOS sign-in helper instructions](tools/macos-sign-in/README.md) to download and run the helper.
+2. Sign in using the Google account associated with your Google Home devices.
+3. Obtain the **Refresh Token** and associated **Device ID**.
+
+The sign-in helper runs independently of Homebridge. You do not need to run Homebridge on a Mac to use this authentication method. Homebridge can continue to run on a Raspberry Pi, Linux server or any other supported platform.
+
+Download the compiled helper from [GitHub Releases](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/releases/tag/mac-sign-in-v0.1.0). Choose **arm64** for Apple Silicon or **x64** for Intel. The download includes Node.js and does not require Xcode. The helper is not included in the npm plugin package.
+
+#### Connecting your account
+
+1. Open the plugin settings in Homebridge.
+2. Navigate to **Accounts → Google Home → Connect Account**.
+3. Enter your **Refresh Token** and **Device ID**.
+4. Check the connection to validate your credentials.
+5. Enter a name to identify your account.
+6. Select **Add to Accounts**.
+7. Select **Save** to apply your configuration.
+
+Although the Device ID is optional, it is recommended that you retain the original Device ID obtained alongside your Refresh Token. If omitted, the plugin will generate an account-specific Device ID.
+
+**Note:** Browser `oauth_token` cookies and Android master tokens are not supported by this authentication method.
+
+#### Reconnecting your account
+
+If your authentication credentials become invalid, obtain new credentials using the sign-in helper and select **Reconnect** for the existing account in the plugin settings.
+
+Replacement credentials are validated before the existing account is updated. Use **Edit** to modify stored account settings.
+
+> **Note:** Google Home authentication is currently experimental. Initial authentication and access to Google Home and Nest services have been validated. Session renewal after expiry and camera streaming are yet to be verified.
 
 <a id="nest-account"></a>
 
 ### Nest Account
 
-If you have a **Nest Account**, you’ll need to obtain an **access token** from the Nest web app.
+If you use an original Nest Account that has not been migrated to Google, you will need to obtain an Access Token from the Nest web app.
 
-1. Go to [home.nest.com](https://home.nest.com) and click **Sign in with Nest**.  
-2. After logging in, open [home.nest.com/session](https://home.nest.com/session).  
-3. You’ll see a JSON string similar to:  
+#### Obtaining your credentials
+
+1. Go to [home.nest.com](https://home.nest.com) and select **Sign in with Nest**.
+2. After signing in, open [home.nest.com/session](https://home.nest.com/session).
+3. Locate the `access_token` near the beginning of the displayed JSON response, for example:
+
    ```json
    {"2fa_state":"enrolled","access_token":"XXX"}
    ```
-4. Copy the value of **access_token** near the start (a long string beginning with `b`) and paste it into the Nest account field in the plugin settings.
-   - Ignore any other `access_token` entries further down the string.
 
-**Note:** Do **not** log out of [home.nest.com](https://home.nest.com), as this will invalidate your credentials.
+4. Copy the value of `access_token`. This is typically a long string beginning with `b`. Ignore any additional `access_token` entries further down the response.
+
+#### Connecting your account
+
+1. Open the plugin settings in Homebridge.
+2. Navigate to **Accounts → Nest → Connect Account**.
+3. Select **Nest** as the account type.
+4. Enter your **Access Token**.
+5. Check the connection to validate your credentials.
+6. Enter a name to identify your account.
+7. Select **Add to Accounts**.
+8. Select **Save** to apply your configuration.
+
+**Important:** Do not sign out of [home.nest.com](https://home.nest.com), as this will invalidate your authentication credentials.
 
 <a id="google-account"></a>
 
-### Google Account
+### Google Account (Nest)
 
-The plugin needs two sign-in details from your Google account: an `issueToken` URL and a `cookie`. Follow these Safari steps to copy them. If they expire or stop working, repeat these steps.
+If you use a Google Account to sign in to the Nest web app, you can authenticate using an Issue Token URL and Cookie.
 
-1. Open Safari in a **Private Window**  
-2. Enable the **Develop Menu** (Safari ▸ Settings ▸ Advanced ▸ check *Show features for web developers*)  
-3. Open **Develop ▸ Show Web Inspector**, then select the **Network** tab  
-4. Ensure **Preserve Log** or **Preserve Requests** is checked  
-5. In the filter box, type **issueToken**  
-6. Go to [home.nest.com](https://home.nest.com) and click **Sign in with Google**  
-7. After login, click the **iframerpc** network request  
-8. In **Headers**, copy:  
-   - **Summary ▸ URL** this is your **issueToken**  
-   - **Request ▸ Cookie:** this is your **cookie**, which must include a key starting with **`SIDCC=`** (if `SIDCC` is missing, the cookie is incomplete and authentication will fail)
-9. Paste both values into the Google account fields in the plugin settings.
+This authentication method requires capturing credentials from the Nest web app using Safari's Web Inspector.
 
-**Important:** Safari is the supported browser for this capture procedure. If credentials captured using another browser fail, capture them again using Safari.
+#### Obtaining your credentials
 
-**Note:** Do **not** log out of [home.nest.com](https://home.nest.com), as this will invalidate your credentials.
+1. Open Safari in a **Private Window**.
+2. Enable the Develop menu by navigating to **Safari → Settings → Advanced** and enabling *Show features for web developers*.
+3. Select **Develop → Show Web Inspector**, then open the **Network** tab.
+4. Enable **Preserve Log** or **Preserve Requests**.
+5. Enter `issueToken` in the filter box.
+6. Navigate to [home.nest.com](https://home.nest.com) and select **Sign in with Google**.
+7. After signing in, select the **iframerpc** network request.
+8. In the **Headers** section, copy the following values:
+   - **Summary → URL:** This is your Issue Token URL.
+   - **Request → Cookie:** This is your Cookie. It must include a `SIDCC=` entry. If this entry is missing, the cookie is incomplete and authentication will fail.
+
+#### Connecting your account
+
+1. Open the plugin settings in Homebridge.
+2. Navigate to **Accounts → Nest → Connect Account**.
+3. Select **Google (Nest)** as the account type.
+4. Enter your **Issue Token URL** and **Cookie**.
+5. Check the connection to validate your credentials.
+6. Enter a name to identify your account.
+7. Select **Add to Accounts**.
+8. Select **Save** to apply your configuration.
+
+If your credentials expire or become invalid, repeat the credential capture procedure and select **Reconnect** for the existing account in the plugin settings.
+
+**Important:** Safari is the supported browser for this credential capture procedure. If credentials obtained using another browser fail, repeat the procedure using Safari.
+
+Do not sign out of [home.nest.com](https://home.nest.com), as this will invalidate your authentication credentials.
 
 ### Settings UI and connection checks
 
-The custom settings UI supports Google and unmigrated Nest accounts. Choose **Connect Account**, select the account type and enter the sign-in fields described above. A successful sign-in shows green **Connection successful** text. Add or update the account, then use **Save settings**. Existing accounts can be checked again with **Check connection**. This status reflects the last authentication check; the settings UI does not discover devices or start device subscriptions. Enter home names and device serial numbers manually for overrides.
+The custom settings UI supports Google Home, Google (Nest) and unmigrated Nest accounts. Choose **Connect Account** in the appropriate section, select the account type where offered and enter the sign-in fields described above. A successful sign-in shows green **Connection successful** text. Add or update the account, then use **Save**. Existing accounts can be checked again with **Check connection**. This status reflects the last authentication check; the settings UI does not discover devices or start device subscriptions. Enter home names and device serial numbers manually for overrides.
 
 ### Multiple Accounts
 

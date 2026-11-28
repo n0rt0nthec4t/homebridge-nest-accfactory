@@ -1,0 +1,26 @@
+Nest Accfactory Sign-in
+
+Requires macOS 13.5 or later. You do not need to install Node.js or Xcode.
+
+1. Use arm64 for Apple Silicon or x64 for Intel. Extract the whole ZIP.
+   Keep its contents together. The launcher runs natively and does not use Rosetta.
+2. Double-click "Sign in.command" to open Terminal and start Google sign-in.
+3. Complete sign-in, then return to Terminal.
+4. Copy the Refresh token and Device ID into:
+   Homebridge > Nest Accfactory > Accounts > Google Home > Connect Account.
+5. Check the connection, add the account and save the plugin settings.
+
+For an existing account, use its Reconnect action.
+
+Google may report a new sign-in on Apple iPhone 16 because the helper uses that
+device profile. Check that the account, time and location match your attempt.
+
+Keep the refresh token private. The helper prints credentials for copying; it
+does not save them or change Homebridge configuration. Ctrl+C cancels sign-in.
+
+These builds are locally signed, not Developer ID signed or Apple notarized.
+macOS may block a downloaded build. Review its origin before allowing it in
+System Settings > Privacy & Security. Do not disable macOS security protections.
+
+If files are missing, extract a fresh copy. For other failures, report the fixed
+error message and your macOS version; never share credentials or sign-in URLs.

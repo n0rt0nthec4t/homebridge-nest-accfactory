@@ -26,7 +26,7 @@
             "type": {
               "type": "string",
               "default": "google",
-              "enum": ["google", "nest"]
+              "enum": ["google", "nest", "googlehome"]
             },
             "access_token": {
               "type": "string",
@@ -45,6 +45,18 @@
               "minLength": 1,
               "pattern": "\\S",
               "placeholder": "See https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/#google-account"
+            },
+            "refreshToken": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 8192,
+              "pattern": "^[^\\s]+$",
+              "placeholder": "Google Home SSO refresh token"
+            },
+            "deviceId": {
+              "type": "string",
+              "pattern": "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$",
+              "placeholder": "Generated automatically if omitted"
             },
             "fieldTest": {
               "type": "boolean",
@@ -80,6 +92,10 @@
               "then": {
                 "required": ["access_token"]
               }
+            },
+            {
+              "if": { "properties": { "type": { "const": "googlehome" } } },
+              "then": { "required": ["refreshToken"] }
             }
           ]
         }
@@ -244,14 +260,15 @@
             {
               "key": "accounts[].type", 
               "title": "Type",
-              "enumNames": ["Google", "Nest"],
+              "enumNames": ["Google", "Nest", "Google Home"],
               "oneOf": [
                 {
                   "enum": ["google"]
                 },
                 {
                   "enum": ["nest"]
-                }
+                },
+                { "enum": ["googlehome"] }
               ]
             },
             { 
@@ -274,6 +291,17 @@
               "condition": {
                   "functionBody": "return model.accounts[arrayIndices] && model.accounts[arrayIndices].type === 'nest';"
                 }
+            },
+            {
+              "key": "accounts[].refreshToken",
+              "title": "Refresh token",
+              "type": "password",
+              "condition": { "functionBody": "return model.accounts[arrayIndices] && model.accounts[arrayIndices].type === 'googlehome';" }
+            },
+            {
+              "key": "accounts[].deviceId",
+              "title": "Device ID (optional)",
+              "condition": { "functionBody": "return model.accounts[arrayIndices] && model.accounts[arrayIndices].type === 'googlehome';" }
             },
             { 
               "key": "accounts[].fieldTest",

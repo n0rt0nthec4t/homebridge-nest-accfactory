@@ -14,6 +14,63 @@ function device(id, aliases) {
   return { id: { googleUuid: id }, otherIds: { otherThirdPartyId: aliases } };
 }
 
+for (const location of ['room', 'unassigned']) {
+  for (const sourceId of ['google-match', 'DEVICE_MATCH']) {
+    test('Foyer resolves a ' + location + ' camera using ' + sourceId, async () => {
+      const cameras = [
+        device('other-google', [{ id: 'DEVICE_OTHER' }, { idType: 'CAMERA', id: 'quartz.wrong' }]),
+        device('google-match', [{ id: 'DEVICE_MATCH' }, { idType: 'CAMERA', id: 'quartz.original' }]),
+      ];
+      const response = {
+        data: [
+          location === 'room' ? { homes: [{ devices: [], rooms: [{ devices: cameras }] }] } : { homes: [], unassignedDevices: cameras },
+        ],
+      };
+      const before = structuredClone(response);
+      assert.deepEqual(await resolveCameraIds({ command: async () => response }, sourceId), {
+        googleDeviceId: 'google-match',
+        legacyDeviceId: 'original',
+        streamingDeviceId: undefined,
+      });
+      assert.deepEqual(response, before);
+    });
+  }
+}
+
+test('Foyer finds both HomeGraph cameras when devices are nested only inside rooms', async () => {
+  const response = {
+    data: [
+      {
+        homes: [
+          {
+            rooms: [
+              { devices: [device('camera-one', [{ idType: 'CAMERA', id: 'quartz.one' }])] },
+              { devices: [device('camera-two', [{ idType: 'CAMERA', id: 'quartz.two' }])] },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const transport = { command: async () => response };
+  assert.deepEqual(await resolveCameraIds(transport, 'camera-one'), {
+    googleDeviceId: 'camera-one',
+    legacyDeviceId: 'one',
+    streamingDeviceId: undefined,
+  });
+  assert.deepEqual(await resolveCameraIds(transport, 'camera-two'), {
+    googleDeviceId: 'camera-two',
+    legacyDeviceId: 'two',
+    streamingDeviceId: undefined,
+  });
+});
+
+for (const resourceId of [undefined, null, '', '   ', 42]) {
+  test('Foyer rejects an absent camera identity before lookup: ' + JSON.stringify(resourceId), async () => {
+    assert.deepEqual(await resolveCameraIds({ command: () => assert.fail('No source identity, no lookup') }, resourceId), {});
+  });
+}
+
 test('Foyer resolves both IDs from the same device in a single bounded request', async () => {
   let response = graph([
     device('other-google', [
@@ -33,7 +90,11 @@ test('Foyer resolves both IDs from the same device in a single bounded request',
       return response;
     },
   };
-  assert.deepEqual(await resolveCameraIds(transport, 'DEVICE_MATCH'), { googleDeviceId: 'google-match', legacyDeviceId: 'original' });
+  assert.deepEqual(await resolveCameraIds(transport, 'DEVICE_MATCH'), {
+    googleDeviceId: 'google-match',
+    legacyDeviceId: 'original',
+    streamingDeviceId: 'DEVICE_MATCH',
+  });
   assert.equal(requests.length, 1);
   let [prefix, service, method, values, options] = requests[0];
   assert.equal(prefix, GOOGLE_HOME_FOYER_PREFIX);
@@ -58,6 +119,7 @@ for (let aliases of [
     assert.deepEqual(await resolveCameraIds({ command: async () => graph([device('google-only', aliases)]) }, 'DEVICE_MATCH'), {
       googleDeviceId: 'google-only',
       legacyDeviceId: undefined,
+      streamingDeviceId: undefined,
     });
   });
 }
@@ -76,6 +138,7 @@ test('Foyer resolves a Quartz-only device without requiring a Google UUID', asyn
   assert.deepEqual(await resolveCameraIds({ command: async () => response }, 'DEVICE_MATCH'), {
     googleDeviceId: undefined,
     legacyDeviceId: 'original',
+    streamingDeviceId: 'DEVICE_MATCH',
   });
 });
 
@@ -116,10 +179,10 @@ for (let fieldTest of [false, true]) {
     let options = { uuid: 'DEVICE_MATCH', fieldTest, getAuthHeader: () => 'Bearer fabricated-token' };
     let first = setupGoogleHomeFoyer(options);
     assert.equal(first.transport instanceof GrpcTransport, true);
-    assert.deepEqual(await first.promise, { googleDeviceId: 'google-match', legacyDeviceId: 'original' });
+    assert.deepEqual(await first.promise, { googleDeviceId: 'google-match', legacyDeviceId: 'original', streamingDeviceId: undefined });
     let second = setupGoogleHomeFoyer(options, first.transport);
     assert.equal(second.transport, first.transport);
-    assert.deepEqual(await second.promise, { googleDeviceId: 'google-match', legacyDeviceId: 'original' });
+    assert.deepEqual(await second.promise, { googleDeviceId: 'google-match', legacyDeviceId: 'original', streamingDeviceId: undefined });
     assert.equal(command.mock.callCount(), 2);
     assert.equal(command.mock.calls[0].this, first.transport);
     first.transport.release();
@@ -192,7 +255,28 @@ for (let native of [false, true]) {
           ]),
         ]),
     };
-    assert.deepEqual(await resolveCameraIds(transport, key), { googleDeviceId: id, legacyDeviceId: 'correct' });
+    assert.deepEqual(await resolveCameraIds(transport, key), {
+      googleDeviceId: id,
+      legacyDeviceId: 'correct',
+      streamingDeviceId: 'DEVICE_MATCH',
+    });
     assert.deepEqual(await resolveCameraIds({ command: async () => graph([device('foreign-device', [])]) }, key), {});
+  });
+}
+
+for (let primary of [false, true]) {
+  test('Foyer resolves the PHX stream ID from the matched camera: primary=' + primary, async () => {
+    let camera = device('google-target', primary === true ? [] : [{ idType: 'PHX', id: 'DEVICE_TARGET' }]);
+    if (primary === true) {
+      camera.id.thirdPartyId = { idType: 'nest-home-assistant-prod', id: 'DEVICE_TARGET' };
+    }
+    let transport = { command: async () => graph([device('google-other', [{ idType: 'PHX', id: 'DEVICE_OTHER' }]), camera]) };
+    for (let input of ['google-target', 'DEVICE_TARGET']) {
+      assert.deepEqual(await resolveCameraIds(transport, input), {
+        googleDeviceId: 'google-target',
+        streamingDeviceId: 'DEVICE_TARGET',
+        legacyDeviceId: undefined,
+      });
+    }
   });
 }

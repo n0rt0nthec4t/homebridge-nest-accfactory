@@ -1,0 +1,134 @@
+name: Mac Sign-in Helper
+
+# Branch and manual runs build downloadable test artifacts. Only this tool's
+# version tags publish a release; npm and plugin release notes are not involved.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['mac-sign-in-v*']
+    paths:
+      - tools/macos-sign-in/**
+      - src/protobuf.js
+      - package.json
+      - package-lock.json
+      - .github/workflows/macos-sign-in.yml
+  pull_request:
+    paths:
+      - tools/macos-sign-in/**
+      - src/protobuf.js
+      - package.json
+      - package-lock.json
+      - .github/workflows/macos-sign-in.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mac-sign-in-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          architecture: ${{ matrix.arch }}
+          cache: npm
+      - run: npm ci
+      - name: Validate helper source and offline behaviour
+        run: |
+          npx eslint 'tools/macos-sign-in/**/*.mjs' --max-warnings=0
+          npm run check --prefix tools/macos-sign-in
+      - name: Build and verify standalone download
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          args=()
+          if [[ -n "$RELEASE_TAG" ]]; then
+            args+=(--tag "$RELEASE_TAG")
+          fi
+          node tools/macos-sign-in/build.mjs "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-sign-in-${{ matrix.arch }}
+          path: |
+            tools/macos-sign-in/release/*.zip
+            tools/macos-sign-in/release/*.sha256
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/mac-sign-in-v')
+    needs: build
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: mac-sign-in-*
+          path: downloads
+          merge-multiple: true
+      - name: Validate release metadata and both architecture downloads
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node tools/macos-sign-in/build.mjs --metadata --tag "$RELEASE_TAG" > helper-release.json
+          node <<'NODE'
+          const fs = require('node:fs');
+          const metadata = JSON.parse(fs.readFileSync('helper-release.json', 'utf8'));
+          const expected = ['arm64', 'x64'].flatMap((arch) => {
+            const name = 'Nest-Accfactory-Sign-In-' + metadata.version + '-macOS-' + arch + '.zip';
+            return [name, name + '.sha256'];
+          }).sort();
+          const files = fs.readdirSync('downloads').sort();
+          if (JSON.stringify(files) !== JSON.stringify(expected)) {
+            throw new Error('Release must contain exactly both downloads and their checksums');
+          }
+          const requirements = '\n\nRequires macOS 13.5 or later. Node.js is included; Xcode is not required.\n' +
+            'These builds are locally signed, not Developer ID signed or Apple notarized.\n' +
+            'Extract the entire ZIP and open Sign in.command. See README.txt in the download for setup and security-alert guidance.\n';
+          fs.writeFileSync('helper-release-notes.md', metadata.notes + requirements);
+          NODE
+          cd downloads
+          shasum -a 256 -c ./*.sha256
+      - name: Publish helper release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          # Refuse replacement of an existing release. The tag must already exist;
+          # this helper release must not become the plugin repository's Latest.
+          args=()
+          if [[ "$(node -p 'require("./helper-release.json").prerelease')" == true ]]; then
+            args+=(--prerelease)
+          fi
+          version=$(node -p 'require("./helper-release.json").version')
+          gh release create "$RELEASE_TAG" downloads/* \
+            --verify-tag --latest=false \
+            --title "Nest Accfactory Sign-in $version" \
+            --notes-file helper-release-notes.md "${args[@]}"

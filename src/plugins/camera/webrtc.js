@@ -50,7 +50,7 @@
 // - Streamer owns retention and delivery pacing; source timestamps are not playout deadlines
 // - Incomplete keyframes and pathological access units are dropped/recovered locally rather than blocking the plugin process
 //
-// Code version 2026.11.27
+// Code version 2026.11.28
 // Mark Hulskamp
 'use strict';
 
@@ -107,6 +107,7 @@ export default class WebRTC extends StreamTransport {
   // Internal data only for this class
   #grpcTransport = undefined; // Shared protobuf/gRPC client for Google Home Foyer APIs
   #streamId = undefined; // Stream ID
+  #streamingDeviceId = undefined; // PHX resource ID used by JoinStream
   #googleHomeDeviceUUID = undefined; // Normal Nest/Google protobuf device ID translated to a Google Foyer device ID
   #googleHomeDeviceUUIDPromise = undefined; // Promise for in-flight HomeGraph lookup of Google Foyer device UUID
   #peerConnection = undefined;
@@ -176,7 +177,10 @@ export default class WebRTC extends StreamTransport {
 
     // Resolve Google Foyer device ID lazily so constructor prefetch failure
     // does not permanently prevent future stream attempts.
-    if (typeof this.#googleHomeDeviceUUID !== 'string' && this.#googleHomeDeviceUUIDPromise instanceof Promise !== true) {
+    if (
+      (typeof this.#googleHomeDeviceUUID !== 'string' || this.#streamingDeviceId === undefined) &&
+      this.#googleHomeDeviceUUIDPromise instanceof Promise !== true
+    ) {
       this.#setupGoogleHomeFoyer();
     }
 
@@ -191,10 +195,10 @@ export default class WebRTC extends StreamTransport {
       return;
     }
 
-    // We still could not resolve the Google Foyer device ID.
+    // Both the Google UUID and stream signalling ID must resolve to this camera.
     // Without this mapping we cannot start streaming or recording.
-    if (typeof this.#googleHomeDeviceUUID !== 'string' || this.#googleHomeDeviceUUID === '') {
-      this?.log?.debug?.('Google Home device UUID not resolved for uuid "%s"', this.uuid);
+    if (typeof this.#googleHomeDeviceUUID !== 'string' || this.#googleHomeDeviceUUID === '' || this.#streamingDeviceId === undefined) {
+      this?.log?.debug?.('Google Home camera IDs not resolved for uuid "%s"', this.uuid);
       this.setState(StreamTransport.STATE.CLOSED, { reason: 'google-device-id-missing' });
       return;
     }
@@ -294,7 +298,7 @@ export default class WebRTC extends StreamTransport {
 
     homeFoyerResponse = await this.#grpcTransport.command(GOOGLE_HOME_FOYER_PREFIX, 'CameraService', 'JoinStream', {
       command: 'offer',
-      deviceId: this.uuid,
+      deviceId: this.#streamingDeviceId,
       local: false, // Keep local requests disabled while their A/V clock alignment is investigated.
       streamContext: 'STREAM_CONTEXT_DEFAULT',
       // Request highest possible resolution; actual delivered resolution may be lower.
@@ -464,7 +468,7 @@ export default class WebRTC extends StreamTransport {
         ) {
           let extendResponse = await this.#grpcTransport.command(GOOGLE_HOME_FOYER_PREFIX, 'CameraService', 'JoinStream', {
             command: 'extend',
-            deviceId: this.uuid,
+            deviceId: this.#streamingDeviceId,
             streamId: this.#streamId,
           });
 
@@ -491,6 +495,8 @@ export default class WebRTC extends StreamTransport {
     this.#closeInProgress = true;
     let closingPeerConnection = this.#peerConnection;
     let closingStreamId = this.#streamId;
+    let closingDeviceId = this.#streamingDeviceId;
+    let closingGoogleDeviceId = this.#googleHomeDeviceUUID;
     let talkbackActive = this.#tracks?.talkback?.active === true;
 
     try {
@@ -533,7 +539,7 @@ export default class WebRTC extends StreamTransport {
       if (closingStreamId !== undefined && talkbackActive === true) {
         await this.#grpcTransport.command(GOOGLE_HOME_FOYER_PREFIX, 'CameraService', 'SendTalkback', {
           googleDeviceId: {
-            value: this.#googleHomeDeviceUUID,
+            value: closingGoogleDeviceId,
           },
           streamId: closingStreamId,
           command: 'COMMAND_STOP',
@@ -546,7 +552,7 @@ export default class WebRTC extends StreamTransport {
         // Tell remote to end the stream session
         await this.#grpcTransport.command(GOOGLE_HOME_FOYER_PREFIX, 'CameraService', 'JoinStream', {
           command: 'end',
-          deviceId: this.uuid,
+          deviceId: closingDeviceId,
           streamId: closingStreamId,
           endStreamReason: 'REASON_USER_EXITED_SESSION',
         });
@@ -710,6 +716,7 @@ export default class WebRTC extends StreamTransport {
       this.uuid = newUuid;
 
       // UUID changed, so cached Google Foyer mapping is no longer valid.
+      this.#streamingDeviceId = undefined;
       this.#googleHomeDeviceUUID = undefined;
       this.#googleHomeDeviceUUIDPromise = undefined;
     }
@@ -2022,11 +2029,15 @@ export default class WebRTC extends StreamTransport {
     let uuid = this.uuid;
     let token = this.token;
     let lookup = promise
-      .then(({ googleDeviceId }) => {
+      .then(({ googleDeviceId, streamingDeviceId }) => {
         // The shared lookup captures its source ID; a superseded response cannot update its replacement.
         if (this.#googleHomeDeviceUUIDPromise !== lookup || this.uuid !== uuid || this.token !== token) {
           return undefined;
         }
+
+        // Preserve the protobuf input ID for Nest callers. HomeGraph callers must
+        // resolve the same camera's PHX alias instead of sending its Google UUID.
+        this.#streamingDeviceId = streamingDeviceId ?? (uuid !== googleDeviceId ? uuid : undefined);
         this.#googleHomeDeviceUUID = googleDeviceId;
         return this.#googleHomeDeviceUUID;
       })

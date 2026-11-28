@@ -15,12 +15,12 @@
 // - The settings host owns the surrounding draft and final Save/Cancel actions
 // - The UI server owns network requests and temporary API clients
 //
-// Code version 2026.11.23
+// Code version 2026.11.28
 // Mark Hulskamp
 
 // Define our modules
 import { ACCOUNT_TYPE } from './constants.js';
-import { stageAccount } from './config.js';
+import { stageAccount, googleHomeCredentials } from './config.js';
 
 export async function startSetup(homebridge, document) {
   // Define DOM access and wizard state. Pending credentials exist only during
@@ -29,9 +29,9 @@ export async function startSetup(homebridge, document) {
 
   let generation = 0;
   let pending;
-  let targets = [];
   let target;
   let busy = false;
+  let allowedTypes = [ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST];
 
   const status = (message, failed = false, successful = false) => {
     // All callers provide fixed messages; backend exception bodies are not shown.
@@ -43,7 +43,7 @@ export async function startSetup(homebridge, document) {
     // Discard the previous review and cookie before another connection attempt.
     // Resetting the wizard does not write or replace any account configuration.
     pending = undefined;
-    for (const key of ['issue-token', 'account-cookie', 'access-token']) {
+    for (const key of ['issue-token', 'account-cookie', 'access-token', 'google-home-refresh', 'google-home-device']) {
       element(key).value = '';
     }
     element('connection-review').hidden = true;
@@ -64,36 +64,47 @@ export async function startSetup(homebridge, document) {
     homebridge.showSchemaForm();
   };
 
-  const open = async () => {
-    // Build reconnect choices from the latest draft, preserving the exact target
-    // snapshot so a later account edit cannot silently receive these credentials.
+  const open = async (type = ACCOUNT_TYPE.GOOGLE, reconnectIndex) => {
+    // Add has no existing-account selection. Only a card's Reconnect action
+    // supplies a target; preserve its snapshot to reject stale updates later.
     try {
       const configs = await homebridge.getPluginConfig();
       const block = configs.find((entry) => entry.platform === 'NestAccfactory');
 
-      targets = (block?.accounts ?? [])
-        .map((account, index) => ({ account, index }))
-        .filter((entry) => [ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST].includes(entry.account.type) === true);
-
-      const select = element('account-target');
-
-      select.replaceChildren();
-      for (const [index, label] of ['Add a new account', ...targets.map((entry) => 'Reconnect: ' + entry.account.name)].entries()) {
-        const option = document.createElement('option');
-
-        option.value = String(index);
-        option.textContent = label;
-        select.append(option);
+      const selected = reconnectIndex === undefined ? undefined : block?.accounts?.[reconnectIndex];
+      if (reconnectIndex !== undefined && (Number.isInteger(reconnectIndex) !== true || selected?.type !== type)) {
+        throw new Error('Reconnect target changed');
       }
-
-      target = undefined;
+      target = selected === undefined ? undefined : { index: reconnectIndex, expected: JSON.stringify(selected) };
       element('settings-status').textContent = '';
-      element('account-name').value = 'Google';
-      element('field-test').checked = false;
-      element('account-type').value = ACCOUNT_TYPE.GOOGLE;
-      element('account-type').disabled = false;
-      element('google-fields').hidden = false;
-      element('nest-fields').hidden = true;
+      element('connection-heading').textContent = selected === undefined ? 'Add account' : 'Reconnect account';
+      element('connection-description').textContent =
+        selected === undefined
+          ? 'Check the sign-in details before adding a new account.'
+          : 'Update sign-in details for “' + selected.name + '”.';
+      element('account-name').value = selected?.name ?? (type === ACCOUNT_TYPE.GOOGLE_HOME ? 'Google Home' : 'Google');
+      element('field-test').checked = selected?.fieldTest === true;
+      // The section owns the available account types; reconnect retains the
+      // selected account's type and never turns it into another data source.
+      allowedTypes =
+        selected !== undefined
+          ? [type]
+          : type === ACCOUNT_TYPE.GOOGLE_HOME
+            ? [ACCOUNT_TYPE.GOOGLE_HOME]
+            : [ACCOUNT_TYPE.GOOGLE, ACCOUNT_TYPE.NEST];
+      const selector = element('account-type');
+      selector.replaceChildren();
+      for (const value of allowedTypes) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = { googlehome: 'Google Home', google: 'Google (Nest)', nest: 'Nest' }[value];
+        selector.append(option);
+      }
+      element('account-type').value = type;
+      element('account-type').disabled = allowedTypes.length === 1;
+      element('google-fields').hidden = type !== ACCOUNT_TYPE.GOOGLE;
+      element('nest-fields').hidden = type !== ACCOUNT_TYPE.NEST;
+      element('google-home-fields').hidden = type !== ACCOUNT_TYPE.GOOGLE_HOME;
       reset();
       homebridge.hideSchemaForm();
       element('connection-toolbar').hidden = true;
@@ -104,24 +115,18 @@ export async function startSetup(homebridge, document) {
   };
 
   element('account-type').addEventListener('change', () => {
+    generation++;
+    reset();
+    if (allowedTypes.includes(element('account-type').value) !== true) {
+      element('account-type').value = allowedTypes[0];
+    }
     element('google-fields').hidden = element('account-type').value !== ACCOUNT_TYPE.GOOGLE;
     element('nest-fields').hidden = element('account-type').value !== ACCOUNT_TYPE.NEST;
+    element('google-home-fields').hidden = element('account-type').value !== ACCOUNT_TYPE.GOOGLE_HOME;
   });
 
-  element('open-connection').addEventListener('click', open);
-
-  element('account-target').addEventListener('change', () => {
-    // The first dropdown entry means a new account. Other entries retain their
-    // original configuration index and snapshot for safe reconnection later.
-    const selected = targets[Number(element('account-target').value) - 1];
-
-    target = selected === undefined ? undefined : { index: selected.index, expected: JSON.stringify(selected.account) };
-    element('account-name').value = selected?.account.name ?? 'Google';
-    element('field-test').checked = selected?.account.fieldTest === true;
-    element('account-type').value = selected?.account.type ?? ACCOUNT_TYPE.GOOGLE;
-    element('account-type').disabled = selected !== undefined;
-    element('account-type').dispatchEvent(new Event('change'));
-  });
+  element('open-connection').addEventListener('click', () => open());
+  element('open-google-home').addEventListener('click', () => open(ACCOUNT_TYPE.GOOGLE_HOME));
 
   element('cancel-connection').addEventListener('click', () => {
     // The bounded authentication check may still finish; ignore its reply after closing.
@@ -134,10 +139,31 @@ export async function startSetup(homebridge, document) {
     }
 
     const type = element('account-type').value;
-    const credentials =
-      type === ACCOUNT_TYPE.GOOGLE
-        ? { issueToken: element('issue-token').value.trim(), cookie: element('account-cookie').value.trim() }
-        : { access_token: element('access-token').value.trim() };
+    if (allowedTypes.includes(type) !== true) {
+      status('Choose an account type from this section.', true);
+      return;
+    }
+    const usingSso = type === ACCOUNT_TYPE.GOOGLE_HOME;
+    let credentials =
+      usingSso === true
+        ? {
+            refreshToken: element('google-home-refresh').value.trim(),
+            ...(element('google-home-device').value.trim() !== '' ? { deviceId: element('google-home-device').value.trim() } : {}),
+          }
+        : type === ACCOUNT_TYPE.GOOGLE
+          ? {
+              issueToken: element('issue-token').value.trim(),
+              cookie: element('account-cookie').value.trim(),
+            }
+          : { access_token: element('access-token').value.trim() };
+    if (usingSso === true) {
+      try {
+        credentials = googleHomeCredentials(credentials);
+      } catch {
+        status('Enter a valid refresh token and, if supplied, its device ID.', true);
+        return;
+      }
+    }
     if (Object.values(credentials).some((value) => value === '')) {
       status('Complete the sign-in fields.', true);
       return;
@@ -147,13 +173,12 @@ export async function startSetup(homebridge, document) {
 
     // Keep the cookie only for this request. A successful reply stays in memory
     // for review and is not staged until Add/Update account is selected.
-    for (const key of ['issue-token', 'account-cookie', 'access-token']) {
+    for (const key of ['issue-token', 'account-cookie', 'access-token', 'google-home-refresh', 'google-home-device']) {
       element(key).value = '';
     }
     busy = true;
     element('connect').disabled = true;
     element('connect').textContent = 'Checking…';
-    element('account-target').disabled = true;
     element('account-name').disabled = true;
     element('field-test').disabled = true;
     element('account-type').disabled = true;
@@ -188,10 +213,9 @@ export async function startSetup(homebridge, document) {
       busy = false;
       element('connect').disabled = false;
       element('connect').textContent = 'Check connection';
-      element('account-target').disabled = false;
       element('account-name').disabled = false;
       element('field-test').disabled = false;
-      element('account-type').disabled = target !== undefined;
+      element('account-type').disabled = allowedTypes.length === 1;
     }
   });
 

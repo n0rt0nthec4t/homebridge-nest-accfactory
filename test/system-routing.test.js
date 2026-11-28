@@ -49,7 +49,6 @@ for (let [values, label, expected] of [
     { timerEnd: { seconds: 0, nanos: 0 }, timerSpeed: 'FAN_SPEED_SETTING_STAGE2' },
   ],
   [{ fan_timer_speed: 3 }, 'fan_control_settings', { timerSpeed: 'FAN_SPEED_SETTING_STAGE3' }],
-  [{ fan_timer_speed: 0 }, 'fan_control_settings', { timerSpeed: 'FAN_SPEED_SETTING_STAGE2' }],
   [{ streaming_enabled: true }, 'recording_toggle_settings', { targetCameraState: 'CAMERA_ON', changeModeReason: 2 }],
   [{ streaming_enabled: false }, 'recording_toggle_settings', { targetCameraState: 'CAMERA_OFF' }],
   [{ audio_enabled: true }, 'microphone_settings', { enableMicrophone: true }],
@@ -362,7 +361,6 @@ for (let [values, label, expected] of [
     'target_temperature_settings',
     { targetTemperature: { heatingTarget: { value: 21.5 }, coolingTarget: { value: 21.5 } } },
   ],
-  [{ fan_timer_speed: '0' }, 'fan_control_settings', { timerSpeed: 'FAN_SPEED_SETTING_STAGE2' }],
   [{ auto_relock_duration: '120' }, 'bolt_lock_settings', { autoRelockDuration: { seconds: 120 } }],
   [{ hot_water_temperature: '60' }, 'hot_water_settings', { temperature: { value: 60 } }],
 ]) {

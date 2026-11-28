@@ -183,6 +183,7 @@ for (let humidity of [undefined, 60]) {
     };
     let characteristics = [];
     weather.addCharacteristic = (service, type) => characteristics.push(type);
+    weather.removeCharacteristic = () => {};
     weather.addTimer = () => {};
     weather.history = () => {};
     weather.onAdd();
@@ -195,7 +196,7 @@ for (let humidity of [undefined, 60]) {
       services.every((service) => service.subtype === 1),
       true,
     );
-    assert.deepEqual(characteristics, ['condition', 'wind']);
+    assert.deepEqual(characteristics, ['condition']);
     weather.onUpdate(weather.deviceData);
     assert.equal(readings.find((reading) => reading.type === 'temperature' && reading.characteristic === 'temperature').value, 25);
     assert.equal(
@@ -209,5 +210,53 @@ for (let humidity of [undefined, 60]) {
     };
     await weather.onTimer({ timer: 'weather' });
     assert.deepEqual(updated, { current_temperature: 26, condition: 'Sunny' });
+  });
+}
+
+for (let readings of [
+  { forecast: 'Fine', station: 'Sydney', condition: 'Clear', wind_direction: 'N', wind_speed: 0, sunrise: 0, sunset: 1730000000 },
+  {},
+  { forecast: null, station: '', condition: '  ', wind_direction: 1, wind_speed: NaN, sunrise: Infinity, sunset: 'invalid' },
+]) {
+  test('weather setup reconciles cached optional characteristics from supplied readings: ' + JSON.stringify(readings), () => {
+    let weather = new NestWeather();
+    let optional = ['ForecastDay', 'ObservationStation', 'Condition', 'WindDirection', 'WindSpeed', 'SunriseTime', 'SunsetTime'];
+    let cachedTemperature = { characteristics: new Set(optional) };
+    let cachedHumidity = {};
+    let services = new Map([
+      ['temperature', cachedTemperature],
+      ['humidity', cachedHumidity],
+      ['pressure', {}],
+      ['history', {}],
+    ]);
+    weather.hap = {
+      Service: {
+        TemperatureSensor: 'temperature',
+        HumiditySensor: 'humidity',
+        Battery: 'battery',
+        EveAirPressureSensor: 'pressure',
+        EveHomeHistory: 'history',
+      },
+      Characteristic: Object.fromEntries(optional.map((name) => [name, name])),
+    };
+    weather.deviceData = { current_temperature: 20, current_humidity: 60, elevation: 50, ...readings };
+    weather.addService = (type, name, subtype) => {
+      assert.equal(subtype, 1);
+      if (services.has(type) === false) {
+        services.set(type, {});
+      }
+      return services.get(type);
+    };
+    weather.removeService = (type) => services.delete(type);
+    weather.addCharacteristic = (service, type) => service.characteristics.add(type);
+    weather.removeCharacteristic = (service, type) => service.characteristics.delete(type);
+    weather.postSetupDetail = () => {};
+    weather.addTimer = () => {};
+    weather.onAdd();
+    assert.equal(weather.temperatureService, cachedTemperature);
+    assert.equal(weather.humidityService, cachedHumidity);
+    assert.equal(services.has('pressure'), false);
+    assert.equal(services.has('history'), false);
+    assert.deepEqual([...cachedTemperature.characteristics], readings.forecast === 'Fine' ? optional : []);
   });
 }

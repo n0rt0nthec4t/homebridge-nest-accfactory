@@ -4,7 +4,7 @@ import test from 'node:test';
 import { setImmediate } from 'node:timers/promises';
 import { ACCOUNT_TYPE } from '../src/consts.js';
 import { ACCOUNT_TYPE as UI_ACCOUNT_TYPE } from '../homebridge-ui/public/constants.js';
-import { stageAccount } from '../homebridge-ui/public/config.js';
+import { stageAccount, googleHomeCredentials } from '../homebridge-ui/public/config.js';
 import { startSetup } from '../homebridge-ui/public/main.js';
 
 const credentials = { issueToken: 'https://accounts.google.com/token', cookie: 'SIDCC=fabricated-cookie' };
@@ -94,9 +94,9 @@ async function ui(request) {
       return request?.(route, payload) ?? { status: 'success' };
     },
   };
-  await startSetup(homebridge, document);
+  const controls = await startSetup(homebridge, document);
   await document.getElementById('open-connection').emit();
-  return { get: document.getElementById, updates, calls };
+  return { get: document.getElementById, updates, calls, controls };
 }
 for (let type of ['google', 'nest']) {
   test('guided ' + type + ' connection clears input and stages only the reviewed account', async () => {
@@ -256,7 +256,6 @@ test('settings host checks both account types and edits Nest credentials using t
   assert.equal(get('accounts-list').querySelector('.nest-heading').textContent, 'Nest');
   assert.equal(get('accounts-list').querySelector('.legacy-accounts').querySelector('summary').children[1], get('connection-toolbar'));
   assert.match(markup, /id="open-connection"[^>]+class="btn btn-secondary"/);
-  assert.equal(get('add-manual-account').disabled, false);
   assert.equal(get('open-connection').disabled, false);
   get('accounts-list').querySelector('.legacy-accounts').open = true;
   assert.equal(get('save-settings').disabled, true);
@@ -291,7 +290,8 @@ test('settings host checks both account types and edits Nest credentials using t
   // result and must never enable the account or persist the check status.
   for (let result of ['failed', 'timeout', 'success']) {
     checkedStatus = result;
-    const check = cards()[2].querySelectorAll('button')
+    const check = cards()[2]
+      .querySelectorAll('button')
       .find((button) => button.textContent === 'Check connection');
     await check.handlers.get('click')();
     assert.deepEqual(requests.at(-1).payload, {
@@ -338,15 +338,17 @@ test('settings host checks both account types and edits Nest credentials using t
   assert.equal(requests.length, requestCount);
   assert.equal(saves, 0);
   assert.deepEqual(
-    cards()[2].querySelectorAll('button')
+    cards()[2]
+      .querySelectorAll('button')
       .filter((button) => button.disabled === true)
       .map((button) => button.textContent),
-    ['Edit', 'Reconnect'],
+    [],
   );
 
   for (let status of ['failed', 'timeout']) {
     checkedStatus = status;
-    const check = cards()[1].querySelectorAll('button')
+    const check = cards()[1]
+      .querySelectorAll('button')
       .find((button) => button.textContent === 'Check connection');
     await check.handlers.get('click')();
     const text = cards()[1].querySelector('.account-status');
@@ -355,7 +357,8 @@ test('settings host checks both account types and edits Nest credentials using t
   }
   const pending = Promise.withResolvers();
   deferredCheck = pending.promise;
-  const check = cards()[1].querySelectorAll('button')
+  const check = cards()[1]
+    .querySelectorAll('button')
     .find((button) => button.textContent === 'Check connection');
   const checking = check.handlers.get('click')();
   let nestCard = cards()[1];
@@ -406,29 +409,50 @@ test('settings host checks both account types and edits Nest credentials using t
   assert.equal(get('save-settings').disabled, true);
 
   // Removing the final Google Home account retains both sections and shows its empty state.
-  let home = get('accounts-list').querySelectorAll('.account-entry').find((entry) => entry.querySelector('.account-row') === cards()[2]);
+  let home = get('accounts-list')
+    .querySelectorAll('.account-entry')
+    .find((entry) => entry.querySelector('.account-row') === cards()[2]);
   const removeButton = home.querySelectorAll('button').find((button) => button.textContent === 'Remove');
   await removeButton.handlers.get('click')();
   assert.equal(home.querySelector('.account-removal-panel').hidden, false);
   assert.equal(current[0].accounts.length, 3, 'the first click does not remove an account');
-  await home.querySelectorAll('button').find((button) => button.textContent === 'Cancel').handlers.get('click')();
+  await home
+    .querySelectorAll('button')
+    .find((button) => button.textContent === 'Cancel')
+    .handlers.get('click')();
   assert.equal(home.querySelector('.account-removal-panel').hidden, true, 'Cancel closes the panel without removal');
-  await home.querySelectorAll('button').find((button) => button.textContent === 'Remove').handlers.get('click')();
-  await home.querySelectorAll('button').find((button) => button.textContent === 'Remove account').handlers.get('click')();
+  await home
+    .querySelectorAll('button')
+    .find((button) => button.textContent === 'Remove')
+    .handlers.get('click')();
+  await home
+    .querySelectorAll('button')
+    .find((button) => button.textContent === 'Remove account')
+    .handlers.get('click')();
   assert.equal(get('accounts-list').querySelector('.nest-heading').textContent, 'Nest');
   assert.equal(get('accounts-list').children[0].textContent, 'No Google Home accounts configured.');
-  assert.equal(get('add-manual-account').disabled, false);
   assert.equal(get('accounts-list').children.length, 2);
-  assert.deepEqual(cards().map((card) => card.querySelector('.account-name').textContent), ['Existing', 'Nest']);
+  assert.deepEqual(
+    cards().map((card) => card.querySelector('.account-name').textContent),
+    ['Existing', 'Nest'],
+  );
   assert.equal(get('open-connection').disabled, false);
   assert.equal(get('save-settings').disabled, false, 'removal still uses the normal Save flow');
   while (get('accounts-list').querySelector('.account-row') !== null) {
     const card = get('accounts-list').querySelectorAll('.account-entry')[0];
-    await card.querySelectorAll('button').find((button) => button.textContent === 'Remove').handlers.get('click')();
-    await card.querySelectorAll('button').find((button) => button.textContent === 'Remove account').handlers.get('click')();
+    await card
+      .querySelectorAll('button')
+      .find((button) => button.textContent === 'Remove')
+      .handlers.get('click')();
+    await card
+      .querySelectorAll('button')
+      .find((button) => button.textContent === 'Remove account')
+      .handlers.get('click')();
   }
-  assert.equal(get('accounts-list').querySelector('.legacy-account-list').querySelector('.account-empty').textContent,
-    'No Nest accounts configured.');
+  assert.equal(
+    get('accounts-list').querySelector('.legacy-account-list').querySelector('.account-empty').textContent,
+    'No Nest accounts configured.',
+  );
   assert.equal(get('accounts-list').querySelector('.account-guidance').hidden, true);
   assert.equal(get('open-connection').disabled, false, 'Nest setup remains available with no configured accounts');
 });
@@ -440,9 +464,7 @@ for (const changedField of ['refreshToken', 'deviceId']) {
     const schema = JSON.parse(await readFile(new URL('../config.schema.json', import.meta.url), 'utf8'));
     const elements = new Map();
     const get = (id) => {
-      const dynamic = [...elements.values()]
-        .flatMap((root) => root.querySelectorAll('button,input,select'))
-        .find((item) => item.id === id);
+      const dynamic = [...elements.values()].flatMap((root) => root.querySelectorAll('button,input,select')).find((item) => item.id === id);
       if (dynamic !== undefined) {
         return dynamic;
       }
@@ -461,21 +483,24 @@ for (const changedField of ['refreshToken', 'deviceId']) {
     let draft = [{ platform: 'NestAccfactory', accounts: [first, { ...first, name: 'B', [changedField]: 'fabricated-replacement' }] }];
     let finishCheck;
     let requests = 0;
-    await startSettings({
-      getPluginConfig: async () => structuredClone(draft),
-      getPluginConfigSchema: async () => schema,
-      updatePluginConfig: async (next) => {
-        draft = next;
+    await startSettings(
+      {
+        getPluginConfig: async () => structuredClone(draft),
+        getPluginConfigSchema: async () => schema,
+        updatePluginConfig: async (next) => {
+          draft = next;
+        },
+        hideSchemaForm() {},
+        showSchemaForm() {},
+        request: () => {
+          requests += 1;
+          return new Promise((resolve) => {
+            finishCheck = resolve;
+          });
+        },
       },
-      hideSchemaForm() {},
-      showSchemaForm() {},
-      request: () => {
-        requests += 1;
-        return new Promise((resolve) => {
-          finishCheck = resolve;
-        });
-      },
-    }, document);
+      document,
+    );
     const entries = () => get('accounts-list').querySelectorAll('.account-entry');
     const button = (entry, label) => entry.querySelectorAll('button').find((item) => item.textContent === label);
     const pending = button(entries()[0], 'Check connection').handlers.get('click')();
@@ -504,10 +529,171 @@ for (let status of ['failed', 'timeout', 'unexpected']) {
   });
 }
 
-test('browser account type constants match runtime values and keep Google Home login disabled', () => {
+test('browser account type constants match runtime values and reject non-SSO credentials for Google Home', () => {
   assert.deepEqual(UI_ACCOUNT_TYPE, ACCOUNT_TYPE);
   assert.throws(
     () => stageAccount(configs, { name: 'Future', type: UI_ACCOUNT_TYPE.GOOGLE_HOME, credentials }),
-    /Invalid account connection/,
+    /Invalid Google Home sign-in result/,
   );
+});
+
+const homeCredentials = { refreshToken: 'fabricated-home-refresh', deviceId: '11111111-2222-3333-4444-555555555555' };
+
+test('Connect Account always opens add mode without an account-target dropdown', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const markup = await readFile(new URL('../homebridge-ui/public/index.html', import.meta.url), 'utf8');
+  assert.equal(markup.includes('id="account-target"'), false);
+  const flow = await ui();
+  await flow.controls.open('google', 0);
+  assert.equal(flow.get('connection-heading').textContent, 'Reconnect account');
+  await flow.get('cancel-connection').emit();
+  await flow.get('open-connection').emit();
+  assert.equal(flow.get('connection-heading').textContent, 'Add account');
+  assert.equal(flow.get('account-type').disabled, false);
+  flow.get('issue-token').value = credentials.issueToken;
+  flow.get('account-cookie').value = credentials.cookie;
+  await flow.get('connect').emit();
+  await flow.get('use-account').emit();
+  assert.equal(flow.updates[0][0].accounts.length, 2);
+  assert.deepEqual(flow.updates[0][0].accounts[0], account);
+});
+
+test('Reconnect opens the named card directly and updates only that target', async () => {
+  const flow = await ui();
+  await flow.controls.open('google', 0);
+  assert.equal(flow.get('connection-heading').textContent, 'Reconnect account');
+  assert.equal(flow.get('account-name').value, account.name);
+  assert.equal(flow.get('account-type').disabled, true);
+  flow.get('issue-token').value = credentials.issueToken;
+  flow.get('account-cookie').value = 'fabricated-replacement';
+  await flow.get('connect').emit();
+  assert.equal(flow.get('use-account').textContent, 'Update account');
+  await flow.get('use-account').emit();
+  assert.equal(flow.updates[0][0].accounts.length, 1);
+  assert.deepEqual(flow.updates[0][0].accounts[0], { ...account, cookie: 'fabricated-replacement' });
+});
+
+test('Google Home imports only validated persistent fields and rejects master-token or malformed results', () => {
+  assert.deepEqual(
+    googleHomeCredentials({
+      type: 'googlehome',
+      ...homeCredentials,
+      name: 'Untrusted',
+      exclude: true,
+      accessToken: 'must-not-import',
+      masterToken: 'must-not-import',
+    }),
+    homeCredentials,
+  );
+  for (const value of [
+    null,
+    [],
+    {},
+    { type: 'nest', ...homeCredentials },
+    { master_token: 'fake-master' },
+    { ...homeCredentials, refreshToken: 'private\nvalue' },
+    { ...homeCredentials, refreshToken: 'x'.repeat(8193) },
+    { ...homeCredentials, deviceId: 'bad-device' },
+  ]) {
+    assert.throws(() => googleHomeCredentials(value), { message: 'Invalid Google Home sign-in result' });
+  }
+});
+
+test('Google Home reconnect stages new credentials without changing unrelated fields or inheriting a stale device ID', () => {
+  const original = { name: 'Home', type: 'googlehome', ...homeCredentials, exclude: true, advanced: 1 };
+  const before = [{ platform: 'NestAccfactory', accounts: [original], options: { debug: true } }];
+  const next = stageAccount(before, {
+    name: 'Updated',
+    type: 'googlehome',
+    credentials: { refreshToken: 'new-fake-refresh' },
+    target: { index: 0, expected: JSON.stringify(original) },
+  });
+  assert.deepEqual(next[0].accounts[0], {
+    name: 'Updated',
+    type: 'googlehome',
+    refreshToken: 'new-fake-refresh',
+    exclude: true,
+    advanced: 1,
+  });
+  assert.deepEqual(before[0].accounts[0], original);
+  assert.deepEqual(next[0].options, before[0].options);
+  assert.throws(
+    () => stageAccount(before, { name: 'Updated', type: 'googlehome', credentials: homeCredentials, target: { index: 0, expected: '{}' } }),
+    /configuration changed/,
+  );
+});
+
+test('Google Home setup checks pasted fields and stages only after review', async () => {
+  const flow = await ui();
+  await flow.get('open-google-home').emit();
+  flow.get('google-home-refresh').value = homeCredentials.refreshToken;
+  flow.get('google-home-device').value = homeCredentials.deviceId;
+  await flow.get('connect').emit();
+  assert.deepEqual(flow.calls[0].payload, { type: 'googlehome', ...homeCredentials, fieldTest: false });
+  assert.equal(flow.get('google-home-refresh').value, '');
+  assert.equal(flow.get('google-home-device').value, '');
+  assert.equal(flow.updates.length, 0);
+  flow.get('account-name').value = 'New Home';
+  await flow.get('use-account').emit();
+  assert.deepEqual(flow.updates[0][0].accounts[1], { name: 'New Home', type: 'googlehome', ...homeCredentials });
+});
+
+test('Google Home cancellation rejects a late check without adding or exposing the imported credential', async () => {
+  const pending = Promise.withResolvers();
+  const flow = await ui(() => pending.promise);
+  await flow.get('open-google-home').emit();
+  flow.get('google-home-refresh').value = homeCredentials.refreshToken;
+  flow.get('google-home-device').value = homeCredentials.deviceId;
+  const checking = flow.get('connect').emit();
+  await flow.get('cancel-connection').emit();
+  pending.resolve({ status: 'success' });
+  await checking;
+  await flow.get('use-account').emit();
+  assert.equal(flow.updates.length, 0);
+  assert.equal(flow.get('google-home-refresh').value, '');
+});
+
+// Section restrictions are enforced before requests as well as in the selector.
+test('Connect Account restricts types to its owning section and has no Manual setup actions', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const markup = await readFile(new URL('../homebridge-ui/public/index.html', import.meta.url), 'utf8');
+  assert.equal(markup.includes('Manual setup'), false);
+  const flow = await ui();
+  assert.deepEqual(
+    flow.get('account-type').children.map((option) => option.value),
+    ['google', 'nest'],
+  );
+  flow.get('account-type').value = 'googlehome';
+  await flow.get('connect').emit();
+  assert.equal(flow.calls.length, 0);
+  await flow.get('open-google-home').emit();
+  assert.deepEqual(
+    flow.get('account-type').children.map((option) => option.value),
+    ['googlehome'],
+  );
+  assert.equal(flow.get('account-type').disabled, true);
+  flow.get('account-type').value = 'nest';
+  await flow.get('connect').emit();
+  assert.equal(flow.calls.length, 0);
+  flow.get('account-type').emit('change');
+  assert.equal(flow.get('account-type').value, 'googlehome');
+});
+
+test('Google Nest shows and submits only website credentials, including after switching from Google Home', async () => {
+  const flow = await ui();
+  assert.equal(flow.get('google-home-fields').hidden, true);
+  assert.equal(flow.get('google-fields').hidden, false);
+  await flow.get('open-google-home').emit();
+  assert.equal(flow.get('google-home-fields').hidden, false);
+  assert.equal(flow.get('google-fields').hidden, true);
+  await flow.get('open-connection').emit();
+  flow.get('google-home-refresh').value = homeCredentials.refreshToken;
+  flow.get('google-home-device').value = homeCredentials.deviceId;
+  flow.get('issue-token').value = credentials.issueToken;
+  flow.get('account-cookie').value = credentials.cookie;
+  await flow.get('connect').emit();
+  assert.deepEqual(flow.calls[0].payload, { type: 'google', ...credentials, fieldTest: false });
+  await flow.get('use-account').emit();
+  assert.deepEqual(flow.updates[0][0].accounts[1], { name: 'Google', type: 'google', ...credentials });
+  assert.throws(() => stageAccount(configs, { name: 'Wrong fields', type: 'google', credentials: homeCredentials }));
 });

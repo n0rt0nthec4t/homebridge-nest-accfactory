@@ -8,6 +8,30 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.0.0-beta.5] - 2026-11-28
+
+### Testing
+
+- Test the separately released macOS sign-in helper on Apple Silicon and Intel Macs, including password and passkey sign-in. Copy the credentials into a Google Home account in the plugin UI, check the connection and confirm HomeGraph device discovery after saving and restarting Homebridge.
+- Leave Google Home accounts connected overnight to test token renewal, continued state updates and commands, and recovery after a network interruption. Confirm cameras still stream after renewal and repeated viewing sessions.
+- With Werift 0.29.0, test camera and doorbell snapshots, live video, HKSV recordings and two-way audio, including repeated start/stop cycles. Check the updated Homebridge UI utilities through account setup, connection checks and reconnecting existing accounts.
+- Heat Link development needs device data from supported installations. Please provide the Heat Link model and firmware, associated thermostat model, and redacted `supportDump` output covering discovery, heating and hot-water state changes, and boost start/stop where supported. Include what changed in the Nest or Google Home app so the reported fields can be matched to actual behaviour. Review logs before sharing and disable `supportDump` afterwards. Heat Link identity, associations and capabilities still require device validation.
+
+### Added
+
+- Standalone macOS sign-in helper for obtaining Google Home credentials to copy into the plugin settings. The helper is released separately; see its [changelog](tools/macos-sign-in/CHANGELOG.md).
+
+### Changed
+
+- Updated Werift to 0.29.0, Homebridge UI utilities to 2.3.1 and ESLint to 10.16.0.
+- Simplified account setup with section-specific sign-in fields, connection checks and review before saving. Existing accounts reconnect from their account cards, and each account type links to its sign-in guide.
+- Prevent stale companion writes using protobuf field masks and HomeGraph property updates. Preserve thermostat units and retain fan speed when zero is requested. Thanks to [@kats1123](https://github.com/kats1123) for [#360](https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/issues/360).
+
+### Fixed
+
+- Remove unsupported weather services and optional characteristics during accessory setup when their readings are unavailable.
+- Fix HomeGraph camera streaming by supplying refreshed OAuth credentials and resolving the camera's `DEVICE_…` signalling ID separately from its Google UUID. Include cameras in rooms and the unassigned list when resolving IDs.
+
 ## [1.0.0-beta.4] - 2026-11-27
 
 ### Breaking Changes
@@ -1428,7 +1452,8 @@ Due to the volume of changes in this release, versioning has been reverted to al
 
 - Main changes are around the video/audio pipelines in `webrtc.js` and `streamer.js` to improve stability and recovery from packet loss, especially for video streams
 
-[Unreleased]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/compare/v1.0.0-beta.4...HEAD
+[Unreleased]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/compare/v1.0.0-beta.5...HEAD
+[1.0.0-beta.5]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/compare/v1.0.0-beta.4...v1.0.0-beta.5
 [1.0.0-beta.4]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/compare/v1.0.0-beta.3...v1.0.0-beta.4
 [1.0.0-beta.3]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/compare/v1.0.0-beta.2...v1.0.0-beta.3
 [1.0.0-beta.2]: https://github.com/n0rt0nthec4t/homebridge-nest-accfactory/compare/v1.0.0-beta.1...v1.0.0-beta.2

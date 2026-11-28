@@ -30,6 +30,12 @@ body { margin: 0; }
   margin-bottom: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text);
 }
 .settings-card > summary { cursor: pointer; padding: 16px 18px; font-size: 19px; font-weight: 650; }
+/* One fixed-size disclosure arrow; native details retain keyboard and open/closed behaviour. */
+.nest-ui summary { list-style: none; }
+.nest-ui summary::-webkit-details-marker { display: none; }
+.nest-ui summary::before { content: ""; display: inline-block; width: 0; height: 0; margin-right: 10px;
+  border-top: 6px solid transparent; border-bottom: 6px solid transparent; border-left: 8px solid currentColor; vertical-align: middle; }
+.nest-ui details[open] > summary::before { transform: rotate(90deg); }
 .settings-card > summary small { margin-left: 16px; font-size: 13px; color: var(--muted); font-weight: 400; }
 .card-content { padding: 0 18px 18px; }
 .nest-ui h3 { font-size: 17px; margin: 0 0 12px; }
@@ -73,7 +79,6 @@ body { margin: 0; }
 .legacy-account-list { margin-top: 12px; color: var(--text); }
 /* Account settings follow the compact reference layout, independently of Homebridge's button theme. */
 #accounts-settings { background: linear-gradient(120deg, #2b1032, #1c0c23 70%); }
-#accounts-settings > summary { font-size: 24px; padding: 16px 20px; }
 #accounts-settings .card-content { padding: 0 20px 20px; }
 #accounts-settings #google-home-toolbar { gap: 10px; margin: 4px 0 8px; }
 #accounts-settings #google-home-heading { font-size: 21px; font-weight: 650; }

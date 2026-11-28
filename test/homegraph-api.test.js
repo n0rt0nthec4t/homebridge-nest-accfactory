@@ -61,6 +61,16 @@ let temperatureTraits = () => ({
   },
 });
 
+// Expected thermostat command envelope; individual cases specify only intended changes.
+let temperatureRequest = (traits) => ({
+  request: [
+    {
+      deviceId: { uuid: 'thermostat', internalId: { source: 'nest-home-assistant-prod' } },
+      categories: [category('temperatureSetting', traits)],
+    },
+  ],
+});
+
 function setup(context, options = {}) {
   context.mock.timers.enable({ apis: ['setTimeout'] });
   let flow = { pushes: [], transports: [], graph: structuredClone(graph), traits: undefined };
@@ -487,34 +497,36 @@ for (let [id, values, method, expected] of [
   [
     'thermostat',
     { hvac_mode: 'heat', target_temperature: 21 },
-    'UpdateTargetTemperature',
-    { deviceId: 'thermostat', mode: 'THERMOSTAT_MODE_HEAT', temperature: { value: 21 }, hvacActor: 'HVAC_ACTOR_IOS' },
+    'UpdateTraits',
+    temperatureRequest({ thermostatTemperatureSetpoint: { number: 21 } }),
   ],
   [
     'thermostat',
     { hvac_mode: 'range', target_temperature_low: 18, target_temperature_high: 25 },
-    'UpdateTargetTemperatureRange',
-    { deviceId: 'thermostat', tempLow: { value: 18 }, tempHigh: { value: 25 }, hvacActor: 'HVAC_ACTOR_IOS' },
+    'UpdateTraits',
+    {
+      request: [
+        {
+          deviceId: { uuid: 'thermostat', internalId: { source: 'nest-home-assistant-prod' } },
+          categories: [
+            category('temperatureSetting', {
+              thermostatTemperatureSetpointLow: { number: 18 },
+              thermostatTemperatureSetpointHigh: { number: 25 },
+            }),
+          ],
+        },
+      ],
+    },
   ],
   [
     'thermostat',
     { target_temperature_high: 24.5 },
-    'UpdateTargetTemperature',
-    { deviceId: 'thermostat', mode: 'THERMOSTAT_MODE_COOL', temperature: { value: 24.5 }, hvacActor: 'HVAC_ACTOR_IOS' },
+    'UpdateTraits',
+    temperatureRequest({ thermostatTemperatureSetpoint: { number: 24.5 } }),
   ],
-  [
-    'thermostat',
-    { eco_mode: 'manual' },
-    'UpdateThermostatMode',
-    { deviceId: 'thermostat', mode: 'THERMOSTAT_MODE_ECO', hvacActor: 'HVAC_ACTOR_IOS' },
-  ],
-  [
-    'thermostat',
-    { eco_mode: 'off' },
-    'UpdateThermostatMode',
-    { deviceId: 'thermostat', mode: 'THERMOSTAT_MODE_COOL', hvacActor: 'HVAC_ACTOR_IOS' },
-  ],
-  ['thermostat', { eco_mode: 'off', hvac_mode: 'heat' }, 'UpdateThermostatMode', undefined],
+  ['thermostat', { eco_mode: 'manual' }, 'UpdateTraits', temperatureRequest({ mode: { text: 'eco' } })],
+  ['thermostat', { eco_mode: 'off' }, 'UpdateTraits', temperatureRequest({ mode: { text: 'cool' } })],
+  ['thermostat', { eco_mode: 'off', hvac_mode: 'heat' }, 'UpdateTraits', temperatureRequest({ mode: { text: 'heat' } })],
   [
     'thermostat',
     { hot_water_boost_active: { state: true } },
@@ -644,13 +656,13 @@ test('failed mode change prevents dependent temperatures while independent comma
   await flow.client.connect();
   let transport = flow.transports[0];
   transport.command = context.mock.fn(async (prefix, service, method) => ({
-    status: method === 'UpdateThermostatMode' ? 7 : 0,
+    status: method === 'UpdateTraits' ? 7 : 0,
     data: [{}],
   }));
   await assert.rejects(flow.client.set('thermostat', { hvac_mode: 'heat', target_temperature: 21, fan_state: true }), AggregateError);
   assert.deepEqual(
     transport.command.mock.calls.map((call) => call.arguments[2]),
-    ['UpdateThermostatMode', 'UpdateThermostatFanMode'],
+    ['UpdateTraits', 'UpdateThermostatFanMode'],
   );
 });
 
@@ -753,6 +765,172 @@ for (let reason of [
       }),
     );
     assert.equal(flow.transports[0].command.mock.callCount(), count);
+  });
+}
+
+for (let mode of ['heat', 'cool', 'range', 'off', 'eco']) {
+  test('mode writes send only the requested mode property: ' + mode, async (context) => {
+    let flow = setup(context);
+    await flow.client.connect();
+    let before = structuredClone(flow.client.resources);
+    await flow.client.set('thermostat', { hvac_mode: mode });
+    let call = flow.transports[0].command.mock.calls.at(-1).arguments;
+    assert.equal(call[1], 'HomeControlService');
+    assert.equal(call[2], 'UpdateTraits');
+    assert.deepEqual(call[3], temperatureRequest({ mode: { text: mode === 'range' ? 'heatcool' : mode } }));
+    assert.deepEqual(flow.client.resources, before);
+  });
+}
+
+for (let [mode, key] of [
+  ['heat', 'target_temperature_low'],
+  ['cool', 'target_temperature_high'],
+]) {
+  test('single setpoints omit cached mode after a separate mode write: ' + mode, async (context) => {
+    let flow = setup(context);
+    flow.traits[0].category[0].traits.find((trait) => trait.name === 'mode').value.text = mode;
+    await flow.client.connect();
+    let before = structuredClone(flow.client.resources);
+    let transport = flow.transports[0];
+    let start = transport.command.mock.callCount();
+    await flow.client.set('thermostat', { hvac_mode: mode === 'heat' ? 'cool' : 'heat' });
+    // Telemetry still contains the old mode. The generic setpoint must not send it back.
+    await flow.client.set('thermostat', { target_temperature: 22 });
+    await flow.client.set('thermostat', { [key]: 23 });
+    let calls = transport.command.mock.calls.slice(start);
+    assert.equal(calls.length, 3);
+    assert.deepEqual(calls[1].arguments[3], temperatureRequest({ thermostatTemperatureSetpoint: { number: 22 } }));
+    assert.deepEqual(calls[2].arguments[3], temperatureRequest({ thermostatTemperatureSetpoint: { number: 23 } }));
+    assert.deepEqual(flow.client.resources, before);
+  });
+}
+
+for (let values of [{ hvac_mode: 'heat' }, { target_temperature: 22 }]) {
+  test('thermostat trait writes require the device provider source: ' + JSON.stringify(values), async (context) => {
+    let flow = setup(context);
+    await flow.client.connect();
+    delete flow.client.resources.get('thermostat').device.id.thirdPartyId;
+    let transport = flow.transports[0];
+    let start = transport.command.mock.callCount();
+    await assert.rejects(flow.client.set('thermostat', values), AggregateError);
+    assert.equal(transport.command.mock.callCount(), start);
+  });
+}
+
+for (let [mode, values, expected] of [
+  ['heat', { target_temperature: 20 }, { thermostatTemperatureSetpoint: { number: 68 } }],
+  ['cool', { target_temperature_high: 25 }, { thermostatTemperatureSetpoint: { number: 77 } }],
+  ['heatcool', { target_temperature_low: 20 }, { thermostatTemperatureSetpointLow: { number: 68 } }],
+  ['heatcool', { target_temperature_high: 25 }, { thermostatTemperatureSetpointHigh: { number: 77 } }],
+  [
+    'heatcool',
+    { target_temperature_low: 20, target_temperature_high: 25 },
+    {
+      thermostatTemperatureSetpointLow: { number: 68 },
+      thermostatTemperatureSetpointHigh: { number: 77 },
+    },
+  ],
+]) {
+  test('generic setpoints preserve a Fahrenheit thermostat unit: ' + JSON.stringify(values), async (context) => {
+    let flow = setup(context);
+    let category = flow.traits[0].category[0];
+    category.traits.find((trait) => trait.name === 'mode').value.text = mode;
+    category.attributes.properties.push({ name: 'temperatureUnit', value: { text: 'F' } });
+    await flow.client.connect();
+    let before = structuredClone(flow.client.resources);
+    await flow.client.set('thermostat', values);
+    let call = flow.transports[0].command.mock.calls.at(-1).arguments;
+    assert.deepEqual(call[3], temperatureRequest(expected));
+    assert.deepEqual(flow.client.resources, before);
+  });
+}
+
+for (let highFirst of [false, true]) {
+  test('range writes omit stale companions before telemetry arrives: highFirst=' + highFirst, async (context) => {
+    let flow = setup(context);
+    flow.traits[0].category[0].traits.find((trait) => trait.name === 'mode').value.text = 'heatcool';
+    await flow.client.connect();
+    let before = structuredClone(flow.client.resources);
+    let transport = flow.transports[0];
+    let start = transport.command.mock.callCount();
+    let changes = [
+      ['target_temperature_low', 'thermostatTemperatureSetpointLow', 20],
+      ['target_temperature_high', 'thermostatTemperatureSetpointHigh', 25],
+    ];
+    if (highFirst === true) {
+      changes.reverse();
+    }
+    for (let [key, , value] of changes) {
+      await flow.client.set('thermostat', { [key]: value });
+    }
+    let calls = transport.command.mock.calls.slice(start);
+    assert.equal(calls.length, 2);
+    for (let [index, [, name, value]] of changes.entries()) {
+      assert.equal(calls[index].arguments[1], 'HomeControlService');
+      assert.equal(calls[index].arguments[2], 'UpdateTraits');
+      assert.deepEqual(calls[index].arguments[3], {
+        request: [
+          {
+            deviceId: { uuid: 'thermostat', internalId: { source: 'nest-home-assistant-prod' } },
+            categories: [category('temperatureSetting', { [name]: { number: value } })],
+          },
+        ],
+      });
+    }
+    assert.deepEqual(flow.client.resources, before);
+  });
+
+  test('paired range writes send both requested fields once: highFirst=' + highFirst, async (context) => {
+    let flow = setup(context);
+    flow.traits[0].category[0].traits.find((trait) => trait.name === 'mode').value.text = 'heatcool';
+    await flow.client.connect();
+    let transport = flow.transports[0];
+    let start = transport.command.mock.callCount();
+    await flow.client.set(
+      'thermostat',
+      highFirst === true
+        ? { target_temperature_high: 25, target_temperature_low: 20 }
+        : { target_temperature_low: 20, target_temperature_high: 25 },
+    );
+    assert.equal(transport.command.mock.callCount() - start, 1);
+    let call = transport.command.mock.calls.at(-1).arguments;
+    assert.equal(call[2], 'UpdateTraits');
+    assert.deepEqual(call[3].request[0].categories, [
+      category('temperatureSetting', {
+        thermostatTemperatureSetpointLow: { number: 20 },
+        thermostatTemperatureSetpointHigh: { number: 25 },
+      }),
+    ]);
+  });
+}
+
+for (let failure of ['source', 'status', 'device-error']) {
+  test('range trait writes reject unavailable routing or backend failure: ' + failure, async (context) => {
+    let flow = setup(context);
+    flow.traits[0].category[0].traits.find((trait) => trait.name === 'mode').value.text = 'heatcool';
+    await flow.client.connect();
+    let transport = flow.transports[0];
+    if (failure === 'source') {
+      delete flow.client.resources.get('thermostat').device.id.thirdPartyId;
+    } else {
+      transport.command = context.mock.fn(async () =>
+        failure === 'status'
+          ? { status: 7, data: [] }
+          : {
+              status: 0,
+              data: [
+                {
+                  device: [{ uuid: { value: 'thermostat' }, category: [category('deviceStatus', { error: { text: 'invalidArgument' } })] }],
+                },
+              ],
+            },
+      );
+    }
+    let before = structuredClone(flow.client.resources);
+    let start = transport.command.mock.callCount();
+    await assert.rejects(flow.client.set('thermostat', { target_temperature_high: 25 }), AggregateError);
+    assert.equal(transport.command.mock.callCount() - start, failure === 'source' ? 0 : 1);
+    assert.deepEqual(flow.client.resources, before);
   });
 }
 

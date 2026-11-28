@@ -946,13 +946,15 @@ test('Google Home accounts start only HomeGraph and renew SSO credentials withou
   let { manager, uuid, connection } = setup(context, [homeAccount]);
   let graph = context.mock.method(connection.homegraphAPI, 'connect', async () => true);
   let protobuf = context.mock.method(connection.googleProtobufAPI, 'connect', async () => true);
-  let requests = context.mock.method(network, 'request', async () => response({ token: 'fixture-home-oauth', expiresIn: 3599 }));
+  let requests = context.mock.method(network, 'request', async () =>
+    response({ token: requests.mock.callCount() === 0 ? 'fixture-home-oauth' : 'fixture-home-renewed', expiresIn: 3599 }),
+  );
   manager.start(uuid);
   assert.equal(graph.mock.callCount(), 1);
   assert.equal(protobuf.mock.callCount(), 0);
   assert.equal(await connection.session.connect(), true);
   assert.equal(connection.oauth2, 'fixture-home-oauth');
-  assert.equal(connection.cameraAuth, undefined);
+  assert.deepEqual(connection.cameraAuth, { oauth2: 'fixture-home-oauth', fieldTest: false });
   assert.equal(connection.refreshDelay, 3299000);
   let [method, url, options, body] = requests.mock.calls[0].arguments;
   assert.equal(method, 'post');
@@ -966,7 +968,26 @@ test('Google Home accounts start only HomeGraph and renew SSO credentials withou
   context.mock.timers.tick(connection.refreshDelay);
   await setImmediate();
   assert.equal(requests.mock.callCount(), 2);
+  assert.equal(connection.oauth2, 'fixture-home-renewed');
+  assert.deepEqual(connection.cameraAuth, { oauth2: 'fixture-home-renewed', fieldTest: false });
   assert.equal(connection.refreshToken, homeAccount.refreshToken);
+});
+
+test('Google Home camera credentials remain scoped to their account and environment', async (context) => {
+  let { manager } = setup(context, [
+    homeAccount,
+    { ...homeAccount, name: 'Field', fieldTest: true, refreshToken: 'fixture-field-refresh' },
+  ]);
+  context.mock.method(network, 'request', async (method, url, options) =>
+    response({
+      token: options.headers.Authorization === 'Bearer fixture-field-refresh' ? 'fixture-field-oauth' : 'fixture-home-oauth',
+      expiresIn: 3600,
+    }),
+  );
+  let connections = [...manager.entries()].map((entry) => entry[1]);
+  await Promise.all(connections.map((connection) => connection.session.connect()));
+  assert.deepEqual(connections[0].cameraAuth, { oauth2: 'fixture-home-oauth', fieldTest: false });
+  assert.deepEqual(connections[1].cameraAuth, { oauth2: 'fixture-field-oauth', fieldTest: true });
 });
 
 for (let failure of [401, 403, 'invalid_grant', 'PERMISSION_DENIED', 'offline', 'missing']) {
@@ -1003,6 +1024,7 @@ test('Google Home shutdown retires a late token reply and clears the installed O
   finish(response({ token: 'late-secret', expiresIn: 3600 }));
   assert.equal(await pending, false);
   assert.equal(connection.authorised, false);
+  assert.equal(connection.cameraAuth, undefined);
   assert.equal(connection.oauth2, undefined);
   assert.equal(connection.timer, undefined);
 });
@@ -1045,8 +1067,10 @@ test('Google Home isolated connection check accepts refresh token without device
   let configured = { type: ACCOUNT_TYPE.GOOGLE_HOME, refreshToken: 'fixture-sso-secret' };
   let request = context.mock.method(network, 'request', async () => response({ token: 'fixture-oauth', expiresIn: 3600 }));
   assert.equal(await AccountSession.testConnection(configured), 'success');
-  assert.match(new URLSearchParams(request.mock.calls[0].arguments[3].toString()).get('device_id'),
-    /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
+  assert.match(
+    new URLSearchParams(request.mock.calls[0].arguments[3].toString()).get('device_id'),
+    /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
+  );
   assert.equal(Object.hasOwn(configured, 'deviceId'), false);
 });
 

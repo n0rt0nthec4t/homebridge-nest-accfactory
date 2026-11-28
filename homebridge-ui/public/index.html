@@ -12,13 +12,11 @@
         <div class="card-content">
           <div id="google-home-toolbar" class="section-actions">
             <h3 id="google-home-heading">Google Home</h3>
-            <button type="button" class="btn btn-secondary" disabled>Manual setup</button>
-            <button type="button" class="btn btn-primary" disabled>+ Connect Account</button>
+            <button id="open-google-home" type="button" class="btn btn-primary">+ Connect Account</button>
           </div>
           <p id="google-home-description" class="section-description">Connect your Google account to access devices through Google Home.</p>
           <div id="accounts-list"></div>
           <div id="connection-toolbar" class="section-actions">
-            <button id="add-manual-account" type="button" class="btn btn-secondary">Manual setup</button>
             <button id="open-connection" type="button" class="btn btn-secondary">+ Connect Account</button>
           </div>
           <div id="manual-account-editor" class="editor-panel" hidden></div>
@@ -58,20 +56,27 @@
   <section id="connection-panel" class="card mb-3" aria-labelledby="connection-heading" hidden>
     <div class="card-body">
       <h3 id="connection-heading">Connect an account</h3>
-      <p class="text-muted">Check the sign-in details for a Google or Nest account.</p>
+      <p id="connection-description" class="text-muted">Check the sign-in details before adding an account.</p>
       <div id="setup-inputs">
-        <label for="account-target" class="form-label">Account</label>
-        <select id="account-target" class="form-control"></select>
         <label for="account-type" class="form-label">Account type</label>
         <select id="account-type" class="form-control">
-          <option value="google">Google</option><option value="nest">Nest</option>
+          <option value="googlehome">Google Home</option><option value="google">Google (Nest)</option><option value="nest">Nest</option>
         </select>
         <label class="checkbox-label" for="field-test">
           <input id="field-test" type="checkbox"><span>Use Field Test API</span>
         </label>
         <p class="form-text text-muted">Enable only if your account uses Google's field-test environment.</p>
+        <div id="google-home-fields" hidden>
+          <h4>Google SSO credentials</h4>
+          <p>Paste the refresh token and device ID printed by the Mac sign-in helper.
+            <a href="https://github.com/n0rt0nthec4t/homebridge-nest-accfactory#google-home-account" target="_blank" rel="noopener noreferrer">Sign-in instructions</a></p>
+          <label for="google-home-refresh" class="form-label">Refresh token</label>
+          <input id="google-home-refresh" type="password" class="form-control" autocomplete="off" spellcheck="false" maxlength="8192">
+          <label for="google-home-device" class="form-label">Device ID (optional)</label>
+          <input id="google-home-device" class="form-control" autocomplete="off" spellcheck="false" placeholder="Generated automatically if omitted">
+        </div>
         <div id="google-fields">
-          <h4>Google sign-in</h4>
+          <h4>Nest website credentials</h4>
           <p>Use the Issue Token URL and Cookie header from Google sign-in in the Nest website.
             <a href="https://github.com/n0rt0nthec4t/homebridge-nest-accfactory#google-account" target="_blank" rel="noopener noreferrer">Sign-in instructions</a></p>
           <label for="issue-token" class="form-label">Issue Token URL</label>
@@ -81,7 +86,8 @@
         </div>
         <div id="nest-fields" hidden>
           <h4>Nest sign-in</h4>
-          <p>For an unmigrated Nest account, enter its existing Nest access token.</p>
+          <p>For an unmigrated Nest account, enter its existing Nest access token.
+            <a href="https://github.com/n0rt0nthec4t/homebridge-nest-accfactory#nest-account" target="_blank" rel="noopener noreferrer">Sign-in instructions</a></p>
           <label for="access-token" class="form-label">Access Token</label>
           <input id="access-token" type="password" class="form-control" autocomplete="off" spellcheck="false">
         </div>

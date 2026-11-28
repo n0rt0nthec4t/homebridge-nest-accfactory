@@ -1125,7 +1125,16 @@ test('weather optional environmental characteristics publish values and preserve
       this.addCharacteristic(C.EveElevation);
     }
   };
-  let flow = await setup(context, 'weather', { elevation: 50 });
+  let flow = await setup(context, 'weather', {
+    elevation: 50,
+    forecast: 'Fine',
+    station: 'Sydney',
+    condition: 'Clear',
+    wind_direction: 'NE',
+    wind_speed: 0,
+    sunrise: 0,
+    sunset: 0,
+  });
   let service = flow.device.temperatureService;
   await flow.device.update({
     current_temperature: 19,
@@ -1149,7 +1158,8 @@ test('weather optional environmental characteristics publish values and preserve
   ]) {
     assert.equal(value(service, C[name]), expected);
   }
-  assert.equal(value(flow.device.airPressureService, C.EveElevation), 50);
+  assert.equal(flow.device.airPressureService, undefined);
+  assert.equal(flow.device.accessory.getService(hap.Service.EveAirPressureSensor), undefined);
   await flow.device.update({ current_temperature: 20 });
   assert.equal(value(service, C.Condition), 'Clear');
   assert.equal(flow.device.temperatureService, service);
@@ -1186,6 +1196,19 @@ test('weather optional environmental characteristics publish values and preserve
     assert.equal(flow.device.temperatureService, service);
   }
   assert.deepEqual(flow.warnings, []);
+  // Restored optional characteristics and the old pressure service are removed
+  // during setup when the new source supplies no corresponding readings.
+  flow.device.accessory.addService(hap.Service.EveAirPressureSensor, '', 1);
+  for (let field of ['forecast', 'station', 'condition', 'wind_direction', 'wind_speed', 'sunrise', 'sunset']) {
+    flow.device.deviceData[field] = null;
+  }
+  flow.device.onAdd();
+  assert.equal(flow.device.temperatureService, service);
+  assert.equal(flow.device.accessory.getService(hap.Service.EveAirPressureSensor), undefined);
+  for (let name of names.filter((name) => name !== 'EveElevation')) {
+    assert.equal(service.testCharacteristic(C[name]), false);
+  }
+
   // Remove while extension definitions still exist; the test cleanup restores globals afterwards.
   await flow.device.remove();
 });

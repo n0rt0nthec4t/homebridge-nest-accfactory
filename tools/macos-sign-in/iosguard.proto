@@ -1,0 +1,43 @@
+// Google iOSGuard enrollment envelopes. Field numbers and wire types define
+// the challenge request, compressed response and authentication metadata.
+syntax = "proto3";
+package google.iosguard;
+message CompressedData {
+  bytes data = 1;
+  repeated uint32 format = 2;
+}
+message IGRequest {
+  uint32 requestFlags = 1;
+  string appVersion = 2;
+  string deviceModel = 3;
+  string deviceOsVersion = 4;
+  double executionTiming1 = 7;
+  uint32 requestFlags2 = 8;
+  double executionTiming2 = 11;
+  uint32 requestFlags3 = 12;
+  string appName = 13;
+  string deviceOsBuild = 14;
+  fixed64 requestId = 17;
+}
+message DeviceChallengeRequest { CompressedData data = 10; }
+message DeviceChallenge { CompressedData data = 3; }
+message DeviceChallengeSetup { CompressedData data = 3; }
+message DeviceChallengeDecompressed {
+  string jsCode = 1;
+  string responseCode = 2;
+  fixed64 deviceChallengeId = 5;
+}
+message DeviceChallengeSetupDecompressed { string jsCode = 1; }
+message DeviceResponse {
+  message ExecutionTimings {
+    double part1 = 1;
+    double part2 = 2;
+    double part3 = 3;
+    double part4 = 4;
+  }
+  string igdResult = 1;
+  ExecutionTimings executionTimings = 3;
+  fixed64 deviceChallengeId = 6;
+  fixed64 requestId = 7;
+}
+message IGResponse { CompressedData data = 5; }

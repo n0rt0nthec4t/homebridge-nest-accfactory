@@ -19,7 +19,7 @@
 // - Camera credential notification completes before clients resume ingestion
 // - This session does not own resource data, API transports or HomeKit accessories
 //
-// Code version 2026.11.26
+// Code version 2026.11.28
 // Mark Hulskamp
 'use strict';
 
@@ -433,9 +433,10 @@ export default class AccountSession extends EventEmitter {
     }
 
     if (data?.error !== undefined) {
-      if (notifications === true && ['invalid_scope', 'PERMISSION_DENIED'].includes(
-        typeof data.error === 'string' ? data.error : data.error?.status,
-      ) === true) {
+      if (
+        notifications === true &&
+        ['invalid_scope', 'PERMISSION_DENIED'].includes(typeof data.error === 'string' ? data.error : data.error?.status) === true
+      ) {
         return await this.#connectGoogleHome(account, signal, false);
       }
       let terminal = ['invalid_grant', 'invalid_client', 'unauthorized_client', 'access_denied', 'UNAUTHENTICATED', 'PERMISSION_DENIED'];
@@ -450,6 +451,7 @@ export default class AccountSession extends EventEmitter {
 
     return {
       sessionData: { access_token: token.trim() },
+      cameraAuth: { oauth2: token.trim(), fieldTest: account.fieldTest === true },
       oauth2: token.trim(),
       refreshSeconds: Number(data.expiresIn ?? data.expires_in) - 300,
     };
@@ -547,7 +549,7 @@ export default class AccountSession extends EventEmitter {
     this.emit('disconnect', true);
 
     // Keep one credential record for both API clients and camera transports.
-    // Google Home has OAuth only; it does not fabricate Nest camera credentials.
+    // Google Home camera transports receive OAuth without Nest session credentials.
     Object.assign(account, {
       authorised: true,
       allowRetry: true,

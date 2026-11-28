@@ -25,7 +25,7 @@
 // - connect() starts ingestion without a consumer; onData optionally reports committed changes
 // - Google Home Foyer media signalling belongs to the WebRTC camera transport
 //
-// Code version 2026.11.26
+// Code version 2026.11.27
 // Mark Hulskamp
 
 // Define node.js modules
@@ -439,6 +439,10 @@ export default class GoogleProtobufAPI {
           if (['fan_duration', 'fan_timer_speed'].includes(key) === true && Object.hasOwn(values, 'fan_state') === true) {
             continue;
           }
+          // Zero retains the current fan stage; do not replay a stale cached speed.
+          if (key === 'fan_timer_speed' && isNumeric(value, { type: 'integer', min: 0, max: 3 }) === true && Number(value) === 0) {
+            continue;
+          }
 
           let { update, command } = this.#buildSetting(resourceId, key, value, values, currentResource, appliedTraits);
 
@@ -523,6 +527,7 @@ export default class GoogleProtobufAPI {
         type_url: '',
         value: {},
       },
+      stateMask: { paths: [] },
     };
     let commandElement = {
       resourceRequest: {
@@ -550,9 +555,14 @@ export default class GoogleProtobufAPI {
 
       updateElement.state.value = typeof traitValue === 'object' && traitValue !== null ? structuredClone(traitValue) : {};
 
-      // Optionally merge in simple top-level updates
+      // Mask paths use backend protobuf descriptor names, not JavaScript keys.
+      // Only changed fields may be applied: observed companions can lag accepted
+      // writes or external controls. The source cache remains Observe-owned.
       if (typeof updates === 'object' && updates !== null) {
         Object.assign(updateElement.state.value, updates);
+        updateElement.stateMask.paths.push(
+          ...Object.keys(updates).map((field) => field.replace(/[A-Z]/g, (letter) => '_' + letter.toLowerCase())),
+        );
       }
     };
 
@@ -630,19 +640,23 @@ export default class GoogleProtobufAPI {
 
           if (setHeatingTarget === true) {
             updateElement.state.value.targetTemperature.heatingTarget = { value: Number(value) };
+            updateElement.stateMask.paths.push('target_temperature.heating_target');
           }
 
           if (setCoolingTarget === true) {
             updateElement.state.value.targetTemperature.coolingTarget = { value: Number(value) };
+            updateElement.stateMask.paths.push('target_temperature.cooling_target');
           }
 
           if (key === 'hvac_mode' && value.toUpperCase() !== 'OFF') {
             updateElement.state.value.targetTemperature.setpointType = 'SET_POINT_TYPE_' + value.toUpperCase();
             updateElement.state.value.enabled = { value: true };
+            updateElement.stateMask.paths.push('target_temperature.setpoint_type', 'enabled');
           }
 
           if (key === 'hvac_mode' && value.toUpperCase() === 'OFF') {
             updateElement.state.value.enabled = { value: false };
+            updateElement.stateMask.paths.push('enabled');
           }
 
           // Attribute the request using the Nest client actor fields expected by
@@ -652,6 +666,7 @@ export default class GoogleProtobufAPI {
             originator: { resourceId },
             timeOfAction: timestamp(Date.now()),
           };
+          updateElement.stateMask.paths.push('target_temperature.current_actor_info');
         } else {
           // Saved Eco limits are configuration, never ordinary HomeKit targets.
           throw Object.assign(new Error('Normal temperatures require Eco Off'), {
@@ -687,13 +702,12 @@ export default class GoogleProtobufAPI {
           // Set fan mode on the target thermostat, including runtime if turning on
           setUpdateTrait('fan_control_settings', 'type.nestlabs.com/nest.trait.hvac.FanControlSettingsTrait');
           updateElement.state.value.timerEnd = value === true ? timestamp(Date.now() + Number(values.fan_duration) * 1000) : timestamp(0);
-          if (values?.fan_timer_speed !== undefined) {
+          updateElement.stateMask.paths.push('timer_end');
+          if (values?.fan_timer_speed !== undefined && Number(values.fan_timer_speed) !== 0) {
             // A zero speed retains the current stage. fan_state owns the combined
             // on/off, duration and optional speed update for this request.
-            updateElement.state.value.timerSpeed =
-              Number(values.fan_timer_speed) !== 0
-                ? 'FAN_SPEED_SETTING_STAGE' + Number(values.fan_timer_speed)
-                : resource.value.fan_control_settings.timerSpeed;
+            updateElement.state.value.timerSpeed = 'FAN_SPEED_SETTING_STAGE' + Number(values.fan_timer_speed);
+            updateElement.stateMask.paths.push('timer_speed');
           }
         }
         break;
@@ -702,8 +716,8 @@ export default class GoogleProtobufAPI {
         if (isNumeric(value, { type: 'integer', min: 0, max: 3 }) === true) {
           // Set fan speed on the target thermostat only if we're not changing fan on/off state also
           setUpdateTrait('fan_control_settings', 'type.nestlabs.com/nest.trait.hvac.FanControlSettingsTrait');
-          updateElement.state.value.timerSpeed =
-            Number(value) !== 0 ? 'FAN_SPEED_SETTING_STAGE' + Number(value) : resource.value.fan_control_settings.timerSpeed;
+          updateElement.state.value.timerSpeed = 'FAN_SPEED_SETTING_STAGE' + Number(value);
+          updateElement.stateMask.paths.push('timer_speed');
         }
         break;
 
@@ -715,6 +729,7 @@ export default class GoogleProtobufAPI {
           updateElement.state.value.targetCameraState = value === true ? 'CAMERA_ON' : 'CAMERA_OFF';
           updateElement.state.value.changeModeReason = 2;
           updateElement.state.value.settingsUpdated = timestamp(Date.now());
+          updateElement.stateMask.paths.push('target_camera_state', 'change_mode_reason', 'settings_updated');
         }
         break;
 
@@ -787,6 +802,7 @@ export default class GoogleProtobufAPI {
           remote === true
             ? { rcsSourceType: 'RCS_SOURCE_TYPE_SINGLE_SENSOR', activeRcsSensor: { resourceId } }
             : { rcsSourceType: 'RCS_SOURCE_TYPE_BACKPLATE' };
+        updateElement.stateMask.paths.push('rcs_control_mode', 'active_rcs_selection');
         break;
       }
 
@@ -805,6 +821,7 @@ export default class GoogleProtobufAPI {
           let boostTime = value.time === undefined ? 30 * 60 : Number(value.time);
 
           updateElement.state.value.boostTimerEnd = value?.state === true ? timestamp(Date.now() + boostTime * 1000) : timestamp(0);
+          updateElement.stateMask.paths.push('boost_timer_end');
         }
         break;
 
@@ -816,6 +833,7 @@ export default class GoogleProtobufAPI {
             ...(updateElement.state.value.temperature ?? {}),
             value: Number(value),
           };
+          updateElement.stateMask.paths.push('temperature.value');
         }
         break;
 
@@ -842,6 +860,7 @@ export default class GoogleProtobufAPI {
             ...(updateElement.state.value.autoRelockDuration ?? {}),
             seconds: Number(value),
           };
+          updateElement.stateMask.paths.push('auto_relock_duration.seconds');
         }
         break;
 
@@ -874,6 +893,7 @@ export default class GoogleProtobufAPI {
             ...(updateElement.state.value.dehumidifierTargetHumidity ?? {}),
             enabled: value,
           };
+          updateElement.stateMask.paths.push('dehumidifier_target_humidity.enabled');
         }
         break;
 
@@ -885,6 +905,7 @@ export default class GoogleProtobufAPI {
             ...(updateElement.state.value.dehumidifierTargetHumidity ?? {}),
             value: Number(value),
           };
+          updateElement.stateMask.paths.push('dehumidifier_target_humidity.value');
         }
         break;
 
@@ -896,6 +917,7 @@ export default class GoogleProtobufAPI {
             ...(updateElement.state.value.humidifierTargetHumidity ?? {}),
             enabled: value,
           };
+          updateElement.stateMask.paths.push('humidifier_target_humidity.enabled');
         }
         break;
 
@@ -907,6 +929,7 @@ export default class GoogleProtobufAPI {
             ...(updateElement.state.value.humidifierTargetHumidity ?? {}),
             value: Number(value),
           };
+          updateElement.stateMask.paths.push('humidifier_target_humidity.value');
         }
         break;
     }

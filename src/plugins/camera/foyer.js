@@ -9,7 +9,7 @@
 // - Apply shared endpoint, browser headers, timeout and response-buffer settings
 // - Request HomeGraph and return the client with its pending ID lookup
 // - Match the source device ID and resolve aliases from that same device
-// - Return googleDeviceId and legacyDeviceId without the quartz. prefix
+// - Return Google UUID, PHX streaming ID and legacy ID without the quartz. prefix
 //
 // Notes:
 // - Missing aliases remain undefined; unmatched devices return an empty object
@@ -17,7 +17,7 @@
 // - Callers own constructor prefetch, lazy retries and client cleanup
 // - No credentials or global lookup cache are stored by this module
 //
-// Code version 2026.11.26
+// Code version 2026.11.28
 'use strict';
 
 // Define node.js modules
@@ -65,6 +65,10 @@ function setupGoogleHomeFoyer(options, transport = undefined) {
 
 // Resolve the available Foyer and legacy IDs through the caller-owned transport.
 async function resolveCameraIds(transport, resourceId) {
+  if (typeof resourceId !== 'string' || resourceId.trim() === '') {
+    return {};
+  }
+
   let response = await transport.command(
     GOOGLE_HOME_FOYER_PREFIX,
     'StructuresService',
@@ -72,9 +76,19 @@ async function resolveCameraIds(transport, resourceId) {
     { requestId: crypto.randomUUID() },
     { retry: 2 },
   );
-  for (let home of Object.values(response?.data?.[0]?.homes ?? {})) {
-    for (let device of Object.values(home?.devices ?? {})) {
-      let aliases = Object.values(device?.otherIds?.otherThirdPartyId ?? {});
+
+  // Foyer can place cameras under a home, inside its rooms, or in the unassigned
+  // list. Discovery and streaming must recognise the same topology.
+  let graph = response?.data?.[0];
+  let groups = Object.values(graph?.homes ?? {}).flatMap((home) => [
+    home?.devices,
+    ...Object.values(home?.rooms ?? {}).map((room) => room?.devices),
+  ]);
+  groups.push(graph?.unassignedDevices);
+  for (let devices of groups) {
+    for (let device of Object.values(devices ?? {})) {
+      let aliases = [device?.id?.thirdPartyId, ...Object.values(device?.otherIds?.otherThirdPartyId ?? {})];
+
       // Resolve aliases on the same device; never borrow another camera's ID.
       if (device?.id?.googleUuid !== resourceId && aliases.some((alias) => alias?.id === resourceId) === false) {
         continue;
@@ -86,7 +100,19 @@ async function resolveCameraIds(transport, resourceId) {
           alias.id.startsWith('quartz.') === true &&
           alias.id.length > 'quartz.'.length,
       );
+
+      // JoinStream uses the PHX resource ID, also supplied as the primary third-party
+      // ID on Google Home accounts. Wake-up and talkback use the Google UUID.
+      let streaming = aliases.find(
+        (alias) =>
+          alias?.idType === 'PHX' && typeof alias.id === 'string' && alias.id.startsWith('DEVICE_') === true && alias.id.length > 7,
+      );
+      let primaryId = device?.id?.thirdPartyId?.id;
+      let streamingDeviceId =
+        streaming?.id ??
+        (typeof primaryId === 'string' && primaryId.startsWith('DEVICE_') === true && primaryId.length > 7 ? primaryId : undefined);
       return {
+        streamingDeviceId,
         googleDeviceId: device?.id?.googleUuid,
         legacyDeviceId: camera?.id.slice('quartz.'.length),
       };

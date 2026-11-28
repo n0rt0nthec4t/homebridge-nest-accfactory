@@ -8,6 +8,7 @@ import hap from './helpers/homebridge-hap.js';
 import test from 'node:test';
 import { setImmediate } from 'node:timers/promises';
 import HomeKitDevice from '../src/HomeKitDevice/HomeKitDevice.js';
+import HomeKitHistory from '../src/HomeKitHistory/HomeKitHistory.js';
 import FFmpeg from '../src/plugins/camera/ffmpeg.js';
 import { TIMERS } from '../src/consts.js';
 import { importSource } from './helpers/import-source.js';
@@ -35,7 +36,7 @@ for (let name of ['doorbell', 'floodlight']) {
 }
 HomeKitDevice.PLUGIN_NAME = 'camera-hap-test';
 let serial = 0;
-async function setup(context, name = 'camera', data = {}, prepareAccessory = undefined) {
+async function setup(context, name = 'camera', data = {}, prepareAccessory = undefined, lifecycle = false) {
   context.mock.method(childProcess, 'spawnSync', () => ({ error: new Error('Fixture probe unavailable') }));
   context.mock.method(FFmpeg.prototype, 'supportsEncoder', () => true);
   let device = new classes[name](
@@ -82,12 +83,16 @@ async function setup(context, name = 'camera', data = {}, prepareAccessory = und
     writes.push(values);
   };
   context.after(() => device.remove());
-  // Exercise the same base/subclass hook sequence as the lifecycle without publishing an accessory.
-  await classes.camera.prototype.onAdd.call(device);
-  if (name !== 'camera') {
-    await device.onAdd();
+  if (lifecycle === true) {
+    await device.add({ enableHistory: device.deviceData.eveHistory === true });
+  } else {
+    // Exercise the same base/subclass hook sequence without publishing an accessory.
+    await classes.camera.prototype.onAdd.call(device);
+    if (name !== 'camera') {
+      await device.onAdd();
+    }
+    await device.update({});
   }
-  await device.update({});
   return { device, writes };
 }
 for (let name of ['camera', 'doorbell', 'floodlight']) {
@@ -567,5 +572,43 @@ for (let name of ['camera', 'doorbell', 'floodlight']) {
     await device.update({ events: [{ ...event, id: 'new-vehicle', start_time: 1700000061000, end_time: 1700000062000 }] });
     assert.equal(motion.value, true);
     assert.equal(device.motionService, service);
+  });
+}
+
+// Real ADD must link Eve history after camera/controller setup, including cached
+// services; source selection must not change the motion service's UUID/subtype.
+for (const cached of [false, true]) {
+  test('HomeGraph camera keeps Eve motion history through the full ADD lifecycle: cached=' + cached, async (context) => {
+    const previousHistory = HomeKitDevice.EVEHOME;
+    const previousPlatform = HomeKitDevice.PLATFORM_NAME;
+    HomeKitDevice.EVEHOME = HomeKitHistory;
+    HomeKitDevice.PLATFORM_NAME = 'camera-hap-test';
+    context.after(() => {
+      HomeKitDevice.EVEHOME = previousHistory;
+      HomeKitDevice.PLATFORM_NAME = previousPlatform;
+    });
+    let existing;
+    const { device } = await setup(
+      context,
+      'camera',
+      { eveHistory: true, apiAccess: { resourceId: 'google-camera' } },
+      cached === true
+        ? (accessory) => {
+            existing = accessory.addService(hap.Service.MotionSensor, '', 1);
+          }
+        : undefined,
+      true,
+    );
+    assert.equal(device.motionService?.UUID, hap.Service.MotionSensor.UUID);
+    assert.equal(device.motionService?.subtype, 1);
+    if (cached === true) {
+      assert.equal(device.motionService, existing);
+    }
+    assert.equal(device.historyService?.EveHome?.evetype, 'motion');
+    assert.equal(device.motionService.testCharacteristic(C.EveMotionSensitivity), true);
+    assert.equal(
+      device.accessory.services.some((service) => service.UUID === hap.Service.EveHomeHistory.UUID),
+      true,
+    );
   });
 }

@@ -10,6 +10,7 @@ name: Release & Publish
 #   never permits the workflow to create a tag or finish a GitHub release.
 # - Release notes accept Keep a Changelog headings and legacy ## vVERSION headings.
 # - Alpha/beta notes live in PRERELEASE_NOTES.md; stable notes in CHANGELOG.md.
+# - Plugin release tags start with v; independently tagged tool releases are skipped.
 # - Configure this repository and workflow filename as an npm trusted publisher.
 # - Adjust the validation matrix to the runtimes supported by each project.
 on:
@@ -21,7 +22,8 @@ on:
       - package-lock.json
       - CHANGELOG.md
       - PRERELEASE_NOTES.md
-  # Stable publishing uses the commit identified by the published release tag.
+  # Release events cannot filter tag names here. Job guards admit only plugin
+  # tags; metadata validation below requires an exact package-version match.
   release:
     types: [published]
 
@@ -29,21 +31,22 @@ permissions:
   contents: read
 
 # Queue publish attempts across both event types without discarding pending runs.
+# Unrelated tool releases use a separate queue so they cannot delay npm publishing.
 # Rerun the original failed run to resume after a partially completed release.
 concurrency:
-  group: npm-publish-${{ github.repository }}
+  group: npm-publish-${{ github.repository }}${{ github.event_name == 'release' && !startsWith(github.event.release.tag_name, 'v') && '-other-release' || '' }}
   cancel-in-progress: false
   queue: max
 
 jobs:
   validate-media:
-    if: github.event_name == 'push' || github.event.release.prerelease == false
+    if: github.event_name == 'push' || (github.event_name == 'release' && github.event.release.prerelease == false && startsWith(github.event.release.tag_name, 'v'))
     uses: ./.github/workflows/media-tests.yml
 
   # Validate committed source without auto-formatting or changing dependencies.
   validate:
-    # Prereleases created below must not trigger a second publish.
-    if: github.event_name == 'push' || github.event.release.prerelease == false
+    # Skip tool releases and prereleases created by this workflow.
+    if: github.event_name == 'push' || (github.event_name == 'release' && github.event.release.prerelease == false && startsWith(github.event.release.tag_name, 'v'))
     strategy:
       fail-fast: false
       matrix:
@@ -64,6 +67,7 @@ jobs:
       - run: npm run check
 
   publish-npm:
+    if: github.event_name == 'push' || (github.event_name == 'release' && github.event.release.prerelease == false && startsWith(github.event.release.tag_name, 'v'))
     needs: [validate, validate-media]
     runs-on: ubuntu-latest
     permissions:
